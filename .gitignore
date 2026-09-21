@@ -1,0 +1,21 @@
+# 配置与数据（含 bot_token 与上游 api_key 明文）
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+*.bak
+
+# 构建产物
+/menshen
+*.tar.gz
+*.zip
+
+# 本地环境
+.env
+.env.test
+.DS_Store
+
+# 本地工具状态，不属于这个项目
+CLAUDE.md
+.spec-workflow/

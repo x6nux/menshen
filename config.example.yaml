@@ -1,0 +1,59 @@
+# menshen 配置。复制为 config.yaml 后按需修改。
+# 这里只有接入 Telegram 必需的几项，其余全部在 bot 的管理面板里配置。
+
+# ---- 主管理员（必填）----
+# TG 数字 user_id，不是用户名。
+#
+# 主管理员掌握上游渠道、模型与联合封禁，并可在面板上添加**次级管理员**。
+# 次管只能接入自己的 bot、管自己那些 bot 在各群的行为。
+#
+# 这份名单只存在于配置文件里，不进数据库 —— 面板上删不掉它，
+# 否则一次手滑就能让整个服务没有任何人能管。
+admin_ids:
+  - 123456789
+
+# ---- 主 bot（必填）----
+# 管理面板所在的那个 bot。它同时也是长轮询模式下唯一工作的 bot。
+bot_token: "123456789:AA..."
+
+# ---- 接入方式：填了 public_url 就是 webhook，否则是长轮询 ----
+#
+# ⚠️ 要接入**多个** bot 就必须填 public_url。长轮询模式下只能服务上面那
+#    一个 bot，管理员在面板上接入子 bot 会被直接拒绝 —— getUpdates 要为
+#    每个 bot 各开一条长连接，而 Telegram 的限速同时按 bot 和按出口 IP
+#    算，几个 bot 一起轮询会互相挤掉配额，表现是全都变慢、全都丢更新。
+
+# public_url 是回调地址的**前缀**，可以带任意层子路径。
+# 完整回调地址 = <public_url>/<bot_token>/webhook
+#
+#   public_url: "https://ad.example.com/tg"
+#   → https://ad.example.com/tg/123456789:AA.../webhook
+#
+# 每个已接入的 bot 由本进程自动 setWebhook，不必手工调用。
+# 路径里的 token 就是凭证，与 Telegram 官方的 /bot<TOKEN>/method 同构。
+#
+# ⚠️ 接入是**注册制**：token 必须先由某个管理员在面板上登记过
+#    （🤖 我的机器人 → 添加），没登记的一律 401。没有归属就谈不上
+#    谁能管它、谁为它的开销负责。
+#
+# 必须是 https（Telegram 不接受 http），通常是反代对外的地址。
+# public_url: "https://ad.example.com"
+
+# webhook 模式下本进程的监听地址。默认只听回环——
+# 这个端口上的请求等同于「以 bot 身份收发消息」，不要直接暴露到公网，
+# 前面挂 nginx / caddy 做 TLS 终止。
+#
+# ⚠️ 跑在容器里时必须改成 "0.0.0.0:8081"：默认值只听容器自己的回环，
+#    端口映射过去也连不上。暴露面交给 compose 的端口绑定来收敛。
+# listen_addr: "127.0.0.1:8081"
+
+# ---- 可选 ----
+
+# Bot API 基址。默认走反代，因为直连 api.telegram.org 在不少网络环境下
+# 连 TCP 都握不上手，而那是整个 bot 唯一的输入通道。
+# tg_api_base: "https://api.telegram.org"
+
+# SQLite 数据库路径。库里有上游 api_key 明文，建议 0600 权限。
+# ⚠️ 跑在容器里时必须指向挂载卷内（如 "/app/data/data.db"），
+#    否则写进容器可写层，重启即全部丢失。
+# db_path: "data.db"

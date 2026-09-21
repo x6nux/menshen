@@ -1,0 +1,449 @@
+package store
+
+import (
+	"encoding/json"
+	"strconv"
+	"sync/atomic"
+
+	"menshen/internal/upstream"
+)
+
+// settings 的默认值：read-with-fallback，不做启动 seed。
+// 默认值在 Snapshot 构建时铺满，读侧永远拿到完整表。
+//
+// 新增设置项只需往这里加一条；新增**表**必须进 schemaSQL，
+// 新增**列**必须进 migrate()。
+//
+// 作用域分三层，见 settingSpecs 的 scope 字段：
+//   - 全局：只有主管理员能改，本表是唯一来源
+//   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
+//   - per-chat：不在本表，直接是 bot_chats 的列
+var settingDefaults = map[string]string{
+	"tz_offset":          "8",
+	"log_retention_days": "30",
+
+	// ---- 全局（主管理员）----
+	// antiad_enabled 是全平台急停：关掉它，所有 bot 的所有群一起停判。
+	// 单个群的启停在 bot_chats.enabled 上。
+	"antiad_enabled":   "0",
+	"antiad_so_model":  "", // systemone 判定模型，空则只走大模型
+	"antiad_llm_model": "", // 大模型复判/总结模型，空则不复判不总结
+	// 形态摘要是全局一份：所有 bot 的样本汇进同一个池子，学得最快。
+	"antiad_digest":         "",
+	"antiad_digest_last_id": "0",
+	"antiad_digest_min":     "5",
+	"antiad_digest_max":     "1200",
+	// 联合封禁：默认关。它会跨 bot 跨群批量封人，打开前要想清楚。
+	"gban_enabled": "0",
+	// 每个次级管理员能接入的 bot 数上限。主管理员不受限。
+	"max_bots_per_admin": "5",
+	// 是否把所有 bot 的命中告警抄送主管理员。默认关——
+	// 分发出去之后，主管的私聊不该被每一个次管的群刷屏。
+	"alert_copy_main": "0",
+
+	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
+	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
+	// 引入浮点要改动整套设置面板机制，不值当。
+	"antiad_so_trust":   "80", // systemone 置信度采信线
+	"antiad_act_hard":   "90", // 删除 + 禁言线
+	"antiad_act_soft":   "75", // 删除线
+	"antiad_new_hours":  "72", // 新人时长界
+	"antiad_new_msgs":   "10", // 新人消息数界
+	"antiad_mute_hours": "24",
+	// 滥用护栏：全量送检是明知成本的选择，这几项只堵滥用，不改设计。
+	// 窗口长度沿用 limiter.go 的 1 分钟。0 = 不限。
+	"antiad_rpm_chat":     "30", // 每群每分钟送检上限
+	"antiad_alert_rpm":    "3",  // 同一 (群,人) 每分钟告警上限
+	"antiad_cmd_rpm":      "3",  // 每人每分钟 /ad、/adb 次数上限
+	"antiad_ctx_msgs":     "6",
+	"antiad_alert_ttl":    "300", // 群内告警自动撤回秒数，0 = 永不撤回
+	"antiad_dm_admins":    "1",   // 是否私聊 owner
+	"antiad_exempt_users": "[]",  // 该 bot 的豁免名单
+
+	// ---- 进群冷判定（per-bot）----
+	// 新人进群时不等他发言，先就账号画像（昵称/用户名/简介）判一次，
+	// 判为广告号即无限期限制发言，由本人改正后自助解除。默认关：
+	// 它对每个进群的人都要花一次 AI 的钱。
+	"antiad_cold": "0",
+	// 冷判定的采信线，比消息判定的处置线更高——进群画像的证据比一条
+	// 具体消息少得多，宁可漏也不要在人刚进门时就误伤。
+	"antiad_cold_conf": "85",
+	// 本地预筛：只有昵称/简介出现可疑特征的人才送检。关掉就是每个
+	// 进群的人都送检，大群里这是数量级的成本差别。
+	"antiad_cold_prefilter": "1",
+	// 自助解除的重试间隔基数（秒）。不限次数，但第 n 次要等
+	// base × 2^(n-1)，封顶 1 小时——有耐心的人也磨不动多少 AI 开销。
+	"antiad_unban_base": "60",
+}
+
+// BotRec 是 bots 表的一行。
+type BotRec struct {
+	Token    string
+	BotID    int64
+	Username string
+	OwnerID  int64
+	// SoModel / LLMModel 为空表示沿用全局默认。只有主管理员能改——
+	// 模型直接决定判定质量与花掉多少钱。
+	SoModel   string
+	LLMModel  string
+	Enabled   bool
+	CreatedAt int64
+}
+
+// Label 返回面板上展示用的名字，绝不含 token。
+func (r *BotRec) Label() string {
+	if r.Username != "" {
+		return "@" + r.Username
+	}
+	return strconv.FormatInt(r.BotID, 10)
+}
+
+// BotChat 是 bot_chats 的一行：某个 bot 在某个群的行为配置。
+type BotChat struct {
+	BotID      int64
+	ChatID     int64
+	Title      string
+	Enabled    bool
+	Dryrun     bool
+	GroupAlert bool
+	CreatedAt  int64
+}
+
+// AdminRec 是 admins 表的一行（次级管理员）。
+type AdminRec struct {
+	UserID    int64
+	Note      string
+	AddedBy   int64
+	CreatedAt int64
+}
+
+// GbanRec 是联合封禁名单的一行。
+type GbanRec struct {
+	UserID    int64
+	Reason    string
+	SrcChat   int64
+	ByBot     int64
+	CreatedAt int64
+}
+
+type Snapshot struct {
+	Models    map[string]*upstream.Model
+	Upstreams []*upstream.Upstream
+	Settings  map[string]string
+
+	// bots 按 bot_id 索引，botTokens 按 token 索引。
+	// 两份指向同一批对象：webhook 侧只有 token，面板侧只有 bot_id。
+	Bots      map[int64]*BotRec
+	BotTokens map[string]*BotRec
+
+	BotChats    map[int64]map[int64]BotChat // botID -> chatID -> 配置
+	BotSettings map[int64]map[string]string // botID -> k -> v
+	Admins      map[int64]AdminRec
+	Gban        map[int64]GbanRec
+}
+
+func (s *Snapshot) Setting(k string) string { return s.Settings[k] }
+
+func (s *Snapshot) SettingInt(k string, def int64) int64 {
+	if v, err := strconv.ParseInt(s.Settings[k], 10, 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func (s *Snapshot) SettingInt64List(k string) []int64 {
+	var out []int64
+	json.Unmarshal([]byte(s.Settings[k]), &out)
+	return out
+}
+
+// botSetting 三级回退：bot 覆盖 → 全局值 → 默认值（全局值本身已铺满默认）。
+//
+// botID 为 0 时退化成纯全局读取，这让定时任务这类「不属于任何 bot」的
+// 调用方不必分叉。
+func (s *Snapshot) BotSetting(botID int64, k string) string {
+	if m, ok := s.BotSettings[botID]; ok {
+		if v, ok := m[k]; ok {
+			return v
+		}
+	}
+	return s.Settings[k]
+}
+
+func (s *Snapshot) BotSettingInt(botID int64, k string, def int64) int64 {
+	if v, err := strconv.ParseInt(s.BotSetting(botID, k), 10, 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func (s *Snapshot) BotSettingInt64List(botID int64, k string) []int64 {
+	var out []int64
+	json.Unmarshal([]byte(s.BotSetting(botID, k)), &out)
+	return out
+}
+
+// chatConf 取某个 bot 在某群的配置。第二个返回值为假表示该群不在它的名下。
+func (s *Snapshot) ChatConf(botID, chatID int64) (BotChat, bool) {
+	c, ok := s.BotChats[botID][chatID]
+	return c, ok
+}
+
+// chatsOf 返回某个 bot 名下的全部群（含未启用的），按 chat_id 稳定排序。
+func (s *Snapshot) ChatsOf(botID int64) []BotChat {
+	m := s.BotChats[botID]
+	out := make([]BotChat, 0, len(m))
+	for _, c := range m {
+		out = append(out, c)
+	}
+	// 插入排序：一个 bot 的群数是个位数到两位数，不值得引排序包。
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].ChatID < out[j-1].ChatID; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+// modelsFor 解析某个 bot 实际使用的两个模型：bots 表的覆盖优先，否则全局默认。
+func (s *Snapshot) ModelsFor(botID int64) (so, llm string) {
+	so, llm = s.Settings["antiad_so_model"], s.Settings["antiad_llm_model"]
+	if r, ok := s.Bots[botID]; ok {
+		if r.SoModel != "" {
+			so = r.SoModel
+		}
+		if r.LLMModel != "" {
+			llm = r.LLMModel
+		}
+	}
+	return
+}
+
+// botsOwnedBy 返回某人名下的 bot。主管理员传 mainAdmin 取全部。
+func (s *Snapshot) BotsOwnedBy(uid int64, all bool) []*BotRec {
+	out := make([]*BotRec, 0, len(s.Bots))
+	for _, r := range s.Bots {
+		if all || r.OwnerID == uid {
+			out = append(out, r)
+		}
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].BotID < out[j-1].BotID; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+type Cache struct {
+	store *Store
+	cfg   atomic.Pointer[Snapshot]
+}
+
+func NewCache(s *Store) (*Cache, error) {
+	c := &Cache{store: s}
+	if err := c.Reload(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Cache) Snap() *Snapshot { return c.cfg.Load() }
+
+// reload 重建整个配置快照并原子替换。任何配置变更后调用。
+//
+// 任何一段扫描都要查 rows.Err()：rows.Next() 因中途出错（如 WAL 写锁竞争）
+// 提前返回 false 时不会自己报错，不查就会把「只扫到一半」悄悄当成「扫完了」，
+// 而这里扫的是权限与生效群——静默少一半等于静默改权限。
+func (c *Cache) Reload() error {
+	snap := &Snapshot{
+		Models:      map[string]*upstream.Model{},
+		Settings:    map[string]string{},
+		Bots:        map[int64]*BotRec{},
+		BotTokens:   map[string]*BotRec{},
+		BotChats:    map[int64]map[int64]BotChat{},
+		BotSettings: map[int64]map[string]string{},
+		Admins:      map[int64]AdminRec{},
+		Gban:        map[int64]GbanRec{},
+	}
+
+	if err := c.loadModels(snap); err != nil {
+		return err
+	}
+	if err := c.loadUpstreams(snap); err != nil {
+		return err
+	}
+	if err := c.loadSettings(snap); err != nil {
+		return err
+	}
+	if err := c.loadTenancy(snap); err != nil {
+		return err
+	}
+
+	c.cfg.Store(snap)
+	return nil
+}
+
+func (c *Cache) loadModels(snap *Snapshot) error {
+	rows, err := c.store.Read.Query(`SELECT name,prompt_price,completion_price,
+		cache_read_price,cache_write_price,enabled FROM models`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		m := &upstream.Model{}
+		var en int64
+		if err := rows.Scan(&m.Name, &m.PromptPrice, &m.CompletionPrice,
+			&m.CacheReadPrice, &m.CacheWritePrice, &en); err != nil {
+			return err
+		}
+		m.Enabled = en == 1
+		snap.Models[m.Name] = m
+	}
+	return rows.Err()
+}
+
+func (c *Cache) loadUpstreams(snap *Snapshot) error {
+	rows, err := c.store.Read.Query(`SELECT id,name,base_url,api_key,weight,status,
+		supports_chat,supports_systemone FROM upstreams ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		u := &upstream.Upstream{}
+		var sc, so int64
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Weight,
+			&u.Status, &sc, &so); err != nil {
+			return err
+		}
+		u.SupportsChat, u.SupportsSystemOne = sc == 1, so == 1
+		snap.Upstreams = append(snap.Upstreams, u)
+	}
+	return rows.Err()
+}
+
+func (c *Cache) loadSettings(snap *Snapshot) error {
+	// 先铺默认值，再用 DB 覆盖
+	for k, v := range settingDefaults {
+		snap.Settings[k] = v
+	}
+	rows, err := c.store.Read.Query(`SELECT k,v FROM settings`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return err
+		}
+		snap.Settings[k] = v
+	}
+	return rows.Err()
+}
+
+// loadTenancy 加载多租户那四张表：bots / bot_chats / bot_settings / admins，
+// 外加联合封禁名单。
+func (c *Cache) loadTenancy(snap *Snapshot) error {
+	rows, err := c.store.Read.Query(`SELECT token,bot_id,username,owner_id,
+		so_model,llm_model,enabled,created_at FROM bots ORDER BY bot_id`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		r := &BotRec{}
+		var en int64
+		if err := rows.Scan(&r.Token, &r.BotID, &r.Username, &r.OwnerID,
+			&r.SoModel, &r.LLMModel, &en, &r.CreatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		r.Enabled = en == 1
+		snap.Bots[r.BotID] = r
+		snap.BotTokens[r.Token] = r
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = c.store.Read.Query(`SELECT bot_id,chat_id,title,enabled,dryrun,
+		group_alert,created_at FROM bot_chats`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var bc BotChat
+		var en, dry, ga int64
+		if err := rows.Scan(&bc.BotID, &bc.ChatID, &bc.Title, &en, &dry, &ga,
+			&bc.CreatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		bc.Enabled, bc.Dryrun, bc.GroupAlert = en == 1, dry == 1, ga == 1
+		if snap.BotChats[bc.BotID] == nil {
+			snap.BotChats[bc.BotID] = map[int64]BotChat{}
+		}
+		snap.BotChats[bc.BotID][bc.ChatID] = bc
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = c.store.Read.Query(`SELECT bot_id,k,v FROM bot_settings`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var botID int64
+		var k, v string
+		if err := rows.Scan(&botID, &k, &v); err != nil {
+			rows.Close()
+			return err
+		}
+		if snap.BotSettings[botID] == nil {
+			snap.BotSettings[botID] = map[string]string{}
+		}
+		snap.BotSettings[botID][k] = v
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = c.store.Read.Query(`SELECT user_id,note,added_by,created_at FROM admins`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var a AdminRec
+		if err := rows.Scan(&a.UserID, &a.Note, &a.AddedBy, &a.CreatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		snap.Admins[a.UserID] = a
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = c.store.Read.Query(
+		`SELECT user_id,reason,src_chat,by_bot,created_at FROM gban`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g GbanRec
+		if err := rows.Scan(&g.UserID, &g.Reason, &g.SrcChat, &g.ByBot,
+			&g.CreatedAt); err != nil {
+			return err
+		}
+		snap.Gban[g.UserID] = g
+	}
+	return rows.Err()
+}

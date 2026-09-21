@@ -1,0 +1,19 @@
+# 容器化部署有两处必须在 config.yaml 里对齐，否则表现得像「跑起来了但没用」：
+#
+#   db_path:     "/app/data/data.db"   ← 必须落在下面挂的卷里。
+#                默认值 data.db 会写进容器可写层，重启即全部丢失。
+#   listen_addr: "0.0.0.0:8081"        ← 容器内必须监听全零地址。
+#                默认值只听容器自己的回环，端口映射过去也连不上。
+#                暴露面由下面的 ports 只绑宿主机回环来收敛。
+services:
+  menshen:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    # 仅 webhook 模式需要。长轮询模式把这两行删掉，不开任何端口。
+    # 只绑宿主机回环：这个端口上的请求等同于「以 bot 身份收发消息」，
+    # 前面必须有反代做 TLS 终止。
+    ports:
+      - "127.0.0.1:8081:8081"
