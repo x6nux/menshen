@@ -1,5 +1,23 @@
 # menshen 配置。复制为 config.yaml 后按需修改。
 # 这里只有接入 Telegram 必需的几项，其余全部在 bot 的管理面板里配置。
+#
+# ---- 每一项都可以改用环境变量 ----
+#
+# 键名加 MENSHEN_ 前缀、转大写即可：
+#
+#   admin_ids    → MENSHEN_ADMIN_IDS    （多个用逗号分隔："1,2,3"）
+#   bot_token    → MENSHEN_BOT_TOKEN
+#   public_url   → MENSHEN_PUBLIC_URL
+#   listen_addr  → MENSHEN_LISTEN_ADDR
+#   tg_api_base  → MENSHEN_TG_API_BASE
+#   tg_proxy     → MENSHEN_TG_PROXY
+#   ai_proxy     → MENSHEN_AI_PROXY
+#   db_path      → MENSHEN_DB_PATH
+#
+# 环境变量**压过**本文件，且本文件可以完全不存在（容器里常见的做法是
+# 不挂配置、全用环境变量）。两者混用时，本文件给基线、环境变量覆盖个别项。
+#
+# 加前缀是为了不跟别的东西撞车 —— 尤其 HTTP_PROXY 已经被 Go 自己用着了。
 
 # ---- 主管理员（必填）----
 # TG 数字 user_id，不是用户名。
@@ -52,6 +70,31 @@ bot_token: "123456789:AA..."
 # Bot API 基址。默认走反代，因为直连 api.telegram.org 在不少网络环境下
 # 连 TCP 都握不上手，而那是整个 bot 唯一的输入通道。
 # tg_api_base: "https://api.telegram.org"
+
+# 出网代理，两类请求分开配，都可留空。
+#
+#   tg_proxy  Telegram Bot API
+#   ai_proxy  AI 上游（全部渠道）
+#
+# 分开配是因为最常见的形态是「TG 被墙、AI 走国内中转」—— 把 AI 流量也
+# 绕一圈只是白多一跳延迟。只需要其中一个就只配一个。
+#
+# 留空 = 沿用 HTTP_PROXY / HTTPS_PROXY 环境变量（不是直连）。
+# 换句话说现在靠环境变量跑着的部署，不动这两项即可保持原样。
+#
+# ⚠️ 必须带协议前缀，而且漏写时不一定会报错：
+#    "127.0.0.1:7890" 启动时会被明确拒绝，但 "localhost:1080" 这种主机名
+#    形式解析得过去 —— Go 会把 "localhost" 当成协议名，结果是连不上也不
+#    报错。本服务两类都拦。可用 http / https / socks5 / socks5h。
+#
+# ⚠️ 跑在容器里时 127.0.0.1 指的是容器自己。要用宿主机上的代理得写
+#    "http://host.docker.internal:7890"（Docker Desktop）或宿主机在
+#    docker0 上的地址（Linux 常见为 172.17.0.1）。
+#
+# 代理和 tg_api_base 解决的不是同一件事：后者换的是目标地址（反代），
+# 前者换的是到达路径。多数情况下用默认的反代就够，不必配代理。
+# tg_proxy: "http://127.0.0.1:7890"
+# ai_proxy: ""
 
 # SQLite 数据库路径。库里有上游 api_key 明文，建议 0600 权限。
 # ⚠️ 跑在容器里时必须指向挂载卷内（如 "/app/data/data.db"），
