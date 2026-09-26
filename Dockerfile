@@ -15,11 +15,21 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -o /out/menshen .
 
 FROM alpine:3.21
-# TLS 根证书：连 Telegram 与 AI 上游都要它，scratch 镜像里少了它
-# 表现为「所有请求都失败」而不是一条明确的证书错误。
-RUN apk add --no-cache ca-certificates tzdata
+# TLS 根证书：连 Telegram 与 AI 上游都要它，少了它表现为「所有请求都失败」
+# 而不是一条明确的证书错误。这里只装证书，不装 tzdata（见下）。
+RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=build /out/menshen /app/menshen
+
+# 时区：Go 发行包自带 zoneinfo.zip，不装 tzdata 就靠它。
+# 目标路径不能随便放：TZ / time.Local 的初始化只认
+# /usr/share/zoneinfo、/etc/localtime 和「构建时 GOROOT 下的 lib/time/zoneinfo.zip」
+# 三处，ZONEINFO 只对显式的 LoadLocation 生效（放在二进制同目录是无效的，实测过）。
+# GOROOT 已烤进二进制，就是构建镜像里的 /usr/local/go，所以按原路径放回即可。
+# 不放心的可以 `docker exec <容器> ./menshen -version`，看时间戳是不是 +0800。
+COPY --from=build /usr/local/go/lib/time/zoneinfo.zip /usr/local/go/lib/time/zoneinfo.zip
+# 只影响日志时间戳的显示（DB 里存的是绝对时间），要改成别的时区在 compose 里覆盖 TZ。
+ENV TZ=Asia/Shanghai
 
 # 这两项在容器里只有一个正确答案，所以烤进镜像，免得每个部署各踩一次：
 #
