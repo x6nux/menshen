@@ -40,6 +40,18 @@ var settingDefaults = map[string]string{
 	// 是否把所有 bot 的命中告警抄送主管理员。默认关——
 	// 分发出去之后，主管的私聊不该被每一个次管的群刷屏。
 	"alert_copy_main": "0",
+	// ---- AI 请求（全局）：不稳定的是上游模型本身，与哪个 bot 发起无关 ----
+	// systemone 平均不到 1 秒出结果，整次请求超过这个时限就当卡住，换一个立即重试。
+	"antiad_so_timeout_ms": "2000",
+	// 复判走流式，首字超过这个时限就当卡住，换一个立即重试。
+	"antiad_llm_ttft_ms": "5000",
+	// 1 分钟内重试超过这个次数就进入并发模式（每轮同时发多路，先到先得）。0 = 关闭。
+	"antiad_hedge_retries": "5",
+	"antiad_hedge_minutes": "5", // 并发模式持续多久，期间再触发会顺延
+	"antiad_hedge_fanout":  "2", // 并发模式下每轮同时发几路；期间开销随之成倍
+	// 识图模型（看图片与贴纸），空则图片与贴纸不判。全局一份：它按图片去重缓存，
+	// 与哪个 bot 收到这张图无关。
+	"antiad_vision_model": "",
 
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
@@ -59,6 +71,16 @@ var settingDefaults = map[string]string{
 	"antiad_alert_ttl":    "300", // 群内告警自动撤回秒数，0 = 永不撤回
 	"antiad_dm_admins":    "1",   // 是否私聊 owner
 	"antiad_exempt_users": "[]",  // 该 bot 的豁免名单
+	// 禁言档改为封禁出群（永久）。每群可单独覆盖（bot_chats.punish）。
+	"antiad_ban": "0",
+	// 判定成员 bot 的消息。默认豁免：群里的工具 bot 常发链接。
+	// bot 默认看不见其他 bot 的消息，开了也要对方满足 Bot-to-Bot 条件才收得到。
+	"antiad_judge_bots": "0",
+	// 管理员私聊改为汇总：每隔这么多分钟最多一条。
+	"antiad_alert_every": "5",
+	// 汇总游标（antiad_log.id，按 bot 存在 bot_settings）。-1 = 还没初始化：
+	// 升级后第一次运行只记位置，不翻旧账。
+	"antiad_alert_last_id": "-1",
 
 	// ---- 进群冷判定（per-bot）----
 	// 新人进群时不等他发言，先就账号画像（昵称/用户名/简介）判一次，
@@ -106,7 +128,18 @@ type BotChat struct {
 	Enabled    bool
 	Dryrun     bool
 	GroupAlert bool
-	CreatedAt  int64
+	// Punish 是本群的处罚方式：-1 跟随 bot 设置，0 禁言，1 封禁。见 BanMode。
+	Punish    int64
+	CreatedAt int64
+}
+
+// BanMode 报告这个群的「禁言档」是否改为封禁出群。
+// 每群设置优先；跟随时读 bot 级的 antiad_ban（再回落到全局默认）。
+func (s *Snapshot) BanMode(c BotChat) bool {
+	if c.Punish >= 0 {
+		return c.Punish == 1
+	}
+	return s.BotSettingInt(c.BotID, "antiad_ban", 0) == 1
 }
 
 // AdminRec 是 admins 表的一行（次级管理员）。
@@ -370,7 +403,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 	}
 
 	rows, err = c.store.Read.Query(`SELECT bot_id,chat_id,title,enabled,dryrun,
-		group_alert,created_at FROM bot_chats`)
+		group_alert,punish,created_at FROM bot_chats`)
 	if err != nil {
 		return err
 	}
@@ -378,7 +411,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		var bc BotChat
 		var en, dry, ga int64
 		if err := rows.Scan(&bc.BotID, &bc.ChatID, &bc.Title, &en, &dry, &ga,
-			&bc.CreatedAt); err != nil {
+			&bc.Punish, &bc.CreatedAt); err != nil {
 			rows.Close()
 			return err
 		}

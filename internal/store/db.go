@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS bot_chats (
   dryrun      INTEGER NOT NULL DEFAULT 1,
   group_alert INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL DEFAULT 0,
+  punish      INTEGER NOT NULL DEFAULT -1,
   PRIMARY KEY (bot_id, chat_id)
 );
 
@@ -125,6 +126,7 @@ CREATE TABLE IF NOT EXISTS group_members (
   msg_count   INTEGER NOT NULL DEFAULT 0,
   last_msg_at INTEGER NOT NULL DEFAULT 0,
   ad_hits     INTEGER NOT NULL DEFAULT 0,
+  whitelisted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, user_id)
 );
 
@@ -153,21 +155,55 @@ CREATE INDEX IF NOT EXISTS idx_antiad_user ON antiad_log(chat_id, user_id);
 -- 与 antiad_log 分开：后者只记判过的，被护栏去重/限流拦下的、豁免者发的
 -- 都不在里面——而那恰恰是刷屏号最可能藏东西的地方。主键用
 -- (chat_id, message_id)：TG 重推同一条 update 时不得留两份。
+-- 没有文字的消息（图片、贴纸）也记，text 为空：判成广告号时要连带删掉
+-- 此人近期的全部消息，靠的就是这里的 message_id。media_group 是相册 ID。
 CREATE TABLE IF NOT EXISTS group_messages (
-  chat_id    INTEGER NOT NULL,
-  message_id INTEGER NOT NULL,
-  user_id    INTEGER NOT NULL,
-  text       TEXT    NOT NULL,
-  at         INTEGER NOT NULL,
+  chat_id     INTEGER NOT NULL,
+  message_id  INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL,
+  text        TEXT    NOT NULL,
+  at          INTEGER NOT NULL,
+  media_group TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gmsg_user ON group_messages(chat_id, user_id, at);
 CREATE INDEX IF NOT EXISTS idx_gmsg_at ON group_messages(at);
+
+-- alert_cleanup 是待撤回的群内告警。记在库里而不是内存计时器上：
+-- 进程一重启计时器就丢了，还没到点的告警会永久留在群里。
+-- bot_id 决定由哪个 bot 去撤：只有发消息的那个 bot 删得掉它。
+CREATE TABLE IF NOT EXISTS alert_cleanup (
+  bot_id     INTEGER NOT NULL,
+  chat_id    INTEGER NOT NULL,
+  message_id INTEGER NOT NULL,
+  due_at     INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, message_id)
+);
+
+-- ad_hashes 是「消息本身就是广告」的内容指纹。同样的内容再出现时不再送检、
+-- 直接删除，禁言交给复判模型。只记消息级广告：账号级广告的正文可能只是
+-- 一句「你好」，记下来会误删所有人的你好。按 bot 隔离：一个租户的误判
+-- 不该删到别人的群里。
+CREATE TABLE IF NOT EXISTS ad_hashes (
+  bot_id      INTEGER NOT NULL,
+  hash        TEXT    NOT NULL,
+  log_id      INTEGER NOT NULL,
+  kind        TEXT    NOT NULL DEFAULT '',
+  confidence  REAL    NOT NULL DEFAULT 0,
+  hits        INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  last_hit_at INTEGER NOT NULL,
+  PRIMARY KEY (bot_id, hash)
+);
 `
 
 func Open(path string) (*Store, error) {
+	// synchronous(NORMAL)：WAL 下它不会损坏库，只是断电时可能丢最后几笔写入；
+	// 默认的 FULL 让每次写都等一次 fsync，而每条群消息要写两次（画像 + 留底），
+	// 广告洪峰时这就是瓶颈。pragma 按连接生效，所以必须写在 DSN 里。
 	dsn := "file:" + path +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+		"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
+		"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 
 	write, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -208,6 +244,15 @@ func migrate(db *sql.DB) error {
 		// 这条记录」两个判断的共同依据。老库的行默认 0 = 归属未知，
 		// 面板按主管理员可见处理。
 		{"antiad_log", "bot_id", "INTEGER NOT NULL DEFAULT 0"},
+		// whitelisted：反广告按群白名单（/adw）。全局豁免仍在
+		// settings.antiad_exempt_users。
+		{"group_members", "whitelisted", "INTEGER NOT NULL DEFAULT 0"},
+		// media_group：相册 ID，判成广告时整组删除。不建索引：按相册找兄弟消息
+		// 带着 chat_id、user_id，走 idx_gmsg_user；而 schemaSQL 先于 migrate 执行，
+		// 在这一列上建索引会让老库启动时直接报「no such column」。
+		{"group_messages", "media_group", "TEXT NOT NULL DEFAULT ''"},
+		// punish：本群的处罚方式。-1 = 跟随 bot 设置（antiad_ban），0 = 禁言，1 = 封禁。
+		{"bot_chats", "punish", "INTEGER NOT NULL DEFAULT -1"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
