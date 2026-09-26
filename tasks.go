@@ -51,12 +51,22 @@ func runBackgroundTasksEvery(stop <-chan struct{}, sh *core.Shared, reg *core.Re
 func tickMinute(sh *core.Shared, reg *core.Registry) {
 	antiad.GCChatAdminCache(sh) // 群管理员缓存过期条目
 	antiad.GCBioCache(sh)       // 个人简介缓存过期条目
+	antiad.GCLinkCache(sh)      // 简介链接解析缓存过期条目
+	antiad.GCVisionCache(sh)    // 识图结果缓存
+	antiad.GCDoomedAlbums(sh)   // 已判成广告的相册
 	sh.AdLimits.GC()            // 反广告护栏窗口：回收长期无人问津的 key
 	sh.Captcha.GC()             // 过期的人机验证题
 	antiad.GCUnbanGate(sh)      // 自助解除的重试记录
+	sh.GCShard(time.Now())      // 同群多 bot 的发言人认领
 	if reg != nil {
-		// 待输入会话是每个 bot 各自一份的，逐个清。
-		reg.Each(func(b *core.Bot) { b.GCPending() })
+		now := time.Now()
+		reg.Each(func(b *core.Bot) {
+			b.GCPending()                    // 待输入会话是每个 bot 各自一份的
+			antiad.SweepAlertCleanup(b, now) // 到点撤回群内告警：只有发它的 bot 删得掉
+			// 私聊汇总。启动即跑的这一轮顺带把游标就位：升级后第一次只记位置，
+			// 拖到第一个整分钟的话，这一分钟里的命中会被当成「历史」跳过。
+			antiad.FlushAdSummary(b, now)
+		})
 	}
 }
 

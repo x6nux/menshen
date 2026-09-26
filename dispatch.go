@@ -20,6 +20,11 @@ func dispatch(b *core.Bot, u *tg.Update) {
 		handleCallback(b, u.CallbackQuery)
 	case u.Message != nil && u.Message.From != nil && u.Message.Chat != nil:
 		handleMessage(b, u.Message)
+	case u.EditedMessage != nil && u.EditedMessage.From != nil && u.EditedMessage.Chat != nil:
+		// 只接群里的编辑：私聊里编辑一条旧消息不该被当成又一次面板输入。
+		if m := u.EditedMessage; m.Chat.Type != "" && m.Chat.Type != "private" {
+			antiad.HandleGroupMessage(b, m)
+		}
 	case u.ChatMember != nil:
 		antiad.HandleChatMemberUpdate(b, u.ChatMember)
 	case u.MyChatMember != nil:

@@ -107,7 +107,7 @@ func TestMaskToken(t *testing.T) {
 }
 
 // TestWebhookDispatch 确认 <前缀>/<TOKEN>/webhook 的更新真的被那个 bot
-// 处理了。观察点取上下文环而不是队列本身：loadAll 已经把 worker 启起来
+// 处理了。观察点取群消息留底而不是队列本身：loadAll 已经把 worker 启起来
 // 了，队列里的东西转瞬就被取走，只有走完整条分发链路才会留下痕迹。
 func TestWebhookDispatch(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
@@ -124,16 +124,52 @@ func TestWebhookDispatch(t *testing.T) {
 		t.Fatalf("状态码 = %d, 期望 200", w.Code)
 	}
 
+	count := func() (n int) {
+		b.Store.Read.QueryRow(`SELECT COUNT(*) FROM group_messages
+			WHERE chat_id=-100 AND text='喵'`).Scan(&n)
+		return n
+	}
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(b.AdCtx.Recent(-100, 5)) > 0 {
-			break
-		}
+	for time.Now().Before(deadline) && count() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	got := b.AdCtx.Recent(-100, 5)
-	if len(got) != 1 || got[0].Text != "喵" {
-		t.Errorf("更新未被处理，上下文环 = %+v", got)
+	if n := count(); n != 1 {
+		t.Errorf("更新未被处理，留底里有 %d 条", n)
+	}
+}
+
+// TestWebhookDispatchesEditedMessage 确认编辑过的群消息也走进反广告：
+// 分发里漏掉 edited_message 的话，「先发正常、再编辑成广告」畅通无阻，
+// 而留底里仍是编辑前的样子，复查也看不见。
+func TestWebhookDispatchesEditedMessage(t *testing.T) {
+	reg, b := testutil.NewTestRegistry(t, dispatch)
+	testutil.EnableAntiad(t, b, -100)
+
+	for i, body := range []string{
+		`{"update_id":7,"message":{"message_id":1,"date":1700000000,
+			"from":{"id":4242},"chat":{"id":-100,"type":"supergroup"},"text":"喵"}}`,
+		`{"update_id":8,"edited_message":{"message_id":1,"date":1700000000,"edit_date":1700000060,
+			"from":{"id":4242},"chat":{"id":-100,"type":"supergroup"},"text":"改过了"}}`,
+	} {
+		w := httptest.NewRecorder()
+		reg.ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+			"/svc/"+testutil.TestToken+"/webhook", strings.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("第 %d 条状态码 = %d", i, w.Code)
+		}
+	}
+
+	text := func() (s string) {
+		b.Store.Read.QueryRow(`SELECT text FROM group_messages
+			WHERE chat_id=-100 AND message_id=1`).Scan(&s)
+		return s
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && text() != "改过了" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := text(); got != "改过了" {
+		t.Errorf("编辑后的留底 = %q，edited_message 没有被分发", got)
 	}
 }
 
@@ -234,10 +270,11 @@ func TestEnqueueDropsWhenFull(t *testing.T) {
 }
 
 // TestQueueWorkerIsSerial 确认 worker 串行消费。
-// 反广告的上下文环按到达顺序入环，并发消费会让 recent_context 乱序。
+// 同一个人的更新有先后依赖：资历累计、留底，以及 recent_context 取的是
+// 「这条之前」的留底。并发消费会让它们随调度乱序。
 func TestQueueWorkerIsSerial(t *testing.T) {
 	// 传真实的 dispatch：这个测试验证的就是「按到达顺序走完整条分发链」，
-	// 换成空分发就只剩队列自己在转，上下文环永远是空的。
+	// 换成空分发就只剩队列自己在转，留底永远是空的。
 	b, _, _ := testutil.NewTestBotDispatch(t, 1, 1, dispatch)
 	testutil.EnableAntiad(t, b, -100)
 
@@ -250,23 +287,37 @@ func TestQueueWorkerIsSerial(t *testing.T) {
 			Message: testutil.GroupMsg(-100, 42, int64(i), "消息"+string(rune('０'+i)))})
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(b.AdCtx.Recent(-100, 10)) == 5 {
-			break
+	// 按 rowid 排序：它就是插入顺序。五条消息的时间戳相同，分发链一旦
+	// 乱序，落库顺序跟着乱，而 at / message_id 都看不出来。
+	texts := func() []string {
+		rows, err := b.Store.Read.Query(`SELECT text FROM group_messages
+			WHERE chat_id=-100 ORDER BY rowid`)
+		if err != nil {
+			t.Fatalf("读留底失败: %v", err)
 		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var s string
+			rows.Scan(&s)
+			out = append(out, s)
+		}
+		return out
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(texts()) < 5 {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	got := b.AdCtx.Recent(-100, 10)
+	got := texts()
 	if len(got) != 5 {
-		t.Fatalf("上下文环里有 %d 条，期望 5 条", len(got))
+		t.Fatalf("留底里有 %d 条，期望 5 条", len(got))
 	}
-	for i, m := range got {
+	for i, text := range got {
 		want := "消息" + string(rune('０'+i+1))
-		if m.Text != want {
-			t.Errorf("第 %d 条上下文 = %q, 期望 %q（顺序必须与到达顺序一致）",
-				i, m.Text, want)
+		if text != want {
+			t.Errorf("第 %d 条留底 = %q, 期望 %q（顺序必须与到达顺序一致）",
+				i, text, want)
 		}
 	}
 }
@@ -276,7 +327,7 @@ func TestQueueWorkerIsSerial(t *testing.T) {
 // 漏掉哪个哪个就彻底收不到，而 getUpdates/setWebhook 都不会报错。
 func TestPollAllowedUpdates(t *testing.T) {
 	list := core.PollAllowedUpdates()
-	for _, must := range []string{"message", "callback_query", "chat_member", "my_chat_member"} {
+	for _, must := range []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"} {
 		if !slices.Contains(list, must) {
 			t.Errorf("allowed_updates 缺少 %q —— 该类更新会彻底收不到且无任何报错", must)
 		}
