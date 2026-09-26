@@ -3,6 +3,7 @@ package testutil
 import (
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -61,6 +62,19 @@ func (f *FakeTG) CountCalls(method string) int {
 		}
 	}
 	return n
+}
+
+// Calls 返回某方法全部调用的载荷，按调用顺序。
+func (f *FakeTG) Calls(method string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, c := range f.calls {
+		if c.method == method {
+			out = append(out, c.payload)
+		}
+	}
+	return out
 }
 
 // LastCall 返回某方法最后一次调用的载荷，未调用过则返回 nil。
@@ -230,4 +244,28 @@ func SetChatEnabled(t *testing.T, b *core.Bot, chatID int64, on bool) {
 	if err := b.Cache.Reload(); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
+}
+
+// AddRegistryBot 往 registry 里再挂一个 bot，并给它一个独立的假传输层，
+// 用于「同群多 bot」的测试：各自发了哪些请求要能分开数。
+func AddRegistryBot(t *testing.T, reg *core.Registry, sh *core.Shared,
+	botID, ownerID int64) (*core.Bot, *FakeTG) {
+
+	t.Helper()
+	token := strconv.FormatInt(botID, 10) + ":AAEEfaketoken_ForUnitTestsOnly1234567"
+	fake := NewFakeTG()
+	prev := sh.TransportFor
+	sh.TransportFor = func(tok string) tg.Transport {
+		if tok == token {
+			return fake
+		}
+		return prev(tok)
+	}
+	RegisterTestBot(t, sh, token, botID, ownerID)
+	reg.LoadAll()
+	b, ok := reg.LookupID(botID)
+	if !ok {
+		t.Fatalf("bot %d 没能被 LoadAll 拉起来", botID)
+	}
+	return b, fake
 }
