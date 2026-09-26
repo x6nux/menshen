@@ -19,3 +19,4 @@ config.yaml
 # 本地工具状态，不属于这个项目
 CLAUDE.md
 .spec-workflow/
+.serena/
