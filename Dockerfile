@@ -1,9 +1,16 @@
-FROM golang:1.25-alpine AS build
+# 构建阶段固定跑在构建机的原生架构上，靠 GOOS/GOARCH 交叉编译出目标架构：
+# 纯 Go 交叉编译只要几秒，而让 arm64 走 QEMU 模拟整个 go build 要慢十几倍。
+# CI 里 amd64 / arm64 各有原生 runner（见 .github/workflows/docker.yml），这段主要
+# 是给本地 `docker buildx build --platform linux/arm64` 省掉模拟编译的开销。
+# 本地 docker build / compose 构建时（BuildKit，Docker 23+ 默认）这几个值
+# 就是本机架构，产物与原先一致。
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-s -w -X 'main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
     -o /out/menshen .
 
