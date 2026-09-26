@@ -24,8 +24,9 @@ func nonNeg(n int) int {
 
 // ExtractUsage 从非流式响应体里取出用量。
 //
-// 判定链路全程非流式——systemone 本就没有流式形态，复判也显式传
-// stream:false，因此这里不需要 SSE 扫描器。
+// 这里只认非流式的形状：systemone 本就没有流式形态；复判虽然走流式，
+// 但 antiad 读流时已把内容与流末的 usage 拼回非流式的形状（readChatStream），
+// 所以这里不需要 SSE 扫描器。
 // 解析失败返回零值：用量只影响面板上的开销数字，不该让一次统计失败
 // 把判定结果一起丢掉。
 func ExtractUsage(ep upstream.Endpoint, body []byte) Usage {
