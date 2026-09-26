@@ -1,17 +1,42 @@
-# 容器化部署有两处必须在 config.yaml 里对齐，否则表现得像「跑起来了但没用」：
+# 两种配法，二选一或混用：
 #
-#   db_path:     "/app/data/data.db"   ← 必须落在下面挂的卷里。
-#                默认值 data.db 会写进容器可写层，重启即全部丢失。
-#   listen_addr: "0.0.0.0:8081"        ← 容器内必须监听全零地址。
-#                默认值只听容器自己的回环，端口映射过去也连不上。
-#                暴露面由下面的 ports 只绑宿主机回环来收敛。
+#   A. 全环境变量 —— 不挂配置文件，把下面 volumes 里的 config.yaml 那行
+#      删掉即可。适合把 token 交给 secret / CI 变量管理的部署。
+#   B. 配置文件 —— 挂 config.yaml，个别项再用 environment 覆盖。
+#
+# 环境变量**压过**配置文件：镜像里已经烤好了容器内唯一正确的 db_path 与
+# listen_addr（见 Dockerfile），这两项不必再操心。
 services:
   menshen:
     build: .
     restart: unless-stopped
+
+    environment:
+      # ---- A 方案要填的（B 方案从 config.yaml 读，这里全可删）----
+      # 主管理员 TG user_id，多个用逗号分隔。
+      MENSHEN_ADMIN_IDS: "123456789"
+      # 管理面板所在的 bot。长轮询模式必填。
+      MENSHEN_BOT_TOKEN: "123456789:AA..."
+
+      # ---- 可选 ----
+      # 填了它就是 webhook 模式（多 bot 必须），否则长轮询。
+      # MENSHEN_PUBLIC_URL: "https://ad.example.com"
+      # Bot API 基址。默认走反代，直连 api.telegram.org 常常握不上手。
+      # MENSHEN_TG_API_BASE: "https://api.telegram.org"
+      #
+      # 出网代理，两类请求分开配。留空 = 沿用 HTTPS_PROXY 环境变量。
+      # ⚠️ 容器里的 127.0.0.1 指的是容器自己。要用宿主机上的代理得写
+      #    host.docker.internal（Docker Desktop）或宿主机在 docker0 上的
+      #    地址（Linux 常见为 172.17.0.1）。
+      # MENSHEN_TG_PROXY: "http://host.docker.internal:7890"
+      # MENSHEN_AI_PROXY: ""
+
     volumes:
+      # A 方案删掉这行。文件不存在不算错误，服务会全部从环境变量读。
       - ./config.yaml:/app/config.yaml:ro
+      # 数据卷必须挂：库里有上游 api_key 明文，且重启后要保住判定历史。
       - ./data:/app/data
+
     # 仅 webhook 模式需要。长轮询模式把这两行删掉，不开任何端口。
     # 只绑宿主机回环：这个端口上的请求等同于「以 bot 身份收发消息」，
     # 前面必须有反代做 TLS 终止。
