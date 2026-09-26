@@ -76,7 +76,7 @@ func (sh *Shared) newTransport(token string) tg.Transport {
 	if sh.TransportFor != nil {
 		return sh.TransportFor(token)
 	}
-	return tg.NewHTTP(sh.Cfg.TGAPIBase, token)
+	return tg.NewHTTP(sh.Cfg.TGAPIBase, token, sh.tgRoundTripper)
 
 }
 

@@ -82,7 +82,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if !b.Enqueue(&u) {
 		// 丢弃而不是阻塞：阻塞会让 TG 投递超时并重推，重推又落到同一个
-		// 满队列上。与「判定并发已满放行」是同一个失败方向——
+		// 满队列上。与「判定队列已满放行」是同一个失败方向——
 		// 宁可漏一条，也不让投递链路反过来拖垮自己。
 		slog.Warn("webhook：队列已满，丢弃一条更新",
 			"token", config.MaskToken(token), "update_id", u.UpdateID)

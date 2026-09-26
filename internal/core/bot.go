@@ -3,9 +3,11 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,10 +59,29 @@ type Shared struct {
 	// bioCache 缓存 TG 个人简介（getChat）。广告号的强特征常写在简介里，
 	// 但全量送检下不缓存就是每条群消息多一次 TG 往返。
 	BioCache sync.Map // int64(uid) -> bioEntry
+	// LinkCache 缓存简介/昵称里挂的频道、群组、bot 查出来的样子，键为小写用户名。
+	// 按用户名共享：群里十个人挂同一个频道也只查一次。
+	LinkCache sync.Map // string -> linkEntry
+	// VisionCache 是识图结果，键为 file_unique_id：刷屏号反复发同一张图、
+	// 群友反复用同一个贴纸，不必每次都花钱。
+	VisionCache sync.Map // string -> visionEntry
+	// DoomedAlbums 记下已判成广告的相册，判定之后才到的那几张照删。
+	DoomedAlbums sync.Map // "chatID:albumID" -> time.Time
 
 	// aiClient 专供反广告判定调用上游。http.Client 并发安全，
 	// 共享还能复用连接池。
 	AIClient *http.Client
+	// AIHedge 记录各「端点:模型」并发模式的截止时刻（见 antiad 的 aiCall）。
+	// 进程级而非 bot 级：不稳定的是上游模型本身，与哪个 bot 发起的请求无关。
+	AIHedge sync.Map // string -> time.Time
+
+	// tgRoundTripper 是 TG 侧的代理 RoundTripper，所有 bot 实例共用一份。
+	// nil 表示没配 tg_proxy，此时各 client 的 Transport 保持 nil，
+	// 走 DefaultTransport（即读 HTTP_PROXY / HTTPS_PROXY 环境变量）。
+	//
+	// 共享而不是每个 bot 各建一个：Transport 自带连接池，按 bot 切开会让
+	// 空闲连接数乘以 bot 数量，而它们连的是同一个上游。
+	tgRoundTripper http.RoundTripper
 
 	// captcha 是自助解除限制时的人机验证题库。跨 bot 共享：
 	// 同一个人在两个群被限制时，不该因为换了个 bot 就绕过答题次数。
@@ -76,13 +97,20 @@ type Shared struct {
 	// reg 是 bot 实例总表。联合封禁要遍历「所有 bot 的所有群」，
 	// 而那件事不属于任何一个 bot。由 newBotRegistry 回填。
 	Reg *Registry
+
+	// shard 是同群多 bot 的发言人认领表（见 shard.go）。
+	shard shardTable
 }
 
 func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 	return &Shared{Cfg: cfg, Store: s, Cache: c,
 		AdLimits: ratelimit.New(),
 		Captcha:  captcha.NewStore(),
-		AIClient: &http.Client{Timeout: aiClientTimeout}}
+		// 两类出网请求各用各的代理：TG 常被墙，而 AI 上游往往是国内
+		// 可达的中转，把它也绕一圈只是白多一跳。两者都可留空。
+		AIClient: &http.Client{Timeout: aiClientTimeout,
+			Transport: config.ProxyTransport(cfg.AIProxy)},
+		tgRoundTripper: config.ProxyTransport(cfg.TGProxy)}
 }
 
 // aiClientTimeout 是判定调用 AI 上游的整体超时。
@@ -110,7 +138,6 @@ type Bot struct {
 	doneOnce sync.Once
 
 	pending sync.Map // int64 -> PendingInput
-	AdCtx   CtxRing  // 各群最近消息，供判定时作上下文
 	// upstreamNewDraft 暂存新增上游的 name\x00url\x00key，直到类型选择完毕。
 	UpstreamNewDraft sync.Map // int64(uid) -> string
 	// adminCmdsDone 记录哪些管理员的 chat scope 命令菜单已注册成功。
@@ -123,16 +150,22 @@ type Bot struct {
 	// 进程生命周期内不会变，查一次就够。
 	SelfID atomic.Int64
 
-	// adSem 限制同时在飞的反广告判定数。判定已经挪出轮询 goroutine，
-	// 但不设上限的话 goroutine 数就等于群消息速率，上游一慢就会堆成
-	// 几千个在飞的请求——把「卡住轮询」换成「打爆内存和上游」而已。
-	AdSem chan struct{}
+	// adJobs 是反广告判定的任务队列，由 adWorkers 个常驻 worker 消费。
+	// 判定已经挪出更新处理的同步段，但不设上限的话 goroutine 数就等于
+	// 群消息速率，上游一慢就会堆成几千个在飞的请求——把「卡住更新处理」
+	// 换成「打爆内存和上游」而已。
+	adJobs chan func()
+	// adReviews 是大模型复判的队列（先删后判的后半段），与 adJobs 分开：
+	// 大模型慢，排在一起的话初判会堵在它后面。
+	adReviews chan func()
+	// adBusy 是排队中与执行中的任务总数，测试靠它等判定跑完。
+	adBusy atomic.Int64
 
 	// updates 是 webhook 模式下的串行投递队列。
 	//
-	// 必须串行：反广告的上下文环按消息到达顺序入环，每个 HTTP 请求
-	// 各起一个 goroutine 会让 recent_context 的顺序随调度乱掉，
-	// 模型就会看到乱序的对话、甚至看到自己正要判的那一条。
+	// 必须串行：同一个人的更新有先后依赖——资历累计、留底，以及
+	// recent_context 取的是「这条之前」的留底。每个 HTTP 请求各起一个
+	// goroutine 会让它们随调度乱序，模型就可能把此人之后说的话当成上下文。
 	// 队列把轮询的「单 goroutine 依次处理」语义原样搬了过来。
 	updates chan *tg.Update
 
@@ -142,28 +175,80 @@ type Bot struct {
 	// 只能反向注入。做成 NewBot 的必填参数而不是可选字段：漏传直接
 	// 编译不过，不会变成又一个「配置漏了但一切看起来正常」的失效点。
 	dispatch Dispatcher
+
+	// SummaryAt 是上一次发出私聊汇总的时刻（unix 秒），节流用。
+	SummaryAt atomic.Int64
 }
 
-// adMaxConcurrent 是并发判定上限。取 8：足够让一个活跃群不至于因为
-// 单条慢请求就排队，又不会在上游整体变慢时堆积过多在飞请求。
-const adMaxConcurrent = 8
+const (
+	// adWorkers 是每个 bot 的并发判定数。8 路在活跃群里排不开：单次判定
+	// 最坏要几十秒（AI 重试预算 45 秒），几条慢请求就能把通道占满。
+	//
+	// ponytail: 每个 bot 独立一个池，多 bot 叠加后打到上游的总并发上限是
+	// adWorkers × bot 数；上游扛不住时改成 Shared 级总闸。
+	adWorkers = 32
+	// adQueueCap 是排队上限。worker 全忙时先排队而不是直接放行；
+	// 队列也满说明上游整体慢了，此时再放行，防止积压无限增长。
+	adQueueCap = 1024
+)
 
 // UpdateQueueCap 是 webhook 队列容量。
 // 满了就丢弃而不是阻塞：阻塞会让 TG 的投递超时并重推，重推又落到同一个
-// 满队列上，雪崩只会更快。丢弃与「判定并发已满放行」是同一个失败方向。
+// 满队列上，雪崩只会更快。丢弃与「判定队列已满放行」是同一个失败方向。
 const UpdateQueueCap = 256
 
 func NewBot(t tg.Transport, sh *Shared, token string, d Dispatcher) *Bot {
-	return &Bot{Shared: sh, TG: t, Token: token, dispatch: d,
-		AdSem:   make(chan struct{}, adMaxConcurrent),
-		updates: make(chan *tg.Update, UpdateQueueCap),
-		done:    make(chan struct{})}
+	b := &Bot{Shared: sh, TG: t, Token: token, dispatch: d,
+		adJobs:    make(chan func(), adQueueCap),
+		adReviews: make(chan func(), adQueueCap),
+		updates:   make(chan *tg.Update, UpdateQueueCap),
+		done:      make(chan struct{})}
+	for range adWorkers {
+		go b.adWorker(b.adJobs)
+		go b.adWorker(b.adReviews)
+	}
+	return b
 }
 
-// shutdown 停掉这一个 bot 的 worker。可重复调用。
+// adWorker 消费一条判定队列，bot 停用时退出。队列里还没跑的任务随之丢弃：
+// 与进程退出同策略，它们只会写自己的流水。
+func (b *Bot) adWorker(jobs chan func()) {
+	for {
+		select {
+		case <-b.done:
+			return
+		case job := <-jobs:
+			job()
+			b.adBusy.Add(-1)
+		}
+	}
+}
+
+// AdSubmit 把判定任务放进队列，从不阻塞调用方（更新处理的同步段）。
+// 队列已满返回 false，由调用方决定如何放行。
+func (b *Bot) AdSubmit(job func()) bool { return b.adEnqueue(b.adJobs, job) }
+
+// AdReview 把大模型复判放进复判队列，满了返回 false（调用方按初判定案）。
+func (b *Bot) AdReview(job func()) bool { return b.adEnqueue(b.adReviews, job) }
+
+func (b *Bot) adEnqueue(jobs chan func(), job func()) bool {
+	b.adBusy.Add(1)
+	select {
+	case jobs <- job:
+		return true
+	default:
+		b.adBusy.Add(-1)
+		return false
+	}
+}
+
+// AdBusy 返回排队中与执行中的判定数，测试靠它等判定跑完。
+func (b *Bot) AdBusy() int64 { return b.adBusy.Load() }
+
+// shutdown 停掉这一个 bot 的 worker（更新队列与判定池）。可重复调用。
 //
-// 在飞的判定 goroutine 不等：它们最长几十秒，且并发有上限，全部只会写
-// 自己的流水。与进程退出同策略。
+// 在飞的判定不等：它们最长几十秒，且并发有上限，全部只会写自己的流水。
+// 与进程退出同策略。
 func (b *Bot) Shutdown() {
 	b.doneOnce.Do(func() { close(b.done) })
 }
@@ -189,6 +274,30 @@ func (b *Bot) AlertTargets() []int64 {
 		}
 	}
 	return out
+}
+
+// fileTimeout 是下载 TG 文件（识图用）的超时。图片不大，拖过它多半是卡住了。
+const fileTimeout = 20 * time.Second
+
+// fileMaxBytes 是单个文件的下载上限，识图只要看清图里的字。
+const fileMaxBytes = 5 << 20
+
+// DownloadFile 下载 getFile 给出的文件路径。
+//
+// 地址里有 bot token，出错一律过 tg.CallError 剥掉 URL，否则 token 会进日志
+// 与流水。代理与 Bot API 调用同一份（tgRoundTripper）。
+func (b *Bot) DownloadFile(path string) ([]byte, error) {
+	c := &http.Client{Timeout: fileTimeout, Transport: b.tgRoundTripper}
+	resp, err := c.Get(strings.TrimRight(b.Cfg.TGAPIBase, "/") +
+		"/file/bot" + b.Token + "/" + path)
+	if err != nil {
+		return nil, tg.CallError("download", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download: HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, fileMaxBytes))
 }
 
 // ---- 发送与编辑 ----
@@ -334,6 +443,7 @@ type Dispatcher func(*Bot, *tg.Update)
 var adGroupCmds = []map[string]string{
 	{"command": "ad", "description": "复查某人是否在发广告（回复对方的消息）"},
 	{"command": "adb", "description": "标记为广告并处置（群管理员，回复对方的消息）"},
+	{"command": "adw", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
 }
 
 func (b *Bot) RegisterCommands() {
@@ -400,8 +510,9 @@ func (b *Bot) EnsureAdminCommands(id int64) {
 // 事件都收不到，反广告的「新人 / 老人」分档会全部退化成「年龄未知」。
 // 而一旦显式声明，默认清单就整体失效，因此 message 与 callback_query
 // 也要原样列出，漏写哪一个哪一个就彻底收不到，且 TG 不会因此报任何错。
+// edited_message 同理：不列就收不到编辑，「先发正常、再编辑成广告」畅通无阻。
 func PollAllowedUpdates() []string {
-	return []string{"message", "callback_query", "chat_member", "my_chat_member"}
+	return []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
 }
 
 // enqueue 把一条 update 投进串行队列，队列已满时返回 false。

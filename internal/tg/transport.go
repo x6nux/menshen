@@ -29,9 +29,13 @@ type httpTransport struct {
 const httpTimeout = 40 * time.Second
 
 // NewHTTP 按 token 建一个指向 Telegram 的传输层。
-func NewHTTP(base, token string) Transport {
+//
+// tr 为 nil 时不设 Transport，让 net/http 落到 DefaultTransport ——
+// 它的 Proxy 是 ProxyFromEnvironment，HTTP_PROXY / HTTPS_PROXY 因此仍然
+// 生效。这里若塞一个自造的 Transport，会把环境变量代理静默废掉。
+func NewHTTP(base, token string, tr http.RoundTripper) Transport {
 	return &httpTransport{base: base, token: token,
-		client: &http.Client{Timeout: httpTimeout}}
+		client: &http.Client{Timeout: httpTimeout, Transport: tr}}
 }
 
 // endpoint 拼出某个方法的请求 URL。
