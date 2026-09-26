@@ -1,0 +1,166 @@
+# 检查 → 每个架构各在一台原生 runner 上构建 → 合并成多架构 manifest → 推到 GHCR。
+#
+# amd64 跑 ubuntu-latest，arm64 跑 ubuntu-24.04-arm：两个架构都是原生编译，
+# 没有 QEMU 模拟。单架构作业只把自己那半张镜像按 digest 推上去（不带 tag），
+# 最后由 merge 作业用 buildx imagetools 合成 manifest list，统一打 tag 推送。
+#
+# 只有推 v* tag 才发布；推 main 与 PR 只跑检查与构建，确认镜像还构建得出来。
+# 发布的标签：v2.3.0 → 2.3.0、2.3、latest。预发布（v2.3.0-rc1）只出
+# 2.3.0-rc1，不动 latest。
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 打包前的三项检查（见 CLAUDE.md）。不过就不构建，更不发布。
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未 gofmt：$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./...
+      # 版本号写死在 main.go，tag 只是发布动作。两者不一致的话，镜像叫 2.3.0，
+      # -version 却打印旧版本号，线上排查时会被它误导。
+      - name: tag 与 main.go 的 version 一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          if ! grep -Eq "^[[:space:]]*version[[:space:]]*=[[:space:]]*\"${want}\"" main.go; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 main.go 里的 version 不一致，先递增 version 再打 tag"
+            exit 1
+          fi
+
+  # 一台 runner 一个架构，只构建、只按 digest 推送自己那一半。
+  image:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+          # arm64 的托管 runner 目前只对公开仓库免费，这个仓库是公开的。
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # 这一作业不产出 tag，meta 只用来给镜像带上版本相关的 label。
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # push-by-digest：只推镜像内容，不推 tag。tag 由 merge 作业打在合并后的
+          # manifest list 上，否则两个架构会各自成一个带 tag 的单架构镜像。
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
+          # 关掉 provenance：开着的话每次 by-digest 推送本身就是个 index（真镜像 +
+          # 一条 attestation），合并后 manifest 里会多出 unknown/unknown 平台条目。
+          provenance: false
+          labels: ${{ steps.meta.outputs.labels }}
+          # gha 缓存按架构分 scope：两台 runner 并行导出，同 scope 会互相覆盖。
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: 留下 digest 给 merge 作业
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 两个架构的 digest 合成一个 manifest list，再统一打 tag 推送。只有发布才跑。
+  merge:
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      # imagetools 要连 registry 改 manifest，用不着 docker 引擎，但要 buildx。
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: 合成多架构 manifest 并打 tag
+        working-directory: /tmp/digests
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(-t "$tag"); done \
+            < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
+      # 合并这一步出错往往不报错（比如只收到一个 digest），所以回头验一下。
+      - name: 校验 manifest 里两个架构都在
+        run: |
+          docker buildx imagetools inspect --raw "$IMAGE:${{ steps.meta.outputs.version }}" > /tmp/manifest.json
+          jq . /tmp/manifest.json
+          archs=$(jq -r '.manifests[].platform.architecture' /tmp/manifest.json | sort | tr '\n' ' ')
+          for want in amd64 arm64; do
+            case " $archs " in
+              *" $want "*) ;;
+              *) echo "::error::${{ steps.meta.outputs.version }} 的 manifest 里没有 $want"; exit 1 ;;
+            esac
+          done
