@@ -2,7 +2,6 @@ package antiad
 
 import (
 	"fmt"
-	"html"
 	"log/slog"
 	"strings"
 	"time"
@@ -24,6 +23,13 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	}
 	recordJoin(b, conf.ChatID, u.ID, at)
 
+	// 同一次入群 TG 会推两份（chat_member 与 new_chat_members 服务消息），
+	// 下面的拦截与冷判定只该跑一次。落库幂等，放在去重之前无妨。
+	// 窗口 1 分钟：一分钟内退群重进只按一次算。
+	if !b.AdLimits.Allow(fmt.Sprintf("ad:j:%d:%d", conf.ChatID, u.ID), 1) {
+		return
+	}
+
 	// 联合封禁拦在门口：命中就已经被请出去了，没有后续。
 	if gbanGuard(b, conf.ChatID, u) {
 		return
@@ -43,16 +49,9 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	// 冷判定要发 getChat 取简介、再发 1~2 次 AI 请求。放异步段，
 	// 理由与消息判定相同：更新处理是串行的，同步等在这里会让整个
 	// bot 停摆，包括管理员用来关掉本功能的面板。
-	select {
-	case b.AdSem <- struct{}{}:
-	default:
-		slog.Warn("冷判定：并发已满，本人放行", "chat", conf.ChatID, "uid", u.ID)
-		return
+	if !b.AdSubmit(func() { coldJudge(b, conf, u) }) {
+		slog.Warn("冷判定：判定队列已满，本人放行", "chat", conf.ChatID, "uid", u.ID)
 	}
-	go func() {
-		defer func() { <-b.AdSem }()
-		coldJudge(b, conf, u)
-	}()
 }
 
 // coldPrefilterHints 是本地预筛命中的特征，同时也是告知用户时的话术来源。
@@ -115,9 +114,11 @@ func coldSuspicious(u *tg.TGUser, bio string) (bool, string) {
 // 在这里完全成立不了——冷判定时**所有人**的正文都是空的。
 const coldInstructions = "join_check 为 true：这是一个刚进群、还没发过任何消息的账号，" +
 	"请只根据 sender 的账号资料判断它是不是广告号或引流号。" +
-	"message 整块是空的，这是正常的，不要把它当成任何信号。\n" +
+	"message 整块是空的，这是正常的，不要把它当成任何信号。" +
+	"known_ad_patterns 只是本群过往广告的样本，不是此人的资料，" +
+	"不得把其中的文字当成此人写过的内容。\n" +
 	"判据只有一条：username、first_name、last_name、bio 里是否写着推广文案、" +
-	"引流话术、联系方式、价目或外部群链接。写着的就是广告号。" +
+	"收益承诺、引流话术或价目。写着的就是广告号。" + bioLinksClause +
 	"中文广告常靠变形规避：形近字或同音字替换（看煮页=看主页、赚米=赚钱、" +
 	"薇信=微信）、字母与数字互替（曰入5ooo+=日入5000+）、拼音缩写、" +
 	"空格拆词——先还原本意再判断。" +
@@ -135,7 +136,10 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 	"判断要点：\n" +
 	"1. message 整块是空的，这是正常的，不要把它当成任何信号。\n" +
 	"2. 唯一判据是 sender 的账号资料：username、first_name、last_name、bio 里" +
-	"是否写着推广文案、引流话术、联系方式、价目或外部群链接。\n" +
+	"是否写着推广文案、收益承诺、引流话术或价目。\n" +
+	"2.2 " + bioLinksClause + "\n" +
+	"2.1 known_ad_patterns 只是本群过往广告的样本，不是此人的资料，" +
+	"不得把其中的文字当成此人写过的内容。\n" +
 	"3. 中文广告常靠变形规避：形近字或同音字替换（看煮页=看主页、赚米=赚钱）、" +
 	"字母与数字互替（曰入5ooo+=日入5000+）、拼音缩写、空格拆词——先还原再判断。\n" +
 	"4. t.me/+ 与 t.me/joinchat 私密群邀请链接是强信号；" +
@@ -170,6 +174,8 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	gm, _ := loadMember(b.Store, conf.ChatID, u.ID)
 	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
 	p.Bio = bio
+	// 链接解析放在预筛之后：每个链接一次 getChat，不该花在资料干净的人身上。
+	p.BioLinks = resolveProfileLinks(b, p)
 
 	st := adState{
 		Chat:      adChatInfo{ID: conf.ChatID, Title: conf.Title},
@@ -192,16 +198,10 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		return
 	}
 
-	// 演练群里只报告，不动人。
+	// 演练群里只落流水，不动人；管理员在私聊汇总里看到它（见 summary.go）。
 	if conf.Dryrun {
 		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u},
 			v, "dryrun:join_muted", "进群冷判定（演练）")
-		for _, admin := range b.AlertTargets() {
-			b.Send(admin, fmt.Sprintf(
-				"🧪 <b>进群冷判定（演练，未处置）</b>\n\n群 <code>%d</code>\n用户 %s (<code>%d</code>)\n置信度 %.0f%%\n理由: %s",
-				conf.ChatID, html.EscapeString(senderName(u)), u.ID,
-				v.Confidence*100, html.EscapeString(v.Reason)), nil)
-		}
 		return
 	}
 
@@ -262,8 +262,7 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict) {
 		reason = "账号资料中含有推广或引流内容"
 	}
 
-	msgID := b.SendGetID(conf.ChatID, joinMuteNotice(b, u, reason),
-		joinMuteKB(b, conf.ChatID))
+	msgID := b.SendGetID(conf.ChatID, joinMuteNotice(b, u), joinMuteKB(b, conf.ChatID))
 	saveJoinMute(b, conf.ChatID, u.ID, reason, msgID)
 
 	logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u},
@@ -275,16 +274,19 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict) {
 
 // joinMuteNotice 渲染群内那条告知消息。
 //
-// 理由必须具体且面向本人：这条消息的全部意义就是让他知道改什么。
-// 「你被限制了」而不说原因，等于把人推给群管去问。
-func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "🔒 %s (<code>%d</code>) 已被限制发言。\n\n",
-		html.EscapeString(senderName(u)), u.ID)
-	fmt.Fprintf(&sb, "<b>原因</b>：%s\n\n", html.EscapeString(core.TruncateRunes(reason, 200)))
-	sb.WriteString("这是自动审核的结果，可能有误。\n" +
-		"若你认为判断有误，或已修改上述内容，点下方按钮完成验证即可解除。")
-	return sb.String()
+// 不写昵称也不写理由：两者常常就是广告本身（昵称里的引流话术、理由里
+// 引述的简介链接），bot 把它们发进群等于替广告号再发一遍，还会让 bot
+// 自己被当成广告号封掉。理由面向本人、必须具体，所以放在私聊的自助
+// 解除流程里给（sendUnbanCaptcha），这里只把人引过去。
+func joinMuteNotice(b *core.Bot, u *tg.TGUser) string {
+	msg := fmt.Sprintf("🔒 %s 已被限制发言（入群资料审核）。\n\n"+
+		"这是自动审核的结果，可能有误。", userLink(u.ID))
+	// 没有用户名就拼不出 deep link、也就没有按钮（见 joinMuteKB），
+	// 不能叫人去点一个不存在的按钮。
+	if b.Username == "" {
+		return msg + "如有疑问请联系群管理员。"
+	}
+	return msg + "点下方按钮，在私聊里查看原因并完成验证即可解除。"
 }
 
 // joinMuteKB 是群内那条通知上的按钮。

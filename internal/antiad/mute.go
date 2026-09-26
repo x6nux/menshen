@@ -29,7 +29,12 @@ func MutedPermissions() map[string]any {
 // unmute 恢复默认权限。必须逐项给 true —— 再发一次全 false
 // 等于又禁言了一次，这是误判处置里最容易写反的一处。
 // 返回 TG 调用是否成功，调用方要据此决定给管理员的提示措辞。
+//
+// 频道身份（负 ID）当初是 banChatSenderChat 封的，解除走 unbanChatSenderChat。
 func Unmute(b *core.Bot, chatID, uid int64) (bool, string) {
+	if uid < 0 {
+		return Unban(b, chatID, uid)
+	}
 	ok, desc := b.CallOK("restrictChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid,
 		"permissions": map[string]any{

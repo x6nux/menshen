@@ -3,7 +3,6 @@ package antiad
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"html"
 	"log/slog"
 	"slices"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"menshen/internal/billing"
 	"menshen/internal/core"
 	"menshen/internal/store"
 	"menshen/internal/tg"
@@ -75,6 +75,9 @@ func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	if !isMemberStatus(cu.NewChatMember.Status) || isMemberStatus(old) {
 		return
 	}
+	if !b.ClaimSender(cu.Chat.ID, cu.NewChatMember.User.ID, time.Now()) {
+		return
+	}
 	at := cu.Date
 	if at == 0 {
 		at = time.Now().Unix()
@@ -127,17 +130,26 @@ func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
 // 留底是给人和模型复查用的，不是原样归档聊天记录。
 const gmsgTextLimit = 1000
 
-// recordMessage 把一条群消息留底，供 /ad 事后复查。
+// recordMessage 把一条群消息留底，供 /ad 事后复查与连带删除。编辑过的
+// 消息覆盖正文：复查要看的是群里现在显示的样子。album 是相册 ID。
 //
 // 失败只记日志不中断：留底是复查用的辅助设施，不该让一次写失败
 // 把这条消息的判定也一起拖没。
-func recordMessage(b *core.Bot, chatID, msgID, uid int64, text string, at int64) {
+func recordMessage(b *core.Bot, chatID, msgID, uid int64, text string, at int64, album string) {
 	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
-		(chat_id,message_id,user_id,text,at) VALUES (?,?,?,?,?)
-		ON CONFLICT(chat_id,message_id) DO NOTHING`,
-		chatID, msgID, uid, core.TruncateRunes(text, gmsgTextLimit), at); err != nil {
+		(chat_id,message_id,user_id,text,at,media_group) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(chat_id,message_id) DO UPDATE SET text=excluded.text`,
+		chatID, msgID, uid, core.TruncateRunes(text, gmsgTextLimit), at, album); err != nil {
 		slog.Error("反广告：留底失败", "chat", chatID, "msg", msgID, "err", err)
 	}
+}
+
+// recordedText 取这条消息的留底正文，没有留底时返回空串。
+func recordedText(b *core.Bot, chatID, msgID int64) string {
+	var t string
+	b.Store.Read.QueryRow(`SELECT text FROM group_messages
+		WHERE chat_id=? AND message_id=?`, chatID, msgID).Scan(&t)
+	return t
 }
 
 // gmsgRow 是一条留底记录。
@@ -152,8 +164,10 @@ type gmsgRow struct {
 // 正序是给模型看的：复查要判断「这个账号一路以来在干什么」，
 // 倒序会让它把最新的当成开头。
 func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
+	// 没有文字的（图片、贴纸）只为连带删除留着 ID，复查里是空行。
 	rows, err := s.Read.Query(`SELECT message_id,text,at FROM group_messages
-		WHERE chat_id=? AND user_id=? ORDER BY at DESC, message_id DESC LIMIT ?`,
+		WHERE chat_id=? AND user_id=? AND text != ''
+		ORDER BY at DESC, message_id DESC LIMIT ?`,
 		chatID, uid, limit)
 	if err != nil {
 		slog.Error("反广告：读取留底失败", "chat", chatID, "uid", uid, "err", err)
@@ -186,14 +200,14 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
 const adReviewLimit = 60
 
 const adCmdUsage = "用法：回复某人的消息发 <code>/ad</code>，" +
-	"或直接发 <code>/ad &lt;user_id&gt;</code>。\n" +
+	"或直接发 <code>/ad &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查。"
 
-// parseAdCommand 识别 /ad 与 /adb 并取出命令名与参数。
+// parseAdCommand 识别 /ad、/adb、/adw 并取出命令名与参数。
 //
 // 群里 TG 客户端会自动补成 /ad@botname，必须一并认。
-// 两条命令合并识别，因为 /adb 以 /ad 为前缀 —— 分开写的话，
-// 先匹配 /ad 的那一方会把 /adb 也吃掉。
+// 几条命令合并识别，因为 /adb、/adw 以 /ad 为前缀 —— 分开写的话，
+// 先匹配 /ad 的那一方会把它们也吃掉。
 func parseAdCommand(text string) (cmd, arg string, ok bool) {
 	f := strings.Fields(text)
 	if len(f) == 0 {
@@ -204,7 +218,7 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 		head = head[:i]
 	}
 	switch head {
-	case "/ad", "/adb":
+	case "/ad", "/adb", "/adw":
 		return head, strings.Join(f[1:], " "), true
 	}
 	return "", "", false
@@ -222,11 +236,12 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	var targetMsgID int64
 	switch {
 	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
-		target = m.ReplyToMessage.From
+		target = senderOf(m.ReplyToMessage)
 		targetMsgID = m.ReplyToMessage.MessageID
 	case arg != "":
+		// 负数是频道 ID（以频道身份发言的记录就记在频道名下）。
 		uid, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
-		if err != nil || uid <= 0 {
+		if err != nil || uid == 0 {
 			b.Send(m.Chat.ID, adCmdUsage, nil)
 			return
 		}
@@ -269,16 +284,9 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 			core.CtxMsg{Name: senderName(target), Text: h.Text, At: h.At})
 	}
 
-	select {
-	case b.AdSem <- struct{}{}:
-	default:
+	if !b.AdSubmit(func() { reviewAndAct(b, snap, conf, tgt, profile, state) }) {
 		b.Send(m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
-		return
 	}
-	go func() {
-		defer func() { <-b.AdSem }()
-		reviewAndAct(b, snap, conf, tgt, profile, state)
-	}()
 }
 
 // canMarkAd 报告此人能否用 /adb 直接标记广告。
@@ -318,7 +326,8 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 			b.SendGetID(conf.ChatID, adbCmdUsage, nil), 30*time.Second)
 		return
 	}
-	target := m.ReplyToMessage
+	// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
+	target := asSender(m.ReplyToMessage)
 	if target.From.ID == b.BotID() {
 		return // 别把 bot 自己的告警标成广告
 	}
@@ -338,10 +347,12 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 			senderName(m.From), m.From.ID),
 	}
 	// 人工标记直接取最高档：判断已经由人做出，不必再过阈值矩阵。
-	act := adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"}
+	// 禁言与否仍服从本群的处罚方式（可改为封禁）。
+	act := withPunish(adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"},
+		snap.BanMode(conf))
 
-	action, note := ApplyAction(b, target, act, conf.Dryrun)
-	logID := logAd(b, target, v, action, note)
+	note := ApplyAction(b, target, act, conf.Dryrun)
+	logID := logAd(b, target, v, logAction(act, conf.Dryrun), note)
 
 	if !conf.Dryrun {
 		BumpAdHits(b, conf.ChatID, target.From.ID, 1)
@@ -349,9 +360,7 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 			"人工标记："+core.TruncateRunes(displayText(target), 60))
 	}
 
-	gm, _ := loadMember(b.Store, conf.ChatID, target.From.ID)
-	p := buildProfile(b, target, gm, time.Now().Unix())
-	text, kb := renderAdAlertBrief(b, target, v, act, note, p, logID, conf.Dryrun)
+	text, kb := renderAdAlertBrief(b, target, v, act, note, logID, conf.Dryrun)
 	scheduleAlertCleanup(b, conf.ChatID,
 		b.SendGetID(conf.ChatID, "🖐 <b>人工标记</b>\n"+text, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
@@ -362,7 +371,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	profile senderProfile, state adState) {
 
 	chatID := conf.ChatID
-	state.Sender.Bio = userBio(b, state.Sender.UserID)
+	enrichSender(b, &state.Sender)
 
 	v, err := judgeBoth(b, snap, state)
 	if err != nil {
@@ -372,37 +381,42 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	}
 
 	dryrun := conf.Dryrun
-	act := decideAction(b, snap, isNewbie(b, snap, profile), v)
+	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
 	if tgt.MessageID == 0 {
 		// /ad <user_id> 没有指向具体消息，删不了任何东西。
 		// 不摘掉的话 deleteMessage 必然失败，告警里还会多一条假的失败说明。
 		act.Delete = false
 	}
-	action, note := ApplyAction(b, tgt, act, dryrun)
-	logID := logAd(b, tgt, v, action, note)
+	note := ApplyAction(b, tgt, act, dryrun)
+	logID := logAd(b, tgt, v, logAction(act, dryrun), logNote(act, note, dryrun))
 	if act.Name != "none" && !dryrun {
 		BumpAdHits(b, chatID, tgt.From.ID, 1)
-		if act.Mute {
+		if act.Mute || act.Ban {
 			maybeGban(b, chatID, tgt.From.ID, "复查判定："+core.TruncateRunes(v.Reason, 80))
 		}
 	}
 
 	// 与自动告警的群内版用同一份渲染：同一个渠道不该有两种长度，
 	// 也同样不把广告原文整段贴回群里。
-	text, kb := renderAdAlertBrief(b, tgt, v, act, note, profile, logID, dryrun)
+	text, kb := renderAdAlertBrief(b, tgt, v, act, note, logID, dryrun)
 	scheduleAlertCleanup(b, chatID, b.SendGetID(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 
-// handleGroupMessage 是群消息的总入口。
+// handleGroupMessage 是群消息的总入口，也接编辑过的消息（edited_message）。
 func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	if m.Chat == nil || m.From == nil {
 		return
 	}
+	// 以频道身份发言、访客 bot 代发的，换成实际发言者：豁免、画像、留底、
+	// 处置都落在他身上，删除仍作用于这条消息本身。「bot 一律豁免」对这两类
+	// 不成立，否则随便 @ 几个广告 bot、或换成频道身份就能绕过检测。
+	m = asSender(m)
 	conf, active := chatActive(b, m.Chat.ID)
 	if !active {
 		return
 	}
+	edited := m.EditDate != 0
 
 	at := m.Date
 	if at == 0 {
@@ -411,129 +425,182 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 
 	// service 消息兜底：chat_member 在 bot 权限变动期间可能漏收，
 	// 而「谁刚进群」是整个分档的基础，两条路都要接。
+	// 进群按进群的人分给 bot，不按发这条 service 消息的人：
+	// 管理员拉人进群时 from 是管理员。
 	if len(m.NewChatMembers) > 0 {
 		for _, nu := range m.NewChatMembers {
-			if nu != nil {
+			if nu != nil && b.ClaimSender(m.Chat.ID, nu.ID, time.Now()) {
 				onJoin(b, conf, nu, at)
 			}
 		}
 		return // 入群 service 消息本身没有正文，不进判定
 	}
 
+	// 同群有几个 bot 时，这个人只归其中一个（见 core/shard.go）。必须排在
+	// 画像计数之前：每个 bot 各计一次的话，新人的发言数会翻倍涨成老成员。
+	if !b.ClaimSender(m.Chat.ID, m.From.ID, time.Now()) {
+		return
+	}
+
 	// 资历累计必须先于「无正文就早退」。纯图/贴纸同样是在群里活动的证据，
 	// 不计的话这类成员 msg_count 永不增长，在 isNewbie 的发言数轴上
 	// 永远算新人；而年龄轴在 joined_at 缺失时本就不参与判定，
 	// 两条轴一起失效就等于「老成员低风险」对他们完全不成立。
-	// 代价是每条贴纸多一次 UPSERT，与一次 AI 调用相比可以忽略。
-	gm := touchMember(b, m.Chat.ID, m.From.ID, at)
-
-	// 判空看的是「本人正文 + 引用内容」的合集，不能只看本人正文：
-	// 规避形态的极限版是一个字都不发（只发贴纸），载荷全在引用块里，
-	// 只看正文的话这条守门恰好把它放过去。
-	text := displayText(m)
-	if text == "" {
-		return // 纯图/贴纸且无引用：本期不判定
+	// 编辑不是新发言：计进资历的话，反复编辑一条就能把新人刷成老成员。
+	var gm groupMember
+	if edited {
+		gm, _ = loadMember(b.Store, m.Chat.ID, m.From.ID)
+	} else {
+		gm = touchMember(b, m.Chat.ID, m.From.ID, at)
 	}
 
-	// 两条命令都不是群聊内容：不留底（留了会被送进下一次复查），
-	// 也不进判定。放在留底之前正是为此。
-	if cmd, arg, ok := parseAdCommand(text); ok {
-		switch cmd {
-		case "/ad":
-			HandleAdCommand(b, conf, m, arg)
-		case "/adb":
-			HandleAdbCommand(b, conf, m)
+	// 命令不是群聊内容：不留底（留了会被送进下一次复查），也不进判定。
+	// 取本人正文而不是 displayText，否则回复形态下被引用的原文会混进参数。
+	// 命令只在发出时执行一次：编辑一条旧命令不该再执行一遍。
+	if cmd, arg, ok := parseAdCommand(m.Text); ok {
+		if !edited {
+			switch cmd {
+			case "/ad":
+				HandleAdCommand(b, conf, m, arg)
+			case "/adb":
+				HandleAdbCommand(b, conf, m)
+			case "/adw":
+				HandleAdwCommand(b, conf, m, arg)
+			}
 		}
 		return
 	}
 
+	// 判空看的是「本人正文 + 引用内容」的合集，不能只看本人正文：
+	// 规避形态的极限版是一个字都不发（只发贴纸），载荷全在引用块里。
+	text := displayText(m)
+
+	// TG 会因为 bot 用不到的字段变化推来「编辑」（官方文档原话）。
+	// 正文没变就什么都不做，否则每次这类变动都要再花一次送检的钱。
+	if edited && recordedText(b, m.Chat.ID, m.MessageID) == core.TruncateRunes(text, gmsgTextLimit) {
+		return
+	}
+
 	// 留底先于一切判定分支。豁免者、被护栏拦下的、判定失败的都要留：
-	// /ad 复查时需要的恰恰是这些「没被判过」的消息。
-	recordMessage(b, m.Chat.ID, m.MessageID, m.From.ID, text, at)
+	// /ad 复查与 recent_context 需要的恰恰是这些「没被判过」的消息。
+	// 没有文字的（图片、贴纸）也留：判成广告号时要连带删掉此人近期的
+	// 全部消息，靠的是这里的 ID。
+	recordMessage(b, m.Chat.ID, m.MessageID, m.From.ID, text, at, m.MediaGroupID)
+
+	// 相册里判定之后才到的那几张：整组已判成广告，到一张删一张。
+	if m.MediaGroupID != "" && albumDoomed(b, m.Chat.ID, m.MediaGroupID) {
+		b.CallOK("deleteMessage", map[string]any{"chat_id": m.Chat.ID, "message_id": m.MessageID})
+		return
+	}
 
 	snap := b.Cache.Snap()
+	// 纯图/贴纸配了识图模型才判（识图在判定 worker 里做，见 judgeAndAct）。
+	if _, seeable := visualOf(m); text == "" && !(seeable && visionOn(snap)) {
+		return
+	}
 
 	if adExempt(b, snap, m.Chat.ID, m.From) {
-		// 豁免者的发言仍要进上下文：模型需要看到完整的群内对话，
-		// 否则「管理员刚说了别发广告」这种关键语境会丢失。
-		b.AdCtx.Push(m.Chat.ID, senderName(m.From), text, at)
 		return
 	}
 
 	profile := buildProfile(b, m, gm, at)
+	// buildState 必须留在同步段：recent_context 读的是本人此前的留底，
+	// 更新按到达顺序串行处理，此刻库里恰好是「这条之前」的全部发言。
+	// 挪进判定 worker 的话，此人随后几条也可能已经落库，模型会把
+	// 「之后说的话」当成上下文。
 	state := buildState(b, snap, m, profile)
-	// 入环必须留在同步段，且必须在 buildState 之后：更新是按到达顺序
-	// 串行处理的（轮询单 goroutine / webhook 单 worker），挪进 goroutine
-	// 后入环顺序会随调度乱掉，模型就会在 recent_context 里看到乱序的
-	// 对话，甚至看到自己正要判的那一条。
-	b.AdCtx.Push(m.Chat.ID, senderName(m.From), text, at)
 
-	if ok, why := adAllow(b, snap, m.Chat.ID, text); !ok {
+	// 同样的内容此前已判为消息级广告：不送检、不占本群送检额度，直接删，
+	// 禁言交给复判模型——必须排在护栏之前。
+	if text != "" {
+		if h, ok := lookupAdHash(b, text); ok {
+			if !b.AdSubmit(func() { hashHit(b, snap, conf, m, profile, state, h, text) }) {
+				slog.Warn("反广告：判定队列已满，哈希命中未处置", "chat", m.Chat.ID, "uid", m.From.ID)
+			}
+			return
+		}
+	}
+
+	if ok, why := adAllow(b, snap, m.Chat.ID, m.MessageID, m.EditDate,
+		isNewbie(b, snap, profile)); !ok {
 		// 护栏拦下的同样按放行处理，只是不花这次 AI 的钱。
 		slog.Info("反广告：护栏拦下，未送检", "chat", m.Chat.ID,
 			"uid", m.From.ID, "why", why)
+		// 重复投递的是已经处理过的同一条，不用再记；其余的要记：
+		// 那是一条真实的消息被放过了，面板上必须看得见。
+		if why != adDupMessage {
+			logAd(b, m, adVerdict{Decider: adDeciderSkipped, Reason: why}, "none", "未送检")
+		}
 		return
 	}
 
-	// 判定要发 1~2 次 AI 请求（每次 20 秒超时，最坏 80 秒），而更新处理
-	// 是串行的。同步等在这里，上游一慢整个 bot 就停摆——管理员连
-	// 「关闭反广告」都点不动，而上游抖动恰恰是最需要关掉它的时刻。
-	select {
-	case b.AdSem <- struct{}{}:
-	default:
-		// 并发已满就丢弃这一条。与超时放行是同一个失败方向：宁可漏判，
+	// 判定要发 1~2 次 AI 请求（带重试最坏几十秒），而更新处理是串行的。
+	// 同步等在这里，上游一慢整个 bot 就停摆——管理员连「关闭反广告」
+	// 都点不动，而上游抖动恰恰是最需要关掉它的时刻。
+	if !b.AdSubmit(func() { judgeAndAct(b, snap, conf, m, profile, state) }) {
+		// 队列已满就放行这一条。与超时放行是同一个失败方向：宁可漏判，
 		// 也不能让判定链路反过来拖垮 bot 本身。
-		slog.Warn("反广告：并发已满，本条放行", "chat", m.Chat.ID, "uid", m.From.ID)
-		logAd(b, m, adVerdict{Reason: "并发已满"}, "none", "并发已满，未送检")
-		return
+		slog.Warn("反广告：判定队列已满，本条放行", "chat", m.Chat.ID, "uid", m.From.ID)
+		logAd(b, m, adVerdict{Reason: "判定队列已满"}, "none", "判定队列已满，未送检")
 	}
-	go func() {
-		defer func() { <-b.AdSem }()
-		judgeAndAct(b, snap, conf, m, profile, state)
-	}()
 }
 
-// judgeAndAct 是判定与处置，跑在独立 goroutine 上。
+// judgeAndAct 是判定与处置，跑在判定 worker 上。
 //
-// 进程退出时不等待在飞的判定：它们最长 80 秒，且并发有上限，全部只会
+// 先删后判：初判（systemone）一出结论就先动手——删消息、要罚的先临时禁言
+// （tempMute），再把大模型复判投进**单独的**复判队列，定案后补正式处罚、
+// 连带删除与告警。大模型再慢，广告也不会一直挂在群里，发广告的人也发不了
+// 下一条。初判低于采信线、或者要罚才复判（needReview）。
+//
+// 进程退出时不等待在飞的判定：它们最长几十秒，且并发有上限，全部只会
 // 写自己的流水。store 关闭后写操作返回错误而非 panic（database/sql
 // 的既有行为），最坏结果是日志里多几条写失败——用一整套等待机制换
 // 这个，不划算。
 func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Message,
 	profile senderProfile, state adState) {
 
-	// 个人简介要发一次 getChat，所以放在异步段取：同步段每多一次 TG
+	// 简介与简介里的链接要发 getChat，所以放在异步段取：同步段每多一次 TG
 	// 往返，更新处理就多停一次。
-	state.Sender.Bio = userBio(b, state.Sender.UserID)
+	enrichSender(b, &state.Sender)
 
-	v, err := judge(b, snap, state)
+	// 内容哈希按识图之前的文字记，与 HandleGroupMessage 查的是同一个键。
+	// 纯图没有文字：空串当键的话，之后所有纯图都会互相命中。
+	text := displayText(m)
+	m, state, vis, ok := seeVisual(b, snap, m, state, text)
+	if !ok {
+		return
+	}
+
+	v, err := judgeFirst(b, snap, state)
 	if err != nil {
 		// 失败一律放行。反向会在上游抖动时清空整个群聊。
 		slog.Warn("反广告：判定失败，放行", "chat", m.Chat.ID,
 			"uid", m.From.ID, "err", err)
-		logAd(b, m, adVerdict{Reason: err.Error()}, "none", "判定失败")
+		logAd(b, m, adVerdict{Reason: err.Error(), Usage: vis.Usage, Cost: vis.Cost},
+			"none", "判定失败")
 		return
 	}
+	// 识图的钱也是判这条消息花的。
+	v.Usage, v.Cost = billing.MergeUsage(v.Usage, vis.Usage), v.Cost+vis.Cost
 
-	// 演练是**每个群**各自的状态：新加的群先观察、老群已转正式，
-	// 是最常见的形态。
-	dryrun := conf.Dryrun
-	act := decideAction(b, snap, isNewbie(b, snap, profile), v)
-	action, note := ApplyAction(b, m, act, dryrun)
-	logID := logAd(b, m, v, action, note)
-
-	// 演练期的判定不该污染真实画像：切回正式模式后，
-	// 这些人的 prior_ad_hits 应该还是干净的。
-	if act.Name != "none" && !dryrun {
-		BumpAdHits(b, m.Chat.ID, m.From.ID, 1)
-		// 联合封禁只认最高档：删+禁言那一档意味着置信度过了 hard 线，
-		// 而联合封禁会把人从所有接入群一起请出去，证据不足不能动。
-		if act.Mute {
-			maybeGban(b, m.Chat.ID, m.From.ID, "自动判定："+core.TruncateRunes(v.Reason, 80))
-		}
+	finish := func(v adVerdict, pre adAction, preNote string) {
+		actOnVerdict(b, snap, conf, m, profile, v, pre, preNote, text)
 	}
-	if act.Alert {
-		sendAdAlert(b, conf, m, v, act, note, profile, logID, dryrun)
+	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
+	if !needReview(b, snap, v, act) {
+		finish(v, adAction{}, "")
+		return
+	}
+	// 复判前先按初判动手：删消息、临时禁言。连带删除、封禁、告警都等复判
+	// 定了再做——封禁踢出群，不适合当先行动作。频道身份不先封：TG 封频道身份
+	// 不支持限时，封了就得等人手工解。
+	pre := adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
+	preNote := ApplyAction(b, m, pre, conf.Dryrun)
+	if !b.AdReview(func() { finish(review(b, snap, state, v, llmSystemPrompt), pre, preNote) }) {
+		// 按初判定案，临时禁言照样转正式：让它到期自己解除，等于白白放走。
+		slog.Warn("反广告：复判队列已满，按初判定案", "chat", m.Chat.ID, "uid", m.From.ID)
+		v.Reason = "（复判队列已满，仅采信 systemone 初判）" + v.Reason
+		finish(v, pre, preNote)
 	}
 }
 
@@ -541,20 +608,30 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 //
 // 用户明知成本地选择了全量送检，所以这里不做抽样、不关送检，只堵滥用：
 // 任何普通群成员都能靠刷屏把钱烧掉，这与「按设计每条都判」是两回事。
-func adAllow(b *core.Bot, snap *store.Snapshot, chatID int64, text string) (bool, string) {
-	// 去重必须排在上限之前：重复刷屏不该白白吃掉本群的送检额度，
-	// 否则攻击者用一条文案就能把正常消息挤出判定。
-	h := fnv.New64a()
-	h.Write([]byte(text))
-	if !b.AdLimits.Allow(fmt.Sprintf("ad:d:%d:%x", chatID, h.Sum64()), 1) {
-		return false, "窗口内重复文本"
+func adAllow(b *core.Bot, snap *store.Snapshot, chatID, msgID, editDate int64, newbie bool) (bool, string) {
+	// 去重按消息 ID，只挡同一条消息被处理两次（重启后 TG 重发了更新）。
+	// 不按文字去重：那样多号轮番刷同一段模板，只有第一个号被判，其余全被
+	// 当成「重复」既不判也不删——线上实测漏过。同文刷屏的成本由内容哈希
+	// （hash.go）兜住，它排在这之前。
+	// 带上编辑时间：编辑成广告的那一版与原版同一个 ID，常常就在一分钟内。
+	if !b.AdLimits.Allow(fmt.Sprintf("ad:d:%d:%d:%d", chatID, msgID, editDate), 1) {
+		return false, adDupMessage
 	}
-	if !b.AdLimits.Allow(fmt.Sprintf("ad:c:%d", chatID),
+	// 每群上限只管老成员，新人既不受限也不占额度：广告几乎都出自新号，而额度
+	// 多半是被老成员的日常聊天占满的——先到先得的话，刷屏高峰里最先被放过的
+	// 恰恰是广告号。新号刷屏的成本由内容哈希和判成广告后的禁言兜住。
+	if !newbie && !b.AdLimits.Allow(fmt.Sprintf("ad:c:%d", chatID),
 		snap.BotSettingInt(b.BotID(), "antiad_rpm_chat", 30)) {
 		return false, "超出本群送检频率上限"
 	}
 	return true, ""
 }
+
+const (
+	adDupMessage = "同一条消息重复投递"
+	// adDeciderSkipped 标记「护栏拦下、没有送检」的流水，verdict 记为 skipped。
+	adDeciderSkipped = "skipped"
+)
 
 const chatAdminTTL = 10 * time.Minute
 
@@ -571,7 +648,16 @@ func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) boo
 	if u == nil {
 		return true
 	}
-	if u.IsBot {
+	// 关联频道自动转发（777000）：能往关联频道发帖的只有频道方，判它等于
+	// 判频道自己的帖子。匿名管理员就是管理员本人，打开「判定成员 bot」后也不判。
+	if u.ID == tgServiceUID || u.ID == groupAnonymousBotID {
+		return true
+	}
+	// 成员 bot 默认豁免：群里的工具 bot（RSS、签到）常发链接，判了会误删。
+	// 开启 antiad_judge_bots 后只豁免管理员 bot 与白名单——另一个反广告
+	// bot 通常是管理员，判它的告警会互相删来删去。
+	// 访客 bot 与频道身份不走这里：入口处已把发送者换成了召唤者/频道。
+	if u.IsBot && snap.BotSettingInt(b.BotID(), "antiad_judge_bots", 0) != 1 {
 		return true
 	}
 	// 主管理员与本 bot 的归属人豁免：他们要能在群里说话而不被自己部署
@@ -581,6 +667,10 @@ func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) boo
 		return true
 	}
 	if slices.Contains(snap.BotSettingInt64List(b.BotID(), "antiad_exempt_users"), u.ID) {
+		return true
+	}
+	// 按群白名单要一次本地读库，仍排在唯一要发 TG API 的群管理员判断之前。
+	if isGroupWhitelisted(b, chatID, u.ID) {
 		return true
 	}
 	return IsChatAdmin(b, chatID, u.ID)
@@ -597,25 +687,45 @@ func IsChatAdmin(b *core.Bot, chatID, uid int64) bool {
 		}
 	}
 
+	admin, ok := queryChatAdmin(b, chatID, uid)
+	if !ok {
+		return false
+	}
+	b.ChatAdminCache.Store(key, chatAdminEntry{
+		admin: admin, expire: time.Now().Add(chatAdminTTL)})
+	return admin
+}
+
+// queryChatAdmin 向 TG 查一次，ok 为假表示没查成（已记日志，不缓存）。
+func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
+	if uid < 0 {
+		// 频道身份：频道当不了群管理员，与之对等的是本群的关联频道——
+		// 讨论群里能以它的身份发言的只有群主一方。
+		raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID})
+		var resp tg.ChatFullResp
+		if err != nil || json.Unmarshal(raw, &resp) != nil || !resp.OK {
+			slog.Warn("反广告：查询关联频道失败，按普通频道处理",
+				"chat", chatID, "sender_chat", uid, "err", err)
+			return false, false
+		}
+		return resp.Result.LinkedChatID == uid, true
+	}
+
 	raw, err := b.TG.Call("getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid,
 	})
 	if err != nil {
 		slog.Warn("反广告：查询群管理员失败，按普通成员处理",
 			"chat", chatID, "uid", uid, "err", err)
-		return false
+		return false, false
 	}
 	var resp tg.ChatMemberResp
 	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
 		slog.Warn("反广告：查询群管理员返回异常，按普通成员处理",
 			"chat", chatID, "uid", uid, "resp", string(raw))
-		return false
+		return false, false
 	}
-
-	admin := resp.Result.Status == "administrator" || resp.Result.Status == "creator"
-	b.ChatAdminCache.Store(key, chatAdminEntry{
-		admin: admin, expire: time.Now().Add(chatAdminTTL)})
-	return admin
+	return resp.Result.Status == "administrator" || resp.Result.Status == "creator", true
 }
 
 // bioTTL 是个人简介的缓存时长。简介本身很少变，但广告号会在被处置后
@@ -654,9 +764,12 @@ func userBio(b *core.Bot, uid int64) string {
 		b.BioCache.Store(uid, bioEntry{expire: time.Now().Add(bioTTL)})
 		return ""
 	}
-	b.BioCache.Store(uid, bioEntry{bio: resp.Result.Bio,
-		expire: time.Now().Add(bioTTL)})
-	return resp.Result.Bio
+	bio := resp.Result.Bio
+	if uid < 0 {
+		bio = resp.Result.Description // 频道身份：频道简介
+	}
+	b.BioCache.Store(uid, bioEntry{bio: bio, expire: time.Now().Add(bioTTL)})
+	return bio
 }
 
 // gcBioCache 清理过期条目，防止 map 无限增长。
@@ -721,13 +834,148 @@ func HandleMyChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	}
 }
 
-// msgText 返回参与判定的正文：正文为空时取图片/视频配文。
-// 只看 Text 会把「图片 + 配文」这一整类广告漏光。
+// msgText 返回参与判定的正文：本人正文（为空时取图片/视频配文），再加上
+// 消息附带的非文字载荷，每种一行、带方括号前缀。
+//
+// 只看 Text 会把「图片 + 配文」这一整类漏光；只看 Text/Caption 又会把
+// 联系人卡片、投票、文件名、藏在「点这里」背后的链接、内联按钮漏光——
+// 它们在「无正文」守门处被直接放过，而卡片的名字与号码本身就是广告。
 func msgText(m *tg.Message) string {
+	var parts []string
 	if m.Text != "" {
-		return m.Text
+		parts = append(parts, m.Text)
+	} else if m.Caption != "" {
+		parts = append(parts, m.Caption)
 	}
-	return m.Caption
+	if m.Vision != "" {
+		parts = append(parts, m.Vision)
+	}
+	// 分两次遍历而不是 append 拼接两个切片：后者可能写进 Entities 的
+	// 备用容量，与并发读同一条消息的人互相踩。
+	for _, es := range [][]tg.MessageEntity{m.Entities, m.CaptionEntities} {
+		for _, e := range es {
+			if e.Type == "text_link" && e.URL != "" {
+				parts = append(parts, "［隐藏链接］"+e.URL)
+			}
+		}
+	}
+	parts = append(parts, payloadLines(&m.MsgPayload)...)
+	if m.ReplyMarkup != nil {
+		for _, row := range m.ReplyMarkup.InlineKeyboard {
+			for _, btn := range row {
+				parts = append(parts, joinNonEmpty("［按钮］", btn.Text, btn.URL))
+			}
+		}
+	}
+	if m.ViaBot != nil && m.ViaBot.Username != "" {
+		parts = append(parts, "［经由］@"+m.ViaBot.Username)
+	}
+	if m.GuestBot != nil {
+		parts = append(parts, "［访客 bot］@"+m.GuestBot.Username)
+	}
+	if src := forwardSource(m.ForwardOrigin); src != "" {
+		parts = append(parts, "［转发自］"+src)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// payloadLines 把非文字载荷渲染成带类型前缀的文字，每种一行。
+// 前缀让模型分得清哪段是卡片、哪段是文件名，而不是本人说的话。
+func payloadLines(p *tg.MsgPayload) []string {
+	var out []string
+	add := func(prefix string, fields ...string) {
+		if s := joinNonEmpty(prefix, fields...); s != prefix {
+			out = append(out, s)
+		}
+	}
+	if c := p.Contact; c != nil {
+		add("［联系人卡片］", strings.TrimSpace(c.FirstName+" "+c.LastName), c.PhoneNumber)
+	}
+	if v := p.Poll; v != nil {
+		f := []string{v.Question}
+		for _, o := range v.Options {
+			f = append(f, o.Text)
+		}
+		add("［投票］", f...)
+	}
+	if v := p.Venue; v != nil {
+		add("［地点］", v.Title, v.Address)
+	}
+	if v := p.Game; v != nil {
+		add("［游戏］", v.Title, v.Description)
+	}
+	if v := p.Invoice; v != nil {
+		add("［账单］", v.Title, v.Description)
+	}
+	if v := p.Checklist; v != nil {
+		f := []string{v.Title}
+		for _, t := range v.Tasks {
+			f = append(f, t.Text)
+		}
+		add("［清单］", f...)
+	}
+	if v := p.Audio; v != nil {
+		add("［音频］", v.Title, v.Performer, v.FileName)
+	}
+	for _, f := range []*tg.FileNamed{p.Document, p.Video, p.Animation} {
+		if f != nil {
+			add("［文件］", f.FileName)
+		}
+	}
+	if v := p.Story; v != nil && v.Chat != nil {
+		add("［故事］", chatLabel(v.Chat.Title, v.Chat.Username))
+	}
+	if v := p.LinkPreviewOptions; v != nil {
+		add("［预览］", v.URL)
+	}
+	return out
+}
+
+// joinNonEmpty 以空格拼接非空字段并加上前缀；全空时只返回前缀。
+func joinNonEmpty(prefix string, fields ...string) string {
+	var f []string
+	for _, s := range fields {
+		if s = strings.TrimSpace(s); s != "" {
+			f = append(f, s)
+		}
+	}
+	return prefix + strings.Join(f, " ")
+}
+
+func chatLabel(title, username string) string {
+	if username != "" {
+		return strings.TrimSpace(title + " @" + username)
+	}
+	return title
+}
+
+// forwardSource 取转发来源的名字。从引流频道整条转发进群是常见形态，
+// 来源名本身就是信号（「日赚频道」），只标 is_forwarded 模型看不到它。
+func forwardSource(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var o struct {
+		SenderUser     *tg.TGUser `json:"sender_user"`
+		SenderUserName string     `json:"sender_user_name"`
+		SenderChat     *tg.Chat   `json:"sender_chat"`
+		Chat           *tg.Chat   `json:"chat"`
+	}
+	if json.Unmarshal(raw, &o) != nil {
+		return ""
+	}
+	switch {
+	case o.SenderUser != nil:
+		return chatLabel(strings.TrimSpace(o.SenderUser.FirstName+" "+o.SenderUser.LastName),
+			o.SenderUser.Username)
+	case o.SenderUserName != "":
+		return o.SenderUserName
+	case o.Chat != nil:
+		return chatLabel(o.Chat.Title, o.Chat.Username)
+	case o.SenderChat != nil:
+		return chatLabel(o.SenderChat.Title, o.SenderChat.Username)
+	}
+	return ""
 }
 
 // displayText 是「这条消息在群里实际可见的全部文字」：本人正文加上
@@ -762,12 +1010,16 @@ type senderProfile struct {
 	LastName  string `json:"last_name"`
 	// Bio 是 TG 个人简介。广告号常把联系方式与价目写在这里，
 	// 本条消息看起来再无害也该据此提高可疑度。
-	Bio         string `json:"bio"`
-	IsPremium   bool   `json:"is_premium"`
-	AgeHours    int64  `json:"age_hours"`
-	AgeKnown    bool   `json:"age_known"`
-	MsgsInGroup int64  `json:"msgs_in_group"`
-	PriorAdHits int64  `json:"prior_ad_hits"`
+	Bio string `json:"bio"`
+	// BioLinks 是昵称与简介里挂的公开频道/群组/bot 查出来的样子（见 enrichSender）。
+	BioLinks []linkInfo `json:"bio_links,omitempty"`
+	// IsChannel 表示以频道身份发言：first_name 是频道名，bio 是频道简介。
+	IsChannel   bool  `json:"is_channel,omitempty"`
+	IsPremium   bool  `json:"is_premium"`
+	AgeHours    int64 `json:"age_hours"`
+	AgeKnown    bool  `json:"age_known"`
+	MsgsInGroup int64 `json:"msgs_in_group"`
+	PriorAdHits int64 `json:"prior_ad_hits"`
 }
 
 type adMessageInfo struct {
@@ -776,7 +1028,11 @@ type adMessageInfo struct {
 	HasMention  bool   `json:"has_mention"`
 	HasMedia    bool   `json:"has_media"`
 	IsForwarded bool   `json:"is_forwarded"`
-	Length      int    `json:"length"`
+	// IsEdited 表示这是发出后又编辑过的版本。
+	IsEdited bool `json:"is_edited,omitempty"`
+	Length   int  `json:"length"`
+	// MentionedBots 是正文里 @ 到的 bot，见 mentionedBots。
+	MentionedBots []string `json:"mentioned_bots,omitempty"`
 }
 
 type adChatInfo struct {
@@ -810,6 +1066,10 @@ func quotedInfo(m *tg.Message) *adQuotedInfo {
 		q.Text = m.ExternalReply.Text
 		if q.Text == "" {
 			q.Text = m.ExternalReply.Caption
+		}
+		// 频道引用同样可能是一张联系人卡片或一个投票。
+		if extra := payloadLines(&m.ExternalReply.MsgPayload); len(extra) > 0 {
+			q.Text = strings.TrimSpace(q.Text + "\n" + strings.Join(extra, "\n"))
 		}
 		if c := m.ExternalReply.Chat; c != nil {
 			q.From = c.Title
@@ -864,6 +1124,7 @@ func buildProfile(b *core.Bot, m *tg.Message, gm groupMember, now int64) senderP
 		p.FirstName = m.From.FirstName
 		p.LastName = m.From.LastName
 		p.IsPremium = m.From.IsPremium
+		p.IsChannel = m.From.ID < 0 // 见 senderOf
 	}
 
 	// joined_at 缺失（bot 部署前此人已在群）时退回 first_seen，
@@ -879,8 +1140,8 @@ func buildProfile(b *core.Bot, m *tg.Message, gm groupMember, now int64) senderP
 	return p
 }
 
-// buildState 组装送检载荷。调用方必须在它返回之后才把当前消息推进
-// 上下文环，否则模型会在 recent_context 里看到自己要判的那一条。
+// buildState 组装送检载荷。recent_context 取自本人留底并排除当前这条，
+// 所以当前消息先留底再调用它是安全的（HandleGroupMessage 正是如此）。
 func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfile) adState {
 	text := msgText(m)
 	st := adState{
@@ -888,16 +1149,18 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 			Text:        core.TruncateRunes(text, adStateTextLimit),
 			HasMedia:    m.Text == "" && m.Caption != "",
 			IsForwarded: len(m.ForwardOrigin) > 0,
+			IsEdited:    m.EditDate != 0,
 			// 长度报原文的，不报截断后的：长度本身是判定信号
 			// （刷屏、超长广告文案），截断载荷不该把它一起抹掉。
-			Length: len([]rune(text)),
+			Length:        len([]rune(text)),
+			MentionedBots: mentionedBots(text),
 		},
 		Sender: p,
 		Quoted: quotedInfo(m),
 	}
 	if m.Chat != nil {
 		st.Chat = adChatInfo{ID: m.Chat.ID, Title: m.Chat.Title}
-		st.RecentContext = b.AdCtx.Recent(m.Chat.ID,
+		st.RecentContext = recentOwn(b.Store, m,
 			int(snap.BotSettingInt(b.BotID(), "antiad_ctx_msgs", 6)))
 	}
 
@@ -918,6 +1181,36 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 	return st
+}
+
+// ctxTextLimit 是单条上下文的字符上限。上下文用来让模型看到此人近来
+// 说过什么，不需要全文；不截断的话一条长消息就能把每次判定的 input
+// token 撑爆。
+const ctxTextLimit = 200
+
+// recentOwn 取发送者本人在本群最近 n 条留底（不含当前这条），由旧到新。
+//
+// 只取本人的：别人的发言（尤其是带「［引用］」载荷的广告）混进来，模型
+// 会把它当成本条消息引用的内容——线上真实误判过。从留底取而不是另开
+// 一个内存环：环按群共享、容量有限，活跃群里本人的上一条早被挤出去了；
+// 留底按人建了索引，重启也不丢。
+func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
+	if n <= 0 || m.From == nil {
+		return nil
+	}
+	var out []core.CtxMsg
+	// 多取一条：当前这条通常已经留底，过滤掉之后仍有 n 条。
+	for _, h := range loadUserMessages(s, m.Chat.ID, m.From.ID, n+1) {
+		if h.MessageID == m.MessageID {
+			continue
+		}
+		out = append(out, core.CtxMsg{Name: senderName(m.From),
+			Text: core.TruncateRunes(h.Text, ctxTextLimit), At: h.At})
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
 }
 
 const (
@@ -991,14 +1284,6 @@ func senderName(u *tg.TGUser) string {
 // 一条几千字的广告不该把库撑大，管理员也读不完。
 const adTextLimit = 1000
 
-// adAction 是一次处置的动作组合。
-type adAction struct {
-	Delete bool
-	Mute   bool
-	Alert  bool
-	Name   string // none / alerted / deleted / deleted_muted
-}
-
 // decideAction 按「用户风险档 × 置信度」决定处置强度。
 //
 //	置信度 ≥ hard(90%)      新人: 删 + 禁言 + 告警    老人: 删 + 告警
@@ -1020,7 +1305,10 @@ func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) a
 
 	switch {
 	case conf >= hard && newbie:
-		return adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"}
+		// 账号本身就是广告号时连带删掉此人近期的全部消息。只在这一档：
+		// 老成员误判的代价与自动禁言同理，删光了更是没法挽回。
+		return adAction{Delete: true, Mute: true, Alert: true,
+			Purge: v.Scope == "account", Name: "deleted_muted"}
 	case conf >= hard:
 		return adAction{Delete: true, Alert: true, Name: "deleted"}
 	case conf >= soft && newbie:
@@ -1031,50 +1319,6 @@ func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) a
 	return adAction{Name: "none"}
 }
 
-// applyAction 执行处置，返回实际动作名与失败说明。
-//
-// dryrun 为真时完整跳过所有群内写操作，只把「本应执行什么」记下来。
-// 试运行期必须能看清 AI 会怎么判，而又不真的动群里的人。
-//
-// 删除与禁言互相独立：一个失败不得连带取消另一个，否则广告号会
-// 既留着消息又不受任何限制。
-func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) (string, string) {
-	if act.Name == "none" {
-		return "none", ""
-	}
-	if dryrun {
-		return "dryrun:" + act.Name, ""
-	}
-
-	var notes []string
-	if act.Delete {
-		if ok, desc := b.CallOK("deleteMessage", map[string]any{
-			"chat_id": m.Chat.ID, "message_id": m.MessageID,
-		}); !ok {
-			notes = append(notes, noteDeleteFailed+": "+desc)
-		}
-	}
-	if act.Mute {
-		hours := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
-		if ok, desc := b.CallOK("restrictChatMember", map[string]any{
-			"chat_id": m.Chat.ID, "user_id": m.From.ID,
-			"until_date":  time.Now().Unix() + hours*3600,
-			"permissions": MutedPermissions(),
-		}); !ok {
-			notes = append(notes, noteMuteFailed+": "+desc)
-		}
-	}
-	return act.Name, strings.Join(notes, "; ")
-}
-
-// 失败说明的两个前缀。写入方（applyAction）与判读方（adAlertKB）
-// 共用同一份常量：告警要据此决定补刀按钮给不给，两处各写一份字面量
-// 的话，改了文案就会静默丢掉按钮。
-const (
-	noteDeleteFailed = "删除失败"
-	noteMuteFailed   = "禁言失败"
-)
-
 // logAd 落一条判定流水，返回自增 id（失败返回 0）。
 // clean 也要记：否则算不出真实开销，形态总结也拿不到样本量基数。
 func logAd(b *core.Bot, m *tg.Message, v adVerdict, action, reason string) int64 {
@@ -1082,8 +1326,11 @@ func logAd(b *core.Bot, m *tg.Message, v adVerdict, action, reason string) int64
 	if v.IsAd {
 		verdict = "ad"
 	}
-	if v.Decider == "" {
+	switch v.Decider {
+	case "":
 		verdict = "error"
+	case adDeciderSkipped:
+		verdict = "skipped" // 没送检，不是判定失败
 	}
 	note := v.Reason
 	if reason != "" {
@@ -1116,71 +1363,47 @@ func BumpAdHits(b *core.Bot, chatID, uid, delta int64) {
 	}
 }
 
-// alertTextLimit 是告警里展示的原文长度。TG 单条消息 4096 字符上限，
-// 留足空间给画像、判定与按钮。
-const alertTextLimit = 500
-
-// sendAdAlert 把一次命中推给全部管理员。
+// sendAdAlert 把一次命中贴到群里（开了「群内展示」时）。管理员私聊不在这里发：
+// 攒成汇总由 FlushAdSummary 定时发，见 summary.go。逐条私聊在刷屏高峰里会
+// 刷爆私聊、撞上 TG 发送频率限制，把删除/禁言一起拖慢。
 //
-// 演练模式下这是唯一的输出渠道，措辞必须让人一眼看出「没有真的动手」，
-// 否则管理员会以为广告已经被删了。
-// note 是 applyAction 的失败说明（成功时为空）：告警要按「实际结果」
-// 而非「意图」渲染。
+// 演练模式下措辞必须让人一眼看出「没有真的动手」，否则群里会以为广告已经被删了。
+// note 是 ApplyAction 的失败说明（成功时为空）：告警要按「实际结果」而非
+// 「意图」渲染。
 func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, act adAction,
-	note string, p senderProfile, logID int64, dryrun bool) {
+	note string, logID int64, dryrun bool) {
 
-	// 每次命中都给「全部管理员」各发一条私聊。不节流的话，一个刷屏的人
-	// 就能把每个管理员的私聊刷爆，还会撞上 Telegram 对 bot 的发送速率
-	// 限制，连正常的业务消息一起发不出去。按 (群, 人) 隔离：压掉的应该
-	// 是这一个人的重复告警，不是整个群的。
-	//
-	// 节流放在投递侧而非渲染侧：/ad 复查有自己的命令限频，
-	// 它的结果是人主动要的，不该被这条自动告警的节流压掉。
+	// 默认关闭 —— 升级上来的部署不该突然在群里多出消息。
+	if !conf.GroupAlert || m.Chat == nil {
+		return
+	}
+	// 按 (群, 人) 节流：一个刷屏的人不能把群刷成告警墙，也不能撞上 TG 对
+	// 单群的发送频率限制。压掉的只是这一个人的重复告警。
+	// /ad 复查不走这里：它是人主动要的，有自己的命令限频。
 	snap := b.Cache.Snap()
 	if !b.AdLimits.Allow(fmt.Sprintf("ad:a:%d:%d", m.Chat.ID, m.From.ID),
 		snap.BotSettingInt(b.BotID(), "antiad_alert_rpm", 3)) {
 		slog.Info("反广告：告警被节流", "chat", m.Chat.ID, "uid", m.From.ID)
 		return
 	}
-
-	text, kb := renderAdAlert(b, m, v, act, note, p, logID, dryrun)
-
-	// 两个去向互相独立，都可以单独关掉。两个都关是合法配置：
-	// 只留流水、不打扰任何人，此时一条消息都不该发出去。
-	if snap.BotSettingInt(b.BotID(), "antiad_dm_admins", 1) == 1 {
-		for _, admin := range b.AlertTargets() {
-			b.Send(admin, text, kb)
-		}
-	}
-	if conf.GroupAlert && m.Chat != nil {
-		// 贴在群里：处置结果对全群可见，该群的 TG 管理员能直接点按钮
-		// 判断（见 adDispositionAllowed）。默认关闭 —— 升级上来的部署
-		// 不该突然在群里多出消息。
-		//
-		// 用精简版：群里要的是「谁、为什么、被怎么处理了」，
-		// 私聊那份完整画像在群里只会刷屏，原文更是不能整段贴回去。
-		brief, bkb := renderAdAlertBrief(b, m, v, act, note, p, logID, dryrun)
-		// 只撤回群里这条：私聊是管理员自己的收件箱，bot 没有理由去清理，
-		// 那里也不会刷屏。
-		scheduleAlertCleanup(b, m.Chat.ID, b.SendGetID(m.Chat.ID, brief, bkb),
-			time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
-	}
+	// 贴在群里：处置结果对全群可见，该群的 TG 管理员能直接点按钮判断
+	// （见 adDispositionAllowed）。精简版：昵称与原文一个字都不能贴回去。
+	brief, bkb := renderAdAlertBrief(b, m, v, act, note, logID, dryrun)
+	scheduleAlertCleanup(b, m.Chat.ID, b.SendGetID(m.Chat.ID, brief, bkb),
+		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
-
-// groupAlertTextLimit 是群内告警展示的原文长度。
-//
-// 比私聊版（500）短得多，而且是故意的：bot 刚把广告删掉，转头自己把
-// 原文完整贴回群里的话，删除等于白做，引流信息照样可见。这里只留够
-// 让人辨认「是哪条」的开头。
-const groupAlertTextLimit = 40
 
 // renderAdAlertBrief 渲染群内版告警。
 //
 // 与私聊版分开：私聊是给管理员事后复盘的，信息越全越好；群里是给在场
-// 的人一眼看明白「谁、为什么、被怎么处理了」，长文只会刷屏，而且群名与
+// 的人一眼看明白「谁、被怎么处理了」，长文只会刷屏，而且群名与
 // chat_id 在群里是纯噪音——大家已经在这个群里了。
+//
+// 昵称与原文一个字都不贴：广告号的昵称和正文本身就是广告，bot 把它们
+// 发回群里等于替它再发一遍（删除白做），还会让 bot 自己被 TG 当成广告号
+// 封掉。掐头去尾也不行——首尾同样可能是载荷。
 func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
-	note string, p senderProfile, logID int64, dryrun bool) (string, map[string]any) {
+	note string, logID int64, dryrun bool) (string, map[string]any) {
 
 	var sb strings.Builder
 	if dryrun {
@@ -1188,17 +1411,20 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 		sb.WriteString("🧪 <b>演练（未实际处置）</b>\n")
 	}
 
-	kind := v.Kind
-	if kind == "" {
-		kind = "未分类"
-	}
+	kind := adKindLabel(v.Kind)
 	fmt.Fprintf(&sb, "🚫 <b>广告</b> · %.0f%% · %s\n",
 		v.Confidence*100, html.EscapeString(kind))
 
-	fmt.Fprintf(&sb, "├ 用户  %s (<code>%d</code>)\n",
-		html.EscapeString(senderName(m.From)), m.From.ID)
-	// 资历是误判与否最要紧的一条线索，用一个词带过。
-	fmt.Fprintf(&sb, "├ 资历  %s\n", seniorityWord(p))
+	fmt.Fprintf(&sb, "├ 用户  %s\n", userLink(m.From.ID))
+	if logID != 0 {
+		// 告警撤回或翻不到时，管理员凭这个编号去拦截记录里找。
+		fmt.Fprintf(&sb, "├ 记录  <code>#%d</code>\n", logID)
+	}
+	// 空值来自没跑 AI 的路径（人工标记），印一行空的「判定」只是噪音。
+	if v.Model != "" {
+		fmt.Fprintf(&sb, "├ 判定  <code>%s</code>\n",
+			html.EscapeString(core.TruncateRunes(v.Model, 40)))
+	}
 
 	// 处置行是树的末枝，除非还要接一条失败说明。
 	tail, label := "└", "处置"
@@ -1214,11 +1440,17 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 		fmt.Fprintf(&sb, "└ ⚠️    %s\n", html.EscapeString(core.TruncateRunes(note, 60)))
 	}
 
-	if txt := core.TruncateRunes(displayText(m), groupAlertTextLimit); txt != "" {
-		fmt.Fprintf(&sb, "「<code>%s</code>」", html.EscapeString(txt))
-	}
-
 	return sb.String(), adAlertKB(act, note, logID, dryrun)
+}
+
+// userLink 渲染可点开的用户 ID。不写昵称：广告号的昵称本身就是广告，
+// bot 把它发出去与发原文无异；点开链接由 TG 客户端自己显示资料。
+// 频道（负 ID）没有 tg://user 链接可用，只给 ID，频道名同样不写。
+func userLink(uid int64) string {
+	if uid < 0 {
+		return fmt.Sprintf(`<code>%d</code>（频道）`, uid)
+	}
+	return fmt.Sprintf(`<a href="tg://user?id=%d">%d</a>`, uid, uid)
 }
 
 // scheduleAlertCleanup 安排到点撤回 bot 自己发的群内告警。
@@ -1229,82 +1461,43 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 //
 // 代价要讲清楚：告警一撤，上面的处置按钮也跟着没了。所以 ttl 可以配成
 // 0 表示永不撤回 —— 有人就是希望按钮一直挂在那儿。
+//
+// 记进 alert_cleanup，由 SweepAlertCleanup 每分钟撤一批，所以最多晚一分钟。
+// 不用内存计时器：进程一重启就丢，还没到点的告警会永久留在群里。
 func scheduleAlertCleanup(b *core.Bot, chatID, msgID int64, ttl time.Duration) {
 	if ttl <= 0 || msgID == 0 {
 		// msgID 为 0 说明没拿到发送结果。传 0 给 TG 会被解读成别的消息，
 		// 宁可不撤也不能删错。
 		return
 	}
-	// 用 AfterFunc 而不是睡眠的 goroutine：它走运行时计时器，
-	// 几百条待撤回的告警也只是几百个定时器项。
-	time.AfterFunc(ttl, func() {
-		b.TG.Call("deleteMessage", map[string]any{
-			"chat_id": chatID, "message_id": msgID,
-		})
-	})
-}
-
-// seniorityWord 把资历压成一个词，供群内告警用。
-func seniorityWord(p senderProfile) string {
-	switch {
-	case !p.AgeKnown:
-		return fmt.Sprintf("群内 %d 条", p.MsgsInGroup)
-	case p.AgeHours < 72:
-		return fmt.Sprintf("新人 · 进群 %d 小时 · 群内 %d 条", p.AgeHours, p.MsgsInGroup)
-	default:
-		return fmt.Sprintf("进群 %d 天 · 群内 %d 条", p.AgeHours/24, p.MsgsInGroup)
+	if _, err := b.Store.Write.Exec(`INSERT OR REPLACE INTO alert_cleanup
+		(bot_id,chat_id,message_id,due_at) VALUES (?,?,?,?)`,
+		b.BotID(), chatID, msgID, time.Now().Add(ttl).Unix()); err != nil {
+		slog.Error("反广告：记录待撤回告警失败", "chat", chatID, "msg", msgID, "err", err)
 	}
 }
 
-// renderAdAlert 渲染私聊告警正文与按钮。
-func renderAdAlert(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
-	note string, p senderProfile, logID int64, dryrun bool) (string, map[string]any) {
-
-	var sb strings.Builder
-	if dryrun {
-		sb.WriteString("🧪 <b>演练模式（未实际处置）</b>\n\n")
+// SweepAlertCleanup 撤回这个 bot 到点的群内告警。每条只试一次：撤不掉的
+// （已被人删掉、超过 TG 的 48 小时删除期限）重试也没用。
+func SweepAlertCleanup(b *core.Bot, now time.Time) {
+	rows, err := b.Store.Read.Query(`SELECT chat_id,message_id FROM alert_cleanup
+		WHERE bot_id=? AND due_at <= ? LIMIT 200`, b.BotID(), now.Unix())
+	if err != nil {
+		slog.Error("反广告：读取待撤回告警失败", "err", err)
+		return
 	}
-	sb.WriteString("🚫 <b>反广告命中</b>\n\n")
-
-	title := m.Chat.Title
-	if title == "" {
-		title = "（无标题）"
+	var due [][2]int64
+	for rows.Next() {
+		var c, m int64
+		if rows.Scan(&c, &m) == nil {
+			due = append(due, [2]int64{c, m})
+		}
 	}
-	fmt.Fprintf(&sb, "群组: %s (<code>%d</code>)\n", html.EscapeString(title), m.Chat.ID)
-	fmt.Fprintf(&sb, "用户: %s (<code>%d</code>)\n",
-		html.EscapeString(senderName(m.From)), m.From.ID)
-
-	ageDesc := fmt.Sprintf("进群 %d 小时", p.AgeHours)
-	if !p.AgeKnown {
-		ageDesc = fmt.Sprintf("已观察到 %d 小时（进群时间未知）", p.AgeHours)
+	rows.Close()
+	for _, d := range due {
+		b.TG.Call("deleteMessage", map[string]any{"chat_id": d[0], "message_id": d[1]})
+		b.Store.Write.Exec(`DELETE FROM alert_cleanup WHERE chat_id=? AND message_id=?`, d[0], d[1])
 	}
-	fmt.Fprintf(&sb, "画像: %s · 群内 %d 条 · 历史命中 %d 次\n",
-		ageDesc, p.MsgsInGroup, p.PriorAdHits)
-
-	kind := v.Kind
-	if kind == "" {
-		kind = "未分类"
-	}
-	fmt.Fprintf(&sb, "判定: 广告 (%s) · 置信度 %.0f%% · 来源 %s\n",
-		html.EscapeString(kind), v.Confidence*100, v.Decider)
-	if v.Reason != "" {
-		fmt.Fprintf(&sb, "理由: %s\n", html.EscapeString(v.Reason))
-	}
-
-	fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>\n",
-		html.EscapeString(core.TruncateRunes(displayText(m), alertTextLimit)))
-
-	if dryrun {
-		fmt.Fprintf(&sb, "\n<b>本应执行</b>: %s（演练模式下未执行）", actionDesc(act))
-	} else if note != "" {
-		// 如实说哪一步没做成。谎报「已执行」会让管理员不去补刀，
-		// 广告就一直留在群里 —— 而这恰恰是最需要人介入的情况。
-		fmt.Fprintf(&sb, "\n已执行: %s\n⚠️ %s", actionDesc(act), html.EscapeString(note))
-	} else {
-		fmt.Fprintf(&sb, "\n已执行: %s", actionDesc(act))
-	}
-
-	return sb.String(), adAlertKB(act, note, logID, dryrun)
 }
 
 // adAlertKB 构造处置按钮。私聊版与群内版共用 —— 两处各写一份的话，
@@ -1323,7 +1516,7 @@ func adAlertKB(act adAction, note string, logID int64, dryrun bool) map[string]a
 	if dryrun || !act.Delete || strings.Contains(note, noteDeleteFailed) {
 		manual = append(manual, [2]string{"🗑 删除", fmt.Sprintf("a:ad:del:%d", logID)})
 	}
-	if dryrun || !act.Mute || strings.Contains(note, noteMuteFailed) {
+	if dryrun || (!act.Mute && !act.Ban) || strings.Contains(note, noteMuteFailed) {
 		manual = append(manual, [2]string{"🔇 禁言", fmt.Sprintf("a:ad:mute:%d", logID)})
 	}
 	if len(manual) > 0 {
@@ -1339,7 +1532,17 @@ func adAlertKB(act adAction, note string, logID int64, dryrun bool) map[string]a
 func actionDesc(act adAction) string {
 	switch act.Name {
 	case "deleted_muted":
+		if act.Purge {
+			return "删除此人近期全部消息 + 禁言"
+		}
 		return "删除消息 + 禁言"
+	case "deleted_banned":
+		if act.Purge {
+			return "删除此人近期全部消息 + 封禁出群"
+		}
+		return "删除消息 + 封禁出群"
+	case "muted":
+		return "禁言"
 	case "deleted":
 		return "删除消息"
 	case "alerted":
@@ -1355,6 +1558,7 @@ func actionDesc(act adAction) string {
 // AdLogRow 是 antiad_log 的一行。
 type AdLogRow struct {
 	ID         int64
+	BotID      int64
 	ChatID     int64
 	UserID     int64
 	MessageID  int64
@@ -1374,10 +1578,10 @@ type AdLogRow struct {
 
 func LoadAdLog(s *store.Store, id int64) (AdLogRow, bool) {
 	var r AdLogRow
-	err := s.Read.QueryRow(`SELECT id,chat_id,user_id,message_id,text,verdict,
+	err := s.Read.QueryRow(`SELECT id,bot_id,chat_id,user_id,message_id,text,verdict,
 		confidence,decider,ad_kind,action,reason,prompt_tokens,completion_tokens,
 		quota_cost,created_at FROM antiad_log WHERE id=?`, id).
-		Scan(&r.ID, &r.ChatID, &r.UserID, &r.MessageID, &r.Text, &r.Verdict,
+		Scan(&r.ID, &r.BotID, &r.ChatID, &r.UserID, &r.MessageID, &r.Text, &r.Verdict,
 			&r.Confidence, &r.Decider, &r.Kind, &r.Action, &r.Reason,
 			&r.PromptTokens, &r.CompletionTokens, &r.QuotaCost, &r.CreatedAt)
 	if err != nil {

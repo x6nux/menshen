@@ -1,6 +1,8 @@
 package antiad
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -246,36 +248,6 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	}
 }
 
-// TestAdAllowDedupBeforeLimit 锁住护栏顺序：去重必须排在频率上限之前，
-// 否则攻击者用一条重复文案就能把正常消息挤出判定额度。
-func TestAdAllowDedupBeforeLimit(t *testing.T) {
-	b, _ := testutil.NewTestBot(t, 1)
-	if err := b.PutBotSetting(b.BotID(), "antiad_rpm_chat", "2"); err != nil {
-		t.Fatal(err)
-	}
-	snap := b.Cache.Snap()
-
-	if ok, _ := adAllow(b, snap, -100, "重复文案"); !ok {
-		t.Fatal("首条应放行")
-	}
-	// 同文案再来：被去重拦下，且不该消耗本群的送检额度
-	if ok, why := adAllow(b, snap, -100, "重复文案"); ok {
-		t.Error("重复文案应被拦下")
-	} else if !strings.Contains(why, "重复") {
-		t.Errorf("拦截原因应指明重复，得到 %q", why)
-	}
-	// 额度还剩 1 条给不同文案
-	if ok, _ := adAllow(b, snap, -100, "另一条"); !ok {
-		t.Error("去重不该消耗频率额度，第二条不同文案应放行")
-	}
-	// 现在满了
-	if ok, why := adAllow(b, snap, -100, "第三条"); ok {
-		t.Error("超出上限应被拦下")
-	} else if !strings.Contains(why, "频率") {
-		t.Errorf("拦截原因应指明频率，得到 %q", why)
-	}
-}
-
 // TestAdExempt 覆盖四条豁免路径中不发 API 的那三条。
 func TestAdExempt(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 777)
@@ -338,5 +310,225 @@ func TestIsChatAdminFailClosed(t *testing.T) {
 	// 失败不缓存，下次还要重试
 	if IsChatAdmin(b, -100, 42); fake.CountCalls("getChatMember") != 2 {
 		t.Error("失败结果不该被缓存")
+	}
+}
+
+// TestAdExemptLinkedChannelForward：关联频道自动转发进讨论群时，发送者是
+// 777000（is_bot=false）。能往关联频道发帖的只有频道方，判它等于判频道自己
+// 的帖子，处置还会去禁言这个官方账号。
+func TestAdExemptLinkedChannelForward(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	if !adExempt(b, b.Cache.Snap(), -100, &tg.TGUser{ID: 777000, FirstName: "Telegram"}) {
+		t.Error("777000 频道自动转发应豁免")
+	}
+	if fake.CountCalls("getChatMember") != 0 {
+		t.Error("这是纯内存判断，不该发 API 请求")
+	}
+}
+
+// TestBuildStateRecentContextIsOwnHistory：recent_context 只取发送者本人的留底。
+// 别人的发言（尤其是带「［引用］」载荷的广告）混进来，模型会把它当成本条
+// 消息引用的内容——线上真实误判过。
+func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if err := b.PutBotSetting(b.BotID(), "antiad_ctx_msgs", "2"); err != nil {
+		t.Fatal(err)
+	}
+	recordMessage(b, -100, 1, 42, "本人第一条", 1000, "")
+	recordMessage(b, -100, 2, 43, "［引用］别人的广告", 1001, "")
+	recordMessage(b, -100, 3, 42, "本人第二条", 1002, "")
+	recordMessage(b, -100, 4, 42, "本人第三条", 1003, "")
+	// 与真实链路一致：留底先于 buildState，当前这条已经在库里了。
+	m := testutil.GroupMsg(-100, 42, 5, "当前这条")
+	recordMessage(b, -100, 5, 42, "当前这条", 1004, "")
+
+	st := buildState(b, b.Cache.Snap(), m, senderProfile{})
+
+	var got []string
+	for _, c := range st.RecentContext {
+		got = append(got, c.Text)
+	}
+	if want := []string{"本人第二条", "本人第三条"}; !slices.Equal(got, want) {
+		t.Fatalf("recent_context = %q, 期望 %q（只含本人、不含当前、受条数限制、由旧到新）",
+			got, want)
+	}
+
+	// /ad <user_id> 这类没有具体消息的路径（MessageID=0）同样只给 n 条。
+	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 0, "代表消息"), senderProfile{})
+	if n := len(st.RecentContext); n != 2 {
+		t.Errorf("没有当前消息可排除时给了 %d 条，期望 2 条", n)
+	}
+}
+
+// TestGroupAlertCarriesNoNameOrText：bot 发进群的告警不带昵称、原文片段与资历。
+// 广告号的昵称和正文本身就是广告，bot 把它们贴回群里等于替它再发一遍，
+// 还会让 bot 自己被 TG 当成广告号封掉。
+func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=1 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	// 真实拦到的一条赌博引流：载荷（@用户名）在中段，掐头去尾都挡不住。
+	m := testutil.GroupMsg(-100, 8397171625, 7, "能帮收赌博上分的钱来 @tgrv3a 收宽码就能四位数进口袋")
+	m.From.Username, m.From.FirstName = "bbmaBamnVtsm", "盘口招商"
+	sendAdAlert(b, conf, m,
+		adVerdict{IsAd: true, Confidence: 0.95, Kind: "gambling", Decider: "llm"},
+		adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"}, "", 12, false)
+
+	p := fake.LastCall("sendMessage")
+	if p == nil || int64(p["chat_id"].(float64)) != -100 {
+		t.Fatalf("群内告警没发到群里: %v", p)
+	}
+	text := p["text"].(string)
+	for _, bad := range []string{"bbmaBamnVtsm", "盘口招商", "@tgrv3a", "能帮收", "资历", "新人"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("群内告警带出了 %q:\n%s", bad, text)
+		}
+	}
+	for _, want := range []string{"tg://user?id=8397171625", "#12", "删除消息 + 禁言"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("群内告警缺 %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestAlertsShowModelAndRecord：群内告警带「记录 #ID」与判定模型。
+// 记录号是告警撤回后找回这条的唯一线索；模型名是换模型后校准阈值的起点。
+func TestAlertsShowModelAndRecord(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	m := testutil.GroupMsg(-100, 42, 7, "广告")
+	v := adVerdict{IsAd: true, Confidence: 0.9, Decider: "llm", Model: "probe-model"}
+	act := adAction{Delete: true, Alert: true, Name: "deleted"}
+
+	brief, _ := renderAdAlertBrief(b, m, v, act, "", 77, false)
+	if !strings.Contains(brief, "#77") || !strings.Contains(brief, "probe-model") {
+		t.Errorf("群内告警缺记录 ID 或模型名:\n%s", brief)
+	}
+}
+
+// TestBriefAlertNoModelNoEmptyLine：人工标记这类没跑 AI 的路径没有模型名，
+// 印一行空的「判定」只是噪音。
+func TestBriefAlertNoModelNoEmptyLine(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	m := testutil.GroupMsg(-100, 42, 7, "广告")
+	text, _ := renderAdAlertBrief(b, m,
+		adVerdict{IsAd: true, Confidence: 1, Decider: "manual"},
+		adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"}, "", 7, false)
+	if strings.Contains(text, "判定") || strings.Contains(text, "\n\n") {
+		t.Errorf("没有模型名时不该有空的判定行或空行:\n%s", text)
+	}
+}
+
+// TestMsgTextAllTypes：每种能携带文字载荷的消息类型都必须渲染进 msgText，
+// 否则它在「无正文」守门处被直接放过——联系人卡片就是这么漏的。
+// 用真实的 Bot API JSON 反序列化，钉死字段名。
+func TestMsgTextAllTypes(t *testing.T) {
+	cases := []struct {
+		name, js string
+		want     []string
+	}{
+		{"poll", `{"poll":{"question":"加群领福利?","options":[{"text":"t.me/+abc"},{"text":"不要"}]}}`,
+			[]string{"［投票］", "加群领福利?", "t.me/+abc", "不要"}},
+		{"venue", `{"venue":{"title":"茶楼上门","address":"加V: abc123"}}`,
+			[]string{"［地点］", "茶楼上门", "加V: abc123"}},
+		{"game", `{"game":{"title":"日赚500","description":"注册送U"}}`,
+			[]string{"［游戏］", "日赚500", "注册送U"}},
+		{"invoice", `{"invoice":{"title":"VIP群","description":"一次付费终身"}}`,
+			[]string{"［账单］", "VIP群", "一次付费终身"}},
+		{"checklist", `{"checklist":{"title":"兼职步骤","tasks":[{"text":"加微信"},{"text":"做单返利"}]}}`,
+			[]string{"［清单］", "兼职步骤", "加微信", "做单返利"}},
+		{"document", `{"document":{"file_name":"日入5000教程@abc.pdf"}}`,
+			[]string{"［文件］", "日入5000教程@abc.pdf"}},
+		{"audio", `{"audio":{"title":"加我","performer":"@spam","file_name":"a.mp3"}}`,
+			[]string{"［音频］", "加我", "@spam"}},
+		{"video", `{"video":{"file_name":"看主页.mp4"}}`, []string{"［文件］", "看主页.mp4"}},
+		{"animation", `{"animation":{"file_name":"t.me-xx.gif"}}`, []string{"［文件］", "t.me-xx.gif"}},
+		{"hidden link", `{"text":"点这里","entities":[{"type":"text_link","offset":0,"length":3,"url":"https://t.me/+hid"}]}`,
+			[]string{"点这里", "［隐藏链接］https://t.me/+hid"}},
+		{"buttons", `{"text":"福利","reply_markup":{"inline_keyboard":[[{"text":"进群","url":"https://t.me/+btn"}]]}}`,
+			[]string{"［按钮］进群 https://t.me/+btn"}},
+		{"via bot", `{"text":"x","via_bot":{"id":1,"is_bot":true,"username":"adbot"}}`,
+			[]string{"［经由］@adbot"}},
+		{"forward channel", `{"forward_origin":{"type":"channel","chat":{"id":-1,"title":"日赚频道","username":"rz"}}}`,
+			[]string{"［转发自］日赚频道 @rz"}},
+		{"forward user", `{"forward_origin":{"type":"user","sender_user":{"id":2,"first_name":"兼职","username":"jz"}}}`,
+			[]string{"［转发自］兼职 @jz"}},
+		{"forward hidden", `{"forward_origin":{"type":"hidden_user","sender_user_name":"刷单客服"}}`,
+			[]string{"［转发自］刷单客服"}},
+		{"link preview", `{"text":"看看","link_preview_options":{"url":"https://ad.example"}}`,
+			[]string{"［预览］https://ad.example"}},
+		{"story", `{"story":{"id":1,"chat":{"id":-1,"title":"引流号","username":"yl"}}}`,
+			[]string{"［故事］引流号 @yl"}},
+		{"contact", `{"contact":{"phone_number":"+1 361","first_name":"假钱群"}}`,
+			[]string{"［联系人卡片］假钱群 +1 361"}},
+		{"caption", `{"caption":"图下广告","photo":[{"file_id":"x"}]}`, []string{"图下广告"}},
+	}
+	for _, c := range cases {
+		var m tg.Message
+		if err := json.Unmarshal([]byte(c.js), &m); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := msgText(&m)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: msgText = %q, 缺 %q", c.name, got, w)
+			}
+		}
+	}
+}
+
+// TestMsgTextPureMediaEmpty：纯媒体（无配文的图片、贴纸、语音、定位、骰子）
+// 没有文字，必须仍为空，否则每张表情包都会烧一次 AI。
+func TestMsgTextPureMediaEmpty(t *testing.T) {
+	for _, js := range []string{
+		`{"photo":[{"file_id":"x"}]}`, `{"sticker":{"file_id":"x"}}`,
+		`{"voice":{"file_id":"x"}}`, `{"location":{"latitude":1,"longitude":2}}`,
+		`{"dice":{"emoji":"🎲","value":3}}`,
+		// 手机拍的视频、动图常常没有 file_name：没有文字就不该送检。
+		`{"video":{"file_id":"x"}}`, `{"animation":{"file_id":"x"}}`,
+	} {
+		var m tg.Message
+		json.Unmarshal([]byte(js), &m)
+		if got := msgText(&m); got != "" {
+			t.Errorf("%s: msgText = %q, 期望空", js, got)
+		}
+	}
+}
+
+// TestQuotedExternalPayload：频道引用里的非文字载荷（例如引用一张联系人卡片）
+// 同样要进 quoted。
+func TestQuotedExternalPayload(t *testing.T) {
+	var m tg.Message
+	json.Unmarshal([]byte(`{"text":"u","external_reply":{"chat":{"id":-1,"title":"频道"},
+		"contact":{"phone_number":"+1 999","first_name":"刷单"}}}`), &m)
+	q := quotedInfo(&m)
+	if q == nil || !strings.Contains(q.Text, "+1 999") {
+		t.Fatalf("quoted = %+v", q)
+	}
+}
+
+// TestContactCardIsJudged：联系人卡片没有 text/caption，过去在「无正文」守门处
+// 直接放过。卡片的名字与号码就是广告载荷，必须渲染成正文送检。
+func TestContactCardIsJudged(t *testing.T) {
+	var m tg.Message
+	json.Unmarshal([]byte(`{"contact":{"phone_number":"+1 361 789 8440",
+		"first_name":"假钱喜前交流群🔥","last_name":"快递面交都可"}}`), &m)
+	got := msgText(&m)
+	for _, want := range []string{"联系人卡片", "假钱喜前交流群🔥 快递面交都可", "+1 361 789 8440"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("msgText = %q, 缺 %q", got, want)
+		}
+	}
+	// 附言与卡片同时存在时两者都要。
+	m.Caption = "加我"
+	if got := msgText(&m); !strings.Contains(got, "加我") || !strings.Contains(got, "8440") {
+		t.Fatalf("msgText = %q", got)
 	}
 }

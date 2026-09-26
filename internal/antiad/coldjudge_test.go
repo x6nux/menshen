@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -188,5 +189,64 @@ func TestRecheckDropsBioCache(t *testing.T) {
 	}
 	if _, still := loadJoinMute(b.Store, -100, 555); still {
 		t.Error("判定失败时应当放行并清掉限制记录")
+	}
+}
+
+// TestJoinHandledOnce 锁住入群去重。
+//
+// 同一次入群 TG 会推两份：chat_member 事件与「XXX 加入群组」服务消息，
+// 两条路都汇进 onJoin。不去重的话联合封禁拦截、冷判定都各跑两遍——
+// 两次 AI 开销、群里两条通知、管理员两条私聊。这里借联合封禁观察。
+func TestJoinHandledOnce(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := GbanAdd(b.Shared, 555, "测试", -100, testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+
+	HandleChatMemberUpdate(b, &tg.ChatMemberUpdated{
+		Chat: &tg.Chat{ID: -100, Type: "supergroup"}, Date: 5000,
+		OldChatMember: &tg.ChatMemberInfo{Status: "left"},
+		NewChatMember: &tg.ChatMemberInfo{Status: "member", User: &tg.TGUser{ID: 555}},
+	})
+	svc := testutil.GroupMsg(-100, 555, 41, "")
+	svc.NewChatMembers = []*tg.TGUser{{ID: 555}}
+	HandleGroupMessage(b, svc)
+
+	if n := fake.CountCalls("banChatMember"); n != 1 {
+		t.Errorf("同一次入群封了 %d 次，期望 1 次", n)
+	}
+}
+
+// TestJoinMuteNoticeHidesNameAndReason：群里那条限制通知不写昵称也不写理由。
+// 两者常常就是广告本身（昵称里的引流话术、理由里引述的简介链接），bot 把
+// 它们发进群等于替广告号再发一遍。理由在私聊的自助解除流程里给本人看。
+func TestJoinMuteNoticeHidesNameAndReason(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	v := adVerdict{IsAd: true, Confidence: 0.95, Decider: "llm",
+		Reason: "简介写着 t.me/+abc 引流"}
+
+	applyJoinMute(b, conf, &tg.TGUser{ID: 555, FirstName: "日入5000 看主页",
+		Username: "riru_ad"}, v)
+	text := fake.LastCall("sendMessage")["text"].(string)
+	for _, bad := range []string{"日入5000", "riru_ad", "t.me/+abc"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("群内通知带出了 %q:\n%s", bad, text)
+		}
+	}
+	if !strings.Contains(text, "tg://user?id=555") || !strings.Contains(text, "私聊") {
+		t.Errorf("通知应给出用户链接并指向私聊里的解除流程:\n%s", text)
+	}
+
+	// 拿不到自己的用户名就没有 deep link 按钮，不能叫人去点一个不存在的按钮。
+	b.Username = ""
+	applyJoinMute(b, conf, &tg.TGUser{ID: 556}, v)
+	if text := fake.LastCall("sendMessage")["text"].(string); !strings.Contains(text, "联系群管理员") {
+		t.Errorf("没有解除按钮时应指向群管理员:\n%s", text)
 	}
 }

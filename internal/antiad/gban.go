@@ -66,19 +66,38 @@ func gbanRemove(sh *core.Shared, uid int64) error {
 	return sh.Cache.Reload()
 }
 
-// eachActiveChat 遍历全平台所有「已启用」的 (bot, 群) 组合。
-func eachActiveChat(sh *core.Shared, fn func(b *core.Bot, chatID int64)) {
+// eachActiveChat 遍历全平台所有「已启用」的群，带上该群里全部可用的 bot。
+//
+// 按群而不是按 (bot, 群) 遍历：同群挂着几个 bot 时，对同一个人只该动手一次。
+func eachActiveChat(sh *core.Shared, fn func(bots []*core.Bot, chatID int64)) {
 	if sh.Reg == nil {
 		return
 	}
 	snap := sh.Cache.Snap()
+	byChat := map[int64][]*core.Bot{}
 	sh.Reg.Each(func(b *core.Bot) {
 		for _, c := range snap.ChatsOf(b.BotID()) {
 			if c.Enabled {
-				fn(b, c.ChatID)
+				byChat[c.ChatID] = append(byChat[c.ChatID], b)
 			}
 		}
 	})
+	for chatID, bots := range byChat {
+		fn(bots, chatID)
+	}
+}
+
+// callFirstOK 让群里的 bot 依次尝试，直到有一个成功：只挂一个 bot 去执行的话，
+// 恰好挑中一个没有封禁权限的，这个群就被放掉了。
+func callFirstOK(bots []*core.Bot, method string, payload map[string]any) (bool, string) {
+	desc := ""
+	for _, b := range bots {
+		var ok bool
+		if ok, desc = b.CallOK(method, payload); ok {
+			return true, ""
+		}
+	}
+	return false, desc
 }
 
 // enforceGban 在全平台执行一次封禁。
@@ -90,12 +109,12 @@ func EnforceGban(sh *core.Shared, uid int64, reason string) {
 	done := make(chan struct{})
 	n := 0
 
-	eachActiveChat(sh, func(b *core.Bot, chatID int64) {
+	eachActiveChat(sh, func(bots []*core.Bot, chatID int64) {
 		n++
 		go func() {
 			sem <- struct{}{}
 			defer func() { <-sem; done <- struct{}{} }()
-			if ok, desc := b.CallOK("banChatMember", map[string]any{
+			if ok, desc := callFirstOK(bots, "banChatMember", map[string]any{
 				"chat_id": chatID, "user_id": uid,
 			}); !ok {
 				slog.Info("联合封禁：该群未执行成功",
@@ -122,12 +141,12 @@ func LiftGban(sh *core.Shared, uid int64) {
 	done := make(chan struct{})
 	n := 0
 
-	eachActiveChat(sh, func(b *core.Bot, chatID int64) {
+	eachActiveChat(sh, func(bots []*core.Bot, chatID int64) {
 		n++
 		go func() {
 			sem <- struct{}{}
 			defer func() { <-sem; done <- struct{}{} }()
-			b.CallOK("unbanChatMember", map[string]any{
+			callFirstOK(bots, "unbanChatMember", map[string]any{
 				"chat_id": chatID, "user_id": uid, "only_if_banned": true,
 			})
 		}()
@@ -225,8 +244,22 @@ func CleanupData(sh *core.Shared) {
 	// group_members 同样是群聊衍生数据（TG user_id + 发言计数），保留策略
 	// 要与上面一致，否则群从白名单移除后它的行永久留着。
 	// 有命中史的行保留：ad_hits 是风控证据，清掉等于给惯犯重置档案。
+	// 「最近活动」取发言与进群里较晚的那个：只看 last_msg_at 的话，进群后
+	// 还没发言的人（last_msg_at 为 0）第一轮就被删掉，丢了进群时间。
+	// 白名单（/adw）是管理员的明确决定，不随不发言过期。
 	if _, err := sh.Store.Write.Exec(`DELETE FROM group_members
-		WHERE last_msg_at < ? AND ad_hits = 0`, cut); err != nil {
+		WHERE MAX(last_msg_at, joined_at) < ? AND ad_hits = 0 AND whitelisted = 0`,
+		cut); err != nil {
 		slog.Error("清理群成员画像失败", "err", err)
+	}
+	// 内容哈希按最近一次命中过期：广告模板换得很快，久不出现的留着只是占地方。
+	if _, err := sh.Store.Write.Exec(
+		`DELETE FROM ad_hashes WHERE last_hit_at < ?`, cut); err != nil {
+		slog.Error("清理内容哈希失败", "err", err)
+	}
+	// 待撤回告警里 bot 已被删掉、没人去撤的残留行。
+	if _, err := sh.Store.Write.Exec(
+		`DELETE FROM alert_cleanup WHERE due_at < ?`, cut); err != nil {
+		slog.Error("清理待撤回告警失败", "err", err)
 	}
 }

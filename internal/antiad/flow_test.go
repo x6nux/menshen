@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -64,12 +65,6 @@ func TestGroupMessageRecordsBeforeJudging(t *testing.T) {
 	if text != "豁免者的发言" {
 		t.Errorf("留底正文 = %q", text)
 	}
-
-	// 豁免者的发言仍要进上下文：否则「管理员刚说了别发广告」这种
-	// 关键语境会从模型视野里消失。
-	if got := b.AdCtx.Recent(-100, 5); len(got) != 1 || got[0].Text != "豁免者的发言" {
-		t.Errorf("豁免者的发言应进上下文环，得到 %+v", got)
-	}
 }
 
 // TestGroupMessageCountsSeniorityForStickers 锁住一处容易写反的顺序：
@@ -89,9 +84,10 @@ func TestGroupMessageCountsSeniorityForStickers(t *testing.T) {
 	if gm.MsgCount != 1 {
 		t.Errorf("msg_count = %d, 期望 1", gm.MsgCount)
 	}
-	// 但没有正文就不该留底
-	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages`); n != 0 {
-		t.Errorf("无正文不该留底，实际 %d 条", n)
+	// 没有正文也要留底（text 为空）：判成广告号时要连带删掉此人近期的
+	// 全部消息，靠的是留底里的 message_id。
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages WHERE text=''`); n != 1 {
+		t.Errorf("纯贴纸应以空正文留底，实际 %d 条", n)
 	}
 }
 
@@ -332,5 +328,25 @@ func TestComputeCost(t *testing.T) {
 	// 极小用量向上取整，不出现零成本请求
 	if got := billing.ComputeCost(billing.Usage{PromptTokens: 1}, m); got != 1 {
 		t.Errorf("极小用量应向上取整为 1，得到 %d", got)
+	}
+}
+
+// TestContactCardOnlyMessageIsRecorded：只发一张联系人卡片的群消息必须过得了
+// 「无正文」守门——留底即证明它走进了判定分支，而不是在门口被当成贴纸放过。
+func TestContactCardOnlyMessageIsRecorded(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 777)
+	testutil.EnableAntiad(t, b, -100)
+	// 让发送者被认成群管理员（豁免路径）：只验守门，不让判定跑起来。
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+
+	m := testutil.GroupMsg(-100, 42, 61, "")
+	m.Contact = &tg.Contact{FirstName: "假钱交流群", PhoneNumber: "+1 361 789 8440"}
+	HandleGroupMessage(b, m)
+
+	var text string
+	b.Store.Read.QueryRow(`SELECT text FROM group_messages
+		WHERE chat_id=-100 AND message_id=61`).Scan(&text)
+	if !strings.Contains(text, "+1 361 789 8440") {
+		t.Fatalf("只有联系人卡片的消息没过守门，留底 = %q", text)
 	}
 }

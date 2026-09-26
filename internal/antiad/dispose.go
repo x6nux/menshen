@@ -1,0 +1,307 @@
+package antiad
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"menshen/internal/core"
+	"menshen/internal/store"
+	"menshen/internal/tg"
+)
+
+// ---- 处置：动作组合、执行、定案 ----
+
+// adAction 是一次处置的动作组合。
+type adAction struct {
+	Delete bool
+	// Mute 与 Ban 互斥：禁言档按本群设置可改为封禁出群（见 planAction）。
+	Mute bool
+	Ban  bool
+	// Purge 是连带删除此人近期的全部消息（账号本身就是广告号时）。
+	// 不单列动作名：流水里仍记 deleted_muted，另在理由里注明（见 logNote）。
+	Purge bool
+	// Temp 是复判前的临时禁言，时长 tempMute（见 judgeAndAct）。
+	Temp  bool
+	Alert bool
+	Name  string // none / alerted / deleted / muted / deleted_muted / deleted_banned
+}
+
+// tempMute 是复判前临时禁言的时长。必须长过复判的最坏耗时（aiTotalBudget），
+// 否则正式禁言还没落地它就到期了；TG 把不足 30 秒的当成永久。
+const tempMute = 2 * time.Minute
+
+// purgeWindow 是连带删除的时间窗：TG 只允许删 48 小时内的消息，留一小时余量。
+const purgeWindow = 47 * time.Hour
+
+// albumDoomTTL 是「这个相册已判成广告」的记忆时长，覆盖判定之后才到的那几张。
+const albumDoomTTL = 10 * time.Minute
+
+// 失败说明的前缀。写入方（ApplyAction）与判读方（adAlertKB、汇总）共用
+// 同一份常量：告警要据此决定补刀按钮给不给，两处各写一份字面量的话，
+// 改了文案就会静默丢掉按钮。
+const (
+	noteDeleteFailed = "删除失败"
+	noteMuteFailed   = "禁言失败"
+	noteBanFailed    = "封禁失败"
+	// purgeNote 记进流水理由，标明这次连带删除了此人近期的全部消息（见 logNote）。
+	purgeNote = "连带删除此人近期全部消息"
+)
+
+// planAction 按判定结论与本群设置定处置：禁言档在封禁模式下改为封禁出群。
+func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bool, v adVerdict) adAction {
+	return withPunish(decideAction(b, snap, newbie, v), snap.BanMode(conf))
+}
+
+// withPunish 把禁言档换成封禁（ban 为真时）。/adb 与自动判定共用。
+func withPunish(act adAction, ban bool) adAction {
+	if !ban || !act.Mute {
+		return act
+	}
+	act.Mute, act.Ban = false, true
+	act.Name = strings.Replace(act.Name, "muted", "banned", 1)
+	return act
+}
+
+// ApplyAction 执行处置，返回失败说明（全部成功时为空）。
+//
+// dryrun 为真时完整跳过所有群内写操作：试运行期必须能看清 AI 会怎么判，
+// 而又不真的动群里的人。
+//
+// 各动作互相独立：一个失败不得连带取消另一个，否则广告号会既留着消息
+// 又不受任何限制。
+func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
+	if dryrun {
+		return ""
+	}
+	var notes []string
+	if act.Delete {
+		if ok, desc := b.CallOK("deleteMessage", map[string]any{
+			"chat_id": m.Chat.ID, "message_id": m.MessageID,
+		}); !ok {
+			notes = append(notes, noteDeleteFailed+": "+desc)
+		}
+		if m.MediaGroupID != "" {
+			if ok, desc := deleteAlbum(b, m); !ok {
+				notes = append(notes, "删除相册其余图片失败: "+desc)
+			}
+		}
+	}
+	if act.Purge {
+		// 判定的那条上面已删过，再删一次 TG 会自动跳过，不必剔除。
+		ids := gmsgIDs(b, `chat_id=? AND user_id=? AND at > ?`,
+			m.Chat.ID, m.From.ID, time.Now().Add(-purgeWindow).Unix())
+		if ok, desc := deleteMessages(b, m.Chat.ID, ids); !ok {
+			notes = append(notes, "连带删除失败: "+desc)
+		}
+	}
+	if act.Mute {
+		d := time.Duration(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)) * time.Hour
+		if act.Temp {
+			d = tempMute
+		}
+		if ok, desc := MuteSender(b, m.Chat.ID, m.From.ID, d); !ok {
+			notes = append(notes, noteMuteFailed+": "+desc)
+		}
+	}
+	if act.Ban {
+		if ok, desc := BanSender(b, m.Chat.ID, m.From.ID); !ok {
+			notes = append(notes, noteBanFailed+": "+desc)
+		}
+	}
+	return strings.Join(notes, "; ")
+}
+
+// MuteSender 限时禁言。频道身份（负 ID）没有成员权限可改，只能
+// banChatSenderChat，且不支持限时。
+func MuteSender(b *core.Bot, chatID, uid int64, d time.Duration) (bool, string) {
+	if uid < 0 {
+		return b.CallOK("banChatSenderChat", map[string]any{
+			"chat_id": chatID, "sender_chat_id": uid})
+	}
+	return b.CallOK("restrictChatMember", map[string]any{
+		"chat_id": chatID, "user_id": uid,
+		"until_date":  time.Now().Add(d).Unix(),
+		"permissions": MutedPermissions(),
+	})
+}
+
+// BanSender 封禁出群（永久）。频道身份走 banChatSenderChat。
+func BanSender(b *core.Bot, chatID, uid int64) (bool, string) {
+	if uid < 0 {
+		return b.CallOK("banChatSenderChat", map[string]any{
+			"chat_id": chatID, "sender_chat_id": uid})
+	}
+	return b.CallOK("banChatMember", map[string]any{"chat_id": chatID, "user_id": uid})
+}
+
+// Unban 解除封禁。必须带 only_if_banned：不带的话 TG 的语义是「先踢出群再解封」，
+// 对已经不在封禁状态的人等于把他踢出去。
+func Unban(b *core.Bot, chatID, uid int64) (bool, string) {
+	if uid < 0 {
+		return b.CallOK("unbanChatSenderChat", map[string]any{
+			"chat_id": chatID, "sender_chat_id": uid})
+	}
+	return b.CallOK("unbanChatMember", map[string]any{
+		"chat_id": chatID, "user_id": uid, "only_if_banned": true})
+}
+
+func albumKey(chatID int64, album string) string { return fmt.Sprintf("%d:%s", chatID, album) }
+
+// deleteAlbum 删掉 m 所在相册的其余消息，并记下这个相册：判定之后才到的也要删。
+// 相册的配文只挂在其中一张上，只删判定的那条，其余图片（常常就是二维码、
+// 联系方式截图）会留在群里。
+func deleteAlbum(b *core.Bot, m *tg.Message) (bool, string) {
+	b.DoomedAlbums.Store(albumKey(m.Chat.ID, m.MediaGroupID), time.Now().Add(albumDoomTTL))
+	return deleteMessages(b, m.Chat.ID, gmsgIDs(b,
+		`chat_id=? AND user_id=? AND media_group=?`, m.Chat.ID, m.From.ID, m.MediaGroupID))
+}
+
+func albumDoomed(b *core.Bot, chatID int64, album string) bool {
+	v, ok := b.DoomedAlbums.Load(albumKey(chatID, album))
+	return ok && time.Now().Before(v.(time.Time))
+}
+
+// GCDoomedAlbums 清理过期条目，防止 map 无限增长。
+func GCDoomedAlbums(sh *core.Shared) {
+	now := time.Now()
+	sh.DoomedAlbums.Range(func(k, v any) bool {
+		if now.After(v.(time.Time)) {
+			sh.DoomedAlbums.Delete(k)
+		}
+		return true
+	})
+}
+
+// gmsgIDs 按条件取留底里的消息 ID。where 只来自本包的字面量。
+func gmsgIDs(b *core.Bot, where string, args ...any) []int64 {
+	rows, err := b.Store.Read.Query(`SELECT message_id FROM group_messages WHERE `+where, args...)
+	if err != nil {
+		slog.Error("反广告：读取留底 ID 失败", "err", err)
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// deleteMessages 批量删除，每次最多 100 条（TG 的上限），找不到的 TG 会自动跳过。
+func deleteMessages(b *core.Bot, chatID int64, ids []int64) (bool, string) {
+	for i := 0; i < len(ids); i += 100 {
+		if ok, desc := b.CallOK("deleteMessages", map[string]any{
+			"chat_id": chatID, "message_ids": ids[i:min(i+100, len(ids))],
+		}); !ok {
+			return false, desc
+		}
+	}
+	return true, ""
+}
+
+// logAction 是记进流水的动作名。演练期加 dryrun: 前缀：那些动作从未真实
+// 发生，误判处理据此不去解禁。
+func logAction(act adAction, dryrun bool) string {
+	if dryrun && act.Name != "none" {
+		return "dryrun:" + act.Name
+	}
+	return act.Name
+}
+
+// logNote 是记进流水的处置说明：失败说明之外注明连带删除，演练期写「本应」。
+// 不进告警：告警把 note 当失败说明渲染。
+func logNote(act adAction, note string, dryrun bool) string {
+	if !act.Purge {
+		return note
+	}
+	p := "已" + purgeNote
+	if dryrun {
+		p = "本应" + purgeNote
+	}
+	return joinNotes(p, note)
+}
+
+// firstNote 注明复判前先做了什么：终判不认的话，删掉的消息也回不来，得留痕。
+func firstNote(pre adAction, dryrun bool) string {
+	var did []string
+	if pre.Delete {
+		did = append(did, "删除消息")
+	}
+	if pre.Mute {
+		did = append(did, fmt.Sprintf("临时禁言 %d 分钟", tempMute/time.Minute))
+	}
+	if len(did) == 0 {
+		return ""
+	}
+	if dryrun {
+		return "初判本应先行：" + strings.Join(did, " + ")
+	}
+	return "初判先行：" + strings.Join(did, " + ")
+}
+
+// joinNotes 用「; 」连起非空的几段说明。
+func joinNotes(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// actOnVerdict 按终判处置、落流水、记/撤内容哈希、发群内告警，返回流水 ID。
+//
+// pre 是复判前已经先做了的（见 judgeAndAct、hashHit），preNote 是它的失败说明；
+// 没有复判时两者为零值。hashText 是这条的内容：消息级广告且要删的，
+// 记成哈希（为空表示不记，如纯图）。
+func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Message,
+	profile senderProfile, v adVerdict, pre adAction, preNote, hashText string) int64 {
+
+	// 演练是**每个群**各自的状态：新加的群先观察、老群已转正式。
+	dryrun := conf.Dryrun
+	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
+	if v.Decider == deciderHash {
+		// 只凭哈希、没有复判模型的结论：只删不罚。禁言交给复判模型决定，
+		// 不沿用当初那条的处罚——后来者的资料与资历都没判过。
+		act.Mute, act.Ban, act.Purge = false, false, false
+		if act.Delete {
+			act.Name = "deleted"
+		}
+	}
+	// 初判删过的不再删；临时禁言由这里的正式处罚接替，终判不罚就让它到期
+	// ——主动解禁会踩掉同一人另一条消息刚上的禁言。
+	todo := act
+	todo.Delete = act.Delete && !pre.Delete
+	note := joinNotes(preNote, ApplyAction(b, m, todo, dryrun))
+	if pre.Delete && !act.Delete {
+		// 终判不删，先删掉的也回不来了：照实记成删过。
+		act.Delete, act.Name = true, "deleted"
+	}
+	logID := logAd(b, m, v, logAction(act, dryrun),
+		joinNotes(firstNote(pre, dryrun), logNote(act, note, dryrun)))
+
+	// 演练期的判定不该污染真实画像：切回正式模式后，这些人的 prior_ad_hits
+	// 应该还是干净的。复判判为正常的也不算。
+	if v.IsAd && act.Name != "none" && !dryrun {
+		BumpAdHits(b, m.Chat.ID, m.From.ID, 1)
+		// 联合封禁只认最高档：那一档意味着置信度过了 hard 线，而联合封禁会
+		// 把人从所有接入群一起请出去，证据不足不能动。
+		if act.Mute || act.Ban {
+			maybeGban(b, m.Chat.ID, m.From.ID, "自动判定："+core.TruncateRunes(v.Reason, 80))
+		}
+	}
+	// 演练群的判定没人核对过，不能据此在同一个 bot 的正式群里直接删。
+	if hashText != "" && !dryrun && v.IsAd && v.Scope == "message" && act.Delete {
+		rememberAdHash(b, hashText, v, logID)
+	}
+	if act.Alert {
+		sendAdAlert(b, conf, m, v, act, note, logID, dryrun)
+	}
+	return logID
+}

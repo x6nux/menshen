@@ -246,16 +246,9 @@ func HandleCaptchaCallback(b *core.Bot, q *tg.CallbackQuery) {
 	b.AnswerCallback(q.ID, "验证通过，正在重新检查")
 	b.Edit(dmChat, q.Message.MessageID, "✅ 验证通过，正在重新检查你的账号资料……", nil)
 
-	select {
-	case b.AdSem <- struct{}{}:
-	default:
+	if !b.AdSubmit(func() { recheckAndLift(b, dmChat, groupID, q.From, rec) }) {
 		b.Send(dmChat, "系统繁忙，请稍后再点一次「我要解除限制」。", nil)
-		return
 	}
-	go func() {
-		defer func() { <-b.AdSem }()
-		recheckAndLift(b, dmChat, groupID, q.From, rec)
-	}()
 }
 
 // recheckAndLift 重新判定账号画像，通过则解除限制。
