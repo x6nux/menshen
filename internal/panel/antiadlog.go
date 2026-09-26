@@ -27,7 +27,7 @@ func appendReason(old, add string) string {
 func adTodayStats(b *core.Bot) (checked, hits, fps, cost int64) {
 	since := time.Now().Unix() - 86400
 	err := b.Store.Read.QueryRow(`SELECT
-		COUNT(*),
+		COALESCE(SUM(CASE WHEN verdict!='skipped' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN verdict='ad' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN action='undone' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(quota_cost),0)
@@ -145,6 +145,8 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 			mark = "🚫"
 		} else if verdict == "error" {
 			mark = "⚠️"
+		} else if verdict == "skipped" {
+			mark = "⏭" // 护栏拦下、没有送检
 		}
 		// 时刻按 settings.tz_offset 呈现：管理员看到的时间必须是本地时间，
 		// UTC 会让人对不上号。
@@ -153,7 +155,7 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 		// 不带群号就看不出命中来自哪个群；ad_kind 是复盘形态时最直接的分类线索。
 		kindSuffix := ""
 		if kind != "" {
-			kindSuffix = " [" + html.EscapeString(kind) + "]"
+			kindSuffix = " [" + html.EscapeString(antiad.AdKindLabel(kind)) + "]"
 		}
 		fmt.Fprintf(&sb, "• %s <code>%s</code> #%d 群<code>%d</code> 用户<code>%d</code> %.0f%% %s%s\n  <i>%s</i>\n",
 			mark, when, id, cid, uid, conf*100, html.EscapeString(actionLabel(action)),
@@ -197,31 +199,8 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 	b.Edit(chatID, msgID, sb.String(), tg.InlineKB(rowsKB...))
 }
 
-// actionLabel 把 antiad_log.action 的机器值翻成人话。
-// 完整词汇表：none/alerted/deleted/muted/deleted_muted/banned/undone，
-// 以及以上任意值前缀 "dryrun:" 表示演练期本应执行、实际未执行。
-// 漏掉任何一个值都会导致面板直接显示原始字符串。
-func actionLabel(a string) string {
-	switch {
-	case a == "none":
-		return "未处置"
-	case a == "alerted":
-		return "仅告警"
-	case a == "deleted":
-		return "已删除"
-	case a == "muted":
-		return "已禁言"
-	case a == "deleted_muted":
-		return "已删除+禁言"
-	case a == "banned":
-		return "已封禁"
-	case a == "undone":
-		return "已标记误判"
-	case strings.HasPrefix(a, "dryrun:"):
-		return "演练（本应" + actionLabel(strings.TrimPrefix(a, "dryrun:")) + "）"
-	}
-	return a
-}
+// actionLabel 见 antiad.ActionLabel：词汇表归写流水的那一方所有。
+func actionLabel(a string) string { return antiad.ActionLabel(a) }
 
 // handleAntiAdCallback 处理 a:ad:* 回调。
 //
@@ -268,6 +247,27 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		default:
 			b.AnswerCallback(q.ID, "")
 		}
+
+	case "rec": // a:ad:rec:<log_id> —— 私聊汇总里点进来的记录卡片
+		if len(parts) < 4 {
+			b.AnswerCallback(q.ID, "参数缺失")
+			return
+		}
+		id, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		row, ok := antiad.LoadAdLog(b.Store, id)
+		// 卡片带原文，按记录所属的 bot 判权限：callback_data 是客户端发上来的，
+		// 次级管理员能把别人 bot 的记录号拼进去。
+		if !ok || !b.CanManageBot(q.From.ID, row.BotID) {
+			b.AnswerCallback(q.ID, "记录不存在或已过保留期")
+			return
+		}
+		b.AnswerCallback(q.ID, "")
+		text, kb := antiad.RenderAdRecord(b, row)
+		b.Send(chatID, text, kb)
 
 	case "ok", "fp", "del", "mute", "ban":
 		if len(parts) < 4 {
@@ -350,9 +350,14 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		// 施加的限制。dryrun: 前缀标记的动作从未真实发生，同样不算——
 		// 那是演练模式唯一的漏点。
 		unmuted, desc := true, ""
-		if row.Action == "muted" || row.Action == "deleted_muted" {
+		switch row.Action {
+		case "muted", "deleted_muted":
 			unmuted, desc = antiad.Unmute(b, row.ChatID, row.UserID)
+		case "banned", "deleted_banned":
+			unmuted, desc = antiad.Unban(b, row.ChatID, row.UserID)
 		}
+		// 同样的内容别再被当成广告直接删（见 antiad 的内容哈希）。
+		antiad.ForgetAdHash(b, row.Text)
 		antiad.BumpAdHits(b, row.ChatID, row.UserID, -1)
 		antiad.UpdateAdLog(b, row.ID, "undone", appendReason(row.Reason, "管理员标记误判"))
 		if !unmuted {
@@ -390,12 +395,9 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		b.AnswerCallback(q.ID, "已删除")
 
 	case "mute":
-		hours := b.Cache.Snap().SettingInt("antiad_mute_hours", 24)
-		if ok, desc := b.CallOK("restrictChatMember", map[string]any{
-			"chat_id": row.ChatID, "user_id": row.UserID,
-			"until_date":  time.Now().Unix() + hours*3600,
-			"permissions": antiad.MutedPermissions(),
-		}); !ok {
+		hours := b.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_hours", 24)
+		if ok, desc := antiad.MuteSender(b, row.ChatID, row.UserID,
+			time.Duration(hours)*time.Hour); !ok {
 			b.AnswerCallback(q.ID, "禁言失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
@@ -418,10 +420,8 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		b.AnswerCallback(q.ID, "已禁言")
 
 	case "ban":
-		// banChatMember 是把人请出群，与禁言是两回事。
-		if ok, desc := b.CallOK("banChatMember", map[string]any{
-			"chat_id": row.ChatID, "user_id": row.UserID,
-		}); !ok {
+		// banChatMember 是把人请出群，与禁言是两回事。频道身份走 banChatSenderChat。
+		if ok, desc := antiad.BanSender(b, row.ChatID, row.UserID); !ok {
 			b.AnswerCallback(q.ID, "封禁失败: "+core.TruncateRunes(desc, 60))
 			return
 		}

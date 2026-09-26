@@ -253,6 +253,15 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 	} else {
 		sb.WriteString("群内展示: 🔕 关\n")
 	}
+	snap := b.Cache.Snap()
+	punish := "🔇 禁言"
+	if snap.BanMode(c) {
+		punish = "🚫 封禁出群（永久）"
+	}
+	if c.Punish < 0 {
+		punish += "（跟随 bot 设置）"
+	}
+	sb.WriteString("处罚方式: " + punish + "\n")
 
 	// 实时查一次权限：bot 不是群管理员的话，整条链路静默失效，
 	// 面板一切正常、日志干净、什么都没判。这是最常见的部署事故。
@@ -274,7 +283,7 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 	p := fmt.Sprintf("a:mb:%d:c:%d", botID, targetChat)
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(
 		[][2]string{{enLabel, p + ":en"}, {dryLabel, p + ":dry"}},
-		[][2]string{{gaLabel, p + ":ga"}},
+		[][2]string{{gaLabel, p + ":ga"}, {"⚖️ 切换处罚方式", p + ":pn"}},
 		[][2]string{{"🗑 移除该群", p + ":del"}},
 		[][2]string{{"◀️ 返回", fmt.Sprintf("a:mb:%d", botID)}},
 	))
@@ -510,6 +519,8 @@ func handleBotChatCallback(b *core.Bot, q *tg.CallbackQuery, botID int64, parts 
 		err = setChatFlag(b, botID, targetChat, "dryrun", !c.Dryrun)
 	case "ga":
 		err = setChatFlag(b, botID, targetChat, "group_alert", !c.GroupAlert)
+	case "pn":
+		err = cycleChatPunish(b, botID, targetChat, c.Punish)
 	case "del":
 		if err = removeBotChat(b, botID, targetChat); err == nil {
 			b.AnswerCallback(q.ID, "已移除")
@@ -539,6 +550,17 @@ func setChatFlag(b *core.Bot, botID, chatID int64, col string, on bool) error {
 	if _, err := b.Store.Write.Exec(
 		`UPDATE bot_chats SET `+col+`=? WHERE bot_id=? AND chat_id=?`,
 		v, botID, chatID); err != nil {
+		return err
+	}
+	return b.Cache.Reload()
+}
+
+// cycleChatPunish 轮换本群的处罚方式：跟随 bot 设置 → 禁言 → 封禁 → 跟随。
+func cycleChatPunish(b *core.Bot, botID, chatID, cur int64) error {
+	next := map[int64]int64{-1: 0, 0: 1, 1: -1}[cur]
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET punish=? WHERE bot_id=? AND chat_id=?`,
+		next, botID, chatID); err != nil {
 		return err
 	}
 	return b.Cache.Reload()

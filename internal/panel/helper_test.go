@@ -1,6 +1,11 @@
 package panel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+	"strings"
+
 	"menshen/internal/core"
 	"menshen/internal/tg"
 )
@@ -13,4 +18,13 @@ func dispatch(b *core.Bot, u *tg.Update) {
 	if u.CallbackQuery != nil && u.CallbackQuery.From != nil {
 		HandleAdminCallback(b, u.CallbackQuery)
 	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// hashOf 与 antiad 的内容哈希同算法（空白归一后 sha256 取前 16 字节）。
+// 面板测试造数据用；算法一旦分叉，TestFalsePositiveForgetsHashAndUnbans 会变红。
+func hashOf(text string) string {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(text), " ")))
+	return hex.EncodeToString(sum[:16])
 }

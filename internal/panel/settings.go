@@ -42,6 +42,11 @@ var settingSpecs = []settingSpec{
 	{"antiad_digest_min", "形态总结触发样本数", "非负整数，0 = 关闭自动总结", 0, 0, ""},
 	{"antiad_digest_max", "形态摘要字数上限", "正整数，它会乘以每一条群消息的成本", 1, 0, ""},
 	{"antiad_unban_base", "自助解除重试基数（秒）", "正整数，第 n 次要等 base×2^(n-1)，封顶 1 小时", 1, 0, ""},
+	{"antiad_so_timeout_ms", "主判单次时限（毫秒）", "100-60000 的整数；超过它没回就换一个立即重试", 100, 60000, ""},
+	{"antiad_llm_ttft_ms", "复判首字时限（毫秒）", "100-60000 的整数；首字超过它没到就换一个立即重试", 100, 60000, ""},
+	{"antiad_hedge_retries", "并发模式触发：每分钟重试数", "非负整数，1 分钟内重试超过它就进入并发模式；0 = 关闭", 0, 0, ""},
+	{"antiad_hedge_minutes", "并发模式持续（分钟）", "1-1440 的整数，期间再次触发会顺延", 1, 1440, ""},
+	{"antiad_hedge_fanout", "并发模式路数", "2-5 的整数；并发期间开销随之成倍", 2, 5, ""},
 
 	// ---- 每个 bot 可覆盖的参数 ----
 	{"antiad_so_trust", "采信线：systemone 置信度", "0-100 的整数，低于它才转大模型复判", 0, 100, "antiad"},
@@ -58,7 +63,10 @@ var settingSpecs = []settingSpec{
 	{"antiad_cmd_rpm", "每人每分钟命令上限", "非负整数，0 = 不限；/ad 一次要跑两个模型", 0, 0, "antiad"},
 	{"antiad_alert_ttl", "群内告警自动撤回（秒）", "非负整数，0 = 永不撤回；撤回后按钮也会消失", 0, 0, "antiad"},
 	{"antiad_ctx_msgs", "携带上下文条数", "0-20 的整数，越多越准也越贵", 0, 20, "antiad"},
-	{"antiad_dm_admins", "私聊告警", "1 = 开，0 = 关", 0, 1, "antiad"},
+	{"antiad_dm_admins", "私聊汇总", "1 = 开，0 = 关；命中与判定失败定时汇成一条私聊", 0, 1, "antiad"},
+	{"antiad_alert_every", "私聊汇总间隔（分钟）", "1-1440 的整数，每隔这么久最多一条", 1, 1440, "antiad"},
+	{"antiad_ban", "禁言改为封禁", "1 = 该禁言的改为永久封禁出群，0 = 禁言；每群可单独覆盖", 0, 1, "antiad"},
+	{"antiad_judge_bots", "判定成员 bot", "1 = 判（仍豁免管理员 bot），0 = 豁免；需对方 bot 开启 Bot-to-Bot 模式才收得到", 0, 1, "antiad"},
 }
 
 func settingSpecByKey(k string) *settingSpec {
@@ -170,8 +178,11 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		key, label := "antiad_so_model", "默认判定模型（systemone）"
-		if parts[3] == "llm" {
+		switch parts[3] {
+		case "llm":
 			key, label = "antiad_llm_model", "默认复判/总结模型（大模型）"
+		case "vision":
+			key, label = "antiad_vision_model", "识图模型（须支持图片输入；留空则图片与贴纸不判）"
 		}
 		cur := b.Cache.Snap().Setting(key)
 		if cur == "" {
@@ -253,9 +264,10 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 	}
 
 	sb.WriteString("\n<b>默认模型</b>（可在每个 bot 上单独覆盖）\n")
-	fmt.Fprintf(&sb, "判定: %s\n复判: %s\n",
+	fmt.Fprintf(&sb, "判定: %s\n复判: %s\n识图: %s\n",
 		modelLabel(snap.Setting("antiad_so_model")),
-		modelLabel(snap.Setting("antiad_llm_model")))
+		modelLabel(snap.Setting("antiad_llm_model")),
+		modelLabel(snap.Setting("antiad_vision_model")))
 
 	sb.WriteString("\n<i>保留天数同时作用于判定流水、群消息留底与群成员画像" +
 		"（有命中史的画像行保留，那是风控证据）。</i>\n")
@@ -276,6 +288,7 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 			{"🤖 默认判定模型", "a:st:m:so"},
 			{"🤖 默认复判模型", "a:st:m:llm"},
 		},
+		{{"👁 识图模型", "a:st:m:vision"}},
 		{{"📝 形态摘要", "a:ad:dg"}},
 	}
 	// 一行一个：按钮上带了当前值，两列会在手机端被截断，
