@@ -454,6 +454,12 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		gm = touchMember(b, m.Chat.ID, m.From.ID, at)
 	}
 
+	// 解禁码兑换：四条门槛全满足才截下这条消息（见 handleGroupRedeem），
+	// 否则照常留底、照常判定。
+	if handleGroupRedeem(b, conf, m) {
+		return
+	}
+
 	// 命令不是群聊内容：不留底（留了会被送进下一次复查），也不进判定。
 	// 取本人正文而不是 displayText，否则回复形态下被引用的原文会混进参数。
 	// 命令只在发出时执行一次：编辑一条旧命令不该再执行一遍。

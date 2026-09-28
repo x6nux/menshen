@@ -116,6 +116,12 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// 管理员私聊发解禁码 = 兑换（范围按身份分级，见 HandleDirectRedeem）。
+	if code, ok := antiad.FindUnlockCode(text); ok {
+		antiad.HandleDirectRedeem(b, m, code)
+		return
+	}
+
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
 		panel.ShowMainMenu(b, m.Chat.ID, 0, m.From.ID)
 		return

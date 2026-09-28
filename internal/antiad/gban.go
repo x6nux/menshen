@@ -262,4 +262,23 @@ func CleanupData(sh *core.Shared) {
 		`DELETE FROM alert_cleanup WHERE due_at < ?`, cut); err != nil {
 		slog.Error("清理待撤回告警失败", "err", err)
 	}
+	// 申诉与网页验证：过保留期的结案单与验证记录一起清；未结单不动
+	// （用户可能还在流程里）。
+	if _, err := sh.Store.Write.Exec(`DELETE FROM web_checks WHERE created_at < ?`,
+		cut); err != nil {
+		slog.Error("清理网页验证记录失败", "err", err)
+	}
+	if _, err := sh.Store.Write.Exec(`DELETE FROM appeals WHERE updated_at < ?
+		AND status NOT IN ('statement','ai','web','code')`, cut); err != nil {
+		slog.Error("清理申诉单失败", "err", err)
+	}
+	if _, err := sh.Store.Write.Exec(`DELETE FROM appeal_redeems
+		WHERE appeal_id NOT IN (SELECT id FROM appeals)`); err != nil {
+		slog.Error("清理兑换记录失败", "err", err)
+	}
+	// 过期的白名单：到点即失效，删掉后恢复正常检查。
+	if _, err := sh.Store.Write.Exec(`DELETE FROM ad_whitelist
+		WHERE expires_at != 0 AND expires_at < ?`, time.Now().Unix()); err != nil {
+		slog.Error("清理过期白名单失败", "err", err)
+	}
 }
