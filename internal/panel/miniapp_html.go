@@ -9,7 +9,7 @@ const miniAppHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>门神配置</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://telegram.org/js/telegram-web-app.js" async></script>
 <style>
 :root{--bg:var(--tg-theme-bg-color,#f5f5f5);--fg:var(--tg-theme-text-color,#1a1a1a);
 --hint:var(--tg-theme-hint-color,#888);--card:var(--tg-theme-secondary-bg-color,#fff);
@@ -59,8 +59,27 @@ color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transitio
 <main id="view">加载中…</main>
 <div id="toast"></div>
 <script>
-var tg = (window.Telegram && window.Telegram.WebApp) || null;
-if (tg) { try { tg.ready(); tg.expand(); } catch(e){} }
+var tg = null, booted = false;
+// telegram-web-app.js 在部分网络下加载不出来（telegram.org 被屏蔽）。
+// 同步加载会把后面的脚本一起卡住，页面永远停在「加载中」——所以脚本
+// 异步加载，这里轮询等待最多 3 秒，然后无论如何都把界面跑起来。
+function boot(){
+  if (booted) return; booted = true;
+  tg = (window.Telegram && window.Telegram.WebApp) || null;
+  if (tg) { try { tg.ready(); tg.expand(); } catch(e){} }
+  if (!tg) {
+    document.getElementById('view').innerHTML =
+      '<div class="card">请通过 Telegram 里的菜单按钮「配置」打开本页。<br>' +
+      '<span class="hint">如果你已经在 Telegram 里打开，说明官方脚本没加载出来' +
+      '（telegram.org 在部分网络下不可达），换网络或挂代理后重试。</span></div>';
+    return;
+  }
+  load();
+}
+var _tries = 0;
+var _iv = setInterval(function(){
+  if (window.Telegram || ++_tries > 30) { clearInterval(_iv); boot(); }
+}, 100);
 var botID = new URLSearchParams(location.search).get('bot') || '0';
 var S = null, TAB = 'overview';
 var TABS = [['overview','概览'],['bots','机器人'],['chats','群组'],['upstreams','上游'],
@@ -249,13 +268,13 @@ function viewSettings(){
   var h='<div class="card"><h3>总开关</h3>'+
     '<div class="row"><span class="k">反广告总开关</span>'+
     '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'antiad_enabled\',value:'+
-      (g.antiad_enabled=='1'?'0':'1')+",'已切换')+'">'+(g.antiad_enabled=='1'?'已开启':'已关闭')+'</button></div>'+
+      (g.antiad_enabled=='1'?'0':'1')+',\'已切换\')">'+(g.antiad_enabled=='1'?'已开启':'已关闭')+'</button></div>'+
     '<div class="row"><span class="k">告警抄送主管理员</span>'+
     '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'alert_copy_main\',value:'+
-      (g.alert_copy_main=='1'?'0':'1')+",'已切换')+'">'+(g.alert_copy_main=='1'?'已开启':'已关闭')+'</button></div>'+
+      (g.alert_copy_main=='1'?'0':'1')+',\'已切换\')">'+(g.alert_copy_main=='1'?'已开启':'已关闭')+'</button></div>'+
     '<div class="row"><span class="k">联合封禁</span>'+
     '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'gban_enabled\',value:'+
-      (g.gban_enabled=='1'?'0':'1')+",'已切换')+'">'+(g.gban_enabled=='1'?'已开启':'已关闭')+'</button></div></div>';
+      (g.gban_enabled=='1'?'0':'1')+',\'已切换\')">'+(g.gban_enabled=='1'?'已开启':'已关闭')+'</button></div></div>';
   var specs=S.specs.filter(function(sp){ return sp.group==''||sp.group=='both'; });
   h+='<div class="card"><h3>全局参数</h3>'+specs.map(function(sp){
     return '<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+
@@ -337,8 +356,7 @@ function loadLogs(){
 }
 var _render = render;
 render = function(){ _render(); if(TAB=='logs') loadLogs(); };
-
-load();
+// 首屏加载由 boot() 驱动：等 telegram-web-app.js（拿 initData）就绪再请求。
 </script>
 </body>
 </html>`
