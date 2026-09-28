@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -489,6 +490,36 @@ func (b *Bot) RegisterCommands() {
 
 	for _, id := range b.Cfg.AdminIDs {
 		b.registerAdminCommands(id)
+	}
+	b.registerMiniAppButton()
+}
+
+// registerMiniAppButton 给管理员私聊挂上 Mini App 的菜单按钮。
+//
+// 只挂在管理员的私聊里：服务端还会再验一遍 initData 与权限，但按钮本身
+// 不该出现在普通用户的界面上。需要 public_url（Mini App 只在 webhook 模式存在）。
+func (b *Bot) registerMiniAppButton() {
+	if b.Cfg.PublicURL == "" {
+		return
+	}
+	url := strings.TrimRight(b.Cfg.PublicURL, "/") + "/miniapp?bot=" +
+		strconv.FormatInt(b.BotID(), 10)
+	ids := append([]int64{}, b.Cfg.AdminIDs...)
+	for id := range b.Cache.Snap().Admins {
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		if ok, desc := b.CallOK("setChatMenuButton", map[string]any{
+			"chat_id": id,
+			"menu_button": map[string]any{
+				"type": "web_app", "text": "配置",
+				"web_app": map[string]any{"url": url},
+			},
+		}); !ok {
+			// 管理员还没和 bot 建立会话时必然失败，会在下次交互时随
+			// EnsureAdminCommands 一起补；不打扰日志以外的地方。
+			slog.Warn("注册 Mini App 菜单按钮失败", "admin", id, "tg_error", desc)
+		}
 	}
 }
 

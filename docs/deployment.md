@@ -123,3 +123,13 @@ docker compose up -d
 主 bot 自己不入群、不判定：被拉进群或频道会自动退出，这是设计如此。
 判定链路有四个前置条件，缺任何一个都表现为「一条都没拦到」而不报错，
 别忽略主菜单那段提示。其余静默失效点见 [README 的部署前必读](../README.md)。
+
+## Mini App
+
+管理员私聊里的菜单按钮「配置」打开 **Mini App**：`<public_url>/miniapp`。
+仅 webhook 模式存在（轮询模式没有 HTTP 服务）。菜单按钮由服务在启动或接入
+bot 时自动设置（`setChatMenuButton`，只挂在管理员私聊里）。
+
+全部配置项都能在 Mini App 里读写：上游、模型、机器人、群组、全局与单 bot
+参数、白名单、管理员、联合封禁、判定记录与申诉单。鉴权用 Telegram WebApp
+的 `initData` 验签（24 小时有效期），权限与面板一致。

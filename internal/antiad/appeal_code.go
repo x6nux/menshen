@@ -197,6 +197,13 @@ func writeWhitelist(sh *core.Shared, botID, chatID, uid int64,
 	return sh.Cache.Reload()
 }
 
+// AddWhitelist 是 writeWhitelist 的导出版，供面板与 Mini App 写白名单
+// （与解禁码兑换走同一条路径，保证快照刷新与范围规则一致）。
+func AddWhitelist(sh *core.Shared, botID, chatID, uid int64,
+	ttl time.Duration, source string, byUID int64) error {
+	return writeWhitelist(sh, botID, chatID, uid, ttl, source, byUID)
+}
+
 // sendWhitelistNotice 私聊申诉人白名单的期限与提醒。
 func sendWhitelistNotice(b *core.Bot, uid int64) {
 	b.Send(uid, "✅ <b>限制已解除</b>\n\n"+

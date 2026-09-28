@@ -15,6 +15,7 @@ import (
 	"menshen/internal/antiad"
 	"menshen/internal/config"
 	"menshen/internal/core"
+	"menshen/internal/panel"
 	"menshen/internal/store"
 )
 
@@ -218,9 +219,9 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	// 每个 bot 各自的回调地址都要注册一遍：它们的 token 不同，
 	// 路径也就不同。失败不退出——反代可能还没接上，管理员稍后可以
-	// 在面板上重试。
+	// 在面板上重试。FinishSetup 顺带重注册命令菜单与 Mini App 按钮。
 	go reg.Each(func(b *core.Bot) {
-		if err := b.SetWebhook(cfg.WebhookURLFor(b.Token)); err != nil {
+		if err := b.FinishSetup(); err != nil {
 			slog.Error("注册 webhook 失败", "bot", config.MaskToken(b.Token), "err", err)
 			return
 		}
@@ -229,7 +230,7 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh)},
+		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh)},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -248,13 +249,18 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 // 其余交给 webhook。识别方式与 core.TokenFromPath 一样不依赖前缀，
 // 反代再套几层子路径都认得出来。
 type webRouter struct {
-	reg *core.Registry
-	web http.Handler
+	reg  *core.Registry
+	web  http.Handler
+	mini http.Handler
 }
 
 func (h webRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if hasWebSegment(r.URL.Path) {
 		h.web.ServeHTTP(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/miniapp") {
+		h.mini.ServeHTTP(w, r)
 		return
 	}
 	h.reg.ServeHTTP(w, r)

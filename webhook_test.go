@@ -381,13 +381,25 @@ func TestWebRouterRoutesWPaths(t *testing.T) {
 	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("web"))
 	})
-	router := webRouter{reg: reg, web: web}
+	mini := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("mini"))
+	})
+	router := webRouter{reg: reg, web: web, mini: mini}
 
 	for _, p := range []string{"/_w/ap/1/x", "/tg/_w/v/2/y", "/a/b/_w/apv/3/z"} {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
 		if w.Body.String() != "web" {
 			t.Errorf("%s 应进网页处理器，得到 %q", p, w.Body.String())
+		}
+	}
+
+	// Mini App 走 /miniapp 前缀。
+	for _, p := range []string{"/miniapp", "/miniapp/api/state"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
+		if w.Body.String() != "mini" {
+			t.Errorf("%s 应进 Mini App 处理器，得到 %q", p, w.Body.String())
 		}
 	}
 
