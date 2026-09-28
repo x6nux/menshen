@@ -93,6 +93,60 @@ func renameModelName(name, old, newName string) string {
 // renameModelRefs 改写 settings 与 bots 里的模型引用。
 // 只动确实以 old 为前缀的项，其余原样保留。
 func renameModelRefs(tx *sql.Tx, old, newName string) error {
+	return rewriteModelRefs(tx, func(name string) string {
+		return renameModelName(name, old, newName)
+	})
+}
+
+// BindLegacyModels 把所有没有上游前缀的旧格式模型绑到指定上游名下，
+// 并连带改写设置与 bot 覆盖里的引用。返回改写的模型数。
+//
+// 只在「恰好一个上游」时由启动流程调用：无从推断该绑谁时不动数据，
+// 留给面板上的提示让管理员自己决定。
+func (sh *Shared) BindLegacyModels(upstreamName string) (int, error) {
+	if err := ValidUpstreamName(upstreamName); err != nil {
+		return 0, err
+	}
+	snap := sh.Cache.Snap()
+	rename := map[string]string{}
+	for name := range snap.Models {
+		if up, _ := upstream.SplitModelName(name); up == "" {
+			rename[name] = upstreamName + "/" + name
+		}
+	}
+	if len(rename) == 0 {
+		return 0, nil
+	}
+
+	tx, err := sh.Store.Write.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for old, newName := range rename {
+		if _, err := tx.Exec(`UPDATE models SET name=? WHERE name=?`, newName, old); err != nil {
+			return 0, err
+		}
+	}
+	if err := rewriteModelRefs(tx, func(name string) string {
+		if n, ok := rename[name]; ok {
+			return n
+		}
+		return name
+	}); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		return 0, err
+	}
+	return len(rename), nil
+}
+
+// rewriteModelRefs 按 rewrite 函数改写 settings 与 bots 里的全部模型引用。
+func rewriteModelRefs(tx *sql.Tx, rewrite func(string) string) error {
 	for _, k := range []string{"antiad_so_models", "antiad_llm_models"} {
 		v, err := settingValue(tx, k)
 		if err != nil {
@@ -104,7 +158,7 @@ func renameModelRefs(tx *sql.Tx, old, newName string) error {
 		models := store.ParseStringList(v)
 		changed := false
 		for i, m := range models {
-			if nm := renameModelName(m, old, newName); nm != m {
+			if nm := rewrite(m); nm != m {
 				models[i], changed = nm, true
 			}
 		}
@@ -124,7 +178,7 @@ func renameModelRefs(tx *sql.Tx, old, newName string) error {
 		if err != nil {
 			return err
 		}
-		if nm := renameModelName(v, old, newName); nm != v {
+		if nm := rewrite(v); nm != v {
 			if _, err := tx.Exec(`UPDATE settings SET v=? WHERE k=?`, nm, k); err != nil {
 				return err
 			}
@@ -155,10 +209,10 @@ func renameModelRefs(tx *sql.Tx, old, newName string) error {
 	}
 
 	for _, r := range refs {
-		so, soChanged := renameModelList(r.soModels, old, newName)
-		llm, llmChanged := renameModelList(r.llmModels, old, newName)
-		soSingle := renameModelName(r.soModel, old, newName)
-		llmSingle := renameModelName(r.llmModel, old, newName)
+		so, soChanged := rewriteModelList(r.soModels, rewrite)
+		llm, llmChanged := rewriteModelList(r.llmModels, rewrite)
+		soSingle := rewrite(r.soModel)
+		llmSingle := rewrite(r.llmModel)
 		if !soChanged && !llmChanged && soSingle == r.soModel && llmSingle == r.llmModel {
 			continue
 		}
@@ -170,15 +224,15 @@ func renameModelRefs(tx *sql.Tx, old, newName string) error {
 	return nil
 }
 
-// renameModelList 改写一个 JSON 数组列；返回新值与是否变过。
-func renameModelList(v, old, newName string) (string, bool) {
+// rewriteModelList 按 rewrite 改写一个 JSON 数组列；返回新值与是否变过。
+func rewriteModelList(v string, rewrite func(string) string) (string, bool) {
 	models := store.ParseStringList(v)
 	if len(models) == 0 {
 		return v, false
 	}
 	changed := false
 	for i, m := range models {
-		if nm := renameModelName(m, old, newName); nm != m {
+		if nm := rewrite(m); nm != m {
 			models[i], changed = nm, true
 		}
 	}
