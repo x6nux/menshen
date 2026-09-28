@@ -1,11 +1,11 @@
 # 交接文档（门神 Menshen）
 
-> 交接时间：2026-09-28（晚场更新）｜ 仓库：https://github.com/x6nux/menshen ｜ 分支：main（已全部推送，最新 `d9a1b9d`）
+> 交接时间：2026-09-28（晚场更新）｜ 仓库：https://github.com/x6nux/menshen ｜ 分支：main（已全部推送，最新 `33d2825`）
 > 本文不含任何密钥。服务器密码、bot token 与 Turnstile 密钥在 `dev/deploy.md`（本机文件，未提交）。
 
 ## 1. 一句话现状
 
-线上 dev 实例（`https://menshen.free.edu.kg`）跑 `d9a1b9d`：主 bot 提供面板 /
+线上 dev 实例（`https://menshen.free.edu.kg`）跑 `33d2825`：主 bot 提供面板 /
 Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定（该群目前是**演练模式**）。
 申诉网页子系统已端到端验证过（合成单，已清理）：Turnstile → siteverify → 签发解禁码全通。
 唯一没跑过的是「真实处罚 → 真人申诉 → 兑换」这条链。
@@ -37,6 +37,9 @@ Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定�
 | `27c2a30` | 改派 bot 归属时同步运行中实例（原实现只写库，告警/账本/豁免还指向旧归属人） | 测试 |
 | `e3d49f8` | **miniapp 机器人详情页**：移除 bot + 改归属（改归属仅主管理员，目标必须是管理员） | 2 个测试 |
 | `d9a1b9d` | **修复网页 CSP**：`script-src 'nonce-xxx` 少了收尾引号，整个 script-src 非法 → 内联脚本从未执行 → 验证成功后永远不出码 | 测试 + 线上实测出码 |
+| `7407e07` | 复判首字 5s→15s、`AIClient` 总超时 20s→45s（对齐 tgbotaiapi：初判快、复判给慢模型留时间） | 测试 + 线上 |
+| `93a60fc` | 临时禁言 2→5 分钟；复判加 **Shared 级并发闸**（≤50，多 bot 叠加不超上游配额） | 测试 |
+| `33d2825` | **「打开 bot」深链带记录号**：管理员点进记录卡片、普通用户进申诉入口 | 测试 |
 
 **命令改名（用户要求）**：`/ad`→`/check`、`/adb`→`/ban`、`/adw`→`/white`；
 管理员私聊新增 `/log <id>`、`/user <uid>`。旧命令不再响应。
@@ -51,7 +54,7 @@ Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定�
 | 域名 | `https://menshen.free.edu.kg`（Cloudflare 回源 80，TLS 在 CF 终止） |
 | 服务 | systemd `menshen-dev`，`/opt/menshen-dev/menshen`，配置 `/opt/menshen-dev/config.yaml`，库 `/opt/menshen-dev/data/data.db` |
 | bot | 主 `@admenshen_bot`（8715529198，运行中）；工作 `@anti_ad_ai_bot`（7674016285，**已启用、运行中**） |
-| 部署版本 | `d9a1b9d`（2026-09-28 23:2x 部署）；升级时把停用期间积压的 216 条陈旧更新丢弃了（`deleteWebhook?drop_pending_updates=true` 后重新注册） |
+| 部署版本 | `33d2825`（2026-09-28 23:43 部署）；升级时把停用期间积压的 216 条陈旧更新丢弃了（`deleteWebhook?drop_pending_updates=true` 后重新注册） |
 | 上游/模型 | 单上游 `lfree`；`antiad_so_model=lfree/jev-1.13`、`antiad_llm_model=lfree/mimo-v2.5`（旧单值键，读侧兼容） |
 | 生效群 | 工作 bot 名下 1 个：`-1001976894016`「优选IP」，`enabled=1`、**`dryrun=1`（演练）**、群内展示开、处罚跟随 bot（默认禁言 24h） |
 | 全局状态 | 总开关**已开**；冷判定为工作 bot 单独开（`antiad_cold=1`）；`antiad_judge_bots=1`（仅豁免管理员 bot，本次升级新默认） |
