@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"menshen/internal/core"
@@ -15,6 +16,65 @@ func newMainBotEnv(t *testing.T) (*core.Shared, *core.Registry) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	return sh, core.NewRegistry(sh, stop, nil)
+}
+
+// TestBindLegacyModelsOnlyWithSingleUpstream：只有一个上游时自动补前缀
+// （升级无痛）；多于一个时无从推断，必须原样不动。
+func TestBindLegacyModelsOnlyWithSingleUpstream(t *testing.T) {
+	sh, _ := newMainBotEnv(t)
+	w := sh.Store.Write
+	if _, err := w.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
+		VALUES ('up1','http://x','k',1,1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"m1", "m2"} {
+		if _, err := w.Exec(`INSERT INTO models (name,prompt_price,
+			completion_price,cache_read_price,cache_write_price,enabled)
+			VALUES (?,0,0,0,0,1)`, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.Exec(`INSERT INTO settings (k,v) VALUES
+		('antiad_so_model','m1'),
+		('antiad_llm_models','["m2"]')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	bindLegacyModels(sh)
+
+	snap := sh.Cache.Snap()
+	if snap.Models["up1/m1"] == nil || snap.Models["m1"] != nil {
+		t.Errorf("旧模型没补上前缀: %v", snap.Models)
+	}
+	if got := snap.Setting("antiad_so_model"); got != "up1/m1" {
+		t.Errorf("单值设置没改写: %q", got)
+	}
+	if got := snap.SettingStrings("antiad_llm_models"); !slices.Equal(got, []string{"up1/m2"}) {
+		t.Errorf("列表设置没改写: %v", got)
+	}
+
+	// 再加一个上游：新的旧格式模型不该被自动绑定。
+	if _, err := w.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
+		VALUES ('up2','http://y','k',1,1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec(`INSERT INTO models (name,prompt_price,
+		completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES ('m3',0,0,0,0,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	bindLegacyModels(sh)
+	if sh.Cache.Snap().Models["m3"] == nil {
+		t.Error("多个上游时不该自动绑定旧格式模型")
+	}
 }
 
 // TestEnsureMainBotRegistersAndMarks 覆盖全新部署：配置里的 bot 还没登记，

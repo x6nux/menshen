@@ -67,6 +67,7 @@ func main() {
 	}
 	reg.LoadAll()
 	migrateLegacyChats(sh, reg)
+	bindLegacyModels(sh)
 
 	var srv *http.Server
 	if cfg.UseWebhook() {
@@ -175,6 +176,34 @@ func migrateLegacyChats(sh *core.Shared, reg *core.Registry) {
 	}
 	slog.Info("已把全局生效群迁移到 bot 名下",
 		"bot_id", target, "群数", len(legacy))
+}
+
+// bindLegacyModels 把旧格式（无上游前缀）模型绑到唯一的上游名下。
+//
+// 模型名带前缀才能区分多上游。只有一个启用的上游时绑定是无歧义的，
+// 启动时顺手做完；有多个上游时不动数据，交给面板上的提示。
+func bindLegacyModels(sh *core.Shared) {
+	only := ""
+	for _, u := range sh.Cache.Snap().Upstreams {
+		if u.Status != 1 {
+			continue
+		}
+		if only != "" {
+			return // 多于一个上游，无法推断该绑谁
+		}
+		only = u.Name
+	}
+	if only == "" {
+		return
+	}
+	n, err := sh.BindLegacyModels(only)
+	if err != nil {
+		slog.Error("绑定旧格式模型失败", "上游", only, "err", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("已把旧格式模型绑定到唯一上游", "上游", only, "模型数", n)
+	}
 }
 
 // startWebhook 起 HTTP 服务，并为每个已接入的 bot 注册回调地址。
