@@ -11,6 +11,7 @@ import (
 	"menshen/internal/antiad"
 	"menshen/internal/billing"
 	"menshen/internal/core"
+	"menshen/internal/store"
 	"menshen/internal/tg"
 )
 
@@ -37,7 +38,17 @@ func showMyBots(b *core.Bot, chatID, msgID, uid int64) {
 		if !r.Enabled {
 			mark = "⛔"
 		}
-		fmt.Fprintf(&sb, "%s <b>%s</b>\n", mark, html.EscapeString(r.Label()))
+		fmt.Fprintf(&sb, "%s <b>%s</b>", mark, html.EscapeString(r.Label()))
+		if r.IsMain {
+			// 主 bot 没有生效群、没有阈值、没有流水，列「0 个群」只会
+			// 让人以为没配完。
+			sb.WriteString(" 🔧 主 bot")
+			if main {
+				fmt.Fprintf(&sb, " ｜ 归属 <code>%d</code>", r.OwnerID)
+			}
+			sb.WriteString("\n   仅配置管理与接入其他 bot，不入群、不判定\n")
+			continue
+		}
 		chats := snap.ChatsOf(r.BotID)
 		on := 0
 		for _, c := range chats {
@@ -45,7 +56,7 @@ func showMyBots(b *core.Bot, chatID, msgID, uid int64) {
 				on++
 			}
 		}
-		fmt.Fprintf(&sb, "  生效群 %d/%d", on, len(chats))
+		fmt.Fprintf(&sb, "\n  生效群 %d/%d", on, len(chats))
 		if main {
 			fmt.Fprintf(&sb, " ｜ 归属 <code>%d</code>", r.OwnerID)
 		}
@@ -72,7 +83,7 @@ func showMyBots(b *core.Bot, chatID, msgID, uid int64) {
 // 成功失败都编辑同一条消息而不是另发：接入本来就只是一件事，
 // 刷三条消息只会把刚才的面板挤出屏幕。
 func addBotAndReport(b *core.Bot, chatID, uid int64, token string, progressMsg int64) {
-	rec, err := b.Reg.Register(token, uid)
+	rec, err := b.Reg.Register(token, uid, false)
 	if err != nil {
 		// 接入失败最常见的原因是 token 复制少了几个字符。续上会话让他
 		// 直接重发，而不是逼他回面板重点一遍按钮。
@@ -113,6 +124,11 @@ func showBotDetail(b *core.Bot, chatID, msgID, uid, botID int64) {
 		return
 	}
 	main := b.IsMain(uid)
+
+	if rec.IsMain {
+		showMainBotDetail(b, chatID, msgID, uid, rec)
+		return
+	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🤖 <b>%s</b>\n\n", html.EscapeString(rec.Label()))
@@ -208,6 +224,31 @@ func showBotDetail(b *core.Bot, chatID, msgID, uid, botID int64) {
 		[][2]string{{"◀️ 返回", "a:mb"}})
 
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
+}
+
+// showMainBotDetail 渲染主 bot 的只读页。
+//
+// 主 bot 只做配置管理与接入其他 bot：没有生效群、没有阈值、没有流水，
+// 也不能停用/移除（停用会让面板失联，移除会在下次启动时被 ensureMainBot
+// 加回来）。这一页刻意不挂任何改动状态的按钮。
+func showMainBotDetail(b *core.Bot, chatID, msgID, uid int64, rec *store.BotRec) {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🔧 <b>主 bot %s</b>\n\n", html.EscapeString(rec.Label()))
+	sb.WriteString("职责：<b>配置管理 + 接入其他 bot</b>。\n" +
+		"不入群、不判定广告；被拉进群或频道会自动退出。\n\n")
+	status := "✅ 已启用"
+	if !rec.Enabled {
+		status = "⛔ 已停用"
+	}
+	fmt.Fprintf(&sb, "状态: %s\nID: <code>%d</code>\n", status, rec.BotID)
+	if b.IsMain(uid) {
+		fmt.Fprintf(&sb, "归属: <code>%d</code>\n", rec.OwnerID)
+	}
+	sb.WriteString("\n<i>要在某个群反广告，请在「我的机器人」里接入工作 bot，" +
+		"把它拉进群并设为管理员，再为它添加该群。</i>")
+
+	b.EditOrSend(chatID, msgID, sb.String(),
+		tg.InlineKB([][2]string{{"◀️ 返回", "a:mb"}}))
 }
 
 // botStats 汇总某个 bot 近 24 小时的送检量、命中数与开销。
@@ -353,6 +394,13 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 	if len(parts) == 3 { // a:mb:<id>
 		b.AnswerCallback(q.ID, "")
 		showBotDetail(b, chatID, msgID, uid, botID)
+		return
+	}
+
+	// 主 bot 只有只读页：详情页上的按钮已经收起来了，这里再挡一道 ——
+	// callback_data 是客户端发上来的，任何人都能手工拼出来。
+	if rec := b.Cache.Snap().Bots[botID]; rec != nil && rec.IsMain {
+		b.AnswerCallback(q.ID, "主 bot 只做配置管理与接入其他 bot")
 		return
 	}
 
@@ -580,6 +628,11 @@ func removeBotChat(b *core.Bot, botID, chatID int64) error {
 // 顺带查一次群标题：面板上全是裸的 chat_id 时，管理多个群基本靠猜。
 // 查不到不算失败 —— bot 还没进群就添加是合法的使用顺序。
 func addBotChat(b *core.Bot, botID, chatID int64) error {
+	if rec := b.Cache.Snap().Bots[botID]; rec != nil && rec.IsMain {
+		// 面板上已经没有这个入口，这里是服务端兜底：主 bot 的群配置
+		// 会在启动时被 ensureMainBot 清掉，加进去也只会立刻消失。
+		return fmt.Errorf("主 bot 不入群、不判定，不能添加生效群")
+	}
 	title := ""
 	if raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID}); err == nil {
 		var resp struct {

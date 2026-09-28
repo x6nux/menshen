@@ -30,6 +30,11 @@ func TestMigrateOldDB(t *testing.T) {
 		`CREATE TABLE group_messages (chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
 			user_id INTEGER NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,
 			PRIMARY KEY (chat_id, message_id))`,
+		`CREATE TABLE bots (token TEXT PRIMARY KEY, bot_id INTEGER NOT NULL,
+			username TEXT NOT NULL DEFAULT '', owner_id INTEGER NOT NULL,
+			so_model TEXT NOT NULL DEFAULT '', llm_model TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)`,
+		`INSERT INTO bots (token,bot_id,owner_id,created_at) VALUES ('1:old',1,777,0)`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatalf("造老库失败: %v", err)
@@ -43,7 +48,8 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	defer s.Close()
 	for _, c := range [][2]string{{"bot_chats", "punish"},
-		{"group_members", "whitelisted"}, {"group_messages", "media_group"}} {
+		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
+		{"bots", "is_main"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
@@ -54,6 +60,10 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	if bc, ok := c.Snap().ChatConf(1, -100); !ok || bc.Punish != -1 {
 		t.Errorf("老群的处罚方式应默认跟随 bot（-1），得到 %+v", bc)
+	}
+	// 老库没有主 bot 标记：升级后由 ensureMainBot 置位，迁移本身只补列。
+	if rec := c.Snap().Bots[1]; rec == nil || rec.IsMain {
+		t.Errorf("老库的 bot 不该被迁移直接标成主 bot，得到 %+v", rec)
 	}
 }
 

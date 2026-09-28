@@ -112,6 +112,20 @@ func NewTestBotOwned(t *testing.T, adminID, ownerID int64) (*core.Bot, *FakeTG, 
 // main 包，内部包的测试拿不到，只能由调用方把等价的那一份传进来。
 func NewTestBotDispatch(t *testing.T, adminID, ownerID int64,
 	d core.Dispatcher) (*core.Bot, *FakeTG, *core.Shared) {
+	t.Helper()
+	return newTestBotDispatch(t, adminID, ownerID, d, false)
+}
+
+// NewTestMainBotDispatch 建一个**主 bot** 实例（is_main=1），
+// 用于主 bot 专属行为的测试：群消息守卫、自动退群、面板只读。
+func NewTestMainBotDispatch(t *testing.T, adminID, ownerID int64,
+	d core.Dispatcher) (*core.Bot, *FakeTG, *core.Shared) {
+	t.Helper()
+	return newTestBotDispatch(t, adminID, ownerID, d, true)
+}
+
+func newTestBotDispatch(t *testing.T, adminID, ownerID int64,
+	d core.Dispatcher, isMain bool) (*core.Bot, *FakeTG, *core.Shared) {
 
 	t.Helper()
 
@@ -133,7 +147,7 @@ func NewTestBotDispatch(t *testing.T, adminID, ownerID int64,
 	// 所有 token 都用同一个假传输层：测试里不需要区分。
 	sh.TransportFor = func(string) tg.Transport { return fake }
 
-	RegisterTestBot(t, sh, TestToken, TestBotID, ownerID)
+	registerTestBot(t, sh, TestToken, TestBotID, ownerID, isMain)
 
 	b := core.NewBot(fake, sh, TestToken, d)
 	b.SelfID.Store(TestBotID)
@@ -145,9 +159,28 @@ func NewTestBotDispatch(t *testing.T, adminID, ownerID int64,
 // RegisterTestBot 直接写 bots 表，绕开注册流程里的 getMe。
 func RegisterTestBot(t *testing.T, sh *core.Shared, token string, botID, ownerID int64) {
 	t.Helper()
+	registerTestBot(t, sh, token, botID, ownerID, false)
+}
+
+// RegisterMainTestBot 同上，但标记为主 bot（is_main=1）。
+func RegisterMainTestBot(t *testing.T, sh *core.Shared, token string, botID, ownerID int64) {
+	t.Helper()
+	registerTestBot(t, sh, token, botID, ownerID, true)
+}
+
+func registerTestBot(t *testing.T, sh *core.Shared, token string, botID, ownerID int64, isMain bool) {
+	t.Helper()
+	main := 0
+	if isMain {
+		main = 1
+	}
+	// 允许对同一个 bot 再调一次改标记：token 与 bot_id 上都有唯一约束，
+	// 冲突时只更新 is_main。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO bots
-		(token,bot_id,username,owner_id,so_model,llm_model,enabled,created_at)
-		VALUES (?,?,'testbot',?,'','',1,0)`, token, botID, ownerID); err != nil {
+		(token,bot_id,username,owner_id,so_model,llm_model,enabled,created_at,is_main)
+		VALUES (?,?,'testbot',?,'','',1,0,?)
+		ON CONFLICT(bot_id) DO UPDATE SET is_main=excluded.is_main`,
+		token, botID, ownerID, main); err != nil {
 		t.Fatalf("注册测试 bot 失败: %v", err)
 	}
 	if err := sh.Cache.Reload(); err != nil {

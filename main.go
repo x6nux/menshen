@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -89,18 +90,48 @@ func main() {
 	}
 }
 
-// ensureMainBot 把配置里的 bot_token 登记进 bots 表（若尚未登记）。
+// ensureMainBot 把配置里的 bot_token 登记进 bots 表并标记为主 bot。
+//
+// 主 bot 只做配置管理与接入其他 bot：不入群、不判定广告，被拉进群自动
+// 退出。标记落库（bots.is_main）而不是每次比对 cfg.BotToken —— webhook
+// 模式下该字段可为空，配置一改就会漂移。
+//
+// 顺带做两件纠偏：
+//   - 配置换过 bot 时，旧主 bot 的标记摘掉（它降级为普通工作 bot）
+//   - 主 bot 名下遗留的群配置删掉：升级前它可能在群里判过，新语义下
+//     留着只会让面板显示与行为对不上
 func ensureMainBot(cfg *config.Config, sh *core.Shared, reg *core.Registry) error {
-	if _, ok := sh.Cache.Snap().BotTokens[cfg.BotToken]; ok {
-		return nil // 已经登记过
+	snap := sh.Cache.Snap()
+	rec, ok := snap.BotTokens[cfg.BotToken]
+	if !ok {
+		if _, err := reg.Register(cfg.BotToken, cfg.AdminIDs[0], true); err != nil {
+			return err
+		}
+		if rec = sh.Cache.Snap().BotTokens[cfg.BotToken]; rec == nil {
+			return fmt.Errorf("主 bot 登记后读不回记录")
+		}
+		slog.Info("配置里的 bot 已自动接入",
+			"bot", rec.Label(), "owner", cfg.AdminIDs[0])
+	} else if !rec.IsMain {
+		if _, err := sh.Store.Write.Exec(
+			`UPDATE bots SET is_main=1 WHERE bot_id=?`, rec.BotID); err != nil {
+			return err
+		}
+		slog.Info("已把配置里的 bot 标记为主 bot", "bot", rec.Label())
 	}
-	rec, err := reg.Register(cfg.BotToken, cfg.AdminIDs[0])
-	if err != nil {
+
+	// 主 bot 只有一个：其余一律是工作 bot。
+	if _, err := sh.Store.Write.Exec(
+		`UPDATE bots SET is_main=0 WHERE bot_id<>?`, rec.BotID); err != nil {
 		return err
 	}
-	slog.Info("配置里的 bot 已自动接入",
-		"bot", rec.Label(), "owner", cfg.AdminIDs[0])
-	return nil
+	if res, err := sh.Store.Write.Exec(
+		`DELETE FROM bot_chats WHERE bot_id=?`, rec.BotID); err != nil {
+		slog.Error("清理主 bot 的遗留群配置失败", "bot_id", rec.BotID, "err", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("已清理主 bot 的遗留群配置", "bot_id", rec.BotID, "群数", n)
+	}
+	return sh.Cache.Reload()
 }
 
 // migrateLegacyChats 把早先那个全局的 antiad_chats 列表搬进 bot_chats。

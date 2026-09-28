@@ -198,13 +198,16 @@ func (r *Registry) Precheck(token string, ownerID int64) error {
 
 // register 登记一个新 bot 并立即拉起来。
 //
+// isMain 标记「配置里的主 bot」：它只做配置管理与接入其他 bot，不入群、
+// 不判定广告。面板接入的 bot 一律传 false。
+//
 // 它会打一次 getMe，可能卡上几十秒，所以调用方应当在独立 goroutine 里
 // 调它 —— 更新处理是串行的，同步等在这里会让整个 bot 停摆。
 //
 // 注册完还要 finishSetup（命令菜单 + webhook）才算真的能收消息，
 // 那一步分开是因为它的失败不该让接入整体回滚：webhook 没设上可以重试，
 // 而把已经落库的 bot 再删掉只会让人更糊涂。
-func (r *Registry) Register(token string, ownerID int64) (*store.BotRec, error) {
+func (r *Registry) Register(token string, ownerID int64, isMain bool) (*store.BotRec, error) {
 	if err := r.Precheck(token, ownerID); err != nil {
 		return nil, err
 	}
@@ -221,9 +224,9 @@ func (r *Registry) Register(token string, ownerID int64) (*store.BotRec, error) 
 	}
 
 	if _, err := r.sh.Store.Write.Exec(`INSERT INTO bots
-		(token,bot_id,username,owner_id,so_model,llm_model,enabled,created_at)
-		VALUES (?,?,?,?,'','',1,?)`,
-		token, botID, username, ownerID, time.Now().Unix()); err != nil {
+		(token,bot_id,username,owner_id,so_model,llm_model,enabled,created_at,is_main)
+		VALUES (?,?,?,?,'','',1,?,?)`,
+		token, botID, username, ownerID, time.Now().Unix(), isMain); err != nil {
 		slog.Error("注册 bot 失败", "bot_id", botID, "err", err)
 		return nil, fmt.Errorf("落库失败")
 	}
@@ -274,6 +277,11 @@ func (r *Registry) Unregister(botID int64) error {
 	if rec == nil {
 		return fmt.Errorf("该 bot 不存在")
 	}
+	if rec.IsMain {
+		// 主 bot 由配置文件定义，删掉它等于让面板失联，而且下次启动
+		// ensureMainBot 又会把它加回来 —— 看起来「删了又复活」。
+		return fmt.Errorf("主 bot 由配置文件定义，不能移除")
+	}
 
 	r.mu.Lock()
 	b := r.byID[botID]
@@ -316,6 +324,15 @@ func (r *Registry) Unregister(botID int64) error {
 // setBotEnabled 启停一个 bot。停用即摘掉实例，webhook 打过来会被拒；
 // 重新启用时再拉起来并补设一次 webhook。
 func (r *Registry) SetBotEnabled(botID int64, on bool) error {
+	rec := r.sh.Cache.Snap().Bots[botID]
+	if rec == nil {
+		return fmt.Errorf("该 bot 不存在")
+	}
+	if rec.IsMain {
+		// 停用主 bot 会把管理面板本身关掉：没有实例就没人能再把它启用回来。
+		return fmt.Errorf("主 bot 不能停用：它是管理面板的唯一入口")
+	}
+
 	v := 0
 	if on {
 		v = 1
@@ -328,7 +345,7 @@ func (r *Registry) SetBotEnabled(botID int64, on bool) error {
 		return err
 	}
 
-	rec := r.sh.Cache.Snap().Bots[botID]
+	rec = r.sh.Cache.Snap().Bots[botID]
 	if rec == nil {
 		return fmt.Errorf("该 bot 不存在")
 	}

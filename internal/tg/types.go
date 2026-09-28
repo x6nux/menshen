@@ -211,6 +211,10 @@ type ChatMemberUpdated struct {
 type ChatMemberInfo struct {
 	User   *TGUser `json:"user"`
 	Status string  `json:"status"`
+	// IsMember 只在 restricted 状态里出现：被限制但仍在群里。
+	// 判断「bot 还在不在群里」时，restricted 必须看它 —— 只看 status
+	// 会把「已被踢走但留下一条受限记录」当成还在群里。
+	IsMember bool `json:"is_member"`
 }
 
 type ChatMemberResp struct {

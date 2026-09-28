@@ -118,7 +118,7 @@ func TestRegisterProbeFailureLeavesNothing(t *testing.T) {
 	fake.Resp["getMe"] = `{"ok":false,"description":"Unauthorized"}`
 	before := reg.Size()
 
-	rec, err := reg.Register(testToken2, 777)
+	rec, err := reg.Register(testToken2, 777, false)
 	if err == nil {
 		t.Fatal("验真失败时应当报错")
 	}

@@ -110,6 +110,9 @@ type BotRec struct {
 	LLMModel  string
 	Enabled   bool
 	CreatedAt int64
+	// IsMain 表示这是配置里的主 bot：只做配置管理与接入其他 bot，
+	// 不入群、不判定广告（被拉进群会自动退出）。
+	IsMain bool
 }
 
 // Label 返回面板上展示用的名字，绝不含 token。
@@ -381,19 +384,20 @@ func (c *Cache) loadSettings(snap *Snapshot) error {
 // 外加联合封禁名单。
 func (c *Cache) loadTenancy(snap *Snapshot) error {
 	rows, err := c.store.Read.Query(`SELECT token,bot_id,username,owner_id,
-		so_model,llm_model,enabled,created_at FROM bots ORDER BY bot_id`)
+		so_model,llm_model,enabled,created_at,is_main FROM bots ORDER BY bot_id`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		r := &BotRec{}
-		var en int64
+		var en, main int64
 		if err := rows.Scan(&r.Token, &r.BotID, &r.Username, &r.OwnerID,
-			&r.SoModel, &r.LLMModel, &en, &r.CreatedAt); err != nil {
+			&r.SoModel, &r.LLMModel, &en, &r.CreatedAt, &main); err != nil {
 			rows.Close()
 			return err
 		}
 		r.Enabled = en == 1
+		r.IsMain = main == 1
 		snap.Bots[r.BotID] = r
 		snap.BotTokens[r.Token] = r
 	}

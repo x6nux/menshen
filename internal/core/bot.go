@@ -256,6 +256,16 @@ func (b *Bot) Shutdown() {
 // owner 返回这个 bot 的归属人。
 func (b *Bot) Owner() int64 { return b.OwnerID.Load() }
 
+// IsMainBot 报告本实例是不是配置里的主 bot。
+//
+// 主 bot 只做配置管理与接入其他 bot：不入群、不判定广告，被拉进群自动退出。
+// 每次从快照读而不是在实例上缓存一份：ensureMainBot 会在启动时纠正标记，
+// 热重载之后要立刻生效。
+func (b *Bot) IsMainBot() bool {
+	rec := b.Cache.Snap().Bots[b.BotID()]
+	return rec != nil && rec.IsMain
+}
+
 // alertTargets 返回这次告警该私聊谁。
 //
 // 归属人一定收到（bot 是他的，群也是他管的）；主管理员默认**不**收 ——
@@ -456,7 +466,16 @@ func (b *Bot) RegisterCommands() {
 	}
 	// 群聊 scope：/ad。与默认 scope 分开设置，否则私聊里也会冒出
 	// 一个在私聊中毫无意义的复查命令。
-	if ok, desc := b.CallOK("setMyCommands", map[string]any{
+	//
+	// 主 bot 不入群，这份菜单永远不会被看到；升级前注册过的还要清掉，
+	// 否则它短暂停留在某个群里时，群成员会看到一组点不动的命令。
+	if b.IsMainBot() {
+		if ok, desc := b.CallOK("deleteMyCommands", map[string]any{
+			"scope": map[string]any{"type": "all_group_chats"},
+		}); !ok {
+			slog.Warn("清理主 bot 的群命令菜单失败", "tg_error", desc)
+		}
+	} else if ok, desc := b.CallOK("setMyCommands", map[string]any{
 		"commands": adGroupCmds,
 		"scope":    map[string]any{"type": "all_group_chats"},
 	}); !ok {

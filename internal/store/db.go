@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS admins (
 
 -- 接入的 bot。token 是主键也是凭证，面板上一律只露 maskToken 的结果。
 -- so_model / llm_model 为空表示沿用全局默认，由主管理员按 bot 覆盖。
+--
+-- is_main：配置里那个 bot 是**主 bot**，只做配置管理与接入其他 bot，
+-- 不入群、不判定广告。标记落库而不是运行时比对 cfg.BotToken ——
+-- webhook 模式下该字段可为空，配置一改就会漂移。
 CREATE TABLE IF NOT EXISTS bots (
   token      TEXT    PRIMARY KEY,
   bot_id     INTEGER NOT NULL,
@@ -33,7 +37,8 @@ CREATE TABLE IF NOT EXISTS bots (
   so_model   TEXT    NOT NULL DEFAULT '',
   llm_model  TEXT    NOT NULL DEFAULT '',
   enabled    INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  is_main    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_botid ON bots(bot_id);
@@ -253,6 +258,9 @@ func migrate(db *sql.DB) error {
 		{"group_messages", "media_group", "TEXT NOT NULL DEFAULT ''"},
 		// punish：本群的处罚方式。-1 = 跟随 bot 设置（antiad_ban），0 = 禁言，1 = 封禁。
 		{"bot_chats", "punish", "INTEGER NOT NULL DEFAULT -1"},
+		// is_main：主 bot 标记。老库升级时先全部按工作 bot 处理，
+		// 由 ensureMainBot 在启动时把配置里那个 bot 置 1。
+		{"bots", "is_main", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

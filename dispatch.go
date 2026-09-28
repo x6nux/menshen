@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"strings"
 
 	"menshen/internal/antiad"
@@ -23,19 +24,73 @@ func dispatch(b *core.Bot, u *tg.Update) {
 	case u.EditedMessage != nil && u.EditedMessage.From != nil && u.EditedMessage.Chat != nil:
 		// 只接群里的编辑：私聊里编辑一条旧消息不该被当成又一次面板输入。
 		if m := u.EditedMessage; m.Chat.Type != "" && m.Chat.Type != "private" {
+			// 主 bot 不入群、不判定：即使它因退群失败还留在某个群里，
+			// 群里的编辑也不该进反广告链路。
+			if b.IsMainBot() {
+				return
+			}
 			antiad.HandleGroupMessage(b, m)
 		}
 	case u.ChatMember != nil:
+		if b.IsMainBot() {
+			return
+		}
 		antiad.HandleChatMemberUpdate(b, u.ChatMember)
 	case u.MyChatMember != nil:
+		if b.IsMainBot() {
+			handleMainBotChatMember(b, u.MyChatMember)
+			return
+		}
 		antiad.HandleMyChatMemberUpdate(b, u.MyChatMember)
 	}
+}
+
+// handleMainBotChatMember 让主 bot 静默退出被拉进的群/频道。
+//
+// 主 bot 只做配置管理与接入其他 bot，不入群、不判定广告。Telegram 侧
+// 没有「禁止别人拉我」的开关，自动退出是唯一防线。静默：不通知、不回复。
+func handleMainBotChatMember(b *core.Bot, cu *tg.ChatMemberUpdated) {
+	if cu == nil || cu.Chat == nil || cu.NewChatMember == nil {
+		return
+	}
+	if cu.Chat.Type == "private" {
+		return
+	}
+	if !tgMemberPresent(cu.NewChatMember) {
+		return // left / kicked：本来就不在群里
+	}
+	if ok, desc := b.CallOK("leaveChat", map[string]any{"chat_id": cu.Chat.ID}); !ok {
+		slog.Warn("主 bot 退出群/频道失败", "chat", cu.Chat.ID,
+			"type", cu.Chat.Type, "tg_error", desc)
+		return
+	}
+	slog.Info("主 bot 已自动退出群/频道", "chat", cu.Chat.ID, "type", cu.Chat.Type)
+}
+
+// tgMemberPresent 报告这次成员变更之后 bot 是否在群里。
+//
+// member / administrator / creator 没有 is_member 字段，一律算在群里；
+// restricted 要额外看 is_member —— 被踢走的人也会留下受限状态。
+func tgMemberPresent(cm *tg.ChatMemberInfo) bool {
+	switch cm.Status {
+	case "member", "administrator", "creator":
+		return true
+	case "restricted":
+		return cm.IsMember
+	}
+	return false
 }
 
 func handleMessage(b *core.Bot, m *tg.Message) {
 	// 群聊消息交给反广告链路。它自带全部守门（总开关、群白名单），
 	// 未启用时立即返回，行为与「直接忽略群消息」完全一致。
 	if m.Chat.Type != "" && m.Chat.Type != "private" {
+		// 主 bot 只做配置管理与接入其他 bot：群里的消息一律不判、
+		// 不留底、不花钱。它不该在群里，被拉进去由 my_chat_member
+		// 自动退出；这里守的是退出完成前的窗口期与退群失败的情况。
+		if b.IsMainBot() {
+			return
+		}
 		antiad.HandleGroupMessage(b, m)
 		return
 	}
@@ -77,6 +132,12 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 
 func handleCallback(b *core.Bot, q *tg.CallbackQuery) {
 	if q.Message == nil || q.Message.Chat == nil {
+		b.AnswerCallback(q.ID, "")
+		return
+	}
+	// 主 bot 不该在群里，它名下也不会有群内告警 —— 群里来的按钮
+	// 一律只回个空响应，不进面板逻辑。
+	if b.IsMainBot() && q.Message.Chat.Type != "private" {
 		b.AnswerCallback(q.ID, "")
 		return
 	}
