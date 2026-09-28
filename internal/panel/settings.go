@@ -55,7 +55,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_so_trust", "采信线：systemone 置信度", "0-100 的整数，低于它才转大模型复判", 0, 100, "antiad"},
 	{"antiad_act_hard", "处置线：删除+禁言", "0-100 的整数，新人达到它才禁言", 0, 100, "antiad"},
 	{"antiad_act_soft", "处置线：删除", "0-100 的整数，低于它不处置", 0, 100, "antiad"},
-	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销", 0, 1, "antiad"},
+	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销。默认跟随全局，单 bot 可覆盖", 0, 1, "both"},
 	{"antiad_cold_conf", "冷判定采信线", "0-100 的整数，建议高于处置线——进群画像的证据更少", 0, 100, "antiad"},
 	{"antiad_cold_prefilter", "冷判定本地预筛", "1 = 开（只有资料可疑的才送检），0 = 关（人人送检）", 0, 1, "antiad"},
 	{"antiad_new_hours", "新人界定：进群小时数", "非负整数，小于它算新人", 0, 0, "antiad"},
@@ -82,10 +82,13 @@ func settingSpecByKey(k string) *settingSpec {
 }
 
 // specsInGroup 按分组过滤，g="" 取全局设置面板的项。
+//
+// "both" 表示两处都要出现：全局设置页给默认值（仅主管理员能改），
+// 每个 bot 的参数页可以覆盖（带 ✏️），不覆盖就跟随全局。
 func specsInGroup(g string) []settingSpec {
 	out := make([]settingSpec, 0, len(settingSpecs))
 	for _, sp := range settingSpecs {
-		if sp.group == g {
+		if sp.group == g || sp.group == "both" {
 			out = append(out, sp)
 		}
 	}
@@ -135,7 +138,7 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		sp := settingSpecByKey(parts[3])
-		if sp == nil || sp.group != "" {
+		if sp == nil || (sp.group != "" && sp.group != "both") {
 			b.AnswerCallback(q.ID, "未知设置项")
 			return
 		}
@@ -231,7 +234,7 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		sp := settingSpecByKey(parts[4])
-		if sp == nil || sp.group != "antiad" {
+		if sp == nil || (sp.group != "antiad" && sp.group != "both") {
 			b.AnswerCallback(q.ID, "未知设置项")
 			return
 		}
