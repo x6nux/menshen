@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -391,24 +392,34 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 			t.Errorf("群内告警带出了 %q:\n%s", bad, text)
 		}
 	}
-	for _, want := range []string{"tg://user?id=8397171625", "#12", "删除消息 + 禁言"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("群内告警缺 %q:\n%s", want, text)
-		}
+	// 一行版：uid 链接必须有；处置动作与记录编号只进流水与私聊汇总。
+	if !strings.Contains(text, "tg://user?id=8397171625") || !strings.Contains(text, "🚫") {
+		t.Errorf("群内告警应是一行 uid + 原因:\n%s", text)
+	}
+	if strings.Contains(text, "#12") || strings.Contains(text, "删除消息") {
+		t.Errorf("群内告警不该带处置细节:\n%s", text)
+	}
+	// 按钮只留一个：打开 bot 的申诉入口（携带 start=appeal 参数）。
+	kb := fmt.Sprint(p["reply_markup"])
+	if !strings.Contains(kb, "t.me/testbot?start=appeal") {
+		t.Errorf("告警应带打开 bot 的按钮:\n%s", kb)
+	}
+	if got := strings.Count(kb, "url:"); got != 1 {
+		t.Errorf("按钮应只有一个，得到 %d 个：%s", got, kb)
 	}
 }
 
-// TestAlertsShowModelAndRecord：群内告警带「记录 #ID」与判定模型。
-// 记录号是告警撤回后找回这条的唯一线索；模型名是换模型后校准阈值的起点。
-func TestAlertsShowModelAndRecord(t *testing.T) {
+// TestGroupAlertOmitsModelAndRecord：群内告警一行化后不再带记录编号与
+// 判定模型——找回记录靠流水，校准模型靠私聊汇总，群内都是刷屏。
+func TestGroupAlertOmitsModelAndRecord(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	m := testutil.GroupMsg(-100, 42, 7, "广告")
 	v := adVerdict{IsAd: true, Confidence: 0.9, Decider: "llm", Model: "probe-model"}
 	act := adAction{Delete: true, Alert: true, Name: "deleted"}
 
 	brief, _ := renderAdAlertBrief(b, m, v, act, "", 77, false)
-	if !strings.Contains(brief, "#77") || !strings.Contains(brief, "probe-model") {
-		t.Errorf("群内告警缺记录 ID 或模型名:\n%s", brief)
+	if strings.Contains(brief, "#77") || strings.Contains(brief, "probe-model") {
+		t.Errorf("群内告警不该带记录 ID 或模型名:\n%s", brief)
 	}
 }
 

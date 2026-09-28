@@ -227,32 +227,56 @@ func TestJoinHandledOnce(t *testing.T) {
 	}
 }
 
-// TestJoinMuteNoticeHidesNameAndReason：群里那条限制通知不写昵称也不写理由。
-// 两者常常就是广告本身（昵称里的引流话术、理由里引述的简介链接），bot 把
-// 它们发进群等于替广告号再发一遍。理由在私聊的自助解除流程里给本人看。
-func TestJoinMuteNoticeHidesNameAndReason(t *testing.T) {
+// TestJoinMuteNoticeOneLine：群内限制通知一行化——uid + 原因，昵称与
+// 用户名照旧不贴；它受「群内展示」开关控制，发了就安排到点自动撤回。
+func TestJoinMuteNoticeOneLine(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=1 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	conf := testutil.ChatConfOf(t, b, -100)
 	v := adVerdict{IsAd: true, Confidence: 0.95, Decider: "llm",
-		Reason: "简介写着 t.me/+abc 引流"}
+		Reason: "简介写着推广内容引流"}
 
 	applyJoinMute(b, conf, &tg.TGUser{ID: 555, FirstName: "日入5000 看主页",
-		Username: "riru_ad"}, v, "简介写着 t.me/+abc 引流")
-	text := fake.LastCall("sendMessage")["text"].(string)
-	for _, bad := range []string{"日入5000", "riru_ad", "t.me/+abc"} {
+		Username: "riru_ad"}, v, "简介写着推广内容引流")
+	p := fake.LastCall("sendMessage")
+	if p == nil || int64(p["chat_id"].(float64)) != -100 {
+		t.Fatal("开了群内展示应发一条群内通知")
+	}
+	text := p["text"].(string)
+	for _, bad := range []string{"日入5000", "riru_ad"} {
 		if strings.Contains(text, bad) {
-			t.Errorf("群内通知带出了 %q:\n%s", bad, text)
+			t.Errorf("群内通知带出了昵称/用户名:\n%s", text)
 		}
 	}
-	if !strings.Contains(text, "tg://user?id=555") || !strings.Contains(text, "私聊") {
-		t.Errorf("通知应给出用户链接并指向私聊里的解除流程:\n%s", text)
+	if !strings.Contains(text, "tg://user?id=555") ||
+		!strings.Contains(text, "简介写着推广内容引流") {
+		t.Errorf("通知应是一行 uid + 原因:\n%s", text)
+	}
+	var cleanup int
+	if err := b.Store.Read.QueryRow(
+		`SELECT COUNT(*) FROM alert_cleanup`).Scan(&cleanup); err != nil || cleanup != 1 {
+		t.Errorf("通知应安排自动撤回（err=%v, n=%d）", err, cleanup)
 	}
 
-	// 拿不到自己的用户名就没有 deep link 按钮，不能叫人去点一个不存在的按钮。
-	b.Username = ""
-	applyJoinMute(b, conf, &tg.TGUser{ID: 556}, v, "")
-	if text := fake.LastCall("sendMessage")["text"].(string); !strings.Contains(text, "联系群管理员") {
-		t.Errorf("没有解除按钮时应指向群管理员:\n%s", text)
+	// 关掉「群内展示」：禁言照常执行，群里一个字都不发。
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=0 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	conf = testutil.ChatConfOf(t, b, -100)
+	n := fake.CountCalls("sendMessage")
+	applyJoinMute(b, conf, &tg.TGUser{ID: 557}, v, "x")
+	if fake.CountCalls("sendMessage") != n {
+		t.Error("群内展示关闭时不应发群内通知")
 	}
 }

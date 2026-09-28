@@ -1430,56 +1430,33 @@ func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, ac
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 
-// renderAdAlertBrief 渲染群内版告警。
+// renderAdAlertBrief 渲染群内版告警：一行「uid + 原因」，外加一个打开
+// bot 的按钮（携带 start=appeal 参数，申诉入口在 bot 里接）。
 //
-// 与私聊版分开：私聊是给管理员事后复盘的，信息越全越好；群里是给在场
-// 的人一眼看明白「谁、被怎么处理了」，长文只会刷屏，而且群名与
-// chat_id 在群里是纯噪音——大家已经在这个群里了。
+// 群里在场的人只在意「谁、因为什么」，置信度、处置动作、记录编号这些
+// 细节都收进流水与私聊汇总；处置按钮（判定正确/误判/删除/禁言）也一并
+// 收掉——误判申诉走按钮进 bot，补刀操作走配置台的记录页。昵称与原文
+// 照旧一个字不贴：广告号的昵称和正文本身就是广告，bot 把它们发回群里
+// 等于替它再发一遍（删除白做），还会让 bot 自己被 TG 当成广告号封掉。
 //
-// 昵称与原文一个字都不贴：广告号的昵称和正文本身就是广告，bot 把它们
-// 发回群里等于替它再发一遍（删除白做），还会让 bot 自己被 TG 当成广告号
-// 封掉。掐头去尾也不行——首尾同样可能是载荷。
+// 演练标识不能省：没有它，群里会以为广告已经被删了。
 func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 	note string, logID int64, dryrun bool) (string, map[string]any) {
 
 	var sb strings.Builder
 	if dryrun {
-		// 这个标识不能省：没有它，群里会以为广告已经被删了。
-		sb.WriteString("🧪 <b>演练（未实际处置）</b>\n")
+		sb.WriteString("🧪（演练）")
 	}
-
-	kind := adKindLabel(v.Kind)
-	fmt.Fprintf(&sb, "🚫 <b>广告</b> · %.0f%% · %s\n",
-		v.Confidence*100, html.EscapeString(kind))
-
-	fmt.Fprintf(&sb, "├ 用户  %s\n", userLink(m.From.ID))
-	if logID != 0 {
-		// 告警撤回或翻不到时，管理员凭这个编号去拦截记录里找。
-		fmt.Fprintf(&sb, "├ 记录  <code>#%d</code>\n", logID)
+	sb.WriteString("🚫 ")
+	sb.WriteString(userLink(m.From.ID))
+	if v.Reason != "" {
+		sb.WriteString(" · " + html.EscapeString(core.TruncateRunes(v.Reason, 80)))
 	}
-	// 空值来自没跑 AI 的路径（人工标记），印一行空的「判定」只是噪音。
-	if v.Model != "" {
-		fmt.Fprintf(&sb, "├ 判定  <code>%s</code>\n",
-			html.EscapeString(core.TruncateRunes(v.Model, 40)))
-	}
-
-	// 处置行是树的末枝，除非还要接一条失败说明。
-	tail, label := "└", "处置"
-	if dryrun {
-		// 演练下写「已执行」等于在群里公开谎报。
-		label = "本应"
-	}
-	if note != "" {
-		tail = "├"
-	}
-	fmt.Fprintf(&sb, "%s %s  %s\n", tail, label, actionDesc(act))
-	if note != "" {
-		fmt.Fprintf(&sb, "└ ⚠️    %s\n", html.EscapeString(core.TruncateRunes(note, 60)))
-	}
-
-	rows := adAlertRows(act, note, logID, dryrun)
-	if links := adAlertLinks(b, logID); len(links) > 0 {
-		rows = append(rows, links)
+	var rows [][][2]string
+	if b.Username != "" {
+		rows = append(rows, [][2]string{{
+			"🛡 打开 bot 处理",
+			tg.URLBtn("https://t.me/" + b.Username + "?start=appeal")}})
 	}
 	return sb.String(), tg.InlineKB(rows...)
 }
@@ -1590,29 +1567,6 @@ func adAlertLinks(b *core.Bot, logID int64) [][2]string {
 // 改由查看页展示：TG 聊天记录会永久留存、还可能被转发。没有公开地址
 // （轮询模式）时保持原样 —— 否则管理员完全看不到内容。
 func webRedacted(b *core.Bot) bool { return WebAvailable(b.Shared) }
-
-// actionDesc 把动作组合渲染成人话。
-func actionDesc(act adAction) string {
-	switch act.Name {
-	case "deleted_muted":
-		if act.Purge {
-			return "删除此人近期全部消息 + 禁言"
-		}
-		return "删除消息 + 禁言"
-	case "deleted_banned":
-		if act.Purge {
-			return "删除此人近期全部消息 + 封禁出群"
-		}
-		return "删除消息 + 封禁出群"
-	case "muted":
-		return "禁言"
-	case "deleted":
-		return "删除消息"
-	case "alerted":
-		return "仅告警（未删除）"
-	}
-	return "无动作"
-}
 
 // ---- 判定账本的读写 ----
 //

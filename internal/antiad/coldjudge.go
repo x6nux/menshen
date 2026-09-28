@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"fmt"
+	"html"
 	"log/slog"
 	"strings"
 	"time"
@@ -271,8 +272,17 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		reason = "账号资料中含有推广或引流内容"
 	}
 
-	msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u), joinMuteKB(b, conf.ChatID))
-	saveJoinMute(b, conf.ChatID, u.ID, reason, msgID)
+	// 群内通知与命中告警共用「群内展示」开关（conf.GroupAlert）：群主不想
+	// 让 bot 说话时，禁言照常执行，只是不在群里挂出来。发出来就安排到点
+	// 自动撤回——通知的信息价值在本人看到之后就没有了，申诉入口在私聊里。
+	// 静默开关在 sendGroup 里已经生效。
+	if conf.GroupAlert {
+		ttl := time.Duration(b.Cache.Snap().BotSettingInt(
+			b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, reason), joinMuteKB(b, conf.ChatID))
+		scheduleAlertCleanup(b, conf.ChatID, msgID, ttl)
+	}
+	saveJoinMute(b, conf.ChatID, u.ID, reason, 0)
 	// 判定命中即把那条「XXX 已加入群组」的服务消息删掉：广告号的昵称
 	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。
 	deleteJoinNotice(b, conf.ChatID, u.ID)
@@ -352,21 +362,18 @@ func GCJoinNotices(sh *core.Shared) {
 	})
 }
 
-// joinMuteNotice 渲染群内那条告知消息。
+// joinMuteNotice 渲染群内那条告知消息：一行「uid + 原因」。
 //
-// 不写昵称也不写理由：两者常常就是广告本身（昵称里的引流话术、理由里
+// 不写昵称也不写资料：两者常常就是广告本身（昵称里的引流话术、理由里
 // 引述的简介链接），bot 把它们发进群等于替广告号再发一遍，还会让 bot
-// 自己被当成广告号封掉。理由面向本人、必须具体，所以放在私聊的申诉
-// 流程里给（appeal.go），这里只把人引过去。
-func joinMuteNotice(b *core.Bot, u *tg.TGUser) string {
-	msg := fmt.Sprintf("🔒 %s 已被限制发言（入群资料审核）。\n\n"+
-		"这是自动审核的结果，可能有误。", userLink(u.ID))
-	// 没有用户名就拼不出 deep link、也就没有按钮（见 joinMuteKB），
-	// 不能叫人去点一个不存在的按钮。
-	if b.Username == "" {
-		return msg + "如有疑问请联系群管理员。"
+// 自己被当成广告号封掉。面向本人的具体改正建议放在私聊的申诉流程里给
+// （appeal.go），群内这条只负责让在场的人知道「谁、被限制发言了」。
+func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string) string {
+	r := strings.TrimSpace(reason)
+	if r == "" {
+		r = "账号资料中含有推广或引流内容"
 	}
-	return msg + "点下方按钮，在私聊里查看原因并发起申诉。"
+	return "🔒 " + userLink(u.ID) + " · " + html.EscapeString(core.TruncateRunes(r, 80))
 }
 
 // joinMuteKB 是群内那条通知上的按钮。
