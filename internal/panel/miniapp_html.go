@@ -133,7 +133,9 @@ function act(op, body, okMsg){
   return api(op, body).then(function(){ toast(okMsg||'已保存'); return load(); })
     .catch(function(e){ toast('❌ '+e.message); });
 }
-function load(){ return api('state').then(function(d){ S=d; render(); })
+function load(){ return api('state').then(function(d){
+  // 详情缓存跨刷新保留：操作（复查/解除/标记）后回到详情不闪加载页。
+  var ld = S && S.LD; S=d; if(ld) S.LD=ld; render(); })
   .catch(function(e){ document.getElementById('view').innerHTML =
     '<div class="card">❌ '+esc(e.message)+'</div>'; }); }
 
@@ -511,9 +513,13 @@ function apact(a,id){ act('appealact',{id:id,action:a},'已执行'); }
 function viewLogs(){
   if(SUB.indexOf('log:')==0){
     var id=+SUB.slice(4);
-    var l=(S.LOGS||[]).filter(function(x){return x.id==id;})[0];
-    if(l) return viewLogDetail(l);
-    SUB='';
+    // 详情总是走单独的接口：流水正文为空时后端会回查全量留底，
+    // 列表接口没有这一步，直接用缓存会漏掉原文。
+    if(S.LD && S.LD[id]) return viewLogDetail(S.LD[id]);
+    api('log',{id:id}).then(function(d){
+      S.LD=S.LD||{}; S.LD[id]=d; render();
+    }).catch(function(e){ SUB=''; render(); toast('❌ '+e.message); });
+    return backRow()+'<div class="card">加载中…</div>';
   }
   var chips=[['deleted','已删除'],['all','全部'],['ad','命中'],['clean','正常'],
     ['skipped','跳过']];
@@ -561,9 +567,9 @@ function viewLogDetail(l){
     '<div class="row"><span class="k">处置</span><span>'+esc(actionLabel(l.action))+'</span></div>'+
     '<div class="row"><span class="k">开销</span><span>'+esc(l.cost_text)+'</span></div>'+
     (l.reason?'<div class="row"><span class="k">理由</span><span>'+esc(l.reason)+'</span></div>':'')+
-    (l.text?'<div class="hint" style="margin-top:8px">原文</div><div class="mono">'+esc(l.text)+'</div>':'')+
-    (l.view_url?'<div style="margin-top:8px"><a href="'+esc(l.view_url)+
-      '" target="_blank">📄 打开原文查看页</a></div>':'')+
+    (l.text?'<div class="hint" style="margin-top:8px">原文</div><div class="mono" style="white-space:pre-wrap">'+esc(l.text)+'</div>':'')+
+    (l.view_url?'<button class="b g" style="margin-top:10px;width:100%" onclick="window.open(\''+
+      l.view_url+'\',\'_blank\')">📄 打开原文查看页</button>':'')+
     '</div>';
   h+='<div class="card"><h3>操作</h3>'+
     '<div class="grid">'+

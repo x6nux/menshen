@@ -205,8 +205,11 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	}
 
 	// 演练群里只落流水，不动人；管理员在私聊汇总里看到它（见 summary.go）。
+	// 原文（资料画像）同样要写进流水：演练记录是复核「该不该真罚」的依据，
+	// 空着的话配置台与查看页就只剩一句结论。
 	if conf.Dryrun {
-		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u},
+		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u,
+			Text: joinProfileText(u, bio, v)},
 			v, "dryrun:join_muted", "进群冷判定（演练）")
 		return
 	}

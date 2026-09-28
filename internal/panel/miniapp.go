@@ -980,6 +980,12 @@ func miniLogDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 		miniErr(w, http.StatusNotFound, "记录不存在")
 		return
 	}
+	// 流水正文为空时回查全量留底：老记录（冷判定演练分支曾不带原文）
+	// 与「留底在、流水空」的记录，详情页仍要能看到原文。
+	if text == "" && msgID != 0 {
+		sh.Store.Read.QueryRow(`SELECT text FROM group_messages
+			WHERE chat_id=? AND message_id=?`, chatID, msgID).Scan(&text)
+	}
 	out := map[string]any{}
 	miniLogRow(out, lid, botID, chatID, userID, msgID, cost, at,
 		verdict, kind, action, reason, text, decider, conf,

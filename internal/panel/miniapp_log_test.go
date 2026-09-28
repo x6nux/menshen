@@ -77,6 +77,40 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	}
 }
 
+// TestMiniLogDetailFallback：流水正文为空的老记录（冷判定演练分支曾
+// 不带原文），详情接口要回查全量留底补上原文。
+func TestMiniLogDetailFallback(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,
+		 ad_kind,action,reason,created_at)
+		VALUES (?,?,?,?,'','ad',0.9,'so','promo','deleted_muted','广告',?)`,
+		testutil.TestBotID, -100, 999, 7, env.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at) VALUES (-100,7,999,'留底的原文',?)`,
+		env.now); err != nil {
+		t.Fatal(err)
+	}
+
+	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "log",
+		map[string]any{"id": 1})
+	if w.Code != http.StatusOK {
+		t.Fatalf("详情应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["text"] != "留底的原文" {
+		t.Errorf("空流水应回查留底，得到 %v", out["text"])
+	}
+}
+
 // TestMiniLogactOps：记录详情页的操作——解除禁言要发 TG、白名单要落库、
 // 联合封禁按主管理员权限走。
 func TestMiniLogactOps(t *testing.T) {
