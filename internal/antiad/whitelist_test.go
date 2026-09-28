@@ -8,7 +8,7 @@ import (
 )
 
 func adwMsg(chatID, from int64, arg string, reply *tg.Message) *tg.Message {
-	text := "/adw"
+	text := "/white"
 	if arg != "" {
 		text += " " + arg
 	}
@@ -17,7 +17,7 @@ func adwMsg(chatID, from int64, arg string, reply *tg.Message) *tg.Message {
 	return m
 }
 
-// TestAdwWhitelistsAndExempts：群管理员回复某人发 /adw，此人在本群免检；
+// TestAdwWhitelistsAndExempts：群管理员回复某人发 /white，此人在本群免检；
 // 别的群不受影响。
 func TestAdwWhitelistsAndExempts(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -26,7 +26,7 @@ func TestAdwWhitelistsAndExempts(t *testing.T) {
 
 	HandleGroupMessage(b, adwMsg(-100, 1, "", testutil.GroupMsg(-100, 42, 5, "x")))
 	if !isGroupWhitelisted(b, -100, 42) {
-		t.Fatal("/adw 后应在本群白名单里")
+		t.Fatal("/white 后应在本群白名单里")
 	}
 	if isGroupWhitelisted(b, -200, 42) {
 		t.Error("白名单是按群的")
@@ -45,12 +45,12 @@ func TestAdwByIDAndChannel(t *testing.T) {
 	testutil.EnableAntiad(t, b, -100)
 	HandleGroupMessage(b, adwMsg(-100, 1, "-1009", nil))
 	if !isGroupWhitelisted(b, -100, -1009) {
-		t.Error("/adw 应接受频道 ID")
+		t.Error("/white 应接受频道 ID")
 	}
 }
 
 // TestAdwRequiresAdminSilently：白名单等于对此人关掉反广告，普通成员不能用；
-// 与 /adb 同理静默忽略，不告诉刷屏的人这条命令存在。
+// 与 /ban 同理静默忽略，不告诉刷屏的人这条命令存在。
 func TestAdwRequiresAdminSilently(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

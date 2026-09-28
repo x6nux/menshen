@@ -11,16 +11,16 @@ import (
 	"menshen/internal/tg"
 )
 
-// ---- 按群白名单（/adw）----
+// ---- 按群白名单（/white）----
 //
 // 全局豁免在 antiad_exempt_users（面板上按 bot 配）；这里是群管理员在群里
 // 一句话就能加的、只对本群生效的那一份，落在 group_members.whitelisted。
 
-const adwUsage = "用法：回复某人的消息发 <code>/adw</code>，" +
-	"或发 <code>/adw &lt;user_id&gt;</code>，把此人加入本群反广告白名单。" +
+const adwUsage = "用法：回复某人的消息发 <code>/white</code>，" +
+	"或发 <code>/white &lt;user_id&gt;</code>，把此人加入本群反广告白名单。" +
 	"频道填 -100 开头的频道 ID。"
 
-// HandleAdwCommand 处理群内 /adw。与 /adb 同一道门：白名单等于对此人关掉
+// HandleAdwCommand 处理群内 /white。与 /ban 同一道门：白名单等于对此人关掉
 // 反广告，只有群管理员及以上能用，非授权者静默忽略。
 func HandleAdwCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	if !canMarkAd(b, conf.ChatID, m.From.ID) {
@@ -55,7 +55,7 @@ func HandleAdwCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	reply("🤍 已将 " + userLink(uid) + " 加入本群反广告白名单。")
 }
 
-// isGroupWhitelisted 报告此人是否在该群的反广告白名单（/adw）里。
+// isGroupWhitelisted 报告此人是否在该群的反广告白名单（/white）里。
 func isGroupWhitelisted(b *core.Bot, chatID, uid int64) bool {
 	var w int
 	b.Store.Read.QueryRow(`SELECT whitelisted FROM group_members

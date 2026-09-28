@@ -171,7 +171,7 @@ func TestEditedMessageRejudged(t *testing.T) {
 		t.Errorf("留底应覆盖为编辑后的正文，得到 %q", text)
 	}
 
-	cmd := testutil.GroupMsg(-100, 42, 6, "/ad 42")
+	cmd := testutil.GroupMsg(-100, 42, 6, "/check 42")
 	cmd.EditDate = 1700000070
 	before := fake.CountCalls("sendMessage")
 	HandleGroupMessage(b, cmd)
@@ -181,11 +181,11 @@ func TestEditedMessageRejudged(t *testing.T) {
 	}
 }
 
-// TestAdCommandAcceptsChannelID：以频道身份发言的记录记在频道名下，/ad 要认负 ID。
+// TestAdCommandAcceptsChannelID：以频道身份发言的记录记在频道名下，/check 要认负 ID。
 func TestAdCommandAcceptsChannelID(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 1, "/ad -1009"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 1, "/check -1009"))
 	if p := fake.LastCall("sendMessage"); p != nil && strings.Contains(p["text"].(string), "用法") {
 		t.Error("负数的频道 ID 不该被当成用法错误")
 	}

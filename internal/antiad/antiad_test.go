@@ -133,13 +133,13 @@ func TestParseAdCommand(t *testing.T) {
 		wantArg string
 		wantOK  bool
 	}{
-		{"/ad", "/ad", "", true},
-		{"/ad 12345", "/ad", "12345", true},
-		{"/ad@some_bot", "/ad", "", true},   // 群里 TG 客户端会自动补 @botname
-		{"/ad@bot 999", "/ad", "999", true}, // 带参数的 @ 形态
-		// /adb 以 /ad 为前缀，合并识别才不会被前者吃掉
-		{"/adb", "/adb", "", true},
-		{"/adb@some_bot", "/adb", "", true},
+		{"/check", "/check", "", true},
+		{"/check 12345", "/check", "12345", true},
+		{"/check@some_bot", "/check", "", true},   // 群里 TG 客户端会自动补 @botname
+		{"/check@bot 999", "/check", "999", true}, // 带参数的 @ 形态
+		// /ban 以 /check 为前缀，合并识别才不会被前者吃掉
+		{"/ban", "/ban", "", true},
+		{"/ban@some_bot", "/ban", "", true},
 		{"/adx", "", "", false},
 		{"随便聊天", "", "", false},
 		{"", "", "", false},
@@ -353,7 +353,7 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 			got, want)
 	}
 
-	// /ad <user_id> 这类没有具体消息的路径（MessageID=0）同样只给 n 条。
+	// /check <user_id> 这类没有具体消息的路径（MessageID=0）同样只给 n 条。
 	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 0, "代表消息"), senderProfile{})
 	if n := len(st.RecentContext); n != 2 {
 		t.Errorf("没有当前消息可排除时给了 %d 条，期望 2 条", n)

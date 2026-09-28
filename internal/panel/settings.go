@@ -63,7 +63,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_mute_hours", "禁言时长（小时）", "正整数", 1, 0, "antiad"},
 	{"antiad_rpm_chat", "每群每分钟送检上限", "非负整数，0 = 不限；防刷屏烧钱", 0, 0, "antiad"},
 	{"antiad_alert_rpm", "同一人每分钟告警上限", "非负整数，0 = 不限；防刷爆私聊", 0, 0, "antiad"},
-	{"antiad_cmd_rpm", "每人每分钟命令上限", "非负整数，0 = 不限；/ad 一次要跑两个模型", 0, 0, "antiad"},
+	{"antiad_cmd_rpm", "每人每分钟命令上限", "非负整数，0 = 不限；/check 一次要跑两个模型", 0, 0, "antiad"},
 	{"antiad_alert_ttl", "群内告警自动撤回（秒）", "非负整数，0 = 永不撤回；撤回后按钮也会消失", 0, 0, "antiad"},
 	{"antiad_ctx_msgs", "携带上下文条数", "0-20 的整数，越多越准也越贵", 0, 20, "antiad"},
 	{"antiad_dm_admins", "私聊汇总", "1 = 开，0 = 关；命中与判定失败定时汇成一条私聊", 0, 1, "antiad"},

@@ -6,7 +6,7 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestMainBotSkipsGroupCommands 确认主 bot 不注册群命令菜单（/ad /adb /adw），
+// TestMainBotSkipsGroupCommands 确认主 bot 不注册群命令菜单（/check /ban /white），
 // 并清掉升级前注册过的那一份：它不入群，这份菜单只会短暂出现在被拉进的
 // 群里，成为一组点不动的命令。
 func TestMainBotSkipsGroupCommands(t *testing.T) {

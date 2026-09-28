@@ -46,7 +46,7 @@ func TestGroupMessageInactiveIsSilent(t *testing.T) {
 }
 
 // TestGroupMessageRecordsBeforeJudging 确认留底发生在一切判定分支之前：
-// /ad 复查要的恰恰是这些没被判过的消息。
+// /check 复查要的恰恰是这些没被判过的消息。
 func TestGroupMessageRecordsBeforeJudging(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 777)
 	testutil.EnableAntiad(t, b, -100)
@@ -91,16 +91,16 @@ func TestGroupMessageCountsSeniorityForStickers(t *testing.T) {
 	}
 }
 
-// TestAdCommandNotRecorded 确认 /ad 自己不进留底——
+// TestAdCommandNotRecorded 确认 /check 自己不进留底——
 // 留了会被送进下一次复查。
 func TestAdCommandNotRecorded(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 	testutil.EnableAntiad(t, b, -100)
 
-	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 31, "/ad 12345"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 31, "/check 12345"))
 
 	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages`); n != 0 {
-		t.Errorf("/ad 命令不该留底，实际 %d 条", n)
+		t.Errorf("/check 命令不该留底，实际 %d 条", n)
 	}
 }
 

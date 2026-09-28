@@ -246,7 +246,7 @@ func CleanupData(sh *core.Shared) {
 	// 有命中史的行保留：ad_hits 是风控证据，清掉等于给惯犯重置档案。
 	// 「最近活动」取发言与进群里较晚的那个：只看 last_msg_at 的话，进群后
 	// 还没发言的人（last_msg_at 为 0）第一轮就被删掉，丢了进群时间。
-	// 白名单（/adw）是管理员的明确决定，不随不发言过期。
+	// 白名单（/white）是管理员的明确决定，不随不发言过期。
 	if _, err := sh.Store.Write.Exec(`DELETE FROM group_members
 		WHERE MAX(last_msg_at, joined_at) < ? AND ad_hits = 0 AND whitelisted = 0`,
 		cut); err != nil {

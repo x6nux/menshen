@@ -34,7 +34,7 @@ tag 与 `version` 不一致时直接失败。推 main 与 PR 只检查、构建�
 | 表 | 内容 |
 |---|---|
 | `antiad_log` | 判定账本：置信度、处置、开销。**只记判过的** |
-| `group_messages` | 群消息全量留底，供 `/ad` 复查。被护栏拦下的、豁免者发的都在这里 |
+| `group_messages` | 群消息全量留底，供 `/check` 复查。被护栏拦下的、豁免者发的都在这里 |
 | `group_members` | 群成员画像，「新人 / 老人」分档的唯一来源 |
 | `bots` / `bot_chats` / `bot_settings` | 接入的 bot、它的生效群与每群行为、per-bot 阈值覆盖 |
 | `admins` | 次级管理员。主管理员**不在这里**，他只存在于配置文件 |

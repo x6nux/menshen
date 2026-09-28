@@ -8,9 +8,9 @@ import (
 	"menshen/internal/tg"
 )
 
-// adbMsg 造一条「回复某人后发 /adb」的命令消息。
+// adbMsg 造一条「回复某人后发 /ban」的命令消息。
 func adbMsg(chatID, from int64, target *tg.Message) *tg.Message {
-	m := testutil.GroupMsg(chatID, from, 900, "/adb")
+	m := testutil.GroupMsg(chatID, from, 900, "/ban")
 	m.ReplyToMessage = target
 	return m
 }
@@ -30,7 +30,7 @@ func lastLog(t *testing.T, b *core.Bot) (verdict, decider, action string, uid in
 	return verdict, decider, action, uid, n
 }
 
-// TestAdbRequiresAdmin 是 /adb 的权限门。
+// TestAdbRequiresAdmin 是 /ban 的权限门。
 //
 // 它绕过 AI 直接删消息 + 禁言，对普通成员开放等于把删消息的权力交给全群：
 // 任何人回复一句就能让别人闭嘴。testutil.FakeTG 的 getChatMember 默认不返回
@@ -44,10 +44,10 @@ func TestAdbRequiresAdmin(t *testing.T) {
 	HandleAdbCommand(b, conf, adbMsg(-100, 42, target))
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
-		t.Errorf("普通成员用 /adb 禁言了别人（%d 次）", n)
+		t.Errorf("普通成员用 /ban 禁言了别人（%d 次）", n)
 	}
 	if n := fake.CountCalls("deleteMessage"); n != 0 {
-		t.Errorf("普通成员用 /adb 删了消息（%d 次）", n)
+		t.Errorf("普通成员用 /ban 删了消息（%d 次）", n)
 	}
 	if n := fake.CountCalls("sendMessage"); n != 0 {
 		t.Error("非授权者应当被静默忽略 —— 回一句「你没权限」" +
@@ -132,7 +132,7 @@ func TestAdbNeedsReply(t *testing.T) {
 	testutil.EnableAntiad(t, b, -100)
 	conf := testutil.ChatConfOf(t, b, -100)
 
-	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/adb"))
+	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban"))
 
 	if fake.CountCalls("sendMessage") != 1 {
 		t.Errorf("应当回一条用法提示，实际发了 %d 条", fake.CountCalls("sendMessage"))
@@ -143,7 +143,7 @@ func TestAdbNeedsReply(t *testing.T) {
 }
 
 // TestAdbIgnoresSelf 确认不会把 bot 自己的告警标成广告。
-// 告警里带着原文，回复它发 /adb 是很自然的手滑。
+// 告警里带着原文，回复它发 /ban 是很自然的手滑。
 func TestAdbIgnoresSelf(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

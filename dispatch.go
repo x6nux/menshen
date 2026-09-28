@@ -97,18 +97,11 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 
 	text := strings.TrimSpace(m.Text)
 
-	// deep link 必须排在权限判断之前：被限制发言的普通用户正是靠它
-	// 从群里跳进私聊来申诉的，按「非管理员一律忽略」处理会把整条
-	// 自助解除通道堵死。
-	if payload, ok := strings.CutPrefix(text, "/start "); ok {
-		if antiad.HandleStartPayload(b, m, strings.TrimSpace(payload)) {
-			return
-		}
-	}
-
-	// 其余私聊只服务管理面板。非管理员一句话打发，不暴露任何入口。
+	// 非管理员的私聊全部交给申诉通道：deep link、申诉理由输入、解禁码提示。
+	// 它必须排在权限判断之前：被限制发言的正是普通用户，按「非管理员
+	// 一律忽略」处理会把整条申诉通道堵死。
 	if !b.IsStaff(m.From.ID) {
-		if strings.HasPrefix(text, "/start") {
+		if !antiad.HandleNonStaffPrivate(b, m, text) && strings.HasPrefix(text, "/start") {
 			b.Send(m.Chat.ID,
 				"本 bot 是群组反广告助手，把它拉进群并设为管理员即可工作。", nil)
 		}
@@ -145,9 +138,9 @@ func handleCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		return
 	}
-	// 自助解除的验证码按钮对被限制的普通用户开放，先于权限判断分流。
-	if strings.HasPrefix(q.Data, "a:cap:") {
-		antiad.HandleCaptchaCallback(b, q)
+	// 申诉按钮对被限制的普通用户开放，先于权限判断分流。
+	if strings.HasPrefix(q.Data, "a:ap:") {
+		antiad.HandleAppealCallback(b, q)
 		return
 	}
 

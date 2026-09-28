@@ -58,7 +58,7 @@ func profileHandles(p senderProfile) []string {
 }
 
 // enrichSender 补上要发 TG API 才拿得到的画像：个人简介，以及简介与昵称里
-// 挂的频道/群组/bot。自动判定、/ad 复查与冷判定共用，都在判定 worker 里跑——
+// 挂的频道/群组/bot。自动判定、/check 复查与冷判定共用，都在判定 worker 里跑——
 // 同步段每多一次 TG 往返，更新处理就多停一次。
 //
 // 简介里挂自己的频道/群组/bot 是正常的（UP 主、开发者都这样做），只给

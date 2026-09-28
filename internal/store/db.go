@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS antiad_log (
 CREATE INDEX IF NOT EXISTS idx_antiad_time ON antiad_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_antiad_user ON antiad_log(chat_id, user_id);
 
--- group_messages 是群消息的全量留底，供 /ad 事后复查。
+-- group_messages 是群消息的全量留底，供 /check 事后复查。
 -- 与 antiad_log 分开：后者只记判过的，被护栏去重/限流拦下的、豁免者发的
 -- 都不在里面——而那恰恰是刷屏号最可能藏东西的地方。主键用
 -- (chat_id, message_id)：TG 重推同一条 update 时不得留两份。
@@ -316,7 +316,7 @@ func migrate(db *sql.DB) error {
 		// 这条记录」两个判断的共同依据。老库的行默认 0 = 归属未知，
 		// 面板按主管理员可见处理。
 		{"antiad_log", "bot_id", "INTEGER NOT NULL DEFAULT 0"},
-		// whitelisted：反广告按群白名单（/adw）。全局豁免仍在
+		// whitelisted：反广告按群白名单（/white）。全局豁免仍在
 		// settings.antiad_exempt_users。
 		{"group_members", "whitelisted", "INTEGER NOT NULL DEFAULT 0"},
 		// media_group：相册 ID，判成广告时整组删除。不建索引：按相册找兄弟消息

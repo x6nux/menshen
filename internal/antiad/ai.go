@@ -891,7 +891,7 @@ func extractJSONObject(s string) string {
 	return s[start : end+1]
 }
 
-// judgeBoth 是 /ad 复查用的判定：两个模型都跑，不看采信线。
+// judgeBoth 是 /check 复查用的判定：两个模型都跑，不看采信线。
 //
 // 与 judge 的「低置信才升级」刻意不同 —— 复查是人主动发起的二次判断，
 // 目的就是拿到两方结论互相印证；省那一次调用等于把复查降级成重判一遍。

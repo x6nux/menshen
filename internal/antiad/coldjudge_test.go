@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -127,68 +128,73 @@ func TestUnbanGateBackoff(t *testing.T) {
 	}
 }
 
-// TestHandleStartPayloadNoMute 确认没被限制的人点进来会被明确告知，
-// 而不是拿到一道莫名其妙的算术题。
-func TestHandleStartPayloadNoMute(t *testing.T) {
+// TestAppealEntryNoMute 确认没被限制的人点进来会被明确告知，
+// 而不是被拉进一条走不通的申诉流程。
+func TestAppealEntryNoMute(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 
 	m := &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 555},
 		Chat: &tg.Chat{ID: 555, Type: "private"}}
-	if !HandleStartPayload(b, m, unbanPayload(-100)) {
-		t.Fatal("解除入口的 payload 应当被接管")
-	}
-	if b.Captcha.Pending(555) {
-		t.Error("没有待解除的限制时不该出题")
+	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(-100)) {
+		t.Fatal("进群限制的 deep link 应当被接管")
 	}
 	if fake.CountCalls("sendMessage") != 1 {
 		t.Errorf("应当回一条说明，实际发了 %d 条", fake.CountCalls("sendMessage"))
 	}
 
-	// 不是解除入口的 payload 要原样放回去给别的处理器
-	if HandleStartPayload(b, m, "somethingelse") {
+	// 不是我们发出的 payload 要原样放回去给别的处理器
+	if HandleNonStaffPrivate(b, m, "/start somethingelse") {
 		t.Error("无关的 payload 不该被接管")
 	}
 }
 
-// TestHandleStartPayloadIssuesCaptcha 确认被限制的人拿到的是验证码。
-func TestHandleStartPayloadIssuesCaptcha(t *testing.T) {
-	b, _ := testutil.NewTestBot(t, 1)
+// TestAppealEntryListsPenalties 确认被限制的人拿到的是限制清单与申诉按钮。
+func TestAppealEntryListsPenalties(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
 	saveJoinMute(b, -100, 555, "简介里写着引流链接", 88)
 
 	m := &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 555},
 		Chat: &tg.Chat{ID: 555, Type: "private"}}
-	if !HandleStartPayload(b, m, unbanPayload(-100)) {
+	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(-100)) {
 		t.Fatal("应当被接管")
 	}
-	if !b.Captcha.Pending(555) {
-		t.Error("被限制的人应当拿到一道验证题")
+	last := fake.LastCall("sendMessage")
+	if last == nil {
+		t.Fatal("应当发一条申诉入口")
+	}
+	text, _ := last["text"].(string)
+	if !strings.Contains(text, "申诉") || !strings.Contains(text, "进群资料审核") {
+		t.Errorf("应列出有效限制:\n%s", text)
+	}
+	if kb := fmt.Sprint(last["reply_markup"]); !strings.Contains(kb, "a:ap:st") ||
+		!strings.Contains(kb, "a:ap:go") {
+		t.Errorf("应给出「写理由 / 直接申诉」两个按钮，得到 %s", kb)
 	}
 }
 
-// TestRecheckDropsBioCache 锁住自助解除最容易出的那个问题。
+// TestAppealDropsBioCache 锁住申诉复核最容易出的那个问题。
 //
-// 对方刚按提示改完简介就来复核，这时缓存里还躺着一小时前的旧值。
+// 对方刚按提示改完简介就来申诉，这时缓存里还躺着一小时前的旧值。
 // 不清缓存的话，他无论怎么改都过不了，而日志里一切正常。
-func TestRecheckDropsBioCache(t *testing.T) {
+func TestAppealDropsBioCache(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	const stale = "加我微信 abc"
 	b.BioCache.Store(int64(555), bioEntry{
 		bio: stale, expire: time.Now().Add(time.Hour)})
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 0)
+	setGlobal(t, b, "antiad_llm_model", "llm-model")
 
-	rec, _ := loadJoinMute(b.Store, -100, 555)
-	// 没配上游，judgeJoin 必然失败 —— 这条路径按「放行」处理，
-	// 正好让我们在不打网络的情况下走完整段收尾逻辑。
-	recheckAndLift(b, 555, -100, &tg.TGUser{ID: 555}, rec)
+	penalties := []appealPenalty{
+		{Type: "join_profile", ChatID: -100, Reason: "简介里有联系方式"}}
+	// 没配上游，复核必然失败 —— 正好让我们在不打网络的情况下走完资料重拉。
+	if _, err := judgeAppeal(b, b.Cache.Snap(), 555, penalties, "我改了"); err == nil {
+		t.Fatal("没配上游时申诉复核应当失败")
+	}
 
 	if fake.CountCalls("getChat") == 0 {
-		t.Error("复核时必须重新拉一次资料，不能用缓存里的旧值")
+		t.Error("申诉复核时必须重新拉一次资料，不能用缓存里的旧值")
 	}
 	if v, ok := b.BioCache.Load(int64(555)); ok && v.(bioEntry).bio == stale {
 		t.Error("缓存里仍是旧简介 —— 对方改了也读不到，怎么改都通不过")
-	}
-	if _, still := loadJoinMute(b.Store, -100, 555); still {
-		t.Error("判定失败时应当放行并清掉限制记录")
 	}
 }
 

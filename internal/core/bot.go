@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"menshen/internal/captcha"
 	"menshen/internal/config"
 	"menshen/internal/ratelimit"
 	"menshen/internal/store"
@@ -89,11 +88,7 @@ type Shared struct {
 	// 空闲连接数乘以 bot 数量，而它们连的是同一个上游。
 	tgRoundTripper http.RoundTripper
 
-	// captcha 是自助解除限制时的人机验证题库。跨 bot 共享：
-	// 同一个人在两个群被限制时，不该因为换了个 bot 就绕过答题次数。
-	Captcha *captcha.Store
-
-	// unbanGate 是自助解除的重试闸，键为 uid。
+	// unbanGate 是申诉的重试闸，键为 uid。
 	// 不限次数但间隔递增，见 nextUnbanDelay。
 	UnbanGate sync.Map // int64(uid) -> unbanAttempt
 
@@ -111,7 +106,6 @@ type Shared struct {
 func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 	return &Shared{Cfg: cfg, Store: s, Cache: c,
 		AdLimits: ratelimit.New(),
-		Captcha:  captcha.NewStore(),
 		// 两类出网请求各用各的代理：TG 常被墙，而 AI 上游往往是国内
 		// 可达的中转，把它也绕一圈只是白多一跳。两者都可留空。
 		AIClient: &http.Client{Timeout: aiClientTimeout,
@@ -450,16 +444,16 @@ type Dispatcher func(*Bot, *tg.Update)
 
 // adGroupCmds 是群聊里可见的命令。
 //
-// /ad 对所有人开放是有意的：它不直接封禁，走的是与自动判定同一套处置
+// /check 对所有人开放是有意的：它不直接封禁，走的是与自动判定同一套处置
 // 矩阵，而群成员往往比管理员更早发现广告。花钱入口由 antiad_cmd_rpm 把关。
 //
-// /adb 只有群管理员及以上能用，但命令菜单是全群可见的 —— TG 的
+// /ban 只有群管理员及以上能用，但命令菜单是全群可见的 —— TG 的
 // setMyCommands 没有「只给管理员看」的 scope。非授权者用了会被静默
 // 忽略，这比藏起来更好：藏不住，还不如让群管一眼看见自己有这个工具。
 var adGroupCmds = []map[string]string{
-	{"command": "ad", "description": "复查某人是否在发广告（回复对方的消息）"},
-	{"command": "adb", "description": "标记为广告并处置（群管理员，回复对方的消息）"},
-	{"command": "adw", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
+	{"command": "check", "description": "复查某人是否在发广告（回复对方的消息）"},
+	{"command": "ban", "description": "标记为广告并处置（群管理员，回复对方的消息）"},
+	{"command": "white", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
 }
 
 func (b *Bot) RegisterCommands() {
@@ -470,7 +464,7 @@ func (b *Bot) RegisterCommands() {
 	}); !ok {
 		slog.Error("注册默认命令菜单失败", "tg_error", desc)
 	}
-	// 群聊 scope：/ad。与默认 scope 分开设置，否则私聊里也会冒出
+	// 群聊 scope：/check。与默认 scope 分开设置，否则私聊里也会冒出
 	// 一个在私聊中毫无意义的复查命令。
 	//
 	// 主 bot 不入群，这份菜单永远不会被看到；升级前注册过的还要清掉，

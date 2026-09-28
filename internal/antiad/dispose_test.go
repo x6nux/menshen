@@ -272,6 +272,6 @@ func TestAdbHonorsBanMode(t *testing.T) {
 
 	HandleAdbCommand(b, conf, adbMsg(-100, 1, testutil.GroupMsg(-100, 777, 10, "广告")))
 	if fake.CountCalls("banChatMember") != 1 || fake.CountCalls("restrictChatMember") != 0 {
-		t.Error("/adb 在封禁群里应封禁而不是禁言")
+		t.Error("/ban 在封禁群里应封禁而不是禁言")
 	}
 }

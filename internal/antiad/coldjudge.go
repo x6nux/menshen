@@ -282,8 +282,8 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict) {
 //
 // 不写昵称也不写理由：两者常常就是广告本身（昵称里的引流话术、理由里
 // 引述的简介链接），bot 把它们发进群等于替广告号再发一遍，还会让 bot
-// 自己被当成广告号封掉。理由面向本人、必须具体，所以放在私聊的自助
-// 解除流程里给（sendUnbanCaptcha），这里只把人引过去。
+// 自己被当成广告号封掉。理由面向本人、必须具体，所以放在私聊的申诉
+// 流程里给（appeal.go），这里只把人引过去。
 func joinMuteNotice(b *core.Bot, u *tg.TGUser) string {
 	msg := fmt.Sprintf("🔒 %s 已被限制发言（入群资料审核）。\n\n"+
 		"这是自动审核的结果，可能有误。", userLink(u.ID))
@@ -292,7 +292,7 @@ func joinMuteNotice(b *core.Bot, u *tg.TGUser) string {
 	if b.Username == "" {
 		return msg + "如有疑问请联系群管理员。"
 	}
-	return msg + "点下方按钮，在私聊里查看原因并完成验证即可解除。"
+	return msg + "点下方按钮，在私聊里查看原因并发起申诉。"
 }
 
 // joinMuteKB 是群内那条通知上的按钮。
@@ -307,7 +307,7 @@ func joinMuteKB(b *core.Bot, chatID int64) map[string]any {
 		return nil
 	}
 	return tg.InlineKB([][2]string{{
-		"🔓 我要解除限制",
+		"📝 申诉",
 		tg.URLBtn(fmt.Sprintf("https://t.me/%s?start=%s", b.Username, unbanPayload(chatID))),
 	}})
 }

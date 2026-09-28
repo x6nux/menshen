@@ -130,7 +130,7 @@ func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
 // 留底是给人和模型复查用的，不是原样归档聊天记录。
 const gmsgTextLimit = 1000
 
-// recordMessage 把一条群消息留底，供 /ad 事后复查与连带删除。编辑过的
+// recordMessage 把一条群消息留底，供 /check 事后复查与连带删除。编辑过的
 // 消息覆盖正文：复查要看的是群里现在显示的样子。album 是相册 ID。
 //
 // 失败只记日志不中断：留底是复查用的辅助设施，不该让一次写失败
@@ -199,15 +199,15 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
 // 一个刷了几千条的号会把单次请求撑成天价。
 const adReviewLimit = 60
 
-const adCmdUsage = "用法：回复某人的消息发 <code>/ad</code>，" +
-	"或直接发 <code>/ad &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
+const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
+	"或直接发 <code>/check &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查。"
 
-// parseAdCommand 识别 /ad、/adb、/adw 并取出命令名与参数。
+// parseAdCommand 识别 /check、/ban、/white 并取出命令名与参数。
 //
-// 群里 TG 客户端会自动补成 /ad@botname，必须一并认。
-// 几条命令合并识别，因为 /adb、/adw 以 /ad 为前缀 —— 分开写的话，
-// 先匹配 /ad 的那一方会把它们也吃掉。
+// 群里 TG 客户端会自动补成 /check@botname，必须一并认。
+// 几条命令合并识别，因为 /ban、/white 以 /check 为前缀 —— 分开写的话，
+// 先匹配 /check 的那一方会把它们也吃掉。
 func parseAdCommand(text string) (cmd, arg string, ok bool) {
 	f := strings.Fields(text)
 	if len(f) == 0 {
@@ -218,13 +218,13 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 		head = head[:i]
 	}
 	switch head {
-	case "/ad", "/adb", "/adw":
+	case "/check", "/ban", "/white":
 		return head, strings.Join(f[1:], " "), true
 	}
 	return "", "", false
 }
 
-// handleAdCommand 处理群内 /ad 复查。
+// handleAdCommand 处理群内 /check 复查。
 //
 // 命令对所有人开放（它不直接封禁，走的是与自动判定同一套处置矩阵），
 // 因此它本身就是一个花钱入口：一次复查跑两个模型、带上目标全部历史。
@@ -264,7 +264,7 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	}
 
 	// 构造一条「代表消息」：处置要作用在具体消息上（删除），
-	// 而 /ad <user_id> 这一路没有具体消息，此时 MessageID 为 0，
+	// 而 /check <user_id> 这一路没有具体消息，此时 MessageID 为 0，
 	// 下面会把删除动作摘掉。
 	// 代表消息的正文：回复形态下用被回复的那一条，否则用最新一条留底。
 	// 两者不一致会让告警展示的原文与「删除」按钮实际作用的消息对不上。
@@ -289,10 +289,10 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	}
 }
 
-// canMarkAd 报告此人能否用 /adb 直接标记广告。
+// canMarkAd 报告此人能否用 /ban 直接标记广告。
 //
-// 比 /ad 严格得多：/ad 只是花钱跑一次判定，处置仍由矩阵决定；
-// /adb 绕过判定直接删人禁言，对所有人开放等于把删消息的权力给了全群。
+// 比 /check 严格得多：/check 只是花钱跑一次判定，处置仍由矩阵决定；
+// /ban 绕过判定直接删人禁言，对所有人开放等于把删消息的权力给了全群。
 func canMarkAd(b *core.Bot, chatID, uid int64) bool {
 	if b.IsMain(uid) || uid == b.Owner() {
 		return true
@@ -300,7 +300,7 @@ func canMarkAd(b *core.Bot, chatID, uid int64) bool {
 	return IsChatAdmin(b, chatID, uid)
 }
 
-const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息，发送 <code>/adb</code>。\n" +
+const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息，发送 <code>/ban</code>。\n" +
 	"会直接按最高档处置（删除 + 禁言），不经过 AI 判定。"
 
 // handleAdbCommand 人工把一条消息标记为广告并立即处置。
@@ -383,7 +383,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	dryrun := conf.Dryrun
 	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
 	if tgt.MessageID == 0 {
-		// /ad <user_id> 没有指向具体消息，删不了任何东西。
+		// /check <user_id> 没有指向具体消息，删不了任何东西。
 		// 不摘掉的话 deleteMessage 必然失败，告警里还会多一条假的失败说明。
 		act.Delete = false
 	}
@@ -460,11 +460,11 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	if cmd, arg, ok := parseAdCommand(m.Text); ok {
 		if !edited {
 			switch cmd {
-			case "/ad":
+			case "/check":
 				HandleAdCommand(b, conf, m, arg)
-			case "/adb":
+			case "/ban":
 				HandleAdbCommand(b, conf, m)
-			case "/adw":
+			case "/white":
 				HandleAdwCommand(b, conf, m, arg)
 			}
 		}
@@ -482,7 +482,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	}
 
 	// 留底先于一切判定分支。豁免者、被护栏拦下的、判定失败的都要留：
-	// /ad 复查与 recent_context 需要的恰恰是这些「没被判过」的消息。
+	// /check 复查与 recent_context 需要的恰恰是这些「没被判过」的消息。
 	// 没有文字的（图片、贴纸）也留：判成广告号时要连带删掉此人近期的
 	// 全部消息，靠的是这里的 ID。
 	recordMessage(b, m.Chat.ID, m.MessageID, m.From.ID, text, at, m.MediaGroupID)
@@ -1107,7 +1107,7 @@ type adState struct {
 	RecentContext []core.CtxMsg `json:"recent_context"`
 	// Quoted 是本人引用/回复的内容，无引用时为 nil。
 	Quoted *adQuotedInfo `json:"quoted,omitempty"`
-	// ReviewHistory 只在 /ad 复查时非空：该用户在本群的全部留底，
+	// ReviewHistory 只在 /check 复查时非空：该用户在本群的全部留底，
 	// 一次性交给模型。非空即代表「这是对账号的整体复查」而非对单条
 	// 消息的判定，两级提示词都据此切换判断口径。
 	ReviewHistory []core.CtxMsg `json:"review_history,omitempty"`
@@ -1383,7 +1383,7 @@ func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, ac
 	}
 	// 按 (群, 人) 节流：一个刷屏的人不能把群刷成告警墙，也不能撞上 TG 对
 	// 单群的发送频率限制。压掉的只是这一个人的重复告警。
-	// /ad 复查不走这里：它是人主动要的，有自己的命令限频。
+	// /check 复查不走这里：它是人主动要的，有自己的命令限频。
 	snap := b.Cache.Snap()
 	if !b.AdLimits.Allow(fmt.Sprintf("ad:a:%d:%d", m.Chat.ID, m.From.ID),
 		snap.BotSettingInt(b.BotID(), "antiad_alert_rpm", 3)) {

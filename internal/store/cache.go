@@ -76,7 +76,7 @@ var settingDefaults = map[string]string{
 	// 窗口长度沿用 limiter.go 的 1 分钟。0 = 不限。
 	"antiad_rpm_chat":     "30", // 每群每分钟送检上限
 	"antiad_alert_rpm":    "3",  // 同一 (群,人) 每分钟告警上限
-	"antiad_cmd_rpm":      "3",  // 每人每分钟 /ad、/adb 次数上限
+	"antiad_cmd_rpm":      "3",  // 每人每分钟 /check、/ban 次数上限
 	"antiad_ctx_msgs":     "6",
 	"antiad_alert_ttl":    "300", // 群内告警自动撤回秒数，0 = 永不撤回
 	"antiad_dm_admins":    "1",   // 是否私聊 owner

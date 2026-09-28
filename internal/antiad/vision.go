@@ -85,7 +85,7 @@ type visionSpend struct {
 	Cost  int64
 }
 
-// seeVisual 在送检前识图，把结果并进消息与 state，留底也一并更新（/ad 复查
+// seeVisual 在送检前识图，把结果并进消息与 state，留底也一并更新（/check 复查
 // 看的就是它）。ok 为假表示这条不必再判：识图失败的纯图，与判定失败同向放行。
 // text 是识图之前的文字。
 func seeVisual(b *core.Bot, snap *store.Snapshot, m *tg.Message, st adState,

@@ -54,7 +54,7 @@ func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bo
 	return withPunish(decideAction(b, snap, newbie, v), snap.BanMode(conf))
 }
 
-// withPunish 把禁言档换成封禁（ban 为真时）。/adb 与自动判定共用。
+// withPunish 把禁言档换成封禁（ban 为真时）。/ban 与自动判定共用。
 func withPunish(act adAction, ban bool) adAction {
 	if !ban || !act.Mute {
 		return act
