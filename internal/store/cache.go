@@ -173,6 +173,20 @@ type GbanRec struct {
 	CreatedAt int64
 }
 
+// WhiteRec 是 ad_whitelist 的一行。
+//
+// 范围规则：BotID = 0 表示全平台；ChatID = 0 表示该 bot 名下所有群；
+// ExpiresAt = 0 表示永久。
+type WhiteRec struct {
+	BotID     int64
+	ChatID    int64
+	UserID    int64
+	ExpiresAt int64
+	Source    string
+	ByUID     int64
+	CreatedAt int64
+}
+
 type Snapshot struct {
 	Models    map[string]*upstream.Model
 	Upstreams []*upstream.Upstream
@@ -187,6 +201,8 @@ type Snapshot struct {
 	BotSettings map[int64]map[string]string // botID -> k -> v
 	Admins      map[int64]AdminRec
 	Gban        map[int64]GbanRec
+	// Whitelist 是申诉解禁 / /white 产生的白名单，量小，线性扫即可。
+	Whitelist []WhiteRec
 }
 
 func (s *Snapshot) Setting(k string) string { return s.Settings[k] }
@@ -562,5 +578,47 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		}
 		snap.Gban[g.UserID] = g
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = c.store.Read.Query(`SELECT bot_id,chat_id,user_id,expires_at,
+		source,by_uid,created_at FROM ad_whitelist`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var w WhiteRec
+		if err := rows.Scan(&w.BotID, &w.ChatID, &w.UserID, &w.ExpiresAt,
+			&w.Source, &w.ByUID, &w.CreatedAt); err != nil {
+			return err
+		}
+		snap.Whitelist = append(snap.Whitelist, w)
+	}
 	return rows.Err()
+}
+
+// Whitelisted 报告此人在这个范围内是否处于白名单中。
+//
+// 纯内存判断，放在查群管理员（要发 TG API）之前。范围匹配：
+// 全平台（bot_id=0）或本 bot；该 bot 名下所有群（chat_id=0）或本群；
+// 未到期（expires_at=0 为永久）。
+func (s *Snapshot) Whitelisted(botID, chatID, uid, now int64) bool {
+	for _, w := range s.Whitelist {
+		if w.UserID != uid {
+			continue
+		}
+		if w.BotID != 0 && w.BotID != botID {
+			continue
+		}
+		if w.ChatID != 0 && w.ChatID != chatID {
+			continue
+		}
+		if w.ExpiresAt != 0 && w.ExpiresAt <= now {
+			continue
+		}
+		return true
+	}
+	return false
 }

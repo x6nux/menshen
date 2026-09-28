@@ -105,3 +105,21 @@ bot_token: "123456789:AA..."
 # ⚠️ 跑在容器里时必须指向挂载卷内（如 "/app/data/data.db"），
 #    否则写进容器可写层，重启即全部丢失。
 # db_path: "data.db"
+
+# ---- 申诉网页（仅 webhook 模式）----
+#
+# 被处罚的人可以在私聊里发起申诉；AI 维持原判时走网页人机验证
+# （Cloudflare Turnstile），通过后签发解禁码由管理员兑换。
+#
+# 不配 Turnstile 密钥也能跑：申诉在 AI 这一步维持原判后会降级成
+# 「请联系群管理员」，只是没有网页验证与解禁码。
+#
+# ⚠️ Turnstile 后台的域名白名单必须包含 public_url 的主机名，
+#    否则验证组件在页面上根本加载不出来，所有申诉都卡在网页这一步。
+# turnstile_site_key: ""
+# turnstile_secret: ""
+#
+# 取客户端真实 IP 的请求头（用于网页验证记录与账号关联）。
+# 前提：listen_addr 只绑回环、流量全部经过反代，这个头才可信。
+# Cloudflare 后面填 "CF-Connecting-IP"，nginx 后面填 "X-Real-IP"。
+# client_ip_header: ""

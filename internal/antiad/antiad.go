@@ -673,6 +673,10 @@ func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) boo
 	if isGroupWhitelisted(b, chatID, u.ID) {
 		return true
 	}
+	// 申诉解禁 / /white 产生的白名单：纯内存判断，同样排在群管理员之前。
+	if snap.Whitelisted(b.BotID(), chatID, u.ID, time.Now().Unix()) {
+		return true
+	}
 	return IsChatAdmin(b, chatID, u.ID)
 }
 

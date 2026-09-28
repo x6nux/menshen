@@ -56,6 +56,17 @@ type Config struct {
 	// 代理换的是到达路径。反代通常比代理更省事，见 defaultTGAPIBase。
 	TGProxy *url.URL
 	AIProxy *url.URL
+
+	// TurnstileSiteKey / TurnstileSecret 是网页申诉验证用的 Cloudflare
+	// Turnstile 密钥。为空则验证页不可用（申诉降级为 noweb）。
+	// 注意：Turnstile 后台的域名白名单必须包含 public_url 的主机名。
+	TurnstileSiteKey string
+	TurnstileSecret  string
+	// ClientIPHeader 是取客户端真实 IP 的请求头，如 CF-Connecting-IP、
+	// X-Real-IP。为空则取对端地址。
+	//
+	// 前提是 listen_addr 只绑回环、流量全部经过反代 —— 这个请求头才可信。
+	ClientIPHeader string
 }
 
 const defaultListenAddr = "127.0.0.1:8081"
@@ -179,6 +190,9 @@ var envKeys = []struct{ env, key string }{
 	{"MENSHEN_DB_PATH", "db_path"},
 	{"MENSHEN_PUBLIC_URL", "public_url"},
 	{"MENSHEN_LISTEN_ADDR", "listen_addr"},
+	{"MENSHEN_TURNSTILE_SITE_KEY", "turnstile_site_key"},
+	{"MENSHEN_TURNSTILE_SECRET", "turnstile_secret"},
+	{"MENSHEN_CLIENT_IP_HEADER", "client_ip_header"},
 }
 
 // applyEnv 把环境变量盖到已有配置上。
@@ -234,6 +248,12 @@ func assign(c *Config, key, val string) error {
 		if val != "" {
 			c.ListenAddr = val
 		}
+	case "turnstile_site_key":
+		c.TurnstileSiteKey = strings.TrimSpace(val)
+	case "turnstile_secret":
+		c.TurnstileSecret = strings.TrimSpace(val)
+	case "client_ip_header":
+		c.ClientIPHeader = strings.TrimSpace(val)
 	case "admin_ids":
 		// 吃三种形态：环境变量的 "1,2,3"、行内数组 "[1, 2]"、空格分隔。
 		// 整体替换而不是追加：环境变量的语义是覆盖，追加会让镜像里烤的

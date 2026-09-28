@@ -52,6 +52,9 @@ type Message struct {
 		InlineKeyboard [][]struct {
 			Text string `json:"text"`
 			URL  string `json:"url"`
+			// CallbackData 是回调按钮的数据。入站消息里很少见，但面板
+			// 重绘卡片时要把它原样带回去（/log 卡片原地处置）。
+			CallbackData string `json:"callback_data"`
 		} `json:"inline_keyboard"`
 	} `json:"reply_markup"`
 	ViaBot *TGUser `json:"via_bot"`

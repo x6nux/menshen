@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"menshen/internal/antiad"
 	"menshen/internal/config"
 	"menshen/internal/core"
 	"menshen/internal/store"
@@ -208,6 +210,12 @@ func bindLegacyModels(sh *core.Shared) {
 
 // startWebhook 起 HTTP 服务，并为每个已接入的 bot 注册回调地址。
 func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http.Server {
+	// 签名密钥要在开始服务之前就位：并发下两次生成会互相覆盖，
+	// 先签出去的链接随之失效。
+	if err := antiad.EnsureWebSecret(sh); err != nil {
+		slog.Error("生成网页签名密钥失败，申诉网页将不可用", "err", err)
+	}
+
 	// 每个 bot 各自的回调地址都要注册一遍：它们的 token 不同，
 	// 路径也就不同。失败不退出——反代可能还没接上，管理员稍后可以
 	// 在面板上重试。
@@ -221,7 +229,7 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: reg,
+		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh)},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -234,6 +242,32 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 		}
 	}()
 	return srv
+}
+
+// webRouter 组装 HTTP 处理器：路径中任一段为 "_w" 的请求进网页处理器，
+// 其余交给 webhook。识别方式与 core.TokenFromPath 一样不依赖前缀，
+// 反代再套几层子路径都认得出来。
+type webRouter struct {
+	reg *core.Registry
+	web http.Handler
+}
+
+func (h webRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if hasWebSegment(r.URL.Path) {
+		h.web.ServeHTTP(w, r)
+		return
+	}
+	h.reg.ServeHTTP(w, r)
+}
+
+// hasWebSegment 报告路径中是否有 "_w" 段。
+func hasWebSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "_w" {
+			return true
+		}
+	}
+	return false
 }
 
 // startPolling 起长轮询。只有配置里那个 bot 能走这条路 ——

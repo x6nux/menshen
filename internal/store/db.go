@@ -204,6 +204,69 @@ CREATE TABLE IF NOT EXISTS ad_hashes (
   last_hit_at INTEGER NOT NULL,
   PRIMARY KEY (bot_id, hash)
 );
+
+-- 申诉单：一个用户对一个 bot 的一次申诉。状态机见 docs/superpowers/specs
+-- 的 §1.5；同一人同一 bot 同时只能有一张未结单。
+CREATE TABLE IF NOT EXISTS appeals (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot_id       INTEGER NOT NULL,
+  user_id      INTEGER NOT NULL,
+  status       TEXT    NOT NULL,              -- statement/ai/lifted/web/noweb/code/redeemed/rejected/expired
+  statement    TEXT    NOT NULL DEFAULT '',
+  ai_result    TEXT    NOT NULL DEFAULT '',   -- uphold / overturn / error / skipped
+  ai_conf      REAL    NOT NULL DEFAULT 0,
+  ai_reason    TEXT    NOT NULL DEFAULT '',
+  ai_model     TEXT    NOT NULL DEFAULT '',
+  ai_cost      INTEGER NOT NULL DEFAULT 0,
+  web_attempts INTEGER NOT NULL DEFAULT 0,
+  web_since    INTEGER NOT NULL DEFAULT 0,    -- 进入 web 的时刻，24 小时窗口从这里算
+  code         TEXT    NOT NULL DEFAULT '',
+  code_expires INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_appeal_user ON appeals(bot_id, user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_appeal_code ON appeals(code) WHERE code != '';
+
+-- 兑换记录：主键保证每个群只兑换一次；chat_id = 0 表示私聊兑换。
+CREATE TABLE IF NOT EXISTS appeal_redeems (
+  appeal_id INTEGER NOT NULL,
+  chat_id   INTEGER NOT NULL,
+  by_uid    INTEGER NOT NULL,
+  at        INTEGER NOT NULL,
+  PRIMARY KEY (appeal_id, chat_id)
+);
+
+-- 网页验证记录：不论成败都记，账号关联靠它。IP 与浏览器特征只存在这里，
+-- 不写进任何 Telegram 消息、也不上任何网页。
+CREATE TABLE IF NOT EXISTS web_checks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  appeal_id  INTEGER NOT NULL,
+  bot_id     INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  ip         TEXT    NOT NULL DEFAULT '',
+  ua         TEXT    NOT NULL DEFAULT '',
+  fp         TEXT    NOT NULL DEFAULT '',
+  signals    TEXT    NOT NULL DEFAULT '',     -- 规范化前的原始特征 JSON
+  flags      TEXT    NOT NULL DEFAULT '',     -- 命中的硬 / 软信号
+  result     TEXT    NOT NULL,                -- pass / bot / turnstile
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wc_fp   ON web_checks(fp);
+CREATE INDEX IF NOT EXISTS idx_wc_ip   ON web_checks(ip, created_at);
+CREATE INDEX IF NOT EXISTS idx_wc_user ON web_checks(user_id);
+
+-- 白名单：bot_id = 0 全平台；chat_id = 0 该 bot 名下所有群；expires_at = 0 永久。
+CREATE TABLE IF NOT EXISTS ad_whitelist (
+  bot_id     INTEGER NOT NULL,
+  chat_id    INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  source     TEXT    NOT NULL,                -- appeal / adw
+  by_uid     INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (bot_id, chat_id, user_id)
+);
 `
 
 func Open(path string) (*Store, error) {
@@ -269,6 +332,9 @@ func migrate(db *sql.DB) error {
 		// 老库的空串会回退到 so_model / llm_model 单值列。
 		{"bots", "so_models", "TEXT NOT NULL DEFAULT ''"},
 		{"bots", "llm_models", "TEXT NOT NULL DEFAULT ''"},
+		// user_name：判定当时的昵称与用户名。广告号被处置后常改名，
+		// 事后再查就对不上了，所以判定时就要记下来。
+		{"antiad_log", "user_name", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

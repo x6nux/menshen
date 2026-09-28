@@ -373,3 +373,31 @@ func TestSetWebhookReportsTGFailure(t *testing.T) {
 		t.Errorf("错误信息应带上 TG 的说明，得到 %q", err)
 	}
 }
+
+// TestWebRouterRoutesWPaths：路径中任一段为 _w 的请求进网页处理器，
+// 其余照旧进 webhook；反代套几层子路径同样能识别。
+func TestWebRouterRoutesWPaths(t *testing.T) {
+	reg, _ := testutil.NewTestRegistry(t, nil)
+	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("web"))
+	})
+	router := webRouter{reg: reg, web: web}
+
+	for _, p := range []string{"/_w/ap/1/x", "/tg/_w/v/2/y", "/a/b/_w/apv/3/z"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
+		if w.Body.String() != "web" {
+			t.Errorf("%s 应进网页处理器，得到 %q", p, w.Body.String())
+		}
+	}
+
+	// /healthz 与 webhook 路径不进网页处理器。
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Body.String() != "ok" {
+		t.Errorf("/healthz 应由 webhook 处理器回应，得到 %q", w.Body.String())
+	}
+	if hasWebSegment("/ap/1/x") || hasWebSegment("/healthz") {
+		t.Error("不含 _w 段的路径不该被当成网页")
+	}
+}

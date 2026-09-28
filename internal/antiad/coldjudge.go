@@ -30,6 +30,12 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 		return
 	}
 
+	// 白名单先于联合封禁拦截与冷判定：在群里解封过的人，一重新进群
+	// 不该又被拦下。
+	if b.Cache.Snap().Whitelisted(b.BotID(), conf.ChatID, u.ID, time.Now().Unix()) {
+		return
+	}
+
 	// 联合封禁拦在门口：命中就已经被请出去了，没有后续。
 	if gbanGuard(b, conf.ChatID, u) {
 		return
