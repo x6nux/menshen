@@ -31,6 +31,14 @@ func TestTempMuteOutlastsAIBudget(t *testing.T) {
 	}
 }
 
+// TestTempMuteIsFiveMinutes：临时禁言给到 5 分钟 —— 复判最坏 45 秒，但上游
+// 抖动时会重试；余量不足的话定案前自动解禁，等于白罚一截。
+func TestTempMuteIsFiveMinutes(t *testing.T) {
+	if tempMute != 5*time.Minute {
+		t.Errorf("tempMute = %v，应为 5 分钟", tempMute)
+	}
+}
+
 // TestDeleteFirstThenReview：初判一出结论就删、要禁言的先临时禁言，
 // 复判确认后转正式禁言；整条只落一条流水。
 func TestDeleteFirstThenReview(t *testing.T) {

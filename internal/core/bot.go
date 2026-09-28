@@ -81,6 +81,12 @@ type Shared struct {
 	AIFailStreak atomic.Int64
 	AIAlertAt    atomic.Int64
 
+	// reviewSem 是复判（大模型）的全局并发闸。复判跑在每 bot 的 worker
+	// 池上，多 bot 时并发按 bot 数翻倍，而上游看到的只有一份配额 ——
+	// 复判又是最慢、最贵、并发放大最猛的一路，所以闸放在 Shared 级。
+	// 取不到槽位的 worker 在这里等，初判队列有自己的 worker，不会被拖住。
+	reviewSem chan struct{}
+
 	// tgRoundTripper 是 TG 侧的代理 RoundTripper，所有 bot 实例共用一份。
 	// nil 表示没配 tg_proxy，此时各 client 的 Transport 保持 nil，
 	// 走 DefaultTransport（即读 HTTP_PROXY / HTTPS_PROXY 环境变量）。
@@ -111,7 +117,8 @@ type Shared struct {
 
 func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 	return &Shared{Cfg: cfg, Store: s, Cache: c,
-		AdLimits: ratelimit.New(),
+		AdLimits:  ratelimit.New(),
+		reviewSem: make(chan struct{}, adReviewConcurrency),
 		// 两类出网请求各用各的代理：TG 常被墙，而 AI 上游往往是国内
 		// 可达的中转，把它也绕一圈只是白多一跳。两者都可留空。
 		AIClient: &http.Client{Timeout: aiClientTimeout,
@@ -193,12 +200,16 @@ const (
 	// adWorkers 是每个 bot 的并发判定数。8 路在活跃群里排不开：单次判定
 	// 最坏要几十秒（AI 重试预算 45 秒），几条慢请求就能把通道占满。
 	//
-	// ponytail: 每个 bot 独立一个池，多 bot 叠加后打到上游的总并发上限是
-	// adWorkers × bot 数；上游扛不住时改成 Shared 级总闸。
+	// ponytail: 每个 bot 独立一个池，初判叠加到上游的总并发上限仍是
+	// adWorkers × bot 数；复判已经改成 Shared 级总闸（reviewSem）。
 	adWorkers = 32
 	// adQueueCap 是排队上限。worker 全忙时先排队而不是直接放行；
 	// 队列也满说明上游整体慢了，此时再放行，防止积压无限增长。
 	adQueueCap = 1024
+	// adReviewConcurrency 是全局同时在跑的复判数上限。
+	// 复判最慢、最贵，还会触发并发扇出，多 bot 叠加时上游最先被打爆的
+	// 就是它；上游给的是同一份配额，所以闸不能按 bot 各开一份。
+	adReviewConcurrency = 50
 )
 
 // UpdateQueueCap 是 webhook 队列容量。
@@ -238,7 +249,17 @@ func (b *Bot) adWorker(jobs chan func()) {
 func (b *Bot) AdSubmit(job func()) bool { return b.adEnqueue(b.adJobs, job) }
 
 // AdReview 把大模型复判放进复判队列，满了返回 false（调用方按初判定案）。
-func (b *Bot) AdReview(job func()) bool { return b.adEnqueue(b.adReviews, job) }
+//
+// 执行前还要过 Shared 级的并发闸：闸取在 worker 里而不是入队时 —— 入队
+// 必须立即返回（调用方还在更新的同步段上），排队中的任务也不该占着槽位。
+// 等槽位的是复判 worker，初判队列有自己的 worker，不会被拖住。
+func (b *Bot) AdReview(job func()) bool {
+	return b.adEnqueue(b.adReviews, func() {
+		b.reviewSem <- struct{}{}
+		defer func() { <-b.reviewSem }()
+		job()
+	})
+}
 
 func (b *Bot) adEnqueue(jobs chan func(), job func()) bool {
 	b.adBusy.Add(1)

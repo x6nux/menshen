@@ -1,9 +1,13 @@
 package core
 
 import (
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"menshen/internal/config"
+	"menshen/internal/store"
 )
 
 // waitAdIdle 等判定队列排空。
@@ -62,4 +66,58 @@ func TestAdSubmitRejectsWhenQueueFull(t *testing.T) {
 	if b.AdSubmit(func() {}) {
 		t.Error("队列已满时应返回 false")
 	}
+}
+
+// TestAdReviewConcurrencyCappedGlobally：复判执行前要过 Shared 级的全局闸。
+// 每个 bot 各有一池 32 路复判 worker，多 bot 叠加会远超上游配额（复判是
+// 最慢、最贵、并发放大最猛的一路），所以同时在跑的复判被压在
+// adReviewConcurrency。
+func TestAdReviewConcurrencyCappedGlobally(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	cache, err := store.NewCache(db)
+	if err != nil {
+		t.Fatalf("store.NewCache: %v", err)
+	}
+	sh := NewShared(&config.Config{}, db, cache)
+
+	// 两个 bot 共用一份 Shared：闸在 Shared 级，跨 bot 生效。
+	b1 := NewBot(nil, sh, "token1", nil)
+	b2 := NewBot(nil, sh, "token2", nil)
+	defer b1.Shutdown()
+	defer b2.Shutdown()
+
+	var running, peak atomic.Int64
+	release := make(chan struct{})
+	job := func() {
+		n := running.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		<-release
+		running.Add(-1)
+	}
+	// 两个 bot 各占满 32 路复判 worker：64 个任务同时要跑，闸门只放 50。
+	for range adWorkers {
+		if !b1.AdReview(job) {
+			t.Fatal("入队失败")
+		}
+		if !b2.AdReview(job) {
+			t.Fatal("入队失败")
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && running.Load() < int64(adReviewConcurrency) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := peak.Load(); got != int64(adReviewConcurrency) {
+		t.Errorf("复判并发峰值应为 %d，得到 %d", adReviewConcurrency, got)
+	}
+	close(release)
 }

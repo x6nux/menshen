@@ -30,7 +30,8 @@ type adAction struct {
 
 // tempMute 是复判前临时禁言的时长。必须长过复判的最坏耗时（aiTotalBudget），
 // 否则正式禁言还没落地它就到期了；TG 把不足 30 秒的当成永久。
-const tempMute = 2 * time.Minute
+// 给到 5 分钟：复判最坏 45 秒，但上游抖动时会重试，余量要留足。
+const tempMute = 5 * time.Minute
 
 // purgeWindow 是连带删除的时间窗：TG 只允许删 48 小时内的消息，留一小时余量。
 const purgeWindow = 47 * time.Hour
