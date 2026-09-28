@@ -383,7 +383,13 @@ func (sh *Shared) SetBotOwner(botID, ownerID int64) error {
 	if err := sh.Cache.Reload(); err != nil {
 		return err
 	}
-	// 实例上缓存了一份 owner，用于告警投递，要同步。
+	// 实例上缓存了一份 owner：判定豁免、专属联合封禁账本与告警投递都读
+	// 它。不同步的话改派要等到下次重启才真正生效，而界面上一切正常。
+	if sh.Reg != nil {
+		if b, ok := sh.Reg.LookupID(botID); ok {
+			b.OwnerID.Store(ownerID)
+		}
+	}
 	return nil
 }
 

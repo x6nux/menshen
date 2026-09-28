@@ -152,6 +152,29 @@ func TestRegisterMarksMainBot(t *testing.T) {
 	}
 }
 
+// TestSetBotOwnerSyncsLiveInstance：改派归属后运行中的实例必须同步 ——
+// 判定豁免、专属联合封禁账本与上游告警都读实例上的 owner，不同步的话
+// 改派要等到下次重启才真正生效，而界面上一切正常。
+func TestSetBotOwnerSyncsLiveInstance(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	if err := b.AddAdmin(888, "接手人", 777); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Owner(); got != 777 {
+		t.Fatalf("前置：实例归属应为 777，得到 %d", got)
+	}
+
+	if err := b.SetBotOwner(testutil.TestBotID, 888); err != nil {
+		t.Fatalf("SetBotOwner: %v", err)
+	}
+	if got := b.Cache.Snap().Bots[testutil.TestBotID].OwnerID; got != 888 {
+		t.Errorf("快照归属应为 888，得到 %d", got)
+	}
+	if got := b.Owner(); got != 888 {
+		t.Errorf("实例上的归属没同步，得到 %d", got)
+	}
+}
+
 // TestMainBotCannotBeDisabledOrRemoved 守的是两个会把面板弄失联的动作：
 // 停用主 bot 后没人能再启用它，移除它则会在下次启动时被 ensureMainBot
 // 加回来 —— 表现为「删了又复活」，只会让人更糊涂。
