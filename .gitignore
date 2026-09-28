@@ -20,6 +20,3 @@ config.yaml
 CLAUDE.md
 .spec-workflow/
 .serena/
-
-# 本地开发资料，不进版本库
-dev/
