@@ -48,13 +48,25 @@ color:var(--accent-fg);font-size:14px}
 button.g{background:transparent;color:var(--accent);border:1px solid var(--accent)}
 button.d{background:transparent;color:var(--danger);border:1px solid var(--danger)}
 button:disabled{opacity:.5}
-label.sw{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--hint)}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
 .hint{color:var(--hint);font-size:12px;line-height:1.5}
 .badge{font-size:11px;border-radius:6px;padding:2px 6px;background:rgba(128,128,128,.15);flex:0 0 auto}
 .badge.ok{background:rgba(60,180,100,.2)}
 .badge.no{background:rgba(224,82,82,.2)}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0}
+.chips button{flex:0 0 auto;border:0;border-radius:14px;padding:5px 10px;font-size:12px;
+background:rgba(128,128,128,.15);color:var(--fg)}
+.chips button.on{background:var(--accent);color:var(--accent-fg)}
+label.sw{position:relative;display:inline-flex;align-items:center;gap:6px;font-size:13px;
+color:var(--hint);cursor:pointer}
+label.sw input{position:absolute;opacity:0;width:0;height:0}
+label.sw .tr{width:40px;height:24px;border-radius:12px;background:rgba(128,128,128,.4);
+position:relative;transition:.2s;flex:0 0 auto}
+label.sw .tr:after{content:'';position:absolute;left:2px;top:2px;width:20px;height:20px;
+border-radius:50%;background:var(--card);transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+label.sw input:checked~.tr{background:var(--accent)}
+label.sw input:checked~.tr:after{left:18px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#000c;
 color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:.2s;z-index:9}
 #toast.on{opacity:1}
@@ -95,8 +107,13 @@ var S = null, TAB = 'overview';
 var SUB = '';
 // LSUB 是「名单」页的内部分段；UPADD/MDADD 控制两个新增表单的展开。
 var LSUB = 'admins', UPADD = false, MDADD = false;
+// LOGF/LOGQ/LOGPAGE 是记录页的筛选、搜索与页码；APF/APPAGE 同理给申诉。
+// 记录默认筛「已删除」：被判广告删掉的才是要盯的，其余靠切换筛选看。
+var LOGF = 'deleted', LOGQ = '', LOGPAGE = 1;
+var APF = '', APPAGE = 1;
+var ADDCHAT = false;
 var TABS = [['overview','概览'],['bots','机器人'],['chats','群组'],['upstreams','上游'],
-  ['models','模型'],['settings','设置'],['lists','名单'],['logs','记录']];
+  ['models','模型'],['settings','设置'],['lists','名单'],['logs','记录'],['appeals','申诉']];
 
 function toast(m){ var t=document.getElementById('toast'); t.textContent=m; t.classList.add('on');
   setTimeout(function(){t.classList.remove('on');},2200); }
@@ -138,7 +155,7 @@ function render(){
   var v=document.getElementById('view');
   v.innerHTML = ({overview:viewOverview, bots:viewBots, chats:viewChats,
     upstreams:viewUpstreams, models:viewModels, settings:viewSettings,
-    lists:viewLists, logs:viewLogs}[TAB]||viewOverview)();
+    lists:viewLists, logs:viewLogs, appeals:viewAppeals}[TAB]||viewOverview)();
 }
 function toggleBtn(on, cb){ return '<button class="b" data-on="'+!!on+'" onclick="'+cb+'">'
   +(on?'已开启':'已关闭')+'</button>'; }
@@ -230,7 +247,16 @@ function viewChats(){
     if(c) return viewChatDetail(c);
     SUB='';
   }
-  var h='<div class="card"><h3>生效群</h3>';
+  var h='<div class="card"><div class="row" style="border:0;padding:0 0 8px">'+
+    '<h3 style="margin:0">生效群</h3>'+
+    '<button class="b" onclick="ADDCHAT=!ADDCHAT;render()">＋ 添加群</button></div>';
+  if(ADDCHAT){
+    h+='<select id="ca_bot">'+botOpts()+'</select>'+
+      '<input id="ca_id" placeholder="chat_id，如 -1001234567890" style="margin-top:6px">'+
+      '<button class="b" style="margin-top:6px" onclick="act(\'chat\',{bot_id:document.getElementById(\'ca_bot\').value,'+
+      'chat_id:document.getElementById(\'ca_id\').value,action:\'add\'},\'已添加（默认演练）\')">添加</button>'+
+      '<div style="height:8px"></div>';
+  }
   if(!S.chats.length) h+='<div class="hint">（还没有群）</div>';
   h+=S.chats.map(function(c){
     var b=botById(c.bot_id);
@@ -240,12 +266,6 @@ function viewChats(){
       (c.dryrun?'演练':(c.enabled?'判定中':'停用'))+'</span>'+
       '<span class="chev">›</span></div>';
   }).join('');
-  h+='</div>';
-  h+='<div class="card"><h3>添加群</h3>'+
-    '<select id="ca_bot">'+botOpts()+'</select>'+
-    '<input id="ca_id" placeholder="chat_id，如 -1001234567890" style="margin-top:6px">'+
-    '<button class="b" style="margin-top:6px" onclick="act(\'chat\',{bot_id:document.getElementById(\'ca_bot\').value,'+
-    'chat_id:document.getElementById(\'ca_id\').value,action:\'add\'},\'已添加（默认演练）\')">添加</button></div>';
   return h;
 }
 function viewChatDetail(c){
@@ -255,11 +275,11 @@ function viewChatDetail(c){
   h+='<div class="card"><h3>'+esc(c.title||c.chat_id)+' <span class="badge">'+c.chat_id+'</span></h3>'+
     '<div class="hint" style="margin-bottom:8px">所属：'+esc(b?b.label:'未知 bot')+'</div>'+
     '<div class="row"><label class="sw"><input type="checkbox" '+(c.enabled?'checked':'')+
-      ' onchange="'+pre+'enabled:this.checked})"> 启用判定</label></div>'+
+      ' onchange="'+pre+'enabled:this.checked})"><span class="tr"></span> 启用判定</label></div>'+
     '<div class="row"><label class="sw"><input type="checkbox" '+(c.dryrun?'checked':'')+
-      ' onchange="'+pre+'dryrun:this.checked})"> 演练（只记不罚）</label></div>'+
+      ' onchange="'+pre+'dryrun:this.checked})"><span class="tr"></span> 演练（只记不罚）</label></div>'+
     '<div class="row"><label class="sw"><input type="checkbox" '+(c.group_alert?'checked':'')+
-      ' onchange="'+pre+'group_alert:this.checked})"> 群内展示判定结果</label></div>'+
+      ' onchange="'+pre+'group_alert:this.checked})"><span class="tr"></span> 群内展示判定结果</label></div>'+
     '<div class="row"><span class="k">处罚方式</span>'+
       '<select style="width:140px" onchange="'+pre+'punish:this.value})">'+
       '<option value="-1"'+(c.punish==-1?' selected':'')+'>跟随 bot 设置</option>'+
@@ -391,6 +411,10 @@ function viewSettings(){
       '<input style="width:110px" value="'+esc(g[sp.key]||'')+'" '+
       'onchange="act(\'set\',{scope:\'global\',key:\''+sp.key+'\',value:this.value})"></div>';
   }).join('')+'</div>';
+  h+='<div class="card"><h3>展示时区</h3>'+
+    '<div class="row"><span class="k">IANA 时区名，所有时间按它显示</span></div>'+
+    '<input value="'+esc(g.tz_name||'')+'" placeholder="Asia/Shanghai" '+
+    'onchange="act(\'set\',{scope:\'global\',key:\'tz_name\',value:this.value},\'已保存\')"></div>';
   h+='<div class="card"><h3>形态摘要</h3>'+
     '<textarea id="dg">'+esc(S.digest||'')+'</textarea>'+
     '<div class="grid" style="margin-top:8px">'+
@@ -463,34 +487,174 @@ function viewWhite(){
   return h;
 }
 
-/* ---- 记录 ---- */
+/* ---- 记录与申诉：共用的小渲染器 ---- */
+function fmtTS(at){ if(!at) return '—';
+  var d=new Date(at*1000);
+  function p(n){ return (n<10?'0':'')+n; }
+  return (d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
+function verdictLabel(v){ return {ad:'广告',none:'正常',clean:'正常',error:'失败',
+  skipped:'未送检'}[v]||v; }
+function actionLabel(a){ return {none:'无处置',muted:'禁言',banned:'封禁出群',
+  deleted:'删除',deleted_muted:'删除+禁言',deleted_banned:'删除+封禁',undone:'已撤销'}[a]||
+  (a.indexOf('dryrun:')==0?'演练:'+a.slice(7):a); }
+function apStatus(s){ return {statement:'待写理由',ai:'AI 复核中',web:'等网页验证',
+  noweb:'待人工处理',code:'已发解禁码',redeemed:'已兑换',lifted:'已解除',
+  rejected:'已驳回',expired:'已过期'}[s]||s; }
+function apAI(r){ return {uphold:'维持原判',overturn:'撤销原判',error:'复核出错',
+  skipped:'跳过复核'}[r]||'未复核'; }
+function chatTitleOf(cid){ for(var i=0;i<S.chats.length;i++)
+  if(S.chats[i].chat_id==cid) return S.chats[i].title; return ''; }
+function logact(a,id){ act('logact',{id:id,action:a},'已执行'); }
+function apact(a,id){ act('appealact',{id:id,action:a},'已执行'); }
+
+/* ---- 记录：筛选 + 搜索 + 列表 → 详情可操作 ---- */
 function viewLogs(){
-  return '<div class="card"><h3>最近判定记录</h3><div id="logbox">加载中…</div>'+
+  if(SUB.indexOf('log:')==0){
+    var id=+SUB.slice(4);
+    var l=(S.LOGS||[]).filter(function(x){return x.id==id;})[0];
+    if(l) return viewLogDetail(l);
+    SUB='';
+  }
+  var chips=[['deleted','已删除'],['all','全部'],['ad','命中'],['clean','正常'],
+    ['skipped','跳过']];
+  return '<div class="card"><div class="row" style="border:0;padding:0 0 8px">'+
+    '<input id="log_q" placeholder="搜原文 / 理由 / uid / 群号" value="'+esc(LOGQ)+'" '+
+    'onkeydown="if(event.key==\'Enter\'){LOGQ=this.value;LOGPAGE=1;loadLogs();render();}">'+
+    '<button class="b" onclick="LOGQ=document.getElementById(\'log_q\').value;'+
+    'LOGPAGE=1;loadLogs();render()">搜</button></div>'+
+    '<div class="chips">'+chips.map(function(f){
+      return '<button class="'+(LOGF==f[0]?'on':'')+'" onclick="LOGF=\''+f[0]+
+        '\';LOGPAGE=1;loadLogs();render()">'+f[1]+'</button>';
+    }).join('')+'</div>'+
+    '<div id="logbox" style="margin-top:8px">加载中…</div>'+
     '<div class="grid" style="margin-top:8px">'+
     '<button class="b g" onclick="pageLogs(-1)">上一页</button>'+
-    '<button class="b g" onclick="pageLogs(1)">下一页</button></div></div>'+
-    '<div class="card"><h3>申诉单</h3><div id="apbox">加载中…</div></div>';
+    '<button class="b g" onclick="pageLogs(1)">下一页</button></div></div>';
 }
-var LOGPAGE=1;
 function pageLogs(d){ LOGPAGE=Math.max(1,LOGPAGE+d); loadLogs(); }
 function loadLogs(){
-  api('logs',{page:LOGPAGE}).then(function(d){
+  api('logs',{page:LOGPAGE,verdict:LOGF=='all'?'':LOGF,q:LOGQ}).then(function(d){
+    S.LOGS=d.logs;
     var el=document.getElementById('logbox'); if(!el) return;
     el.innerHTML = d.logs.map(function(l){
-      return '<div class="row"><span class="mono">#'+l.id+' · '+esc(l.verdict)+' '+Math.round(l.confidence*100)+
-        '% · '+esc(l.action)+'</span>'+(l.view_url?'<a href="'+esc(l.view_url)+'" target="_blank">查看</a>':'')+'</div>';
+      return '<div class="row item" onclick="go(\'logs\',\'log:'+l.id+'\')">'+
+        '<span><span class="mono">#'+l.id+' · '+fmtTS(l.created_at)+'</span> '+
+        '<span class="badge '+(l.verdict=='ad'?'no':'ok')+'">'+verdictLabel(l.verdict)+'</span>'+
+        '<span class="badge">'+esc(actionLabel(l.action))+'</span>'+
+        '<div class="hint">uid '+l.user_id+' · 群 '+l.chat_id+' · '+
+        Math.round(l.confidence*100)+'% · '+esc(l.cost_text)+'</div>'+
+        (l.text?'<div class="hint">'+esc(l.text.slice(0,50))+'</div>':'')+
+        '</span><span class="chev">›</span></div>';
     }).join('') || '<div class="hint">（没有记录）</div>';
   }).catch(function(e){ var el=document.getElementById('logbox'); if(el) el.textContent='❌ '+e.message; });
-  api('appeals',{page:1}).then(function(d){
+}
+function viewLogDetail(l){
+  var h=backRow();
+  h+='<div class="card"><h3>记录 #'+l.id+' <span class="badge '+
+    (l.verdict=='ad'?'no':'ok')+'">'+verdictLabel(l.verdict)+'</span></h3>'+
+    '<div class="row"><span class="k">时间</span><span class="mono">'+fmtTS(l.created_at)+'</span></div>'+
+    '<div class="row"><span class="k">群 / 用户</span><span class="mono">'+l.chat_id+
+    (chatTitleOf(l.chat_id)?' · '+esc(chatTitleOf(l.chat_id)):'')+' / uid '+l.user_id+'</span></div>'+
+    '<div class="row"><span class="k">判定</span><span>'+verdictLabel(l.verdict)+' · '+
+    Math.round(l.confidence*100)+'%'+(l.decider?' · '+esc(l.decider):'')+
+    (l.kind?' · '+esc(l.kind):'')+'</span></div>'+
+    '<div class="row"><span class="k">处置</span><span>'+esc(actionLabel(l.action))+'</span></div>'+
+    '<div class="row"><span class="k">开销</span><span>'+esc(l.cost_text)+'</span></div>'+
+    (l.reason?'<div class="row"><span class="k">理由</span><span>'+esc(l.reason)+'</span></div>':'')+
+    (l.text?'<div class="hint" style="margin-top:8px">原文</div><div class="mono">'+esc(l.text)+'</div>':'')+
+    (l.view_url?'<div style="margin-top:8px"><a href="'+esc(l.view_url)+
+      '" target="_blank">📄 打开原文查看页</a></div>':'')+
+    '</div>';
+  h+='<div class="card"><h3>操作</h3>'+
+    '<div class="grid">'+
+    '<button class="b g" onclick="logact(\'review\','+l.id+')">🔎 AI 复查</button>'+
+    '<button class="b g" onclick="logact(\'unmute\','+l.id+')">🔓 解除禁言</button>'+
+    '<button class="b g" onclick="logact(\'white\','+l.id+')">🤍 加白名单 24h</button>'+
+    '<button class="b" onclick="if(confirm(\'不经 AI 直接按最高档处置？\'))logact(\'ban\','+l.id+')">🖐 人工标记广告</button>'+
+    '</div>'+
+    (S.me.main?'<div class="grid" style="margin-top:8px">'+
+      '<button class="d" onclick="if(confirm(\'加入联合封禁名单并全平台执行？\'))logact(\'gban\','+l.id+')">🚫 联合封禁</button>'+
+      '<button class="d" onclick="logact(\'ungban\','+l.id+')">解除联合封禁</button></div>':'')+
+    '<div class="hint" style="margin-top:8px">复查结果发到群里（受群内静默开关约束）；'+
+    '人工标记与群内 /ban 命令同效。</div></div>';
+  return h;
+}
+
+/* ---- 申诉：独立页签，处理流程在详情页里闭环 ---- */
+function viewAppeals(){
+  if(SUB.indexOf('ap:')==0){
+    var id=+SUB.slice(3);
+    var a=(S.APS||[]).filter(function(x){return x.id==id;})[0];
+    if(a) return viewAppealDetail(a);
+    SUB='';
+  }
+  var chips=[['open','未结'],['','全部']];
+  return '<div class="card"><div class="chips">'+chips.map(function(f){
+      return '<button class="'+(APF==f[0]?'on':'')+'" onclick="APF=\''+f[0]+
+        '\';APPAGE=1;loadAppeals();render()">'+f[1]+'</button>';
+    }).join('')+'</div>'+
+    '<div id="apbox" style="margin-top:8px">加载中…</div>'+
+    '<div class="grid" style="margin-top:8px">'+
+    '<button class="b g" onclick="pageAppeals(-1)">上一页</button>'+
+    '<button class="b g" onclick="pageAppeals(1)">下一页</button></div></div>';
+}
+function pageAppeals(d){ APPAGE=Math.max(1,APPAGE+d); loadAppeals(); }
+function loadAppeals(){
+  api('appeals',{page:APPAGE}).then(function(d){
+    S.APS=d.appeals;
     var el=document.getElementById('apbox'); if(!el) return;
-    el.innerHTML = d.appeals.map(function(a){
-      return '<div class="row"><span class="mono">#'+a.id+' · uid '+a.user_id+' · '+esc(a.status)+
-        ' · '+esc(a.ai_result)+'</span>'+(a.detail_url?'<a href="'+esc(a.detail_url)+'" target="_blank">详情</a>':'')+'</div>';
+    var open=['statement','ai','web','noweb','code'];
+    var rows=d.appeals.filter(function(a){ return !APF || open.indexOf(a.status)>=0; });
+    el.innerHTML = rows.map(function(a){
+      return '<div class="row item" onclick="go(\'appeals\',\'ap:'+a.id+'\')">'+
+        '<span><span class="mono">#'+a.id+' · uid '+a.user_id+'</span> '+
+        '<span class="badge '+(a.status=='lifted'||a.status=='redeemed'?'ok':
+          (a.status=='rejected'?'no':''))+'">'+apStatus(a.status)+'</span>'+
+        '<div class="hint">'+apAI(a.ai_result)+
+        (a.ai_reason?' · '+esc(a.ai_reason.slice(0,40)):'')+'</div></span>'+
+        '<span class="chev">›</span></div>';
     }).join('') || '<div class="hint">（没有申诉）</div>';
-  }).catch(function(){});
+  }).catch(function(e){ var el=document.getElementById('apbox'); if(el) el.textContent='❌ '+e.message; });
+}
+function viewAppealDetail(a){
+  var open=['statement','ai','web','noweb','code'].indexOf(a.status)>=0;
+  var bb=botById(a.bot_id);
+  var h=backRow();
+  h+='<div class="card"><h3>申诉 #'+a.id+' <span class="badge">'+apStatus(a.status)+'</span></h3>'+
+    '<div class="row"><span class="k">申诉人 / bot</span><span class="mono">uid '+a.user_id+
+    ' / '+(bb?esc(bb.label):a.bot_id)+'</span></div>'+
+    '<div class="row"><span class="k">提交 / 更新</span><span class="mono">'+
+    fmtTS(a.created_at)+' / '+fmtTS(a.updated_at)+'</span></div>'+
+    (a.statement?'<div class="hint" style="margin-top:8px">申诉理由</div><div>'+esc(a.statement)+'</div>':'')+
+    '<div class="row" style="margin-top:8px"><span class="k">AI 复核</span><span>'+apAI(a.ai_result)+
+    (a.ai_conf?' · '+Math.round(a.ai_conf*100)+'%':'')+
+    (a.ai_model?' · '+esc(a.ai_model):'')+'</span></div>'+
+    (a.ai_reason?'<div class="hint">'+esc(a.ai_reason)+'</div>':'')+
+    '<div class="row"><span class="k">网页验证</span><span>'+a.web_attempts+' 次尝试</span></div>'+
+    (a.has_code?'<div class="row"><span class="k">解禁码</span><span>已签发'+
+      (a.code_expires?' · '+fmtTS(a.code_expires)+' 到期':'')+'</span></div>':'')+
+    (a.detail_url?'<div style="margin-top:8px"><a href="'+esc(a.detail_url)+
+      '" target="_blank">📄 申诉详情页</a></div>':'')+
+    '</div>';
+  if(open){
+    h+='<div class="card"><h3>处理</h3>'+
+      '<div class="grid">'+
+      '<button class="b" onclick="if(confirm(\'确认通过并解除该用户全部限制？\'))apact(\'approve\','+a.id+')">✅ 人工解除</button>'+
+      '<button class="d" onclick="if(confirm(\'确认驳回？限制保持原样。\'))apact(\'reject\','+a.id+')">❌ 驳回</button>'+
+      '</div>'+
+      ((a.status=='web'||a.status=='noweb'||a.status=='ai')?
+        '<div class="grid" style="margin-top:8px">'+
+        (a.status!='ai'?'<button class="b g" onclick="apact(\'issue_code\','+a.id+')">🎟 直接签发解禁码</button>':'')+
+        '<button class="b g" onclick="apact(\'rerun\','+a.id+')">🔁 重跑 AI 复核</button></div>':'')+
+      '<div class="hint" style="margin-top:8px">人工解除与 AI 撤销同效：解除禁言与冷判定限制；'+
+      '联合封禁只有主管理员能在此一并解除。</div></div>';
+  }
+  return h;
 }
 var _render = render;
-render = function(){ _render(); if(TAB=='logs') loadLogs(); };
+render = function(){ _render();
+  if(TAB=='logs') loadLogs();
+  if(TAB=='appeals') loadAppeals(); };
 // 首屏加载由 boot() 驱动：等 telegram-web-app.js（拿 initData）就绪再请求。
 </script>
 </body>

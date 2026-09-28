@@ -525,19 +525,9 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 	for _, p := range penalties {
 		switch p.Type {
 		case "join_profile":
-			rec, ok := loadJoinMute(b.Store, p.ChatID, uid)
-			if !ok {
-				continue
-			}
-			if ok, desc := Unmute(b, p.ChatID, uid); !ok {
+			if ok, desc := LiftMute(b, p.ChatID, uid); !ok {
 				slog.Warn("申诉：解除禁言失败", "chat", p.ChatID, "uid", uid, "err", desc)
 				continue
-			}
-			dropJoinMute(b, p.ChatID, uid)
-			if rec.NoticeMsg != 0 {
-				b.TG.Call("deleteMessage", map[string]any{
-					"chat_id": p.ChatID, "message_id": rec.NoticeMsg,
-				})
 			}
 		case "message":
 			if ok, desc := Unmute(b, p.ChatID, uid); !ok {

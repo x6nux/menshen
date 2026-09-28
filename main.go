@@ -11,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// 时区名解析（tz_name）要查 IANA 数据库；静态编译（CGO_ENABLED=0）
+	// 的二进制不保证宿主机装了 tzdata，把数据库嵌进二进制里一劳永逸。
+	_ "time/tzdata"
 
 	"menshen/internal/antiad"
 	"menshen/internal/config"

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"menshen/internal/upstream"
 )
@@ -20,6 +21,9 @@ import (
 //   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
 //   - per-chat：不在本表，直接是 bot_chats 的列
 var settingDefaults = map[string]string{
+	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是旧的小时
+	// 偏移键，仅在 tz_name 无效时作回落用，面板上已不再直接暴露。
+	"tz_name":            "Asia/Shanghai",
 	"tz_offset":          "8",
 	"log_retention_days": "30",
 
@@ -215,6 +219,19 @@ func (s *Snapshot) SettingInt(k string, def int64) int64 {
 		return v
 	}
 	return def
+}
+
+// Location 返回展示与调度使用的时区：优先 tz_name（IANA 名称），
+// 未配或配错时回落到旧的 tz_offset 小时偏移——老部署升级后行为不变，
+// 也不必做数据迁移。
+func (s *Snapshot) Location() *time.Location {
+	if name := strings.TrimSpace(s.Settings["tz_name"]); name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+	}
+	off := s.SettingInt("tz_offset", 8)
+	return time.FixedZone("UTC"+strconv.FormatInt(off, 10), int(off)*3600)
 }
 
 func (s *Snapshot) SettingInt64List(k string) []int64 {

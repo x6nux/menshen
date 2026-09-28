@@ -136,7 +136,7 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 	}
 	fmt.Fprintf(&sb, "%s（第 %d 页）\n\n", title, page)
 
-	tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+	loc := b.Cache.Snap().Location()
 	n := 0
 	for rows.Next() {
 		var id, cid, uid, at int64
@@ -156,9 +156,9 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 		} else if verdict == "skipped" {
 			mark = "⏭" // 护栏拦下、没有送检
 		}
-		// 时刻按 settings.tz_offset 呈现：管理员看到的时间必须是本地时间，
+		// 时刻按 settings.tz_name 呈现：管理员看到的时间必须是本地时间，
 		// UTC 会让人对不上号。
-		when := time.Unix(at+tz*3600, 0).UTC().Format("01-02 15:04")
+		when := time.Unix(at, 0).In(loc).Format("01-02 15:04")
 		// chat_id/ad_kind 都要渲染出来——这个页面是跨所有生效群的全局列表，
 		// 不带群号就看不出命中来自哪个群；ad_kind 是复盘形态时最直接的分类线索。
 		kindSuffix := ""
@@ -542,13 +542,13 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
 	}
 	rows.Close()
 
-	tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+	loc := b.Cache.Snap().Location()
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "📋 <b>用户 %d 的判定记录</b>\n共 %d 条\n\n", target, total)
 	var kb [][][2]string
 	for _, it := range list {
 		fmt.Fprintf(&sb, "• <code>#%d</code> %s · %s · %s\n",
-			it.id, time.Unix(it.at+tz*3600, 0).UTC().Format("01-02 15:04"),
+			it.id, time.Unix(it.at, 0).In(loc).Format("01-02 15:04"),
 			html.EscapeString(map[string]string{
 				"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[it.verdict]),
 			html.EscapeString(actionLabel(it.action)))

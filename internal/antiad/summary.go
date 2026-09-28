@@ -180,10 +180,10 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 		Mute:   strings.Contains(name, "muted"),
 		Ban:    strings.Contains(name, "banned")}
 
-	tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+	loc := b.Cache.Snap().Location()
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "📋 <b>记录 #%d</b>\n\n", r.ID)
-	fmt.Fprintf(&sb, "时间: %s\n", time.Unix(r.CreatedAt+tz*3600, 0).UTC().Format("01-02 15:04"))
+	fmt.Fprintf(&sb, "时间: %s\n", time.Unix(r.CreatedAt, 0).In(loc).Format("01-02 15:04"))
 	fmt.Fprintf(&sb, "群组: <code>%d</code>\n用户: %s\n", r.ChatID, userLink(r.UserID))
 	fmt.Fprintf(&sb, "判定: %s · %s · 置信度 %.0f%% · 来源 %s\n",
 		map[string]string{"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[r.Verdict],

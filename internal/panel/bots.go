@@ -756,7 +756,7 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 	}
 	if len(whitelist) > 0 {
 		sb.WriteString("\n<b>白名单</b>（免于反广告检查）\n")
-		tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+		loc := b.Cache.Snap().Location()
 		for _, w := range whitelist {
 			scope := fmt.Sprintf("群 <code>%d</code>", w.chatID)
 			if w.chatID == 0 {
@@ -767,7 +767,7 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 			}
 			expires := "永久"
 			if w.expiresAt != 0 {
-				expires = time.Unix(w.expiresAt+tz*3600, 0).UTC().Format("01-02 15:04")
+				expires = time.Unix(w.expiresAt, 0).In(loc).Format("01-02 15:04")
 			}
 			fmt.Fprintf(&sb, "• <code>%d</code> ｜ %s ｜ %s ｜ 至 %s\n",
 				w.uid, scope, html.EscapeString(w.source), expires)
@@ -928,10 +928,10 @@ func showGban(b *core.Bot, chatID, msgID int64, page int) {
 		"标记误判会同时把他从名单里放出来并全平台解封。\n\n")
 	fmt.Fprintf(&sb, "<b>名单</b>: %d 人（第 %d 页）\n", total, page)
 
-	tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+	loc := b.Cache.Snap().Location()
 	list := antiad.GbanList(b.Shared, gbanPageSize, (page-1)*gbanPageSize)
 	for _, g := range list {
-		when := time.Unix(g.CreatedAt+tz*3600, 0).UTC().Format("01-02 15:04")
+		when := time.Unix(g.CreatedAt, 0).In(loc).Format("01-02 15:04")
 		fmt.Fprintf(&sb, "• <code>%d</code> <i>%s</i>\n  %s\n",
 			g.UserID, when, html.EscapeString(antiad.GbanReasonLabel(g.Reason)))
 	}

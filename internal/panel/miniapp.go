@@ -182,8 +182,16 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 		miniDigest(sh, w, uid, body)
 	case "logs":
 		miniLogs(sh, w, uid, body)
+	case "log":
+		miniLogDetail(sh, w, uid, body)
+	case "logact":
+		miniLogact(sh, w, r, uid, body)
 	case "appeals":
 		miniAppeals(sh, w, uid, body)
+	case "appeal":
+		miniAppealDetail(sh, w, uid, body)
+	case "appealact":
+		miniAppealact(sh, w, uid, body)
 	default:
 		miniErr(w, http.StatusNotFound, "未知操作")
 	}
@@ -398,6 +406,26 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 			return
 		}
 		if err := sh.PutSetting(key, val); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		miniOK(w, map[string]any{"ok": true})
+		return
+	case "tz_name":
+		// 时区是字符串型（IANA 名称），与整数型 specs 分开校验。
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
+			return
+		}
+		if val == "" || val == "-" {
+			val = "Asia/Shanghai"
+		}
+		if _, err := time.LoadLocation(val); err != nil {
+			miniErr(w, http.StatusBadRequest,
+				"不是有效的 IANA 时区名，如 Asia/Shanghai")
+			return
+		}
+		if err := sh.PutSetting("tz_name", val); err != nil {
 			miniErr(w, http.StatusInternalServerError, "保存失败")
 			return
 		}
@@ -847,22 +875,75 @@ func miniDigest(sh *core.Shared, w http.ResponseWriter, uid int64, body map[stri
 	miniOK(w, map[string]any{"ok": true})
 }
 
+// miniLogCols 是记录列表与详情共用的列清单。
+const miniLogCols = `id,bot_id,chat_id,user_id,message_id,verdict,confidence,
+		ad_kind,action,reason,text,decider,quota_cost,created_at`
+
+func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at int64,
+	verdict, kind, action, reason, text, decider string, conf float64, viewURL string) {
+
+	out["id"] = id
+	out["bot_id"] = botID
+	out["chat_id"] = chatID
+	out["user_id"] = userID
+	out["message_id"] = msgID
+	out["verdict"] = verdict
+	out["confidence"] = conf
+	out["kind"] = kind
+	out["action"] = action
+	out["reason"] = reason
+	out["text"] = text
+	out["decider"] = decider
+	out["cost_text"] = billing.FormatUSDFine(cost)
+	out["created_at"] = at
+	out["view_url"] = viewURL
+}
+
 func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	page := miniInt(body, "page")
 	if page < 1 {
 		page = 1
 	}
-	target := miniInt(body, "user_id")
-	where, args := miniBotsClause(sh, uid, sh.IsMain(uid))
-	q := []any{}
-	if target != 0 {
-		where = " AND user_id=?" + where
-		q = append(q, target)
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+
+	// 筛选与搜索。默认无筛选（前端会带 verdict=deleted 进来）：
+	// 「已删除」是处置动作名前缀，而不是 verdict——放行/跳过的记录
+	// 也可能带处置，按动作筛才与「消息被删了」这个用户视角一致。
+	condWhere, condArgs := "", []any{}
+	switch miniStr(body, "verdict") {
+	case "deleted":
+		condWhere += " AND action LIKE 'deleted%'"
+	case "ad":
+		condWhere += " AND verdict='ad'"
+	case "clean":
+		condWhere += " AND verdict='none'"
+	case "skipped":
+		condWhere += " AND verdict='skipped'"
 	}
-	q = append(q, args...)
-	rows, err := sh.Store.Read.Query(`SELECT id,bot_id,chat_id,user_id,verdict,
-		confidence,ad_kind,action,created_at FROM antiad_log WHERE 1=1`+where+
-		` ORDER BY id DESC LIMIT 20 OFFSET ?`, append(q, (page-1)*20)...)
+	if target := miniInt(body, "user_id"); target != 0 {
+		condWhere += " AND user_id=?"
+		condArgs = append(condArgs, target)
+	}
+	if chat := miniInt(body, "chat_id"); chat != 0 {
+		condWhere += " AND chat_id=?"
+		condArgs = append(condArgs, chat)
+	}
+	if qs := miniStr(body, "q"); qs != "" {
+		like := "%" + qs + "%"
+		condWhere += " AND (text LIKE ? OR reason LIKE ?"
+		condArgs = append(condArgs, like, like)
+		if n, err := strconv.ParseInt(qs, 10, 64); err == nil {
+			condWhere += " OR user_id=? OR chat_id=?"
+			condArgs = append(condArgs, n, n)
+		}
+		condWhere += ")"
+	}
+
+	q := append([]any{}, clauseArgs...)
+	q = append(q, condArgs...)
+	rows, err := sh.Store.Read.Query(`SELECT `+miniLogCols+` FROM antiad_log
+		WHERE 1=1`+clauseWhere+condWhere+` ORDER BY id DESC LIMIT 20 OFFSET ?`,
+		append(q, (page-1)*20)...)
 	if err != nil {
 		miniErr(w, http.StatusInternalServerError, "查询失败")
 		return
@@ -870,20 +951,125 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, botID, chatID, userID, at int64
-		var verdict, kind, action string
+		var id, botID, chatID, userID, msgID, cost, at int64
+		var verdict, kind, action, reason, text, decider string
 		var conf float64
-		if rows.Scan(&id, &botID, &chatID, &userID, &verdict, &conf, &kind,
-			&action, &at) == nil {
-			out = append(out, map[string]any{
-				"id": id, "bot_id": botID, "chat_id": chatID, "user_id": userID,
-				"verdict": verdict, "confidence": conf, "kind": kind,
-				"action": action, "created_at": at,
-				"view_url": antiad.LogViewURL(sh, id),
-			})
+		if rows.Scan(&id, &botID, &chatID, &userID, &msgID, &verdict, &conf,
+			&kind, &action, &reason, &text, &decider, &cost, &at) == nil {
+			m := map[string]any{}
+			miniLogRow(m, id, botID, chatID, userID, msgID, cost, at,
+				verdict, kind, action, reason, text, decider, conf,
+				antiad.LogViewURL(sh, id))
+			out = append(out, m)
 		}
 	}
 	miniOK(w, map[string]any{"logs": out, "page": page})
+}
+
+// miniLogDetail 单条记录的全部字段，供点进去的详情页。
+func miniLogDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	id := miniInt(body, "id")
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	row := sh.Store.Read.QueryRow(`SELECT `+miniLogCols+` FROM antiad_log
+		WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
+	var lid, botID, chatID, userID, msgID, cost, at int64
+	var verdict, kind, action, reason, text, decider string
+	var conf float64
+	if row.Scan(&lid, &botID, &chatID, &userID, &msgID, &verdict, &conf,
+		&kind, &action, &reason, &text, &decider, &cost, &at) != nil {
+		miniErr(w, http.StatusNotFound, "记录不存在")
+		return
+	}
+	out := map[string]any{}
+	miniLogRow(out, lid, botID, chatID, userID, msgID, cost, at,
+		verdict, kind, action, reason, text, decider, conf,
+		antiad.LogViewURL(sh, lid))
+	miniOK(w, out)
+}
+
+// miniLogact 对一条记录执行操作。权限：能管该 bot 的人；联合封禁
+// 额外要求主管理员。bot_id 为 0 的旧记录回落到请求头里的 bot。
+func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
+	uid int64, body map[string]any) {
+	id := miniInt(body, "id")
+	action := miniStr(body, "action")
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	row := sh.Store.Read.QueryRow(`SELECT bot_id,chat_id,user_id,message_id,text
+		FROM antiad_log WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
+	var botID, chatID, userID, msgID int64
+	var text string
+	if row.Scan(&botID, &chatID, &userID, &msgID, &text) != nil {
+		miniErr(w, http.StatusNotFound, "记录不存在")
+		return
+	}
+	if botID == 0 {
+		botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
+	}
+	if action == "gban" || action == "ungban" {
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "联合封禁只有主管理员能操作")
+			return
+		}
+	} else if !miniCanManageBot(sh, uid, botID) {
+		miniErr(w, http.StatusForbidden, "无权管理该 bot")
+		return
+	}
+	if sh.Reg == nil {
+		miniErr(w, http.StatusInternalServerError, "注册表不可用")
+		return
+	}
+	inst, live := sh.Reg.LookupID(botID)
+	if !live {
+		miniErr(w, http.StatusBadRequest, "该 bot 未在运行，无法执行群内操作")
+		return
+	}
+	snap := sh.Cache.Snap()
+	conf, ok := snap.ChatConf(botID, chatID)
+	if !ok {
+		// 群已移除也能操作：解除禁言、加白名单仍有意义。
+		conf = store.BotChat{BotID: botID, ChatID: chatID}
+	}
+
+	switch action {
+	case "review":
+		if !antiad.ReviewByRecord(inst, conf, chatID, userID, uid) {
+			miniErr(w, http.StatusBadRequest, "该用户在本群没有留底消息，无法复查")
+			return
+		}
+	case "ban":
+		if note := antiad.ManualMarkByRecord(inst, conf, chatID, msgID,
+			userID, text, uid); note != "" {
+			miniOK(w, map[string]any{"ok": true, "note": "部分动作失败：" + note})
+			return
+		}
+	case "unmute":
+		if ok2, desc := antiad.LiftMute(inst, chatID, userID); !ok2 {
+			miniErr(w, http.StatusBadRequest, "解除失败："+desc)
+			return
+		}
+	case "white":
+		hours := miniInt(body, "hours")
+		if hours <= 0 {
+			hours = 24
+		}
+		if err := antiad.AddWhitelist(sh, botID, chatID, userID,
+			time.Duration(hours)*time.Hour, "miniapp", uid); err != nil {
+			miniErr(w, http.StatusInternalServerError, "写入失败")
+			return
+		}
+	case "gban":
+		if err := antiad.GbanAdd(sh, userID,
+			fmt.Sprintf("配置台将记录 #%d 人工标黑", id), chatID, botID); err != nil {
+			miniErr(w, http.StatusInternalServerError, "写入失败")
+			return
+		}
+	case "ungban":
+		antiad.LiftGban(sh, userID)
+	default:
+		miniErr(w, http.StatusBadRequest, "未知操作")
+		return
+	}
+	miniOK(w, map[string]any{"ok": true})
 }
 
 func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
@@ -891,10 +1077,11 @@ func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[str
 	if page < 1 {
 		page = 1
 	}
-	where, args := miniBotsClause(sh, uid, sh.IsMain(uid))
-	rows, err := sh.Store.Read.Query(`SELECT id,bot_id,user_id,status,ai_result,
-		ai_conf,created_at FROM appeals WHERE 1=1`+where+
-		` ORDER BY id DESC LIMIT 20 OFFSET ?`, append(args, (page-1)*20)...)
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	rows, err := sh.Store.Read.Query(`SELECT id,bot_id,user_id,status,statement,
+		ai_result,ai_conf,ai_reason,ai_model,web_attempts,code,code_expires,
+		created_at,updated_at FROM appeals WHERE 1=1`+clauseWhere+
+		` ORDER BY id DESC LIMIT 20 OFFSET ?`, append(clauseArgs, (page-1)*20)...)
 	if err != nil {
 		miniErr(w, http.StatusInternalServerError, "查询失败")
 		return
@@ -902,18 +1089,116 @@ func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[str
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, botID, userID, at int64
-		var status, aiResult string
+		var id, botID, userID, attempts, codeExp, at, upd int64
+		var status, statement, aiResult, aiReason, aiModel, code string
 		var conf float64
-		if rows.Scan(&id, &botID, &userID, &status, &aiResult, &conf, &at) == nil {
+		if rows.Scan(&id, &botID, &userID, &status, &statement, &aiResult,
+			&conf, &aiReason, &aiModel, &attempts, &code, &codeExp, &at, &upd) == nil {
 			out = append(out, map[string]any{
 				"id": id, "bot_id": botID, "user_id": userID, "status": status,
-				"ai_result": aiResult, "ai_conf": conf, "created_at": at,
+				"statement": core.TruncateRunes(statement, 300),
+				"ai_result": aiResult, "ai_conf": conf,
+				"ai_reason":    core.TruncateRunes(aiReason, 300),
+				"ai_model":     aiModel,
+				"web_attempts": attempts,
+				"has_code":     code != "", "code_expires": codeExp,
+				"created_at": at, "updated_at": upd,
 				"detail_url": antiad.AppealDetailURL(sh, id),
 			})
 		}
 	}
 	miniOK(w, map[string]any{"appeals": out, "page": page})
+}
+
+// miniAppealDetail 单张申诉单：全字段加兑换与网页验证记录。
+func miniAppealDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	id := miniInt(body, "id")
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	row := sh.Store.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
+		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
+		code,code_expires,created_at,updated_at FROM appeals
+		WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
+	var aid, botID, userID, cost, attempts, webSince, codeExp, at, upd int64
+	var status, statement, aiResult, aiReason, aiModel, code string
+	var conf float64
+	if row.Scan(&aid, &botID, &userID, &status, &statement, &aiResult, &conf,
+		&aiReason, &aiModel, &cost, &attempts, &webSince, &code, &codeExp,
+		&at, &upd) != nil {
+		miniErr(w, http.StatusNotFound, "申诉单不存在")
+		return
+	}
+	out := map[string]any{
+		"id": aid, "bot_id": botID, "user_id": userID, "status": status,
+		"statement": statement, "ai_result": aiResult, "ai_conf": conf,
+		"ai_reason": aiReason, "ai_model": aiModel,
+		"ai_cost":      billing.FormatUSDFine(cost),
+		"web_attempts": attempts, "has_code": code != "",
+		"code": code, "code_expires": codeExp,
+		"created_at": at, "updated_at": upd,
+		"detail_url": antiad.AppealDetailURL(sh, aid),
+	}
+	redeems := []map[string]any{}
+	rd, err := sh.Store.Read.Query(`SELECT chat_id,by_uid,at FROM appeal_redeems
+		WHERE appeal_id=?`, aid)
+	if err == nil {
+		for rd.Next() {
+			var chatID, by, rat int64
+			if rd.Scan(&chatID, &by, &rat) == nil {
+				redeems = append(redeems, map[string]any{
+					"chat_id": chatID, "by_uid": by, "at": rat})
+			}
+		}
+		rd.Close()
+	}
+	out["redeems"] = redeems
+	var checks, passes int
+	sh.Store.Read.QueryRow(`SELECT COUNT(*), COALESCE(SUM(result='pass'),0)
+		FROM web_checks WHERE appeal_id=?`, aid).Scan(&checks, &passes)
+	out["web_checks"] = checks
+	out["web_passes"] = passes
+	miniOK(w, out)
+}
+
+// miniAppealact 对一张申诉单执行人工处理。
+func miniAppealact(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	id := miniInt(body, "id")
+	action := miniStr(body, "action")
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	var botID int64
+	err := sh.Store.Read.QueryRow(`SELECT bot_id FROM appeals
+		WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...).Scan(&botID)
+	if err != nil {
+		miniErr(w, http.StatusNotFound, "申诉单不存在")
+		return
+	}
+	if sh.Reg == nil {
+		miniErr(w, http.StatusInternalServerError, "注册表不可用")
+		return
+	}
+	inst, live := sh.Reg.LookupID(botID)
+	if !live {
+		miniErr(w, http.StatusBadRequest, "该 bot 未在运行，无法处理")
+		return
+	}
+	var actErr error
+	switch action {
+	case "approve":
+		actErr = antiad.AdminLiftAppeal(inst, id, uid, sh.IsMain(uid))
+	case "reject":
+		actErr = antiad.AdminRejectAppeal(inst, id, uid)
+	case "issue_code":
+		_, actErr = antiad.AdminIssueCode(inst, id)
+	case "rerun":
+		actErr = antiad.AdminRerunAppealAI(inst, id)
+	default:
+		miniErr(w, http.StatusBadRequest, "未知操作")
+		return
+	}
+	if actErr != nil {
+		miniErr(w, http.StatusBadRequest, actErr.Error())
+		return
+	}
+	miniOK(w, map[string]any{"ok": true})
 }
 
 // ---- 小工具 ----

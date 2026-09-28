@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"menshen/internal/antiad"
 	"menshen/internal/core"
@@ -31,13 +32,17 @@ type settingSpec struct {
 	group string
 }
 
+// tzSpec 是展示时区：字符串型（IANA 名称），不进 settingSpecs 的整数
+// 校验，输入与 Mini App 各有一份专门处理。
+var tzSpec = settingSpec{key: "tz_name", label: "展示时区",
+	hint: "IANA 时区名，如 Asia/Shanghai、Europe/London；填 - 恢复默认 Asia/Shanghai"}
+
 // settingSpecs 决定面板的展示顺序与校验规则。
 //
 // 不在此表的另外三类：布尔开关（antiad_enabled / gban_enabled 等）走
 // 一键切换；每群开关（enabled/dryrun/group_alert）是 bot_chats 的列；
 // 豁免名单是列表项，走专门的增删入口。
 var settingSpecs = []settingSpec{
-	{"tz_offset", "时区偏移（小时）", "整数，取值范围 -12 ~ 14", -12, 14, ""},
 	{"log_retention_days", "记录保留天数", "正整数，至少 1；同时作用于判定流水与群消息留底", 1, 0, ""},
 	{"max_bots_per_admin", "每人 bot 数上限", "非负整数，0 = 不限；主管理员不受限", 0, 0, ""},
 	{"antiad_digest_min", "形态总结触发样本数", "非负整数，0 = 关闭自动总结", 0, 0, ""},
@@ -139,6 +144,9 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		sp := settingSpecByKey(parts[3])
+		if sp == nil && parts[3] == tzSpec.key {
+			sp = &tzSpec
+		}
 		if sp == nil || (sp.group != "" && sp.group != "both") {
 			b.AnswerCallback(q.ID, "未知设置项")
 			return
@@ -325,6 +333,8 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 			"a:st:e:" + sp.key,
 		}})
 	}
+	rows = append(rows, [][2]string{{
+		"🌏 展示时区 · " + snap.Setting("tz_name"), "a:st:e:" + tzSpec.key}})
 	rows = append(rows, [][2]string{{"◀️ 返回主菜单", "a:main"}})
 
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
@@ -350,6 +360,27 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			return
 		}
 		sp := settingSpecByKey(key)
+		if sp == nil && key == tzSpec.key {
+			// 时区是字符串型：只认 IANA 名称，其余一律打回重填。
+			name := strings.TrimSpace(text)
+			if name == "-" {
+				name = "Asia/Shanghai"
+			}
+			if _, err := time.LoadLocation(name); err != nil {
+				b.Send(chatID, "不是有效的 IANA 时区名（如 Asia/Shanghai、"+
+					"Europe/London），请重新输入：", nil)
+				return
+			}
+			b.DropPending(uid)
+			if err := b.PutSetting("tz_name", name); err != nil {
+				b.Send(chatID, "保存失败。", nil)
+				return
+			}
+			b.Send(chatID, "✅ 展示时区已设为 <code>"+
+				html.EscapeString(name)+"</code>", nil)
+			showSettings(b, chatID, 0)
+			return
+		}
 		if sp == nil {
 			b.DropPending(uid)
 			b.Send(chatID, "该设置项已不存在，操作取消。", nil)

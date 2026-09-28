@@ -216,8 +216,7 @@ func formatTS(sh *core.Shared, unix int64) string {
 	if unix == 0 {
 		return ""
 	}
-	tz := sh.Cache.Snap().SettingInt("tz_offset", 8)
-	return time.Unix(unix+tz*3600, 0).UTC().Format("2006-01-02 15:04")
+	return time.Unix(unix, 0).In(sh.Cache.Snap().Location()).Format("2006-01-02 15:04")
 }
 
 // renderTemplate 渲染模板；执行失败时已经写出部分内容，只能记日志。
