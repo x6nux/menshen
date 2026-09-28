@@ -256,7 +256,7 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "")
 		}
 
-	case "rec": // a:ad:rec:<log_id> —— 私聊汇总里点进来的记录卡片
+	case "rec": // a:ad:rec:<log_id>[:<uid>:<page>] —— 记录卡片
 		if len(parts) < 4 {
 			b.AnswerCallback(q.ID, "参数缺失")
 			return
@@ -275,7 +275,29 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		}
 		b.AnswerCallback(q.ID, "")
 		text, kb := antiad.RenderAdRecord(b, row)
+		if uid, page := navFromCallback(q.Data); uid != 0 {
+			// 从 /user 列表点进来的：原地重绘并保留返回按钮。
+			kb = kbWithNav(kb, fmt.Sprintf(":%d:%d", uid, page))
+			b.Edit(chatID, msgID, text,
+				tg.KBAppend(kb, [][2]string{{"◀️ 返回列表",
+					fmt.Sprintf("a:ad:ul:%d:%d", uid, page)}}))
+			return
+		}
 		b.Send(chatID, text, kb)
+
+	case "ul": // a:ad:ul:<uid>:<page> —— 某人的判定记录列表
+		if len(parts) < 5 {
+			b.AnswerCallback(q.ID, "参数缺失")
+			return
+		}
+		uid, err1 := strconv.ParseInt(parts[3], 10, 64)
+		page, err2 := strconv.ParseInt(parts[4], 10, 64)
+		if err1 != nil || err2 != nil {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		b.AnswerCallback(q.ID, "")
+		showUserLogs(b, chatID, msgID, q.From.ID, uid, int(page))
 
 	case "ok", "fp", "del", "mute", "ban":
 		if len(parts) < 4 {
@@ -298,6 +320,8 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		applyAdManualAction(b, q, parts[2], row)
+		// 处置后原地重绘：从 /user 列表进来的卡片要保留「返回列表」。
+		redrawAdCard(b, q, id)
 
 	default:
 		b.AnswerCallback(q.ID, "")
@@ -326,7 +350,7 @@ func adDispositionAllowed(b *core.Bot, uid int64, row antiad.AdLogRow) bool {
 // 形如 a:ad:<op>:<log_id>，op 限定在五个处置动作内。
 func IsAdDispositionCallback(data string) bool {
 	parts := strings.Split(data, ":")
-	if len(parts) != 4 || parts[0] != "a" || parts[1] != "ad" {
+	if len(parts) < 4 || parts[0] != "a" || parts[1] != "ad" {
 		return false
 	}
 	switch parts[2] {
@@ -453,4 +477,194 @@ func keepActionLabel(action string) string {
 		return "已封禁出群"
 	}
 	return actionLabel(action)
+}
+
+// ---- /log 与 /user：记录卡片与用户记录列表 ----
+
+// ShowLogCard 渲染单条记录卡片并发送（/log <id>）。
+func ShowLogCard(b *core.Bot, chatID, uid, id int64) {
+	row, ok := antiad.LoadAdLog(b.Store, id)
+	if !ok || !b.CanManageBot(uid, row.BotID) {
+		// 不区分「不存在」与「无权」：后者等于确认这个编号存在。
+		b.Send(chatID, "记录不存在或已过保留期。", nil)
+		return
+	}
+	text, kb := antiad.RenderAdRecord(b, row)
+	b.Send(chatID, text, kb)
+}
+
+// ShowUserLogs 渲染某人的判定记录列表（/user <uid>）。
+func ShowUserLogs(b *core.Bot, chatID, uid, target int64) {
+	showUserLogs(b, chatID, 0, uid, target, 1)
+}
+
+const userLogsPerPage = 10
+
+// showUserLogs 渲染列表并原地编辑（msgID 为 0 时新发一条）。
+func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
+	if page < 1 {
+		page = 1
+	}
+	where, args := managedBotsClause(b, uid)
+	if where == " AND 0" {
+		b.EditOrSend(chatID, msgID, "你名下没有机器人。", nil)
+		return
+	}
+
+	var total int64
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=?`+where, append([]any{target}, args...)...).Scan(&total)
+
+	rows, err := b.Store.Read.Query(`SELECT id,chat_id,verdict,confidence,ad_kind,
+		action,created_at FROM antiad_log WHERE user_id=?`+where+
+		` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(append([]any{target}, args...), userLogsPerPage, (page-1)*userLogsPerPage)...)
+	if err != nil {
+		b.Send(chatID, "查询失败。", nil)
+		return
+	}
+	type item struct {
+		id      int64
+		chat    int64
+		verdict string
+		conf    float64
+		kind    string
+		action  string
+		at      int64
+	}
+	var list []item
+	for rows.Next() {
+		var it item
+		if rows.Scan(&it.id, &it.chat, &it.verdict, &it.conf, &it.kind,
+			&it.action, &it.at) == nil {
+			list = append(list, it)
+		}
+	}
+	rows.Close()
+
+	tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📋 <b>用户 %d 的判定记录</b>\n共 %d 条\n\n", target, total)
+	var kb [][][2]string
+	for _, it := range list {
+		fmt.Fprintf(&sb, "• <code>#%d</code> %s · %s · %s\n",
+			it.id, time.Unix(it.at+tz*3600, 0).UTC().Format("01-02 15:04"),
+			html.EscapeString(map[string]string{
+				"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[it.verdict]),
+			html.EscapeString(actionLabel(it.action)))
+		kb = append(kb, [][2]string{{fmt.Sprintf("📋 #%d", it.id),
+			fmt.Sprintf("a:ad:rec:%d:%d:%d", it.id, target, page)}})
+	}
+	if len(list) == 0 {
+		sb.WriteString("（没有记录）")
+	}
+	pages := int((total + userLogsPerPage - 1) / userLogsPerPage)
+	if pages > 1 {
+		nav := [][2]string{}
+		if page > 1 {
+			nav = append(nav, [2]string{"◀️", fmt.Sprintf("a:ad:ul:%d:%d", target, page-1)})
+		}
+		nav = append(nav, [2]string{fmt.Sprintf("%d/%d", page, pages), "a:noop"})
+		if page < pages {
+			nav = append(nav, [2]string{"▶️", fmt.Sprintf("a:ad:ul:%d:%d", target, page+1)})
+		}
+		kb = append(kb, nav)
+	}
+	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(kb...))
+}
+
+// managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数。
+// 主管理员看全部；次级管理员只看自己名下 bot 的记录。
+func managedBotsClause(b *core.Bot, uid int64) (string, []any) {
+	if b.IsMain(uid) {
+		return "", nil
+	}
+	owned := b.Cache.Snap().BotsOwnedBy(uid, false)
+	if len(owned) == 0 {
+		return " AND 0", nil
+	}
+	holders := make([]string, 0, len(owned))
+	args := make([]any, 0, len(owned))
+	for _, r := range owned {
+		holders = append(holders, "?")
+		args = append(args, r.BotID)
+	}
+	return " AND bot_id IN (" + strings.Join(holders, ",") + ")", args
+}
+
+// navFromCallback 从 a:ad:<op>:<id>:<uid>:<page> 里取出列表导航信息。
+func navFromCallback(data string) (uid, page int64) {
+	parts := strings.Split(data, ":")
+	if len(parts) < 6 {
+		return 0, 0
+	}
+	uid, _ = strconv.ParseInt(parts[4], 10, 64)
+	page, _ = strconv.ParseInt(parts[5], 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	return uid, page
+}
+
+// kbWithNav 给卡片上的回调按钮追加 ":<uid>:<page>"，让处置后的重绘
+// 仍能拼出「返回列表」。URL 按钮不带 callback_data，原样保留。
+func kbWithNav(kb map[string]any, nav string) map[string]any {
+	rows, _ := kb["inline_keyboard"].([][]map[string]string)
+	for i := range rows {
+		for j := range rows[i] {
+			if cd := rows[i][j]["callback_data"]; cd != "" {
+				rows[i][j]["callback_data"] = cd + nav
+			}
+		}
+	}
+	return kb
+}
+
+// redrawAdCard 用最新流水重绘记录卡片（处置后调用）。
+func redrawAdCard(b *core.Bot, q *tg.CallbackQuery, id int64) {
+	row, ok := antiad.LoadAdLog(b.Store, id)
+	if !ok {
+		return
+	}
+	text, kb := antiad.RenderAdRecord(b, row)
+	if uid, page := navFromCallback(q.Data); uid != 0 {
+		kb = kbWithNav(kb, fmt.Sprintf(":%d:%d", uid, page))
+		kb = tg.KBAppend(kb, [][2]string{{"◀️ 返回列表",
+			fmt.Sprintf("a:ad:ul:%d:%d", uid, page)}})
+	}
+	b.Edit(q.Message.Chat.ID, q.Message.MessageID, text, kb)
+}
+
+// cmdArg 从「/cmd 参数」里取第一个参数，容忍 /cmd@botname 形态。
+func cmdArg(text, cmd string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(text, cmd))
+	fields := strings.Fields(rest)
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "@") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// HandleLogCommand 处理管理员私聊的 /log <记录号>。
+func HandleLogCommand(b *core.Bot, m *tg.Message, text string) {
+	id, err := strconv.ParseInt(cmdArg(text, "/log"), 10, 64)
+	if err != nil || id <= 0 {
+		b.Send(m.Chat.ID, "用法：<code>/log &lt;记录号&gt;</code>\n\n"+
+			"记录号见群内告警或私聊汇总里的「#编号」。", nil)
+		return
+	}
+	ShowLogCard(b, m.Chat.ID, m.From.ID, id)
+}
+
+// HandleUserCommand 处理管理员私聊的 /user <user_id>。
+func HandleUserCommand(b *core.Bot, m *tg.Message, text string) {
+	uid, err := strconv.ParseInt(cmdArg(text, "/user"), 10, 64)
+	if err != nil || uid == 0 {
+		b.Send(m.Chat.ID, "用法：<code>/user &lt;user_id&gt;</code>", nil)
+		return
+	}
+	ShowUserLogs(b, m.Chat.ID, m.From.ID, uid)
 }

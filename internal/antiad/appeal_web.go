@@ -365,11 +365,3 @@ func clientIP(sh *core.Shared, r *http.Request) string {
 	}
 	return host
 }
-
-func handleAppealDetailPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {
-	http.NotFound(w, r)
-}
-
-func handleLogViewPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {
-	http.NotFound(w, r)
-}

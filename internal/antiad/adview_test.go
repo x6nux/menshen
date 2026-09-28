@@ -1,0 +1,110 @@
+package antiad
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"menshen/internal/testutil"
+)
+
+func itoaTest(n int64) string { return strconv.FormatInt(n, 10) }
+
+// TestViewPageGateAndContent：GET 只给警示与按钮，POST 验签且未过期才渲染；
+// 原文里的脚本被模板转义。
+func TestViewPageGateAndContent(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	b.Cfg.PublicURL = "https://ad.example.com"
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,bot_id,user_name)
+		VALUES (-100,555,900,?,'ad',0.9,'llm','scam','deleted_muted','理由',0,0,0,?,42,'昵称')`,
+		`买号 <script>alert(1)</script>`, time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	path := "/_w/v/" + itoaTest(id) + "/" + logViewSig(b.Shared, id)
+	handler := WebHandler(b.Shared)
+
+	// GET：门槛页，不含原文。
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET 应 200，得到 %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "查看内容") || !strings.Contains(body, `name="k"`) {
+		t.Errorf("门槛页应给出查看按钮与签名表单:\n%s", body)
+	}
+	if strings.Contains(body, "买号") {
+		t.Error("GET 不该渲染原文")
+	}
+
+	// POST：签名有效才渲染，脚本被转义。
+	exp := time.Now().Add(time.Minute).Unix()
+	form := url.Values{"e": {itoaTest(exp)},
+		"k": {logViewPostSig(b.Shared, id, exp)}}
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST 应 200，得到 %d", w.Code)
+	}
+	body = w.Body.String()
+	if !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, "<script>alert") {
+		t.Errorf("原文应被模板转义:\n%s", body)
+	}
+	if !strings.Contains(body, "买号") {
+		t.Error("验签通过后应能看到原文")
+	}
+
+	// 过期表单：404。
+	old := time.Now().Add(-time.Minute).Unix()
+	form = url.Values{"e": {itoaTest(old)}, "k": {logViewPostSig(b.Shared, id, old)}}
+	req = httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("过期表单应 404，得到 %d", w.Code)
+	}
+}
+
+// TestJoinNoticePairedEitherOrder：入群服务消息与冷判定禁言谁先到，
+// 都能把「XXX 已加入群组」删掉。
+func TestJoinNoticePairedEitherOrder(t *testing.T) {
+	// 服务消息先到，判定后命中。
+	b, fake := testutil.NewTestBot(t, 1)
+	noteJoinNotice(b, -100, 555, 50)
+	deleteJoinNotice(b, -100, 555)
+	if last := fake.LastCall("deleteMessage"); last == nil ||
+		last["message_id"] != float64(50) {
+		t.Errorf("判定命中时应删掉已知的服务消息，得到 %v", last)
+	}
+
+	// 判定先命中，服务消息后到。
+	b2, fake2 := testutil.NewTestBot(t, 1)
+	deleteJoinNotice(b2, -100, 556)
+	noteJoinNotice(b2, -100, 556, 60)
+	if last := fake2.LastCall("deleteMessage"); last == nil ||
+		last["message_id"] != float64(60) {
+		t.Errorf("服务消息后到时应当场删除，得到 %v", last)
+	}
+
+	// 没命中就不删：GC 前配对表里留着也不会有动作。
+	b3, fake3 := testutil.NewTestBot(t, 1)
+	noteJoinNotice(b3, -100, 557, 70)
+	if n := fake3.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("没有禁言就不该删服务消息，删了 %d 次", n)
+	}
+	GCJoinNotices(b3.Shared) // 不 panic 即可
+}

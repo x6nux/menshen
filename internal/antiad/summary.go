@@ -189,11 +189,21 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 		map[string]string{"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[r.Verdict],
 		html.EscapeString(adKindLabel(r.Kind)), r.Confidence*100, html.EscapeString(r.Decider))
 	fmt.Fprintf(&sb, "处置: %s\n", html.EscapeString(ActionLabel(r.Action)))
-	if r.Reason != "" {
-		fmt.Fprintf(&sb, "理由: %s\n", html.EscapeString(r.Reason))
+	if webRedacted(b) {
+		// 有公开地址：原文与理由改由查看页展示，聊天记录里不留。
+		sb.WriteString("\n<i>原文与理由已去敏，点下方按钮查看。</i>")
+	} else {
+		if r.Reason != "" {
+			fmt.Fprintf(&sb, "理由: %s\n", html.EscapeString(r.Reason))
+		}
+		fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>",
+			html.EscapeString(core.TruncateRunes(r.Text, 500)))
 	}
-	fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>", html.EscapeString(core.TruncateRunes(r.Text, 500)))
-	return sb.String(), adAlertKB(act, r.Reason, r.ID, dryrun)
+	rows := adAlertRows(act, r.Reason, r.ID, dryrun)
+	if links := adAlertLinks(b, r.ID); len(links) > 0 {
+		rows = append(rows, links)
+	}
+	return sb.String(), tg.InlineKB(rows...)
 }
 
 // ActionLabel 把 antiad_log.action 的机器值翻成人话。

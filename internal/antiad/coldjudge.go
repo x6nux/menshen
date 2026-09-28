@@ -211,7 +211,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		return
 	}
 
-	applyJoinMute(b, conf, u, v)
+	applyJoinMute(b, conf, u, v, bio)
 }
 
 // judgeJoin 是冷判定的判定编排：与消息判定同构，但两级都换成冷判定的
@@ -253,7 +253,7 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 // 禁言是**无限期**的（不给 until_date），因为解除的条件是「本人改正
 // 账号资料」而不是「等够时间」。给时限的话，广告号只要熬过去就能开工，
 // 而改正过的人却还要继续等。
-func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict) {
+func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
 	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
 		"chat_id": conf.ChatID, "user_id": u.ID,
 		"permissions": MutedPermissions(),
@@ -270,12 +270,83 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict) {
 
 	msgID := b.SendGetID(conf.ChatID, joinMuteNotice(b, u), joinMuteKB(b, conf.ChatID))
 	saveJoinMute(b, conf.ChatID, u.ID, reason, msgID)
+	// 判定命中即把那条「XXX 已加入群组」的服务消息删掉：广告号的昵称
+	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。
+	deleteJoinNotice(b, conf.ChatID, u.ID)
 
-	logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u},
+	logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
+		From: u, Text: joinProfileText(u, bio, v)},
 		v, "join_muted", "进群冷判定")
 
 	slog.Info("冷判定：已限制发言",
 		"chat", conf.ChatID, "uid", u.ID, "置信度", v.Confidence)
+}
+
+// joinProfileText 把进群资料渲染成流水正文。
+//
+// 冷判定的证据全在资料里（昵称、用户名、简介），不写进正文的话，
+// 查看页与记录卡片里看不出此人到底哪里违规。
+func joinProfileText(u *tg.TGUser, bio string, v adVerdict) string {
+	var sb strings.Builder
+	sb.WriteString("［入群资料检查］")
+	if n := displayUserName(u); n != "" {
+		sb.WriteString("\n昵称/用户名: " + n)
+	}
+	if b := strings.TrimSpace(bio); b != "" {
+		sb.WriteString("\n简介: " + core.TruncateRunes(b, 300))
+	}
+	if v.Kind != "" {
+		sb.WriteString("\n类型: " + v.Kind)
+	}
+	return sb.String()
+}
+
+// ---- 入群服务消息与判定结果配对 ----
+
+// joinNoticeEntry 是配对状态：msgID 为 0 表示判定先命中、消息还没到。
+type joinNoticeEntry struct {
+	msgID int64
+	muted bool
+	at    time.Time
+}
+
+// noteJoinNotice 记下入群服务消息的 ID；判定已先命中时当场删掉它。
+func noteJoinNotice(b *core.Bot, chatID, uid, msgID int64) {
+	key := fmt.Sprintf("%d:%d", chatID, uid)
+	if v, ok := b.Shared.JoinNotice.Load(key); ok {
+		if v.(joinNoticeEntry).muted {
+			b.TG.Call("deleteMessage", map[string]any{
+				"chat_id": chatID, "message_id": msgID})
+			b.Shared.JoinNotice.Delete(key)
+			return
+		}
+	}
+	b.Shared.JoinNotice.Store(key, joinNoticeEntry{msgID: msgID, at: time.Now()})
+}
+
+// deleteJoinNotice 在冷判定命中禁言时调用：已知服务消息就删掉，
+// 否则留下标记，消息到达时由 noteJoinNotice 删。
+func deleteJoinNotice(b *core.Bot, chatID, uid int64) {
+	key := fmt.Sprintf("%d:%d", chatID, uid)
+	if v, ok := b.Shared.JoinNotice.LoadAndDelete(key); ok {
+		if e := v.(joinNoticeEntry); e.msgID != 0 {
+			b.TG.Call("deleteMessage", map[string]any{
+				"chat_id": chatID, "message_id": e.msgID})
+		}
+		return
+	}
+	b.Shared.JoinNotice.Store(key, joinNoticeEntry{muted: true, at: time.Now()})
+}
+
+// GCJoinNotices 清掉 10 分钟没配上的条目，防止 map 无限增长。
+func GCJoinNotices(sh *core.Shared) {
+	cut := time.Now().Add(-10 * time.Minute)
+	sh.JoinNotice.Range(func(k, v any) bool {
+		if v.(joinNoticeEntry).at.Before(cut) {
+			sh.JoinNotice.Delete(k)
+		}
+		return true
+	})
 }
 
 // joinMuteNotice 渲染群内那条告知消息。

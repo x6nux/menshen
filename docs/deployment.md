@@ -76,6 +76,15 @@ location / {
 | `tg_api_base` | Bot API 基址，默认走反代 |
 | `tg_proxy` / `ai_proxy` | 出网代理，TG 与 AI 分开配，可留空 |
 | `db_path` | SQLite 路径，库里有上游 api_key 明文，建议 `chmod 600` |
+| `turnstile_site_key` / `turnstile_secret` | 申诉网页验证的 Cloudflare Turnstile 密钥；不配则申诉降级为「联系群管理员」 |
+| `client_ip_header` | 取真实客户端 IP 的请求头，如 `CF-Connecting-IP`、`X-Real-IP` |
+
+⚠️ 用申诉网页时，**Turnstile 后台的域名白名单必须包含 `public_url` 的主机名**，
+否则验证组件在页面上根本加载不出来，所有申诉都卡在网页这一步。
+
+`client_ip_header` 的前提是 `listen_addr` 只绑回环、流量全部经过反代 ——
+这个请求头才可信。原始 IP 与浏览器特征只存在数据库里，不写进任何
+Telegram 消息、也不上任何网页。
 
 **每一项都可以改用环境变量**：键名加 `MENSHEN_` 前缀转大写，多个值用逗号分隔，
 例如 `MENSHEN_ADMIN_IDS="1,2,3"`、`MENSHEN_BOT_TOKEN="..."`。环境变量**压过**

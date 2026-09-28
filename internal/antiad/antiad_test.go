@@ -207,11 +207,10 @@ func TestExtractJSONObject(t *testing.T) {
 // act.Delete 为真只说明「打算删」，删失败时若照样隐藏按钮，
 // 唯一需要人工补刀的场景恰好没有入口。
 func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
-	hasBtn := func(kb map[string]any, data string) bool {
-		rows, _ := kb["inline_keyboard"].([][]map[string]string)
+	hasBtn := func(rows [][][2]string, data string) bool {
 		for _, r := range rows {
 			for _, btn := range r {
-				if btn["callback_data"] == data {
+				if btn[1] == data {
 					return true
 				}
 			}
@@ -222,28 +221,28 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
 
 	// 全部成功：不再给删除/禁言按钮
-	kb := adAlertKB(act, "", 7, false)
-	if hasBtn(kb, "a:ad:del:7") || hasBtn(kb, "a:ad:mute:7") {
+	rows := adAlertRows(act, "", 7, false)
+	if hasBtn(rows, "a:ad:del:7") || hasBtn(rows, "a:ad:mute:7") {
 		t.Error("处置成功后不该再给补刀按钮")
 	}
 
 	// 删除失败：删除按钮必须回来，禁言按钮仍然不给
-	kb = adAlertKB(act, noteDeleteFailed+": no rights", 7, false)
-	if !hasBtn(kb, "a:ad:del:7") {
+	rows = adAlertRows(act, noteDeleteFailed+": no rights", 7, false)
+	if !hasBtn(rows, "a:ad:del:7") {
 		t.Error("删除失败后必须给回删除按钮")
 	}
-	if hasBtn(kb, "a:ad:mute:7") {
+	if hasBtn(rows, "a:ad:mute:7") {
 		t.Error("禁言成功时不该给禁言按钮")
 	}
 
 	// 演练模式：两个都要给，因为实际什么都没执行
-	kb = adAlertKB(act, "", 7, true)
-	if !hasBtn(kb, "a:ad:del:7") || !hasBtn(kb, "a:ad:mute:7") {
+	rows = adAlertRows(act, "", 7, true)
+	if !hasBtn(rows, "a:ad:del:7") || !hasBtn(rows, "a:ad:mute:7") {
 		t.Error("演练模式下两个补刀按钮都要给")
 	}
 
 	// 封禁按钮任何情况下都在
-	if !hasBtn(kb, "a:ad:ban:7") {
+	if !hasBtn(rows, "a:ad:ban:7") {
 		t.Error("封禁按钮应始终存在")
 	}
 }

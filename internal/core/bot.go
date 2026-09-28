@@ -92,6 +92,11 @@ type Shared struct {
 	// 不限次数但间隔递增，见 nextUnbanDelay。
 	UnbanGate sync.Map // int64(uid) -> unbanAttempt
 
+	// JoinNotice 把「XXX 已加入群组」服务消息与冷判定结果配对
+	// （见 antiad 的 noteJoinNotice）：命中禁言时那条服务消息也要删掉，
+	// 而它与判定结果谁先到都有可能。键 "chatID:uid"。
+	JoinNotice sync.Map
+
 	// transportFor 非空时用它建传输层，供测试整体替换掉真实 HTTP。
 	TransportFor func(token string) tg.Transport
 
@@ -489,6 +494,9 @@ func (b *Bot) RegisterCommands() {
 
 var adminCmds = []map[string]string{
 	{"command": "start", "description": "打开管理面板"},
+	{"command": "log", "description": "查看某条判定记录（/log 记录号）"},
+	{"command": "user", "description": "查看某人的判定记录（/user user_id）"},
+	{"command": "white", "description": "把某人加入本 bot 的豁免名单"},
 }
 
 // registerAdminCommands 为单个管理员设置 chat scope 的命令菜单。

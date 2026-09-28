@@ -122,6 +122,22 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// /log、/user、/white：记录查询与豁免名单。
+	switch {
+	case text == "/log" || strings.HasPrefix(text, "/log ") ||
+		strings.HasPrefix(text, "/log@"):
+		panel.HandleLogCommand(b, m, text)
+		return
+	case text == "/user" || strings.HasPrefix(text, "/user ") ||
+		strings.HasPrefix(text, "/user@"):
+		panel.HandleUserCommand(b, m, text)
+		return
+	case text == "/white" || strings.HasPrefix(text, "/white ") ||
+		strings.HasPrefix(text, "/white@"):
+		panel.HandleWhiteDM(b, m, text)
+		return
+	}
+
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
 		panel.ShowMainMenu(b, m.Chat.ID, 0, m.From.ID)
 		return

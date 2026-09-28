@@ -238,7 +238,7 @@ func TestJoinMuteNoticeHidesNameAndReason(t *testing.T) {
 		Reason: "简介写着 t.me/+abc 引流"}
 
 	applyJoinMute(b, conf, &tg.TGUser{ID: 555, FirstName: "日入5000 看主页",
-		Username: "riru_ad"}, v)
+		Username: "riru_ad"}, v, "简介写着 t.me/+abc 引流")
 	text := fake.LastCall("sendMessage")["text"].(string)
 	for _, bad := range []string{"日入5000", "riru_ad", "t.me/+abc"} {
 		if strings.Contains(text, bad) {
@@ -251,7 +251,7 @@ func TestJoinMuteNoticeHidesNameAndReason(t *testing.T) {
 
 	// 拿不到自己的用户名就没有 deep link 按钮，不能叫人去点一个不存在的按钮。
 	b.Username = ""
-	applyJoinMute(b, conf, &tg.TGUser{ID: 556}, v)
+	applyJoinMute(b, conf, &tg.TGUser{ID: 556}, v, "")
 	if text := fake.LastCall("sendMessage")["text"].(string); !strings.Contains(text, "联系群管理员") {
 		t.Errorf("没有解除按钮时应指向群管理员:\n%s", text)
 	}

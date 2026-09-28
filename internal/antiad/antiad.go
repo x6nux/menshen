@@ -429,7 +429,13 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// 管理员拉人进群时 from 是管理员。
 	if len(m.NewChatMembers) > 0 {
 		for _, nu := range m.NewChatMembers {
-			if nu != nil && b.ClaimSender(m.Chat.ID, nu.ID, time.Now()) {
+			if nu == nil {
+				continue
+			}
+			// 与冷判定结果配对：命中禁言时这条「XXX 已加入群组」也要删
+			// （广告号的昵称会原样出现在里面），而谁先到都有可能。
+			noteJoinNotice(b, m.Chat.ID, nu.ID, m.MessageID)
+			if b.ClaimSender(m.Chat.ID, nu.ID, time.Now()) {
 				onJoin(b, conf, nu, at)
 			}
 		}
@@ -1349,13 +1355,13 @@ func logAd(b *core.Bot, m *tg.Message, v adVerdict, action, reason string) int64
 
 	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log
 		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
-		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,bot_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,bot_id,user_name)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		m.Chat.ID, m.From.ID, m.MessageID,
 		core.TruncateRunes(displayText(m), adTextLimit),
 		verdict, v.Confidence, v.Decider, v.Kind, action, note,
 		v.Usage.PromptTokens, v.Usage.CompletionTokens, v.Cost,
-		time.Now().Unix(), b.BotID())
+		time.Now().Unix(), b.BotID(), displayUserName(m.From))
 	if err != nil {
 		slog.Error("反广告：流水落库失败", "chat", m.Chat.ID, "err", err)
 		return 0
@@ -1450,7 +1456,11 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 		fmt.Fprintf(&sb, "└ ⚠️    %s\n", html.EscapeString(core.TruncateRunes(note, 60)))
 	}
 
-	return sb.String(), adAlertKB(act, note, logID, dryrun)
+	rows := adAlertRows(act, note, logID, dryrun)
+	if links := adAlertLinks(b, logID); len(links) > 0 {
+		rows = append(rows, links)
+	}
+	return sb.String(), tg.InlineKB(rows...)
 }
 
 // userLink 渲染可点开的用户 ID。不写昵称：广告号的昵称本身就是广告，
@@ -1510,12 +1520,12 @@ func SweepAlertCleanup(b *core.Bot, now time.Time) {
 	}
 }
 
-// adAlertKB 构造处置按钮。私聊版与群内版共用 —— 两处各写一份的话，
+// adAlertRows 构造处置按钮行。私聊版与群内版共用 —— 两处各写一份的话，
 // 「删失败要把按钮放回来」这类规则迟早只在一边生效。
 //
 // 按钮按「当前还能做什么」动态生成：已经删过的不再给删除按钮。
 // callback_data 形如 a:ad:fp:12345，远在 64 字节以内。
-func adAlertKB(act adAction, note string, logID int64, dryrun bool) map[string]any {
+func adAlertRows(act adAction, note string, logID int64, dryrun bool) [][][2]string {
 	rows := [][][2]string{{
 		{"✅ 判定正确", fmt.Sprintf("a:ad:ok:%d", logID)},
 		{"↩️ 误判", fmt.Sprintf("a:ad:fp:%d", logID)},
@@ -1535,8 +1545,30 @@ func adAlertKB(act adAction, note string, logID int64, dryrun bool) map[string]a
 	rows = append(rows, [][2]string{
 		{"🚫 封禁出群", fmt.Sprintf("a:ad:ban:%d", logID)},
 	})
-	return tg.InlineKB(rows...)
+	return rows
 }
+
+// adAlertLinks 是「查看原文与理由 / 申诉」两个链接按钮行（§5.2）。
+//
+// 有公开地址时查看页可用；bot 有用户名时申诉 deep link 才拼得出来。
+func adAlertLinks(b *core.Bot, logID int64) [][2]string {
+	var row [][2]string
+	if u := LogViewURL(b.Shared, logID); u != "" {
+		row = append(row, [2]string{"📄 查看原文与理由", tg.URLBtn(u)})
+	}
+	if b.Username != "" {
+		row = append(row, [2]string{"📝 申诉",
+			tg.URLBtn("https://t.me/" + b.Username + "?start=appeal")})
+	}
+	return row
+}
+
+// webRedacted 报告私聊内容是否要按「有公开地址」的规则去敏。
+//
+// 有公开地址时，私聊告警、面板记录列表与申诉卡片都不带原文、理由与昵称，
+// 改由查看页展示：TG 聊天记录会永久留存、还可能被转发。没有公开地址
+// （轮询模式）时保持原样 —— 否则管理员完全看不到内容。
+func webRedacted(b *core.Bot) bool { return WebAvailable(b.Shared) }
 
 // actionDesc 把动作组合渲染成人话。
 func actionDesc(act adAction) string {
@@ -1579,6 +1611,9 @@ type AdLogRow struct {
 	Kind       string
 	Action     string
 	Reason     string
+	// UserName 是判定当时的昵称与用户名：广告号被处置后常改名，
+	// 事后再查就对不上了。
+	UserName string
 
 	PromptTokens     int64
 	CompletionTokens int64
@@ -1586,14 +1621,29 @@ type AdLogRow struct {
 	CreatedAt        int64
 }
 
+// displayUserName 把 TG 资料拼成「名 姓 (@username)」。
+func displayUserName(u *tg.TGUser) string {
+	if u == nil {
+		return ""
+	}
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if u.Username != "" {
+		if name != "" {
+			return name + " (@" + u.Username + ")"
+		}
+		return "@" + u.Username
+	}
+	return name
+}
+
 func LoadAdLog(s *store.Store, id int64) (AdLogRow, bool) {
 	var r AdLogRow
 	err := s.Read.QueryRow(`SELECT id,bot_id,chat_id,user_id,message_id,text,verdict,
 		confidence,decider,ad_kind,action,reason,prompt_tokens,completion_tokens,
-		quota_cost,created_at FROM antiad_log WHERE id=?`, id).
+		quota_cost,created_at,user_name FROM antiad_log WHERE id=?`, id).
 		Scan(&r.ID, &r.BotID, &r.ChatID, &r.UserID, &r.MessageID, &r.Text, &r.Verdict,
 			&r.Confidence, &r.Decider, &r.Kind, &r.Action, &r.Reason,
-			&r.PromptTokens, &r.CompletionTokens, &r.QuotaCost, &r.CreatedAt)
+			&r.PromptTokens, &r.CompletionTokens, &r.QuotaCost, &r.CreatedAt, &r.UserName)
 	if err != nil {
 		return r, false
 	}

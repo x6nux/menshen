@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -465,6 +467,34 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 				"每项形如 <code>上游名/模型ID</code>，必须已存在于「模型定价」且为启用状态。\n"+
 				"填 <code>-</code> 表示沿用全局默认。")
 
+	case "wd": // a:mb:<botID>:wd:<chat>:<uid> —— 移除一条白名单
+		if len(parts) < 6 {
+			b.AnswerCallback(q.ID, "参数缺失")
+			return
+		}
+		targetChat, err1 := strconv.ParseInt(parts[4], 10, 64)
+		targetUID, err2 := strconv.ParseInt(parts[5], 10, 64)
+		if err1 != nil || err2 != nil {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		if _, err := b.Store.Write.Exec(`DELETE FROM ad_whitelist
+			WHERE bot_id=? AND chat_id=? AND user_id=?`,
+			botID, targetChat, targetUID); err != nil {
+			b.AnswerCallback(q.ID, "移除失败")
+			return
+		}
+		// 全平台白名单只有主管理员能撤。
+		if b.IsMain(uid) {
+			b.Store.Write.Exec(`DELETE FROM ad_whitelist
+				WHERE bot_id=0 AND chat_id=? AND user_id=?`, targetChat, targetUID)
+		}
+		if err := b.Cache.Reload(); err != nil {
+			slog.Error("移除白名单后 reload 失败", "err", err)
+		}
+		b.AnswerCallback(q.ID, "已移除")
+		showBotExempt(b, chatID, 0, botID)
+
 	case "log": // a:mb:<id>:log[:<page>:<all>]
 		page, all := 1, false
 		if len(parts) >= 6 {
@@ -705,8 +735,82 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 			fmt.Sprintf("🗑 移除 %d", uid),
 			fmt.Sprintf("a:mb:%d:exd:%d", botID, uid)}})
 	}
+
+	// 解禁码 / /white 产生的白名单：群范围或全平台，到期自动失效。
+	type wl struct {
+		botID, chatID, uid, expiresAt int64
+		source                        string
+	}
+	var whitelist []wl
+	rowsW, err := b.Store.Read.Query(`SELECT bot_id,chat_id,user_id,expires_at,source
+		FROM ad_whitelist WHERE bot_id=? OR bot_id=0
+		ORDER BY user_id, chat_id`, botID)
+	if err == nil {
+		for rowsW.Next() {
+			var w wl
+			if rowsW.Scan(&w.botID, &w.chatID, &w.uid, &w.expiresAt, &w.source) == nil {
+				whitelist = append(whitelist, w)
+			}
+		}
+		rowsW.Close()
+	}
+	if len(whitelist) > 0 {
+		sb.WriteString("\n<b>白名单</b>（免于反广告检查）\n")
+		tz := b.Cache.Snap().SettingInt("tz_offset", 8)
+		for _, w := range whitelist {
+			scope := fmt.Sprintf("群 <code>%d</code>", w.chatID)
+			if w.chatID == 0 {
+				scope = "本 bot 所有群"
+			}
+			if w.botID == 0 {
+				scope = "全平台"
+			}
+			expires := "永久"
+			if w.expiresAt != 0 {
+				expires = time.Unix(w.expiresAt+tz*3600, 0).UTC().Format("01-02 15:04")
+			}
+			fmt.Fprintf(&sb, "• <code>%d</code> ｜ %s ｜ %s ｜ 至 %s\n",
+				w.uid, scope, html.EscapeString(w.source), expires)
+			rows = append(rows, [][2]string{{
+				fmt.Sprintf("🗑 白名单 %d @%d", w.uid, w.chatID),
+				fmt.Sprintf("a:mb:%d:wd:%d:%d", botID, w.chatID, w.uid)}})
+		}
+	}
+
 	rows = append(rows, [][2]string{{"◀️ 返回", fmt.Sprintf("a:mb:%d", botID)}})
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
+}
+
+// HandleWhiteDM 处理管理员私聊的 /white <uid>：加进本 bot 的豁免名单。
+// 群里的 /white 是另一回事（加入本群白名单，见 antiad.HandleAdwCommand）。
+func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
+	chatID := m.Chat.ID
+	fields := strings.Fields(strings.TrimPrefix(text, "/white"))
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "@") {
+		fields = fields[1:] // /white@botname <uid>
+	}
+	usage := "用法：<code>/white &lt;user_id&gt;</code>\n\n" +
+		"把某人加入本 bot 的豁免名单，他在这台 bot 名下的所有群里" +
+		"发言都不进判定。"
+	if len(fields) == 0 {
+		b.Send(chatID, usage, nil)
+		return
+	}
+	uid, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || uid == 0 {
+		b.Send(chatID, usage, nil)
+		return
+	}
+	list := b.Cache.Snap().BotSettingInt64List(b.BotID(), "antiad_exempt_users")
+	if slices.Contains(list, uid) {
+		b.Send(chatID, fmt.Sprintf("<code>%d</code> 已经在豁免名单里了。", uid), nil)
+		return
+	}
+	if err := b.PutBotInt64List(b.BotID(), "antiad_exempt_users", append(list, uid)); err != nil {
+		b.Send(chatID, "保存失败。", nil)
+		return
+	}
+	b.Send(chatID, fmt.Sprintf("✅ 已把 <code>%d</code> 加入本 bot 的豁免名单。", uid), nil)
 }
 
 // ---- 管理员面板（仅主管理员）----

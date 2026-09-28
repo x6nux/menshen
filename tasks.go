@@ -56,6 +56,7 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 	antiad.GCDoomedAlbums(sh)   // 已判成广告的相册
 	sh.AdLimits.GC()            // 反广告护栏窗口：回收长期无人问津的 key
 	antiad.GCUnbanGate(sh)      // 申诉的重试记录
+	antiad.GCJoinNotices(sh)    // 入群服务消息与判定结果的配对条目
 	sh.GCShard(time.Now())      // 同群多 bot 的发言人认领
 	if reg != nil {
 		now := time.Now()
