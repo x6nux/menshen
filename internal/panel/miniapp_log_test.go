@@ -281,3 +281,86 @@ func TestMiniSetTimezone(t *testing.T) {
 		t.Errorf("次级管理员设时区应 403，得到 %d", w.Code)
 	}
 }
+
+// TestMiniGbanScopes：全局组对所有管理员开放；专属组按人分账本，
+// 生效群只能圈自己名下 bot 覆盖的群。
+func TestMiniGbanScopes(t *testing.T) {
+	reg, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.EnableAntiad(t, b, -100)
+	// 次级管理员 888 名下有 bot 43。
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	reg.LoadAll()
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+	sub888 := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+	callAs := func(token, initData string, botID int64, op string, body any) (int, map[string]any) {
+		w := miniDo(t, env.h, token, initData, botID, op, body)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	// 次级管理员能管理全局组（原本只有主管理员能写）。
+	if code, _ := callAs(testToken2, sub888, 43, "gban",
+		map[string]any{"action": "add", "user_id": 700, "reason": "次管写入"}); code != http.StatusOK {
+		t.Fatalf("次管写全局组应 200")
+	}
+	if _, ok := sh.Cache.Snap().Gban[700]; !ok {
+		t.Fatal("全局组条目没落库")
+	}
+
+	// 专属组：888 圈定自己 bot 的群、加人、看状态。
+	if code, _ := callAs(testToken2, sub888, 43, "gbanown",
+		map[string]any{"action": "chat", "chat_id": -100, "on": true}); code == http.StatusOK {
+		t.Fatal("圈定别人名下 bot 的群应被拒绝")
+	}
+	// bot 43 名下加一个群。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
+		(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
+		VALUES (43,-200,'次管群',1,0,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := callAs(testToken2, sub888, 43, "gbanown",
+		map[string]any{"action": "chat", "chat_id": -200, "on": true}); code != http.StatusOK {
+		t.Fatal("圈定自己名下的群应 200")
+	}
+	if code, _ := callAs(testToken2, sub888, 43, "gbanown",
+		map[string]any{"action": "add", "user_id": 701, "reason": "专属"}); code != http.StatusOK {
+		t.Fatal("专属组加人应 200")
+	}
+	if _, ok := sh.Cache.Snap().GbanOwnBans[888][701]; !ok {
+		t.Fatal("专属组条目没落库")
+	}
+
+	// 状态：888 应同时看到全局组与自己名下的专属组。
+	code, out := callAs(testToken2, sub888, 43, "state", nil)
+	if code != http.StatusOK {
+		t.Fatalf("state 应 200，得到 %d", code)
+	}
+	if _, ok := out["gban"]; !ok {
+		t.Error("次级管理员也应看到全局组名单")
+	}
+	own, ok := out["gban_own"].(map[string]any)
+	if !ok {
+		t.Fatal("state 缺少 gban_own")
+	}
+	if own["enabled"] != true || len(own["bans"].([]any)) != 1 {
+		t.Errorf("gban_own 内容不对：%v", own)
+	}
+
+	// 主管理员的专属组与 888 的互不可见。
+	code, out = callAs(testutil.TestToken, init, testutil.TestBotID, "state", nil)
+	own = out["gban_own"].(map[string]any)
+	if len(own["bans"].([]any)) != 0 {
+		t.Errorf("主管理员的专属组不应看到 888 的条目：%v", own)
+	}
+	_ = reg
+}

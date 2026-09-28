@@ -176,6 +176,8 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 		miniAdmin(sh, w, uid, body)
 	case "gban":
 		miniGban(sh, w, uid, body)
+	case "gbanown":
+		miniGbanOwn(sh, w, uid, body)
 	case "whitelist":
 		miniWhitelist(sh, w, uid, body)
 	case "digest":
@@ -280,6 +282,27 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 	}
 	out["whitelist"] = miniWhitelistRows(sh, uid, main)
 
+	// 全局联合封禁组对所有管理员开放（共同维护的名单），专属组按人给。
+	gbans := []map[string]any{}
+	for _, g := range snap.Gban {
+		gbans = append(gbans, map[string]any{
+			"user_id": g.UserID, "reason": g.Reason,
+			"src_chat": g.SrcChat, "created_at": g.CreatedAt})
+	}
+	out["gban"] = gbans
+	ownBans := []map[string]any{}
+	for _, g := range snap.GbanOwnBans[uid] {
+		ownBans = append(ownBans, map[string]any{
+			"user_id": g.UserID, "reason": g.Reason,
+			"src_chat": g.SrcChat, "created_at": g.CreatedAt})
+	}
+	ownChats := []int64{}
+	for chatID := range snap.GbanOwnChats[uid] {
+		ownChats = append(ownChats, chatID)
+	}
+	out["gban_own"] = map[string]any{
+		"enabled": snap.GbanOwnOn(uid), "chats": ownChats, "bans": ownBans}
+
 	if main {
 		ups := []map[string]any{}
 		for _, u := range snap.Upstreams {
@@ -312,14 +335,6 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 				"user_id": a.UserID, "note": a.Note})
 		}
 		out["admins"] = admins
-
-		gbans := []map[string]any{}
-		for _, g := range snap.Gban {
-			gbans = append(gbans, map[string]any{
-				"user_id": g.UserID, "reason": g.Reason,
-				"src_chat": g.SrcChat, "created_at": g.CreatedAt})
-		}
-		out["gban"] = gbans
 	}
 	miniOK(w, out)
 }
@@ -788,10 +803,8 @@ func miniAdmin(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 }
 
 func miniGban(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	if !sh.IsMain(uid) {
-		miniErr(w, http.StatusForbidden, "只有主管理员能管理联合封禁")
-		return
-	}
+	// 全局组对所有管理员开放：共同维护的名单，每人都能加人/移人
+	// （自动命中仍走判定链路的门槛）。
 	target := miniInt(body, "user_id")
 	switch miniStr(body, "action") {
 	case "add":
@@ -799,10 +812,16 @@ func miniGban(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			miniErr(w, http.StatusBadRequest, "user_id 无效")
 			return
 		}
-		if err := antiad.GbanAdd(sh, target, miniStr(body, "reason"), 0, 0); err != nil {
+		reason := miniStr(body, "reason")
+		if reason == "" {
+			reason = "管理员手工加入"
+		}
+		if err := antiad.GbanAdd(sh, target, reason, 0, 0); err != nil {
 			miniErr(w, http.StatusInternalServerError, "添加失败")
 			return
 		}
+		// 手工加入与判定命中同待遇：落名单即在全局组覆盖范围内执行。
+		go antiad.EnforceGban(sh, target, reason)
 	case "remove":
 		antiad.LiftGban(sh, target)
 	default:
@@ -810,6 +829,66 @@ func miniGban(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 		return
 	}
 	miniOK(w, map[string]any{"ok": true})
+}
+
+// miniGbanOwn 管理请求者自己的专属联合封禁组：开关、圈定生效群、
+// 名单增删。
+func miniGbanOwn(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	target := miniInt(body, "user_id")
+	switch miniStr(body, "action") {
+	case "enable":
+		if err := antiad.GbanOwnSetEnabled(sh, uid, miniBool(body, "on")); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+	case "chat":
+		chatID := miniInt(body, "chat_id")
+		if !ownChat(sh, uid, chatID) {
+			miniErr(w, http.StatusBadRequest, "只能圈定自己名下 bot 覆盖的群")
+			return
+		}
+		if err := antiad.GbanOwnSetChat(sh, uid, chatID, miniBool(body, "on")); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+	case "add":
+		if target == 0 {
+			miniErr(w, http.StatusBadRequest, "user_id 无效")
+			return
+		}
+		reason := miniStr(body, "reason")
+		if reason == "" {
+			reason = "管理员手工加入"
+		}
+		if err := antiad.GbanOwnAddBan(sh, uid, target, reason, 0); err != nil {
+			miniErr(w, http.StatusInternalServerError, "添加失败")
+			return
+		}
+		go antiad.EnforceGbanOwn(sh, uid, target)
+	case "remove":
+		if err := antiad.GbanOwnRemoveBan(sh, uid, target); err != nil {
+			miniErr(w, http.StatusInternalServerError, "移除失败")
+			return
+		}
+	default:
+		miniErr(w, http.StatusBadRequest, "未知操作")
+		return
+	}
+	miniOK(w, map[string]any{"ok": true})
+}
+
+// ownChat 报告某个群是否由请求者名下的 bot 覆盖：专属组的生效群
+// 只能从这里圈。
+func ownChat(sh *core.Shared, uid, chatID int64) bool {
+	snap := sh.Cache.Snap()
+	for _, rec := range snap.BotsOwnedBy(uid, false) {
+		for _, c := range snap.ChatsOf(rec.BotID) {
+			if c.ChatID == chatID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
@@ -1189,7 +1268,7 @@ func miniAppealact(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 	var actErr error
 	switch action {
 	case "approve":
-		actErr = antiad.AdminLiftAppeal(inst, id, uid, sh.IsMain(uid))
+		actErr = antiad.AdminLiftAppeal(inst, id, uid)
 	case "reject":
 		actErr = antiad.AdminRejectAppeal(inst, id, uid)
 	case "issue_code":

@@ -781,8 +781,11 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
-// HandleWhiteDM 处理管理员私聊的 /white <uid>：加进本 bot 的豁免名单。
-// 群里的 /white 是另一回事（加入本群白名单，见 antiad.HandleAdwCommand）。
+// HandleWhiteDM 处理管理员私聊的 /white <uid>：
+//   - 加入本 bot 的豁免名单（这台 bot 名下所有群不进判定）；
+//   - 解除联合封禁（全局组对所有管理员开放，专属组只动自己的账本）。
+//
+// 群里的 /white 是另一回事（本群白名单 + 本群解封，见 antiad.HandleAdwCommand）。
 func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
 	chatID := m.Chat.ID
 	fields := strings.Fields(strings.TrimPrefix(text, "/white"))
@@ -790,8 +793,8 @@ func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
 		fields = fields[1:] // /white@botname <uid>
 	}
 	usage := "用法：<code>/white &lt;user_id&gt;</code>\n\n" +
-		"把某人加入本 bot 的豁免名单，他在这台 bot 名下的所有群里" +
-		"发言都不进判定。"
+		"把某人加入本 bot 的豁免名单（名下所有群不进判定），并解除联合封禁" +
+		"（全局组 + 你的专属组）。"
 	if len(fields) == 0 {
 		b.Send(chatID, usage, nil)
 		return
@@ -801,16 +804,26 @@ func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
 		b.Send(chatID, usage, nil)
 		return
 	}
+	var notes []string
 	list := b.Cache.Snap().BotSettingInt64List(b.BotID(), "antiad_exempt_users")
-	if slices.Contains(list, uid) {
-		b.Send(chatID, fmt.Sprintf("<code>%d</code> 已经在豁免名单里了。", uid), nil)
+	if !slices.Contains(list, uid) {
+		if err := b.PutBotInt64List(b.BotID(), "antiad_exempt_users",
+			append(list, uid)); err != nil {
+			b.Send(chatID, "保存失败。", nil)
+			return
+		}
+		notes = append(notes, "已加入本 bot 的豁免名单")
+	}
+	if scope := antiad.AdminLiftGban(b.Shared, m.From.ID, uid); scope != "" {
+		notes = append(notes, "已解除"+scope+"（含各群解封）")
+	}
+	if len(notes) == 0 {
+		b.Send(chatID, fmt.Sprintf(
+			"<code>%d</code> 已经在豁免名单里，也不在任何联合封禁名单里。", uid), nil)
 		return
 	}
-	if err := b.PutBotInt64List(b.BotID(), "antiad_exempt_users", append(list, uid)); err != nil {
-		b.Send(chatID, "保存失败。", nil)
-		return
-	}
-	b.Send(chatID, fmt.Sprintf("✅ 已把 <code>%d</code> 加入本 bot 的豁免名单。", uid), nil)
+	b.Send(chatID, fmt.Sprintf("✅ <code>%d</code>：%s。", uid,
+		strings.Join(notes, "；")), nil)
 }
 
 // ---- 管理员面板（仅主管理员）----

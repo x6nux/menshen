@@ -23,6 +23,9 @@ import (
 var settingDefaults = map[string]string{
 	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是旧的小时
 	// 偏移键，仅在 tz_name 无效时作回落用，面板上已不再直接暴露。
+	// gban_global 是 bot 级的「加入全局联合封禁组」：1 = 共享命中并接收
+	// 全局组执行，0 = 只在本归属人的专属组里联动。每 bot 可关。
+	"gban_global":        "1",
 	"tz_name":            "Asia/Shanghai",
 	"tz_offset":          "8",
 	"log_retention_days": "30",
@@ -208,6 +211,11 @@ type Snapshot struct {
 	BotSettings map[int64]map[string]string // botID -> k -> v
 	Admins      map[int64]AdminRec
 	Gban        map[int64]GbanRec
+	// GbanOwn* 是专属联合封禁组：owner_id -> 组开关 / 生效群 / 封禁条目。
+	// GbanOwn 缺行视为开启（组的存在不需要显式创建），用 GbanOwnOn 判断。
+	GbanOwn      map[int64]bool
+	GbanOwnChats map[int64]map[int64]bool
+	GbanOwnBans  map[int64]map[int64]GbanRec
 	// Whitelist 是申诉解禁 / /white 产生的白名单，量小，线性扫即可。
 	Whitelist []WhiteRec
 }
@@ -404,14 +412,17 @@ func (c *Cache) Snap() *Snapshot { return c.cfg.Load() }
 // 而这里扫的是权限与生效群——静默少一半等于静默改权限。
 func (c *Cache) Reload() error {
 	snap := &Snapshot{
-		Models:      map[string]*upstream.Model{},
-		Settings:    map[string]string{},
-		Bots:        map[int64]*BotRec{},
-		BotTokens:   map[string]*BotRec{},
-		BotChats:    map[int64]map[int64]BotChat{},
-		BotSettings: map[int64]map[string]string{},
-		Admins:      map[int64]AdminRec{},
-		Gban:        map[int64]GbanRec{},
+		Models:       map[string]*upstream.Model{},
+		Settings:     map[string]string{},
+		Bots:         map[int64]*BotRec{},
+		BotTokens:    map[string]*BotRec{},
+		BotChats:     map[int64]map[int64]BotChat{},
+		BotSettings:  map[int64]map[string]string{},
+		Admins:       map[int64]AdminRec{},
+		Gban:         map[int64]GbanRec{},
+		GbanOwn:      map[int64]bool{},
+		GbanOwnChats: map[int64]map[int64]bool{},
+		GbanOwnBans:  map[int64]map[int64]GbanRec{},
 	}
 
 	if err := c.loadModels(snap); err != nil {
@@ -616,7 +627,75 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		}
 		snap.Whitelist = append(snap.Whitelist, w)
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	// 专属联合封禁组：开关、生效群、封禁条目，一次读完。
+	rows, err = c.store.Read.Query(`SELECT owner_id,enabled FROM gban_own`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ownerID, enabled int64
+		if err := rows.Scan(&ownerID, &enabled); err != nil {
+			return err
+		}
+		snap.GbanOwn[ownerID] = enabled == 1
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	rows, err = c.store.Read.Query(`SELECT owner_id,chat_id FROM gban_own_chats`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ownerID, chatID int64
+		if err := rows.Scan(&ownerID, &chatID); err != nil {
+			return err
+		}
+		if snap.GbanOwnChats[ownerID] == nil {
+			snap.GbanOwnChats[ownerID] = map[int64]bool{}
+		}
+		snap.GbanOwnChats[ownerID][chatID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	rows, err = c.store.Read.Query(`SELECT owner_id,user_id,reason,src_chat,created_at
+		FROM gban_own_bans`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g GbanRec
+		var ownerID int64
+		if err := rows.Scan(&ownerID, &g.UserID, &g.Reason, &g.SrcChat,
+			&g.CreatedAt); err != nil {
+			return err
+		}
+		if snap.GbanOwnBans[ownerID] == nil {
+			snap.GbanOwnBans[ownerID] = map[int64]GbanRec{}
+		}
+		snap.GbanOwnBans[ownerID][g.UserID] = g
+	}
 	return rows.Err()
+}
+
+// GbanOwnOn 报告某管理员的专属联合封禁组是否开启。缺行视为开启：
+// 组的存在本身不需要一次显式创建，关掉才会落行。
+func (s *Snapshot) GbanOwnOn(ownerID int64) bool {
+	v, ok := s.GbanOwn[ownerID]
+	return !ok || v
 }
 
 // Whitelisted 报告此人在这个范围内是否处于白名单中。

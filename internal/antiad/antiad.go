@@ -479,6 +479,12 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// 联合封禁在发言路径同样生效（进群路径是 gbanGuard）：白名单优先，
+	// 命中即禁言、删除本条，不再留底、不再送检。
+	if GbanMessageGuard(b, m.Chat.ID, m.From, m.MessageID) {
+		return
+	}
+
 	// 判空看的是「本人正文 + 引用内容」的合集，不能只看本人正文：
 	// 规避形态的极限版是一个字都不发（只发贴纸），载荷全在引用块里。
 	text := displayText(m)

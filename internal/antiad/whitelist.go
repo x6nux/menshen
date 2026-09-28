@@ -51,6 +51,11 @@ func HandleAdwCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 		reply("加入白名单失败，请稍后再试。")
 		return
 	}
+	// 本群解封：联合封禁（全局组/专属组）若在此群执行过封禁，一并撤掉——
+	// 只加白名单的话，被请出去的人还是进不来。only_if_banned 是必须的：
+	// 对没被封的人解封等于把他踢出去。
+	b.CallOK("unbanChatMember", map[string]any{
+		"chat_id": conf.ChatID, "user_id": uid, "only_if_banned": true})
 	// 只写 ID 链接不写昵称，理由同 userLink。
 	reply("🤍 已将 " + userLink(uid) + " 加入本群反广告白名单。")
 }

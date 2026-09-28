@@ -226,7 +226,7 @@ func TestLiftGbanPassesOnlyIfBanned(t *testing.T) {
 	}
 	LiftGban(b.Shared, 777)
 
-	if _, still := isGbanned(b.Shared, 777); still {
+	if _, still := b.Cache.Snap().Gban[777]; still {
 		t.Error("解除后仍在名单里")
 	}
 	p := fake.LastCall("unbanChatMember")
@@ -259,7 +259,7 @@ func TestGbanCrossesOwners(t *testing.T) {
 	testutil.EnableAntiad(t, b2, -200)
 
 	var chats []int64
-	eachActiveChat(b.Shared, func(_ []*core.Bot, chatID int64) { chats = append(chats, chatID) })
+	eachActiveChat(b.Shared, nil, func(_ []*core.Bot, chatID int64) { chats = append(chats, chatID) })
 	if len(chats) != 2 {
 		t.Fatalf("全平台扫到 %d 个群（%v），期望跨 owner 的 2 个", len(chats), chats)
 	}
@@ -280,7 +280,7 @@ func TestEachActiveChatSkipsDisabled(t *testing.T) {
 	testutil.SetChatEnabled(t, b, -200, false)
 
 	var got []int64
-	eachActiveChat(b.Shared, func(_ []*core.Bot, chatID int64) { got = append(got, chatID) })
+	eachActiveChat(b.Shared, nil, func(_ []*core.Bot, chatID int64) { got = append(got, chatID) })
 	if len(got) != 1 || got[0] != -100 {
 		t.Errorf("遍历到的群 = %v, 期望只有 [-100]", got)
 	}

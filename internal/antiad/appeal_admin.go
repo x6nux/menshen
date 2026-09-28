@@ -17,10 +17,9 @@ func appealOpen(status string) bool {
 	return slices.Contains(appealOpenStatuses, status)
 }
 
-// AdminLiftAppeal 人工通过申诉：撤销全部有效限制并结案。
-// 联合封禁是全平台的决定，非主管理员遇到它时拒绝而不是悄悄跳过——
-// 静默跳过会让操作者以为全解了，其实全平台封禁还在。
-func AdminLiftAppeal(b *core.Bot, appealID, byUID int64, isMain bool) error {
+// AdminLiftAppeal 人工通过申诉：撤销全部有效限制并结案。全局组对所有
+// 管理员开放（共同维护的名单），因此联合封禁不再要求主管理员身份。
+func AdminLiftAppeal(b *core.Bot, appealID, byUID int64) error {
 	ap, ok := loadAppealByID(b.Store, appealID)
 	if !ok {
 		return fmt.Errorf("申诉单不存在")
@@ -33,9 +32,6 @@ func AdminLiftAppeal(b *core.Bot, appealID, byUID int64, isMain bool) error {
 		updateAppeal(b.Shared, ap.ID,
 			`status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
 		return nil
-	}
-	if !isMain && hasGbanPenalty(penalties) {
-		return fmt.Errorf("此人带着联合封禁，只有主管理员能解除")
 	}
 	liftAppealPenalties(b, ap.ID, ap.UserID, penalties)
 	slog.Info("申诉：管理员人工解除", "appeal", ap.ID, "uid", ap.UserID, "by", byUID)

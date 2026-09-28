@@ -71,14 +71,36 @@ CREATE TABLE IF NOT EXISTS bot_settings (
   PRIMARY KEY (bot_id, k)
 );
 
--- 联合封禁名单。全平台共享：任一接入群判定的广告号，在所有 bot 的
--- 所有生效群一起封，新号进群时也拦在门口。
+-- 联合封禁的全局组。默认存在，bot 可选择加入（bots 级设置 gban_global）：
+-- 加入的 bot 共享彼此的命中，也接收全组执行。
 CREATE TABLE IF NOT EXISTS gban (
   user_id    INTEGER PRIMARY KEY,
   reason     TEXT    NOT NULL DEFAULT '',
   src_chat   INTEGER NOT NULL DEFAULT 0,
   by_bot     INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
+);
+
+-- 专属联合封禁组：每个管理员（主/次）名下一个，可整体开关并圈定生效群。
+-- 封禁条目按管理员分账本——名下 bot 命中最高档处置时记进归属人的专属组，
+-- 只在他圈定的群里执行。enabled 缺行视为开启：组的存在不需要显式创建。
+CREATE TABLE IF NOT EXISTS gban_own (
+  owner_id   INTEGER PRIMARY KEY,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS gban_own_chats (
+  owner_id INTEGER NOT NULL,
+  chat_id  INTEGER NOT NULL,
+  PRIMARY KEY (owner_id, chat_id)
+);
+CREATE TABLE IF NOT EXISTS gban_own_bans (
+  owner_id   INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  reason     TEXT    NOT NULL DEFAULT '',
+  src_chat   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (owner_id, user_id)
 );
 
 -- 进群冷判定后被限制发言的人，以及他自助解除所需的全部上下文。

@@ -106,7 +106,7 @@ var S = null, TAB = 'overview';
 // 空串表示停在列表页。切 tab 清空。
 var SUB = '';
 // LSUB 是「名单」页的内部分段；UPADD/MDADD 控制两个新增表单的展开。
-var LSUB = 'admins', UPADD = false, MDADD = false;
+var LSUB = 'own', UPADD = false, MDADD = false;
 // LOGF/LOGQ/LOGPAGE 是记录页的筛选、搜索与页码；APF/APPAGE 同理给申诉。
 // 记录默认筛「已删除」：被判广告删掉的才是要盯的，其余靠切换筛选看。
 var LOGF = 'deleted', LOGQ = '', LOGPAGE = 1;
@@ -146,7 +146,7 @@ function render(){
   document.getElementById('who').textContent = (S.me.main?'主管理员':'次级管理员')+' · uid '+S.me.uid;
   var nav = document.getElementById('tabs'); nav.innerHTML='';
   TABS.forEach(function(t){
-    if(!S.me.main && (t[0]=='upstreams'||t[0]=='models'||t[0]=='lists')) return;
+    if(!S.me.main && (t[0]=='upstreams'||t[0]=='models')) return;
     var b=document.createElement('button'); b.textContent=t[1];
     if(TAB==t[0]) b.className='on';
     b.onclick=function(){ go(t[0]); };
@@ -426,15 +426,47 @@ function viewSettings(){
   return h;
 }
 
-/* ---- 名单（主管理员）：分段切换，不再三张卡摞一页 ---- */
+/* ---- 名单：主管理员四段切换；次级管理员看到专属组 + 全局组 ---- */
 function viewLists(){
-  var tabs=[['admins','次级管理员'],['gban','联合封禁'],['white','白名单']];
+  if(!S.me.main) return viewGbanOwn()+viewGban();
+  var tabs=[['own','专属封禁组'],['gban','全局封禁'],['admins','次级管理员'],['white','白名单']];
   var h='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:6px">'+
     tabs.map(function(t){ return '<button style="flex:1" class="'+(LSUB==t[0]?'b':'b g')+
       '" onclick="LSUB=\''+t[0]+'\';render()">'+t[1]+'</button>'; }).join('')+'</div></div>';
   if(LSUB=='gban') return h+viewGban();
   if(LSUB=='white') return h+viewWhite();
+  if(LSUB=='own') return h+viewGbanOwn();
   return h+viewAdmins();
+}
+/* 专属联合封禁组：每个管理员名下一个，可开关、圈定生效群、管名单。 */
+function viewGbanOwn(){
+  var o=S.gban_own||{enabled:true,chats:[],bans:[]};
+  var inGroup={}; (o.chats||[]).forEach(function(c){ inGroup[c]=true; });
+  var ownChats=S.chats.filter(function(c){
+    var b=botById(c.bot_id); return b && b.owner_id==S.me.uid; });
+  var h='<div class="card"><h3>专属联合封禁组</h3>'+
+    '<div class="row"><span class="k">开启</span>'+toggleBtn(o.enabled,
+      "act('gbanown',{action:'enable',on:"+(o.enabled?'false':'true')+"},'已切换')")+'</div>'+
+    '<div class="hint">名下 bot 判定的最高档命中自动进这个组，只在你圈定的群里执行；'+
+    'bot 是否参与全局组在机器人详情页里选。</div>';
+  h+='<div class="hint" style="margin-top:10px">生效群（点开关圈定）</div>';
+  if(!ownChats.length) h+='<div class="hint">（名下 bot 还没有群）</div>';
+  ownChats.forEach(function(c){
+    h+='<div class="row"><label class="sw"><input type="checkbox" '+(inGroup[c.chat_id]?'checked':'')+
+      ' onchange="act(\'gbanown\',{action:\'chat\',chat_id:'+c.chat_id+',on:this.checked},\'已保存\')"><span class="tr"></span> '+
+      esc(c.title||c.chat_id)+'</label><span class="mono">'+c.chat_id+'</span></div>';
+  });
+  h+='<div class="hint" style="margin-top:10px">封禁名单</div>';
+  (o.bans||[]).forEach(function(g){
+    h+='<div class="row"><span class="mono">'+g.user_id+' · '+esc(g.reason)+'</span>'+
+      '<button class="d" onclick="act(\'gbanown\',{action:\'remove\',user_id:'+g.user_id+'},\'已移除\')">移除</button></div>';
+  });
+  if(!(o.bans||[]).length) h+='<div class="hint">（名单为空）</div>';
+  h+='<div class="grid" style="margin-top:8px"><input id="ow_uid" placeholder="user_id">'+
+    '<input id="ow_reason" placeholder="原因"></div>'+
+    '<button class="b" style="margin-top:8px" onclick="act(\'gbanown\',{action:\'add\',user_id:document.getElementById(\'ow_uid\').value,'+
+    'reason:document.getElementById(\'ow_reason\').value},\'已加入\')">加入专属组</button></div>';
+  return h;
 }
 function viewAdmins(){
   return '<div class="card"><h3>次级管理员</h3>'+
@@ -448,7 +480,9 @@ function viewAdmins(){
     'note:document.getElementById(\'ad_note\').value},\'已添加\')">添加</button></div>';
 }
 function viewGban(){
-  return '<div class="card"><h3>联合封禁</h3>'+
+  return '<div class="card"><h3>全局联合封禁组</h3>'+
+    '<div class="hint" style="margin-bottom:8px">所有管理员共同维护；只有加入全局组的 bot 会执行'+
+    '（机器人详情页里选），命中自动入组的规则见专属组说明。</div>'+
     (S.gban||[]).map(function(g){
       return '<div class="row"><span class="mono">'+g.user_id+' '+esc(g.reason)+'</span>'+
       '<button class="d" onclick="if(confirm(\'解除封禁？\'))act(\'gban\',{action:\'remove\',user_id:'+g.user_id+'},\'已解除\')">解除</button></div>';

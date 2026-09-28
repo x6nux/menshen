@@ -76,6 +76,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_alert_every", "私聊汇总间隔（分钟）", "1-1440 的整数，每隔这么久最多一条", 1, 1440, "antiad"},
 	{"antiad_ban", "禁言改为封禁", "1 = 该禁言的改为永久封禁出群，0 = 禁言；每群可单独覆盖", 0, 1, "antiad"},
 	{"antiad_judge_bots", "判定成员 bot", "1 = 判（仍豁免管理员 bot），0 = 豁免；需对方 bot 开启 Bot-to-Bot 模式才收得到", 0, 1, "antiad"},
+	{"gban_global", "加入全局联合封禁组", "1 = 与其他加入的 bot 共享命中并接收全组执行；0 = 退出全局组，只在本归属人的专属组联动", 0, 1, "antiad"},
 }
 
 func settingSpecByKey(k string) *settingSpec {

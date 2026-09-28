@@ -121,7 +121,7 @@ func TestAdbFeedsGban(t *testing.T) {
 	target := testutil.GroupMsg(-100, 888, 10, "广告内容")
 	HandleAdbCommand(b, conf, adbMsg(-100, 777, target)) // 777 是 newTestRegistry 的主管
 
-	if _, ok := isGbanned(b.Shared, 888); !ok {
+	if _, ok := b.Cache.Snap().Gban[888]; !ok {
 		t.Error("人工标记的广告号应当进联合封禁名单")
 	}
 }
