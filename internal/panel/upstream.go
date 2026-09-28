@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"menshen/internal/core"
+	"menshen/internal/store"
 	"menshen/internal/tg"
 	"menshen/internal/upstream"
 )
@@ -99,6 +100,22 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 					[][2]string{{"✅ 确认删除", fmt.Sprintf("a:up:%d:d:y", id)}},
 					[][2]string{{"◀️ 取消", fmt.Sprintf("a:up:%d", id)}},
 				))
+			return
+		}
+		// 名下有模型时拒绝：模型名里嵌着上游名，删掉上游会留下一批
+		// 「绑定的上游不存在」的死引用 —— 判定每次都失败，而面板上
+		// 看不出原因。
+		if names := modelsOfUpstream(b.Cache.Snap(), id); len(names) > 0 {
+			show := names
+			if len(show) > 10 {
+				show = append(show[:10:10], "……")
+			}
+			b.AnswerCallback(q.ID, "该上游名下有模型")
+			b.Edit(chatID, msgID, fmt.Sprintf(
+				"⛔ <b>该上游名下有 %d 个模型，不能删除</b>\n\n%s\n\n"+
+					"请先到「🤖 模型定价」删掉它们，或把它们改到别的上游名下。",
+				len(names), html.EscapeString(strings.Join(show, "\n"))),
+				tg.InlineKB([][2]string{{"◀️ 返回", fmt.Sprintf("a:up:%d", id)}}))
 			return
 		}
 		if _, err := b.Store.Write.Exec(`DELETE FROM upstreams WHERE id=?`, id); err != nil {
@@ -225,11 +242,12 @@ func handleUpstreamNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, tex
 
 	switch p.Op {
 	case "up_new_name":
-		if text == "" {
-			b.Send(chatID, "名称不能为空，请重新输入：", nil)
+		name := strings.TrimSpace(text)
+		if err := core.ValidUpstreamName(name); err != nil {
+			b.Send(chatID, "❌ "+err.Error()+"，请重新输入：", nil)
 			return
 		}
-		b.AskInput(chatID, m.From.ID, "up_new_url", text,
+		b.AskInput(chatID, m.From.ID, "up_new_url", name,
 			"请输入 base_url（需含协议头 http:// 或 https://）：")
 
 	case "up_new_url":
@@ -386,11 +404,19 @@ func handleUpstreamEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, te
 		col, val = "base_url", strings.TrimSuffix(text, "/")
 
 	case "up_edit_name":
-		if text == "" {
-			b.Send(chatID, "名称不能为空，请重新输入：", nil)
+		name := strings.TrimSpace(text)
+		if err := core.ValidUpstreamName(name); err != nil {
+			b.Send(chatID, "❌ "+err.Error()+"，请重新输入：", nil)
 			return
 		}
-		col, val = "name", text
+		if err := b.RenameUpstream(id, name); err != nil {
+			b.Send(chatID, "改名失败："+html.EscapeString(err.Error()), nil)
+			return
+		}
+		b.DropPending(m.From.ID)
+		b.Send(chatID, "✅ 已改名。引用它的模型名与默认模型设置已一并更新。", nil)
+		showUpstreamDetail(b, chatID, 0, id)
+		return
 
 	case "up_edit_key":
 		if text == "" {
@@ -425,6 +451,28 @@ func handleUpstreamEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, te
 	}
 	b.Send(chatID, "✅ 已更新", nil)
 	showUpstreamDetail(b, chatID, 0, id)
+}
+
+// modelsOfUpstream 返回绑在这个上游名下的模型名（全名，稳定排序）。
+func modelsOfUpstream(snap *store.Snapshot, id int64) []string {
+	var name string
+	for _, u := range snap.Upstreams {
+		if u.ID == id {
+			name = u.Name
+			break
+		}
+	}
+	if name == "" {
+		return nil
+	}
+	var out []string
+	for full := range snap.Models {
+		if up, _ := upstream.SplitModelName(full); up == name {
+			out = append(out, full)
+		}
+	}
+	sortStrings(out)
+	return out
 }
 
 func toggleUpstreamSupports(b *core.Bot, id int64, which string) error {

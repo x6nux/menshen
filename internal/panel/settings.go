@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"slices"
@@ -47,6 +48,8 @@ var settingSpecs = []settingSpec{
 	{"antiad_hedge_retries", "并发模式触发：每分钟重试数", "非负整数，1 分钟内重试超过它就进入并发模式；0 = 关闭", 0, 0, ""},
 	{"antiad_hedge_minutes", "并发模式持续（分钟）", "1-1440 的整数，期间再次触发会顺延", 1, 1440, ""},
 	{"antiad_hedge_fanout", "并发模式路数", "2-5 的整数；并发期间开销随之成倍", 2, 5, ""},
+	{"antiad_upstream_alert_after", "上游异常告警阈值", "连续失败达到它才私聊告警；0 = 关闭", 0, 0, ""},
+	{"antiad_upstream_alert_minutes", "上游异常告警冷却（分钟）", "1-1440 的整数，冷却期内不重复告警", 1, 1440, ""},
 
 	// ---- 每个 bot 可覆盖的参数 ----
 	{"antiad_so_trust", "采信线：systemone 置信度", "0-100 的整数，低于它才转大模型复判", 0, 100, "antiad"},
@@ -168,7 +171,7 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "已切换")
 		showSettings(b, chatID, msgID)
 
-	case "m": // a:st:m:so|llm —— 全局默认模型
+	case "m": // a:st:m:so|llm|vision —— 全局默认模型（列表或单值）
 		if !b.IsMain(q.From.ID) {
 			b.AnswerCallback(q.ID, "")
 			return
@@ -177,21 +180,40 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "参数缺失")
 			return
 		}
-		key, label := "antiad_so_model", "默认判定模型（systemone）"
+		key, label := "antiad_so_models", "默认判定模型（systemone）"
+		single := false
 		switch parts[3] {
 		case "llm":
-			key, label = "antiad_llm_model", "默认复判/总结模型（大模型）"
+			key, label = "antiad_llm_models", "默认复判/总结模型（大模型）"
 		case "vision":
 			key, label = "antiad_vision_model", "识图模型（须支持图片输入；留空则图片与贴纸不判）"
+			single = true
 		}
-		cur := b.Cache.Snap().Setting(key)
-		if cur == "" {
-			cur = "（未配置）"
+		snap := b.Cache.Snap()
+		cur := "（未配置）"
+		if single {
+			if v := snap.Setting(key); v != "" {
+				cur = v
+			}
+		} else {
+			so, llm := snap.ModelsFor(0)
+			list := so
+			if key == "antiad_llm_models" {
+				list = llm
+			}
+			if len(list) > 0 {
+				cur = strings.Join(list, ", ")
+			}
+		}
+		hint := "请输入<b>" + label + "</b>的模型名（必须已存在于「模型定价」且为启用状态）："
+		if !single {
+			hint = "请输入<b>" + label + "</b>列表，按<b>重试顺序</b>用逗号分隔：\n" +
+				"<code>a/gpt-5-mini, b/gpt-5-mini, a/deepseek-v3</code>\n\n" +
+				"每项形如 <code>上游名/模型ID</code>，必须已存在于「模型定价」且为启用状态。"
 		}
 		b.AnswerCallback(q.ID, "")
 		b.AskInput(chatID, q.From.ID, "st_model", key,
-			"请输入<b>"+label+"</b>的模型名（必须已存在于「模型定价」且为启用状态）：\n\n"+
-				"填 <code>-</code> 可清空。\n\n当前值：<code>"+
+			hint+"\n\n填 <code>-</code> 可清空。\n\n当前值：<code>"+
 				html.EscapeString(cur)+"</code>")
 
 	case "b": // a:st:b:<botID>:<key> —— 某个 bot 的覆盖值
@@ -263,10 +285,10 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 			html.EscapeString(snap.Setting(sp.key)) + "</code>\n")
 	}
 
-	sb.WriteString("\n<b>默认模型</b>（可在每个 bot 上单独覆盖）\n")
+	sb.WriteString("\n<b>默认模型</b>（按重试顺序，可在每个 bot 上单独覆盖）\n")
+	so, llm := snap.ModelsFor(0)
 	fmt.Fprintf(&sb, "判定: %s\n复判: %s\n识图: %s\n",
-		modelLabel(snap.Setting("antiad_so_model")),
-		modelLabel(snap.Setting("antiad_llm_model")),
+		modelListLabel(so), modelListLabel(llm),
 		modelLabel(snap.Setting("antiad_vision_model")))
 
 	sb.WriteString("\n<i>保留天数同时作用于判定流水、群消息留底与群成员画像" +
@@ -378,25 +400,52 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			return
 		}
 		name := strings.TrimSpace(text)
+		single := p.Target == "antiad_vision_model"
 		if name == "-" {
 			b.DropPending(uid)
-			if err := b.PutSetting(p.Target, ""); err != nil {
+			if single {
+				if err := b.PutSetting(p.Target, ""); err != nil {
+					b.Send(chatID, "保存失败。", nil)
+					return
+				}
+			} else if err := b.PutSetting(p.Target, "[]"); err != nil {
 				b.Send(chatID, "保存失败。", nil)
 				return
+			} else if old := legacyModelKey(p.Target); old != "" {
+				// 旧单值键也要清：回退读会把它当单元素列表捡回来。
+				_ = b.PutSetting(old, "")
 			}
 			b.Send(chatID, "已清空。", nil)
 			showSettings(b, chatID, 0)
 			return
 		}
-		if !checkModelUsable(b, chatID, name) {
-			return // 保留会话让管理员直接重填
+		if single {
+			if !checkModelUsable(b, chatID, name) {
+				return // 保留会话让管理员直接重填
+			}
+			b.DropPending(uid)
+			if err := b.PutSetting(p.Target, name); err != nil {
+				b.Send(chatID, "保存失败。", nil)
+				return
+			}
+			b.Send(chatID, "已设为 "+modelLabel(name)+"。", nil)
+			showSettings(b, chatID, 0)
+			return
+		}
+		models, err := parseModelList(b, name)
+		if err != nil {
+			b.Send(chatID, "❌ "+html.EscapeString(err.Error())+"\n\n请重新输入：", nil)
+			return
 		}
 		b.DropPending(uid)
-		if err := b.PutSetting(p.Target, name); err != nil {
+		if err := b.PutSetting(p.Target, modelsJSON(models)); err != nil {
 			b.Send(chatID, "保存失败。", nil)
 			return
 		}
-		b.Send(chatID, "已设为 <code>"+html.EscapeString(name)+"</code>。", nil)
+		if old := legacyModelKey(p.Target); old != "" {
+			_ = b.PutSetting(old, "")
+		}
+		b.Send(chatID, "已设为（按重试顺序）："+modelListLabel(models)+"。", nil)
 		showSettings(b, chatID, 0)
 
 	case "bot_model_so", "bot_model_llm":
@@ -413,21 +462,23 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 		if p.Op == "bot_model_llm" {
 			which = "llm"
 		}
-		name := strings.TrimSpace(text)
-		if name == "-" {
-			name = "" // 空 = 沿用全局默认
-		} else if !checkModelUsable(b, chatID, name) {
-			return
+		text = strings.TrimSpace(text)
+		var models []string
+		if text != "-" {
+			if models, err = parseModelList(b, text); err != nil {
+				b.Send(chatID, "❌ "+html.EscapeString(err.Error())+"\n\n请重新输入：", nil)
+				return
+			}
 		}
 		b.DropPending(uid)
-		if err := b.SetBotModel(botID, which, name); err != nil {
+		if err := b.SetBotModels(botID, which, models); err != nil {
 			b.Send(chatID, "保存失败。", nil)
 			return
 		}
-		if name == "" {
+		if len(models) == 0 {
 			b.Send(chatID, "已恢复为全局默认模型。", nil)
 		} else {
-			b.Send(chatID, "已设为 <code>"+html.EscapeString(name)+"</code>。", nil)
+			b.Send(chatID, "已设为（按重试顺序）："+modelListLabel(models)+"。", nil)
 		}
 		showBotDetail(b, chatID, 0, uid, botID)
 
@@ -589,6 +640,54 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 // 必须校验：配了不存在的模型名，链路会在每条消息上向上游拿回 404，
 // 而 404 在 bot 侧只表现为「判定失败 → 放行」，功能静默失效，
 // 运维完全看不见。
+// parseModelList 解析逗号分隔的模型名列表：逐个校验存在且启用，去重但
+// 保持输入顺序（顺序即重试顺序）。返回的错误直接给管理员看。
+func parseModelList(b *core.Bot, text string) ([]string, error) {
+	snap := b.Cache.Snap()
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(text, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" || seen[name] {
+			continue
+		}
+		m := snap.Models[name]
+		if m == nil {
+			return nil, fmt.Errorf("模型 %s 不在「模型定价」里", name)
+		}
+		if !m.Enabled {
+			return nil, fmt.Errorf("模型 %s 已被停用", name)
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("至少要填一个模型名")
+	}
+	return out, nil
+}
+
+// modelsJSON 把模型列表序列化成设置值。
+func modelsJSON(models []string) string {
+	raw, err := json.Marshal(models)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+// legacyModelKey 返回与列表键对应的旧单值键，没有则空串。
+func legacyModelKey(listKey string) string {
+	switch listKey {
+	case "antiad_so_models":
+		return "antiad_so_model"
+	case "antiad_llm_models":
+		return "antiad_llm_model"
+	}
+	return ""
+}
+
+// checkModelUsable 校验一个单值模型名可用（识图模型用）。
 func checkModelUsable(b *core.Bot, chatID int64, name string) bool {
 	m := b.Cache.Snap().Models[name]
 	if m == nil {

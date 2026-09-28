@@ -153,8 +153,8 @@ func showBotDetail(b *core.Bot, chatID, msgID, uid, botID int64) {
 	}
 
 	so, llm := snap.ModelsFor(botID)
-	fmt.Fprintf(&sb, "\n判定模型: %s\n复判模型: %s\n", modelLabel(so), modelLabel(llm))
-	if so == "" && llm == "" {
+	fmt.Fprintf(&sb, "\n判定模型: %s\n复判模型: %s\n", modelListLabel(so), modelListLabel(llm))
+	if len(so) == 0 && len(llm) == 0 {
 		sb.WriteString("⚠️ 两个模型都没配，判定链路无法工作\n")
 	}
 	if !main {
@@ -460,9 +460,10 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		}
 		b.AnswerCallback(q.ID, "")
 		b.AskInput(chatID, uid, "bot_model_"+which, parts[2],
-			"请输入该 bot 专用的<b>"+label+"</b>模型名：\n\n"+
-				"填 <code>-</code> 表示沿用全局默认。\n"+
-				"模型必须已存在于「模型定价」且为启用状态。")
+			"请输入该 bot 专用的<b>"+label+"</b>列表，按<b>重试顺序</b>用逗号分隔：\n"+
+				"<code>a/gpt-5-mini, b/gpt-5-mini</code>\n\n"+
+				"每项形如 <code>上游名/模型ID</code>，必须已存在于「模型定价」且为启用状态。\n"+
+				"填 <code>-</code> 表示沿用全局默认。")
 
 	case "log": // a:mb:<id>:log[:<page>:<all>]
 		page, all := 1, false

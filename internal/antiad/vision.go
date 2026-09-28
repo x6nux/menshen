@@ -131,9 +131,12 @@ func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, vision
 	dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img)
 
 	model := strings.TrimSpace(snap.Setting("antiad_vision_model"))
-	raw, usage, cost, err := aiCall(b.Shared, upstream.EPChat, model, map[string]any{
-		"model": model, "temperature": 0,
-		"stream": true, "stream_options": map[string]any{"include_usage": true},
+	if model == "" {
+		return "", visionSpend{}, fmt.Errorf("未配置识图模型")
+	}
+	reply, err := aiCall(b.Shared, upstream.EPChat, []string{model}, map[string]any{
+		"temperature": 0,
+		"stream":      true, "stream_options": map[string]any{"include_usage": true},
 		"messages": []any{
 			map[string]any{"role": "system", "content": visionPrompt},
 			map[string]any{"role": "user", "content": []any{
@@ -141,11 +144,12 @@ func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, vision
 				map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}},
 			}},
 		},
-	})
-	spend := visionSpend{usage, cost}
+	}, upstreamNotifier(b))
+	spend := visionSpend{reply.Usage, reply.Cost}
 	if err != nil {
 		return "", spend, err
 	}
+	raw := reply.Raw
 	var resp struct {
 		Choices []struct {
 			Message struct {

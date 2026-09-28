@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -63,66 +65,88 @@ func retryDelay(n int) time.Duration {
 	return d
 }
 
-// hedgeKey 是并发模式的统计粒度：同一个模型在两个端点上的表现互不相干。
-func hedgeKey(ep upstream.Endpoint, model string) string {
-	return ep.String() + ":" + model
+// hedgeKey 是并发模式的统计粒度：同一个模型（列表）在两个端点上的表现
+// 互不相干。传进来的是逗号连接后的列表，单模型时与旧键完全一致。
+func hedgeKey(ep upstream.Endpoint, models string) string {
+	return ep.String() + ":" + models
 }
 
-// aiCall 向上游发请求，返回（非流式形状的）响应体、用量与折算成本。
+// aiReply 是一次成功请求的结果：响应体、用量、成本与**实际命中的模型**。
+type aiReply struct {
+	Raw   json.RawMessage
+	Usage billing.Usage
+	Cost  int64
+	// Model 是全名（含上游前缀）。换模型后校准阈值，第一件事就是知道
+	// 眼前这条判定出自哪个模型，所以它必须跟着结果回来。
+	Model string
+}
+
+// aiCall 按配置顺序尝试模型列表，向上游发请求。
 //
-// 挂在 shared 上而不是 Bot 上：它一个 TG 字段都不碰，而形态总结这类
-// 定时任务没有「属于哪个 bot」的概念。Bot 嵌入了 shared，调用写法不变。
+// 模型名形如 <上游名>/<模型ID>：带前缀的只用它绑定的那一个上游；旧格式
+// （无前缀）保持「任选可用上游」的旧行为。发给上游的 model 字段剥掉前缀
+// —— 上游认的是模型 ID，不认我们的命名前缀。
 //
-// chat 端点的调用方应传 stream:true：只有流式才能按首字判断上游是否卡住。
-// 拼好的结果会还原成非流式的形状（见 readChatStream），调用方照常解析。
+// 可恢复的失败（网络错误、5xx、429、卡住）会重试：第 n 次尝试用
+// models[n % len] —— 列表本身就是重试顺序，上游轮换由模型列表承担
+// （同一个上游想多试几次，把它写进列表多次即可）。4xx（除 429）立即失败。
+// 重试过多时进入并发模式：同时发相邻的多个模型。
 //
-// 可恢复的失败（网络错误、5xx、429、卡住）会重试，最多 aiMaxAttempts 次并受
-// aiTotalBudget 约束；有多个可用上游时每次轮换到下一个。卡住的立即重试，
-// 其余按 retryDelay 退避。4xx（除 429）立即失败——模型名错、鉴权错、余额
-// 不足，换个上游或重来一次同样会错，重试只是把同一个错误再犯四遍。
-//
-// 重试过多时进入并发模式（见 noteRetry）：每轮同时发多路，先成功的生效。
-func aiCall(sh *core.Shared, ep upstream.Endpoint, model string, payload any) (
-	json.RawMessage, billing.Usage, int64, error) {
+// notify 非空时，重试全部耗尽会累计连续失败，达到阈值且过了冷却就调用它
+// （上游异常告警，见 alertUpstreamTrouble）。
+func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[string]any,
+	notify func(string)) (aiReply, error) {
 
 	snap := sh.Cache.Snap()
-	ups := upstream.Pick(snap.Upstreams, ep, "antiad")
-	if len(ups) == 0 {
-		return nil, billing.Usage{}, 0, fmt.Errorf("反广告：没有支持 %s 的可用上游", ep)
+	models = cleanModels(models)
+	if len(models) == 0 {
+		return aiReply{}, fmt.Errorf("反广告：没有配置 %s 可用的模型", ep)
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, billing.Usage{}, 0, err
-	}
-
-	key := hedgeKey(ep, model)
+	key := hedgeKey(ep, strings.Join(models, ","))
 	deadline := time.Now().Add(aiTotalBudget)
+	// 列表里的每个模型至少试一次；列表比 5 长时按列表长度放宽。
+	attempts := aiMaxAttempts
+	if len(models) > attempts {
+		attempts = len(models)
+	}
+
 	var lastErr error
-	for attempt := 0; attempt < aiMaxAttempts; attempt++ {
+	lastModel := models[0]
+	for attempt := 0; attempt < attempts; attempt++ {
+		model := models[attempt%len(models)]
+		lastModel = model
 		fan := 1
 		if hedging(sh, key) {
 			fan = int(snap.SettingInt("antiad_hedge_fanout", 2))
 		}
-		r := aiRound(sh, snap, ep, model, ups, attempt, fan, body)
+		r := aiRound(sh, snap, ep, models, attempt, fan, payload)
 		if r.err == nil {
+			sh.AIFailStreak.Store(0) // 成功一次就清零
 			if attempt > 0 {
-				slog.Info("反广告：重试后成功", "模型", model, "第几次", attempt+1)
+				slog.Info("反广告：重试后成功", "模型", r.reply.Model, "第几次", attempt+1)
 			}
-			return r.raw, r.usage, r.cost, nil
+			return r.reply, nil
 		}
 		lastErr = r.err
 		if !r.retryable {
-			return nil, billing.Usage{}, 0, r.err
+			// 4xx 是配置问题（模型名错、鉴权错、余额不足），同一个模型
+			// 再试多少次都一样。但列表里还有没试过的模型时，换一个也许
+			// 就认（模型名在别的上游存在、鉴权不同）—— 每个模型只试一次。
+			if attempt+1 >= len(models) || attempt+1 >= attempts {
+				alertUpstreamTrouble(sh, snap, notify, ep, model, r.err)
+				return aiReply{}, r.err
+			}
+			continue
 		}
 		noteRetry(sh, snap, key)
-		if attempt == aiMaxAttempts-1 {
+		if attempt == attempts-1 {
 			break
 		}
 		// 卡住说明这一路走不通，换一个立即重来；退避只留给 5xx、429 与网络
 		// 错误——那些是上游过载的信号，给它喘口气才有意义。
 		var wait time.Duration
-		if !r.timedOut {
+		if !r.noBackoff {
 			wait = retryDelay(attempt)
 		}
 		if time.Now().Add(wait).After(deadline) {
@@ -135,32 +159,138 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, model string, payload any) (
 			"模型", model, "第几次", attempt+1, "并发", fan, "err", r.err)
 		time.Sleep(wait)
 	}
-	return nil, billing.Usage{}, 0, fmt.Errorf("反广告：上游调用失败（已试 %d 次）: %v",
-		aiMaxAttempts, lastErr)
+	alertUpstreamTrouble(sh, snap, notify, ep, lastModel, lastErr)
+	return aiReply{}, fmt.Errorf("反广告：上游调用失败（已试 %d 次）: %v", attempts, lastErr)
+}
+
+// cleanModels 去掉空白项与重复项，顺序保持不变。
+func cleanModels(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, m := range in {
+		if m = strings.TrimSpace(m); m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// upstreamFor 返回这个模型该走的上游候选：带前缀的只走它绑定的那一个
+// （不存在、停用或不支持该端点时返回空）；旧格式走 Pick 的 sticky 结果。
+func upstreamFor(snap *store.Snapshot, ep upstream.Endpoint, model string) []*upstream.Upstream {
+	name, _ := upstream.SplitModelName(model)
+	if name == "" {
+		return upstream.Pick(snap.Upstreams, ep, "antiad")
+	}
+	for _, u := range snap.Upstreams {
+		if u.Name == name && u.Status == 1 && u.Supports(ep) {
+			return []*upstream.Upstream{u}
+		}
+	}
+	return nil
+}
+
+// upstreamNotifier 返回把上游异常告警发给「bot 归属人 + 全部主管理员」的函数。
+// 上游是主管理员配置的，只有他能修；归属人则要知道自己的群正在漏判。
+// 没有可发的对象时返回 nil，调用方据此跳过告警。
+func upstreamNotifier(b *core.Bot) func(string) {
+	if b == nil {
+		return nil
+	}
+	targets := make([]int64, 0, len(b.Cfg.AdminIDs)+1)
+	if o := b.Owner(); o != 0 {
+		targets = append(targets, o)
+	}
+	for _, id := range b.Cfg.AdminIDs {
+		if !slices.Contains(targets, id) {
+			targets = append(targets, id)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	return func(text string) {
+		for _, id := range targets {
+			b.Send(id, text, nil)
+		}
+	}
+}
+
+// alertUpstreamTrouble 累计连续失败，达到阈值且过了冷却就告警一次。
+//
+// 计数与冷却都是进程级：坏上游是全局资源，同一个上游出问题时每个群
+// 各告一次只会把管理员的私聊淹掉。阈值 0 = 关闭。
+func alertUpstreamTrouble(sh *core.Shared, snap *store.Snapshot, notify func(string),
+	ep upstream.Endpoint, model string, lastErr error) {
+
+	if notify == nil {
+		return
+	}
+	threshold := snap.SettingInt("antiad_upstream_alert_after", 5)
+	if threshold <= 0 {
+		return
+	}
+	if sh.AIFailStreak.Add(1) < threshold {
+		return
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("未知错误")
+	}
+	cooldown := time.Duration(snap.SettingInt("antiad_upstream_alert_minutes", 30)) * time.Minute
+	now := time.Now()
+	for {
+		last := sh.AIAlertAt.Load()
+		if last != 0 && now.Sub(time.Unix(last, 0)) < cooldown {
+			return
+		}
+		if sh.AIAlertAt.CompareAndSwap(last, now.Unix()) {
+			break
+		}
+	}
+	upLabel := "（未绑定）"
+	if n, _ := upstream.SplitModelName(model); n != "" {
+		upLabel = n
+	}
+	slog.Warn("反广告：上游连续失败，已告警", "次数", sh.AIFailStreak.Load(),
+		"端点", ep, "模型", model)
+	notify(fmt.Sprintf("⚠️ <b>上游可能有问题</b>\n\n"+
+		"判定请求已连续失败 %d 次。最后一次：\n"+
+		"端点: %s\n模型: <code>%s</code>\n上游: <code>%s</code>\n"+
+		"错误: %s\n\n"+
+		"判定失败期间的消息一律放行。请检查该上游渠道是否可用、密钥与余额。",
+		sh.AIFailStreak.Load(), ep, html.EscapeString(model), html.EscapeString(upLabel),
+		html.EscapeString(core.TruncateRunes(lastErr.Error(), 300))))
 }
 
 // aiResult 是一次请求（或一轮并发请求）的结果。
 type aiResult struct {
-	raw       json.RawMessage
-	usage     billing.Usage
-	cost      int64
+	reply     aiReply
 	err       error
 	retryable bool
-	// timedOut 表示上游卡住（systemone 超出整次时限、复判超出首字时限）
-	// 而被主动放弃。这类失败立即重试，不退避。
-	timedOut bool
+	// noBackoff 表示这一路不该退避，立即换下一个：上游卡住（systemone
+	// 超出整次时限、复判超出首字时限），或这一路配置上就走不通
+	// （模型绑定的上游不存在/停用/不支持该端点）。
+	noBackoff bool
 }
 
-// aiRound 发一轮请求。fan 为 1 时就是单发；大于 1 时同时发给 fan 个上游
-// （上游不够就有重复），先成功的生效，其余立即取消。
+// aiRound 发一轮请求。fan 为 1 时就是单发；大于 1 时同时发 fan 路：
+// 带前缀的模型各自走各自绑定的上游，所以并发试的是**相邻的多个模型**；
+// 旧格式模型没有绑定上游，按原样轮换上游。先成功的生效，其余立即取消。
 //
 // 全部失败时：只要有一路可重试，这一轮就可重试（某个上游不认这个模型，
-// 换一个也许就认）；只有每一路都是卡住，才按卡住立即重试。
-func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint, model string,
-	ups []*upstream.Upstream, attempt, fan int, body []byte) aiResult {
+// 换一个也许就认）；只有每一路都不可退避，才按「立即换」处理。
+func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint,
+	models []string, attempt, fan int, payload map[string]any) aiResult {
 
 	if fan <= 1 {
-		return aiAttempt(context.Background(), sh, snap, ep, model, ups[attempt%len(ups)], body)
+		model := models[attempt%len(models)]
+		ups := upstreamFor(snap, ep, model)
+		if len(ups) == 0 {
+			return aiResult{err: modelUnavailable(model), retryable: true, noBackoff: true}
+		}
+		return aiAttempt(context.Background(), sh, snap, ep, model, ups[attempt%len(ups)], payload)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,11 +298,17 @@ func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint, model 
 	// 带缓冲：提前返回之后，其余各路写结果时不会阻塞，goroutine 不会泄漏。
 	results := make(chan aiResult, fan)
 	for i := range fan {
-		up := ups[(attempt*fan+i)%len(ups)]
-		go func() { results <- aiAttempt(ctx, sh, snap, ep, model, up, body) }()
+		model := models[(attempt+i)%len(models)]
+		ups := upstreamFor(snap, ep, model)
+		if len(ups) == 0 {
+			results <- aiResult{err: modelUnavailable(model), retryable: true, noBackoff: true}
+			continue
+		}
+		up := ups[(attempt+i)%len(ups)]
+		go func() { results <- aiAttempt(ctx, sh, snap, ep, model, up, payload) }()
 	}
 
-	agg := aiResult{timedOut: true}
+	agg := aiResult{noBackoff: true}
 	errs := make([]string, 0, fan)
 	for range fan {
 		r := <-results
@@ -181,10 +317,16 @@ func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint, model 
 		}
 		errs = append(errs, r.err.Error())
 		agg.retryable = agg.retryable || r.retryable
-		agg.timedOut = agg.timedOut && r.timedOut
+		agg.noBackoff = agg.noBackoff && r.noBackoff
 	}
 	agg.err = fmt.Errorf("并发 %d 路全部失败: %s", fan, strings.Join(errs, "; "))
 	return agg
+}
+
+// modelUnavailable 是「模型绑定的上游不存在/停用/不支持该端点」的错误。
+// 可重试且不退避：让 aiCall 立刻切到列表里的下一个模型。
+func modelUnavailable(model string) error {
+	return fmt.Errorf("模型 %s 绑定的上游不存在、未启用或不支持该端点", model)
 }
 
 // msSetting 读一个毫秒数设置。非法值（0、负数）回落到默认值：时限被配成 0
@@ -202,8 +344,23 @@ func msSetting(snap *store.Snapshot, key string, def int64) time.Duration {
 // 两个端点各有各的「卡住」判据：systemone 平均不到 1 秒出结果，整次请求限时
 // antiad_so_timeout_ms；复判是流式的，只限首字 antiad_llm_ttft_ms ——首字之后
 // 吐字慢不等于卡住，整次仍受 AIClient 的总超时约束。
+//
+// payload 里的 model 由这里按当前模型覆写（剥掉上游前缀），所以并发试多个
+// 模型时每路各拷一份 map，不会互相踩。
 func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
-	ep upstream.Endpoint, model string, up *upstream.Upstream, body []byte) aiResult {
+	ep upstream.Endpoint, model string, up *upstream.Upstream,
+	payload map[string]any) aiResult {
+
+	_, modelID := upstream.SplitModelName(model)
+	p := make(map[string]any, len(payload)+1)
+	for k, v := range payload {
+		p[k] = v
+	}
+	p["model"] = modelID
+	body, err := json.Marshal(p)
+	if err != nil {
+		return aiResult{err: err} // 序列化都失败，重试多少次都一样
+	}
 
 	limit := msSetting(snap, "antiad_llm_ttft_ms", 5000)
 	if ep == upstream.EPSystemOne {
@@ -218,8 +375,8 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	// fail 给请求途中的错误归类：看门狗掐断的算卡住，其余算网络故障。
 	fail := func(err error) aiResult {
 		if stuck.Load() {
-			return aiResult{err: fmt.Errorf("上游 %d 超过 %v 没有响应", up.ID, limit),
-				retryable: true, timedOut: true}
+			return aiResult{err: fmt.Errorf("上游 %s 超过 %v 没有响应", upName(up), limit),
+				retryable: true, noBackoff: true}
 		}
 		// 连不上、连接被掐断——都是值得再试一次的瞬时故障。
 		return aiResult{err: err, retryable: true}
@@ -244,14 +401,14 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		switch {
 		case resp.StatusCode >= 500:
-			return aiResult{err: fmt.Errorf("上游 %d 返回 %d", up.ID, resp.StatusCode),
+			return aiResult{err: fmt.Errorf("上游 %s 返回 %d", upName(up), resp.StatusCode),
 				retryable: true}
 		case resp.StatusCode == http.StatusTooManyRequests:
 			// 限流是典型的瞬时状态，退避后重来往往就过了。
-			return aiResult{err: fmt.Errorf("上游 %d 限流 (429)", up.ID), retryable: true}
+			return aiResult{err: fmt.Errorf("上游 %s 限流 (429)", upName(up)), retryable: true}
 		}
-		return aiResult{err: fmt.Errorf("上游 %d 返回 %d: %s",
-			up.ID, resp.StatusCode, core.TruncateRunes(string(msg), 200))}
+		return aiResult{err: fmt.Errorf("上游 %s 返回 %d: %s",
+			upName(up), resp.StatusCode, core.TruncateRunes(string(msg), 200))}
 	}
 
 	var raw []byte
@@ -267,10 +424,19 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 
 	usage := billing.ExtractUsage(ep, raw)
 	cost := int64(0)
+	// 按**全名**查价：模型表的主键就是 <上游名>/<模型ID>。
 	if m := snap.Models[model]; m != nil {
 		cost = billing.ComputeCost(usage, m)
 	}
-	return aiResult{raw: raw, usage: usage, cost: cost}
+	return aiResult{reply: aiReply{Raw: raw, Usage: usage, Cost: cost, Model: model}}
+}
+
+// upName 是日志与错误里的上游称呼：名字优先，没有名字才退回 ID。
+func upName(u *upstream.Upstream) string {
+	if u.Name != "" {
+		return u.Name
+	}
+	return strconv.FormatInt(u.ID, 10)
 }
 
 // readChatStream 读 chat/completions 的 SSE 流，拼回非流式的响应形状
@@ -462,9 +628,10 @@ const evasionClause = "mentioned_bots 是本条 @ 到的 bot；新成员只发�
 // instructions 由调用方给：消息判定与进群冷判定看的是同一份 state 结构，
 // 但问的是完全不同的问题（「这条消息是不是广告」vs「这个账号是不是
 // 广告号」），提示词必须分开。
-func buildSystemOneReq(model string, st adState, instructions string) map[string]any {
+//
+// 不带 model 字段：模型名是 aiCall 按当前尝试填的（要剥掉上游前缀）。
+func buildSystemOneReq(st adState, instructions string) map[string]any {
 	return map[string]any{
-		"model": model,
 		"state": st,
 		"questions": map[string]any{
 			// criteria 的值不要留 nil：那等于让模型自己猜两个选项的边界在哪，
@@ -528,14 +695,13 @@ type soAnswer struct {
 // 模型走 modelsFor：主管理员配一份全局默认，也可以为单个 bot 单独指定。
 // 次级管理员调不动它 —— 模型直接决定判定质量与花掉多少钱。
 func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions string) (adVerdict, error) {
-	model, _ := snap.ModelsFor(b.BotID())
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return adVerdict{}, fmt.Errorf("反广告：未配置判定模型（antiad_so_model）")
+	soModels, _ := snap.ModelsFor(b.BotID())
+	if len(soModels) == 0 {
+		return adVerdict{}, fmt.Errorf("反广告：未配置判定模型（antiad_so_models）")
 	}
 
-	raw, usage, cost, err := aiCall(b.Shared, upstream.EPSystemOne, model,
-		buildSystemOneReq(model, st, instructions))
+	reply, err := aiCall(b.Shared, upstream.EPSystemOne, soModels,
+		buildSystemOneReq(st, instructions), upstreamNotifier(b))
 	if err != nil {
 		return adVerdict{}, err
 	}
@@ -543,7 +709,7 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	var resp struct {
 		Answers map[string]soAnswer `json:"answers"`
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err := json.Unmarshal(reply.Raw, &resp); err != nil {
 		return adVerdict{}, fmt.Errorf("反广告：systemone 响应无法解析: %w", err)
 	}
 	isAd, ok := resp.Answers["is_ad"]
@@ -559,9 +725,9 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 		Kind:       resp.Answers["ad_kind"].Choice,
 		Scope:      resp.Answers["ad_scope"].Choice,
 		Decider:    "systemone",
-		Model:      model,
-		Usage:      usage,
-		Cost:       cost,
+		Model:      reply.Model,
+		Usage:      reply.Usage,
+		Cost:       reply.Cost,
 	}
 	v.Reason = fmt.Sprintf("systemone 判定 %s，置信度 %.0f%%，危害度 %.1f",
 		isAd.Choice, isAd.Confidence*100, resp.Answers["severity"].Score)
@@ -640,10 +806,9 @@ const llmSystemPrompt = "你是 Telegram 群组的反广告审核员。用户消
 func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	sysPrompt string) (adVerdict, error) {
 
-	_, model := snap.ModelsFor(b.BotID())
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return adVerdict{}, fmt.Errorf("反广告：未配置复判模型（antiad_llm_model）")
+	_, llmModels := snap.ModelsFor(b.BotID())
+	if len(llmModels) == 0 {
+		return adVerdict{}, fmt.Errorf("反广告：未配置复判模型（antiad_llm_models）")
 	}
 
 	payload := map[string]any{
@@ -661,7 +826,6 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	}
 
 	req := map[string]any{
-		"model": model,
 		// temperature 必须为 0：判定要可复现，同一条消息两次判出不同结果
 		// 会让管理员完全无法校准阈值。
 		"temperature": 0,
@@ -675,7 +839,7 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		},
 	}
 
-	raw, usage, cost, err := aiCall(b.Shared, upstream.EPChat, model, req)
+	reply, err := aiCall(b.Shared, upstream.EPChat, llmModels, req, upstreamNotifier(b))
 	if err != nil {
 		return adVerdict{}, err
 	}
@@ -687,14 +851,14 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil || len(resp.Choices) == 0 {
-		return adVerdict{Usage: usage, Cost: cost},
+	if err := json.Unmarshal(reply.Raw, &resp); err != nil || len(resp.Choices) == 0 {
+		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
 			fmt.Errorf("反广告：大模型响应无法解析")
 	}
 
 	obj := extractJSONObject(resp.Choices[0].Message.Content)
 	if obj == "" {
-		return adVerdict{Usage: usage, Cost: cost},
+		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
 			fmt.Errorf("反广告：大模型未返回 JSON")
 	}
 	var out struct {
@@ -705,14 +869,14 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		Reason     string  `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(obj), &out); err != nil {
-		return adVerdict{Usage: usage, Cost: cost},
+		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
 			fmt.Errorf("反广告：大模型 JSON 解析失败: %w", err)
 	}
 
 	return adVerdict{
 		IsAd: out.IsAd, Confidence: out.Confidence, Kind: out.Kind, Scope: out.Scope,
-		Reason: out.Reason, Decider: "llm", Model: model,
-		Usage: usage, Cost: cost,
+		Reason: out.Reason, Decider: "llm", Model: reply.Model,
+		Usage: reply.Usage, Cost: reply.Cost,
 	}, nil
 }
 
@@ -801,7 +965,7 @@ func judgeFirst(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error
 // 全局留空，只看全局的话配了等于没配，而面板上一切正常。
 func hasLLM(b *core.Bot, snap *store.Snapshot) bool {
 	_, llm := snap.ModelsFor(b.BotID())
-	return strings.TrimSpace(llm) != ""
+	return len(llm) > 0
 }
 
 // needReview 报告初判之后要不要交给大模型复判：初判低于采信线，或者要罚
@@ -909,8 +1073,8 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 // 挂在 shared 上：摘要是全局的一份，多 bot 接入时也只该总结一次。
 func RunAdDigest(sh *core.Shared, force bool) {
 	snap := sh.Cache.Snap()
-	model := strings.TrimSpace(snap.Setting("antiad_llm_model"))
-	if model == "" {
+	_, llmModels := snap.ModelsFor(0)
+	if len(llmModels) == 0 {
 		return // 没有可用的总结模型
 	}
 	minNew := snap.SettingInt("antiad_digest_min", 5)
@@ -930,8 +1094,9 @@ func RunAdDigest(sh *core.Shared, force bool) {
 	maxChars := snap.SettingInt("antiad_digest_max", 1200)
 	prompt := buildDigestPrompt(ads, fps, maxChars)
 
-	raw, _, _, err := aiCall(sh, upstream.EPChat, model, map[string]any{
-		"model":       model,
+	// 定时任务没有「属于哪个 bot」的概念，没有可私聊的对象：上游告警
+	// 交给有 bot 上下文的判定路径发（那边才是常态入口）。
+	reply, err := aiCall(sh, upstream.EPChat, llmModels, map[string]any{
 		"temperature": 0,
 		// 流式才能按首字判断上游是否卡住（见 aiAttempt）；include_usage
 		// 让上游在流末附上用量，否则开销无从计算。
@@ -941,11 +1106,12 @@ func RunAdDigest(sh *core.Shared, force bool) {
 			{"role": "system", "content": digestSystemPrompt},
 			{"role": "user", "content": prompt},
 		},
-	})
+	}, nil)
 	if err != nil {
 		slog.Warn("反广告：形态总结失败", "err", err)
 		return
 	}
+	raw := reply.Raw
 
 	var resp struct {
 		Choices []struct {

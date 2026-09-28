@@ -92,10 +92,11 @@ func bootstrapHint(b *core.Bot, uid int64, main bool) string {
 		if !hasEnabled {
 			miss = append(miss, "• 未配置已启用的模型，开销无法核算")
 		}
-		if snap.Setting("antiad_so_model") == "" && snap.Setting("antiad_llm_model") == "" {
+		so, llm := snap.ModelsFor(0)
+		if len(so) == 0 && len(llm) == 0 {
 			miss = append(miss, "• 未选定默认判定模型，链路不会工作")
 		}
-	} else if snap.Setting("antiad_so_model") == "" && snap.Setting("antiad_llm_model") == "" {
+	} else if so, llm := snap.ModelsFor(0); len(so) == 0 && len(llm) == 0 {
 		miss = append(miss, "• 主管理员尚未配置判定模型，链路不会工作")
 	}
 

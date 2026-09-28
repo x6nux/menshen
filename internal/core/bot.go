@@ -71,9 +71,15 @@ type Shared struct {
 	// aiClient 专供反广告判定调用上游。http.Client 并发安全，
 	// 共享还能复用连接池。
 	AIClient *http.Client
-	// AIHedge 记录各「端点:模型」并发模式的截止时刻（见 antiad 的 aiCall）。
+	// AIHedge 记录各「端点:模型列表」并发模式的截止时刻（见 antiad 的 aiCall）。
 	// 进程级而非 bot 级：不稳定的是上游模型本身，与哪个 bot 发起的请求无关。
 	AIHedge sync.Map // string -> time.Time
+
+	// AIFailStreak 是连续失败计数，成功一次清零；AIAlertAt 是上一次
+	// 「上游可能有问题」告警的时刻（unix 秒）。两者都是进程级：坏上游是
+	// 全局资源，同一个上游出问题时不该每个群各告一次。
+	AIFailStreak atomic.Int64
+	AIAlertAt    atomic.Int64
 
 	// tgRoundTripper 是 TG 侧的代理 RoundTripper，所有 bot 实例共用一份。
 	// nil 表示没配 tg_proxy，此时各 client 的 Transport 保持 nil，

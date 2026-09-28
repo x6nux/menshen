@@ -113,7 +113,7 @@ func TestPromptsCoverNewSignals(t *testing.T) {
 
 // TestSystemOneReqAsksScope：删一条还是删光由 ad_scope 决定，问题缺了就永远是 message。
 func TestSystemOneReqAsksScope(t *testing.T) {
-	req := buildSystemOneReq("m", adState{}, soInstructions)
+	req := buildSystemOneReq(adState{}, soInstructions)
 	qs := req["questions"].(map[string]any)
 	if _, ok := qs["ad_scope"]; !ok {
 		t.Fatal("systemone 请求缺 ad_scope 问题")

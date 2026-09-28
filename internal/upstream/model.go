@@ -1,6 +1,9 @@
 package upstream
 
-import "hash/fnv"
+import (
+	"hash/fnv"
+	"strings"
+)
 
 type Model struct {
 	Name            string
@@ -10,6 +13,23 @@ type Model struct {
 	CacheWritePrice float64
 	Enabled         bool
 }
+
+// SplitModelName 把模型名切成（上游名, 模型ID）。
+//
+// 命名规范 <上游名>/<模型ID>：为了区分多个上游，模型名前缀上游名。
+// **按第一个 "/" 切** —— 模型 ID 自身可以带 "/"（OpenRouter 形态
+// openrouter/openai/gpt-4o），所以只能切第一个。
+// 没有前缀（旧格式）时上游名为空串，调用方走「任选可用上游」的旧路径。
+func SplitModelName(name string) (upstreamName, modelID string) {
+	if i := strings.IndexByte(name, '/'); i > 0 && i < len(name)-1 {
+		return name[:i], name[i+1:]
+	}
+	return "", name
+}
+
+// UpstreamName / ModelID 是 SplitModelName 的便捷读法。
+func (m *Model) UpstreamName() string { n, _ := SplitModelName(m.Name); return n }
+func (m *Model) ModelID() string      { _, id := SplitModelName(m.Name); return id }
 
 type Upstream struct {
 	ID      int64
@@ -25,7 +45,9 @@ type Upstream struct {
 	SupportsSystemOne bool
 }
 
-func (u *Upstream) supports(ep Endpoint) bool {
+// Supports 报告这个上游是否提供某个端点。绑定模型（<上游名>/<模型ID>）
+// 选路时也要用它，所以导出。
+func (u *Upstream) Supports(ep Endpoint) bool {
 	switch ep {
 	case EPChat:
 		return u.SupportsChat
@@ -67,7 +89,7 @@ var Paths = map[Endpoint]string{
 func Pick(all []*Upstream, ep Endpoint, key string) []*Upstream {
 	var pool []*Upstream
 	for _, u := range all {
-		if u.Status == 1 && u.supports(ep) {
+		if u.Status == 1 && u.Supports(ep) {
 			pool = append(pool, u)
 		}
 	}

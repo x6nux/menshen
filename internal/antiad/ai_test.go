@@ -15,7 +15,7 @@ import (
 // 上游直接 422。4xx 不重试，于是每一次主判都失败、静默回落成「只有大模型」，
 // 判定照常出结论、面板毫无异样。
 func TestBuildSystemOneReqScoreCriteriaIsList(t *testing.T) {
-	q := buildSystemOneReq("m", adState{}, soInstructions)["questions"].(map[string]any)
+	q := buildSystemOneReq(adState{}, soInstructions)["questions"].(map[string]any)
 	sev := q["severity"].(map[string]any)
 	levels, ok := sev["criteria"].([]string)
 	if !ok || len(levels) != 4 {

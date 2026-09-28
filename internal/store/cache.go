@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"menshen/internal/upstream"
@@ -25,9 +26,18 @@ var settingDefaults = map[string]string{
 	// ---- 全局（主管理员）----
 	// antiad_enabled 是全平台急停：关掉它，所有 bot 的所有群一起停判。
 	// 单个群的启停在 bot_chats.enabled 上。
-	"antiad_enabled":   "0",
-	"antiad_so_model":  "", // systemone 判定模型，空则只走大模型
-	"antiad_llm_model": "", // 大模型复判/总结模型，空则不复判不总结
+	"antiad_enabled": "0",
+	// 判定模型列表（JSON 数组，按重试顺序）。每项形如 <上游名>/<模型ID>；
+	// 旧格式（无前缀）继续兼容，任选可用上游。空列表 = 该级不跑。
+	"antiad_so_models":  "[]", // systemone 判定模型列表，空则只走大模型
+	"antiad_llm_models": "[]", // 大模型复判/总结模型列表，空则不复判不总结
+	// 旧单值键：仅作单元素回退读，面板保存新键时会清掉它。
+	"antiad_so_model":  "",
+	"antiad_llm_model": "",
+	// 上游异常告警：连续失败达到 after 次且距上次告警超过冷却才发一条；
+	// after = 0 关闭。计数是进程级的 —— 坏上游是全局资源，不该每个群各报一次。
+	"antiad_upstream_alert_after":   "5",
+	"antiad_upstream_alert_minutes": "30",
 	// 形态摘要是全局一份：所有 bot 的样本汇进同一个池子，学得最快。
 	"antiad_digest":         "",
 	"antiad_digest_last_id": "0",
@@ -104,10 +114,11 @@ type BotRec struct {
 	BotID    int64
 	Username string
 	OwnerID  int64
-	// SoModel / LLMModel 为空表示沿用全局默认。只有主管理员能改——
-	// 模型直接决定判定质量与花掉多少钱。
-	SoModel   string
-	LLMModel  string
+	// SoModels / LLMModels 是判定模型列表（按重试顺序），空表示沿用全局。
+	// 每项形如 <上游名>/<模型ID>；旧单值列读出来会并成单元素列表。
+	// 只有主管理员能改——模型直接决定判定质量与花掉多少钱。
+	SoModels  []string
+	LLMModels []string
 	Enabled   bool
 	CreatedAt int64
 	// IsMain 表示这是配置里的主 bot：只做配置管理与接入其他 bot，
@@ -193,6 +204,42 @@ func (s *Snapshot) SettingInt64List(k string) []int64 {
 	return out
 }
 
+// SettingStrings 读一个字符串数组设置（JSON 数组）。
+//
+// 解析失败返回 nil 而不是报错：设置项被手工改坏时，上层按「没配」处理，
+// 比让整条判定链路起不来强。逗号分隔的形态也认，方便手工改库。
+func (s *Snapshot) SettingStrings(k string) []string {
+	return parseStringList(s.Settings[k])
+}
+
+// ParseStringList 是 SettingStrings 的裸函数版，面板写库前校验也用它。
+func ParseStringList(v string) []string { return parseStringList(v) }
+
+func parseStringList(v string) []string {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "[]" {
+		return nil
+	}
+	var out []string
+	if json.Unmarshal([]byte(v), &out) == nil {
+		return trimAll(out)
+	}
+	return trimAll(strings.Split(v, ","))
+}
+
+func trimAll(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // botSetting 三级回退：bot 覆盖 → 全局值 → 默认值（全局值本身已铺满默认）。
 //
 // botID 为 0 时退化成纯全局读取，这让定时任务这类「不属于任何 bot」的
@@ -241,18 +288,46 @@ func (s *Snapshot) ChatsOf(botID int64) []BotChat {
 	return out
 }
 
-// modelsFor 解析某个 bot 实际使用的两个模型：bots 表的覆盖优先，否则全局默认。
-func (s *Snapshot) ModelsFor(botID int64) (so, llm string) {
-	so, llm = s.Settings["antiad_so_model"], s.Settings["antiad_llm_model"]
+// ModelsFor 解析某个 bot 实际使用的判定模型**列表**（按重试顺序）：
+// bots 表的覆盖优先，否则全局默认。
+//
+// 新键是 JSON 数组；旧单值键（antiad_so_model / bots.so_model）作为
+// 单元素回退 —— 升级不要求管理员重配，读出来就是一条元素的列表。
+func (s *Snapshot) ModelsFor(botID int64) (so, llm []string) {
+	so = s.modelList("antiad_so_models", "antiad_so_model")
+	llm = s.modelList("antiad_llm_models", "antiad_llm_model")
 	if r, ok := s.Bots[botID]; ok {
-		if r.SoModel != "" {
-			so = r.SoModel
+		if len(r.SoModels) > 0 {
+			so = r.SoModels
 		}
-		if r.LLMModel != "" {
-			llm = r.LLMModel
+		if len(r.LLMModels) > 0 {
+			llm = r.LLMModels
 		}
 	}
 	return
+}
+
+// modelList 读列表键，空则回退单值键（单元素列表）。
+func (s *Snapshot) modelList(listKey, singleKey string) []string {
+	if l := s.SettingStrings(listKey); len(l) > 0 {
+		return l
+	}
+	if v := strings.TrimSpace(s.Settings[singleKey]); v != "" {
+		return []string{v}
+	}
+	return nil
+}
+
+// listOrSingle 新列（JSON 数组）优先，空则把旧单值列当单元素列表。
+// 升级读侧用，与 modelList 是同一套回退规则。
+func listOrSingle(list, single string) []string {
+	if l := ParseStringList(list); len(l) > 0 {
+		return l
+	}
+	if v := strings.TrimSpace(single); v != "" {
+		return []string{v}
+	}
+	return nil
 }
 
 // botsOwnedBy 返回某人名下的 bot。主管理员传 mainAdmin 取全部。
@@ -384,20 +459,25 @@ func (c *Cache) loadSettings(snap *Snapshot) error {
 // 外加联合封禁名单。
 func (c *Cache) loadTenancy(snap *Snapshot) error {
 	rows, err := c.store.Read.Query(`SELECT token,bot_id,username,owner_id,
-		so_model,llm_model,enabled,created_at,is_main FROM bots ORDER BY bot_id`)
+		so_model,llm_model,enabled,created_at,is_main,so_models,llm_models
+		FROM bots ORDER BY bot_id`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		r := &BotRec{}
 		var en, main int64
+		var soModel, llmModel, soModels, llmModels string
 		if err := rows.Scan(&r.Token, &r.BotID, &r.Username, &r.OwnerID,
-			&r.SoModel, &r.LLMModel, &en, &r.CreatedAt, &main); err != nil {
+			&soModel, &llmModel, &en, &r.CreatedAt, &main,
+			&soModels, &llmModels); err != nil {
 			rows.Close()
 			return err
 		}
 		r.Enabled = en == 1
 		r.IsMain = main == 1
+		r.SoModels = listOrSingle(soModels, soModel)
+		r.LLMModels = listOrSingle(llmModels, llmModel)
 		snap.Bots[r.BotID] = r
 		snap.BotTokens[r.Token] = r
 	}

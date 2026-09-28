@@ -225,8 +225,8 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 	if so.Confidence >= trust {
 		return so, nil
 	}
-	_, llmModel := snap.ModelsFor(b.BotID())
-	if strings.TrimSpace(llmModel) == "" {
+	_, llmModels := snap.ModelsFor(b.BotID())
+	if len(llmModels) == 0 {
 		return so, nil // 没配复判模型，原样采信
 	}
 

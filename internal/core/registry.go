@@ -387,16 +387,27 @@ func (sh *Shared) SetBotOwner(botID, ownerID int64) error {
 	return nil
 }
 
-// setBotModel 为单个 bot 覆盖模型。空串表示回到全局默认。
-// which 取 "so" 或 "llm"。
-func (sh *Shared) SetBotModel(botID int64, which, model string) error {
-	col := "so_model"
+// SetBotModels 为单个 bot 覆盖判定模型列表（按重试顺序）。空列表表示
+// 回到全局默认。which 取 "so" 或 "llm"。
+//
+// 写新的 JSON 列并清掉旧单值列：留着旧值的话，下次读侧回退时它可能
+// 冒出来，出现「面板显示 A、实际跑 B」的错位。
+func (sh *Shared) SetBotModels(botID int64, which string, models []string) error {
+	col, old := "so_models", "so_model"
 	if which == "llm" {
-		col = "llm_model"
+		col, old = "llm_models", "llm_model"
 	}
-	// col 只来自上面两个字面量，不存在注入面。
+	v := "[]"
+	if len(models) > 0 {
+		raw, err := json.Marshal(models)
+		if err != nil {
+			return err
+		}
+		v = string(raw)
+	}
+	// col/old 只来自上面两个字面量，不存在注入面。
 	if _, err := sh.Store.Write.Exec(
-		`UPDATE bots SET `+col+`=? WHERE bot_id=?`, model, botID); err != nil {
+		`UPDATE bots SET `+col+`=?, `+old+`='' WHERE bot_id=?`, v, botID); err != nil {
 		return err
 	}
 	return sh.Cache.Reload()

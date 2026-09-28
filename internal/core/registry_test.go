@@ -3,6 +3,7 @@ package core_test
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"menshen/internal/core"
@@ -19,6 +20,107 @@ func (p probeTG) Call(method string, payload any) (json.RawMessage, error) {
 			`{"ok":true,"result":{"id":%d,"username":"probe"}}`, p.id)), nil
 	}
 	return json.RawMessage(`{"ok":true,"result":{}}`), nil
+}
+
+// TestSetBotModelsAndLegacyFallback：per-bot 覆盖写进新 JSON 列；旧单值
+// 列在列表为空时仍作为单元素列表读出来，升级不要求管理员重配。
+func TestSetBotModelsAndLegacyFallback(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+
+	if err := b.SetBotModels(testutil.TestBotID, "so", []string{"a/m1", "b/m2"}); err != nil {
+		t.Fatalf("SetBotModels: %v", err)
+	}
+	so, _ := b.Cache.Snap().ModelsFor(testutil.TestBotID)
+	if !slices.Equal(so, []string{"a/m1", "b/m2"}) {
+		t.Fatalf("per-bot 模型列表没落上，得到 %v", so)
+	}
+
+	// 模拟老库：只有旧单值列。
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bots SET so_models='', so_model='legacy/x' WHERE bot_id=?`,
+		testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	so, _ = b.Cache.Snap().ModelsFor(testutil.TestBotID)
+	if !slices.Equal(so, []string{"legacy/x"}) {
+		t.Errorf("旧单值列应回退成单元素列表，得到 %v", so)
+	}
+}
+
+// TestRenameUpstreamRewritesModelRefs：模型名里嵌着上游名，改名必须
+// 连带改写模型名、默认模型设置与 bot 覆盖 —— 漏掉任何一处，那批模型
+// 都会变成「绑定的上游不存在」，判定静默失效。
+func TestRenameUpstreamRewritesModelRefs(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	w := b.Store.Write
+	if _, err := w.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
+		VALUES ('up1','http://x','k',1,1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"up1/m1", "other/m2"} {
+		if _, err := w.Exec(`INSERT INTO models (name,prompt_price,
+			completion_price,cache_read_price,cache_write_price,enabled)
+			VALUES (?,0,0,0,0,1)`, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.Exec(`INSERT INTO settings (k,v) VALUES
+		('antiad_so_models','["up1/m1","other/m2"]'),
+		('antiad_so_model','up1/m1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec(`UPDATE bots SET so_models='["up1/m1"]',
+		so_model='up1/legacy' WHERE bot_id=?`, testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := b.Store.Read.QueryRow(
+		`SELECT id FROM upstreams WHERE name='up1'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RenameUpstream(id, "up2"); err != nil {
+		t.Fatalf("RenameUpstream: %v", err)
+	}
+
+	snap := b.Cache.Snap()
+	if snap.Models["up2/m1"] == nil || snap.Models["up1/m1"] != nil {
+		t.Errorf("模型名没跟着改名: %v", snap.Models)
+	}
+	if snap.Models["other/m2"] == nil {
+		t.Error("不属于该上游的模型不该被动")
+	}
+	if got := snap.SettingStrings("antiad_so_models"); !slices.Equal(got,
+		[]string{"up2/m1", "other/m2"}) {
+		t.Errorf("默认模型列表没改写: %v", got)
+	}
+	if got := snap.Setting("antiad_so_model"); got != "up2/m1" {
+		t.Errorf("旧单值设置没改写: %q", got)
+	}
+	rec := snap.Bots[testutil.TestBotID]
+	if !slices.Equal(rec.SoModels, []string{"up2/m1"}) {
+		t.Errorf("bot 覆盖列表没改写: %v", rec.SoModels)
+	}
+	var legacy string
+	if err := b.Store.Read.QueryRow(
+		`SELECT so_model FROM bots WHERE bot_id=?`, testutil.TestBotID).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy != "up2/legacy" {
+		t.Errorf("bot 旧单值列没改写: %q", legacy)
+	}
+
+	// 重名与非法名要挡住
+	if err := b.RenameUpstream(id, "up1/bad"); err == nil {
+		t.Error("名称含 / 应被拒绝")
+	}
 }
 
 // TestRegisterMarksMainBot 确认 isMain 参数落到 bots.is_main：

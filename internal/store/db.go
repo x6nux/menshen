@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS bots (
   llm_model  TEXT    NOT NULL DEFAULT '',
   enabled    INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
-  is_main    INTEGER NOT NULL DEFAULT 0
+  is_main    INTEGER NOT NULL DEFAULT 0,
+  -- so_models / llm_models 是 JSON 数组，按重试顺序排列；空串回退到
+  -- 上面那两个单值旧列。模型名形如 <上游名>/<模型ID>。
+  so_models  TEXT    NOT NULL DEFAULT '',
+  llm_models TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_botid ON bots(bot_id);
@@ -261,6 +265,10 @@ func migrate(db *sql.DB) error {
 		// is_main：主 bot 标记。老库升级时先全部按工作 bot 处理，
 		// 由 ensureMainBot 在启动时把配置里那个 bot 置 1。
 		{"bots", "is_main", "INTEGER NOT NULL DEFAULT 0"},
+		// so_models / llm_models：模型列表（JSON 数组，按重试顺序）。
+		// 老库的空串会回退到 so_model / llm_model 单值列。
+		{"bots", "so_models", "TEXT NOT NULL DEFAULT ''"},
+		{"bots", "llm_models", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

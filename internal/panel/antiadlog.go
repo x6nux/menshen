@@ -68,6 +68,14 @@ func modelLabel(v string) string {
 	return "<code>" + html.EscapeString(v) + "</code>"
 }
 
+// modelListLabel 渲染模型列表：按重试顺序用逗号连起来。
+func modelListLabel(v []string) string {
+	if len(v) == 0 {
+		return "（未配置）"
+	}
+	return "<code>" + html.EscapeString(strings.Join(v, ", ")) + "</code>"
+}
+
 // showAntiAdDigest 渲染形态摘要页。
 func showAntiAdDigest(b *core.Bot, chatID, msgID int64) {
 	snap := b.Cache.Snap()

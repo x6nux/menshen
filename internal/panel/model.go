@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"menshen/internal/core"
+	"menshen/internal/store"
 	"menshen/internal/tg"
+	"menshen/internal/upstream"
 )
 
 // 列表分页大小。TG 单条消息容得下 10 条模型的四项价格。
@@ -40,10 +42,34 @@ func handleModelCallback(b *core.Bot, q *tg.CallbackQuery) {
 	verb, arg, _ := strings.Cut(strings.TrimPrefix(q.Data, "a:md:"), ":")
 
 	switch verb {
-	case "new": // a:md:new - 开始五步输入
+	case "new": // a:md:new - 先选上游
 		b.AnswerCallback(q.ID, "")
-		b.AskInput(chatID, q.From.ID, "md_new_name", "",
-			"请输入模型名（需与上游一致，例如 gpt-5-mini）：")
+		showModelUpstreamPick(b, chatID, msgID)
+
+	case "newu": // a:md:newu:<上游ID> - 选定上游，开始输入模型 ID
+		b.AnswerCallback(q.ID, "")
+		upID, err := strconv.ParseInt(arg, 10, 64)
+		if err != nil {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		var up *upstream.Upstream
+		for _, u := range b.Cache.Snap().Upstreams {
+			if u.ID == upID && u.Status == 1 {
+				up = u
+				break
+			}
+		}
+		if up == nil {
+			b.EditOrSend(chatID, msgID, "该上游不存在或已停用。",
+				tg.InlineKB([][2]string{{"◀️ 返回", "a:md"}}))
+			return
+		}
+		b.AskInput(chatID, q.From.ID, "md_new_name", up.Name,
+			"上游：<b>"+html.EscapeString(up.Name)+"</b>\n\n"+
+				"请输入<b>模型 ID</b>（发给上游的 model 字段，需与上游一致，"+
+				"例如 <code>gpt-5-mini</code>；OpenRouter 形态如 "+
+				"<code>openai/gpt-4o</code>）：")
 
 	case "p": // a:md:p:<page> - 翻页
 		page := 1
@@ -126,8 +152,9 @@ func showModelList(b *core.Bot, chatID, msgID int64, page int) {
 	var sb strings.Builder
 	sb.WriteString("🤖 <b>模型定价</b>\n价格单位：$ / 1M tokens\n\n")
 	if total == 0 {
-		sb.WriteString("暂无模型。\n\n模型表只用于把判定开销折算成钱——" +
-			"名称必须与上游一致，反广告面板选模型时会按它校验。")
+		sb.WriteString("暂无模型。\n\n模型名格式为 <code>上游名/模型ID</code>" +
+			"（如 <code>openrouter/openai/gpt-4o</code>）：名字决定它走哪个上游，" +
+			"价格用于把判定开销折算成钱。")
 	}
 	for _, name := range names[start:end] {
 		m := snap.Models[name]
@@ -140,6 +167,10 @@ func showModelList(b *core.Bot, chatID, msgID int64, page int) {
 			formatPrice(m.PromptPrice), formatPrice(m.CompletionPrice))
 		fmt.Fprintf(&sb, "  缓存读 $%s ｜ 缓存写 $%s\n",
 			formatPrice(m.CacheReadPrice), formatPrice(m.CacheWritePrice))
+	}
+	if n := legacyModelCount(snap); n > 0 {
+		fmt.Fprintf(&sb, "\n⚠️ 有 %d 个旧格式模型（无上游前缀），会任选可用上游；"+
+			"建议删掉后按 <code>上游名/模型ID</code> 重新添加。\n", n)
 	}
 	if total > 0 {
 		fmt.Fprintf(&sb, "\n第 %d / %d 页，共 %d 个模型。点击下方按钮查看详情。",
@@ -169,6 +200,41 @@ func showModelList(b *core.Bot, chatID, msgID int64, page int) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
+// showModelUpstreamPick 让管理员先选上游再输入模型 ID。
+//
+// 模型名 <上游名>/<模型ID> 是绑定关系的唯一来源：不先定上游就拼不出
+// 名字，也就无从区分多上游。
+func showModelUpstreamPick(b *core.Bot, chatID, msgID int64) {
+	var rows [][][2]string
+	skipped := 0
+	for _, u := range b.Cache.Snap().Upstreams {
+		if u.Status != 1 {
+			continue
+		}
+		if core.ValidUpstreamName(u.Name) != nil {
+			skipped++ // 名字含 / 或 : 的旧上游，拼不成前缀
+			continue
+		}
+		rows = append(rows, [][2]string{{
+			btnValue(u.Name), fmt.Sprintf("a:md:newu:%d", u.ID)}})
+	}
+	if len(rows) == 0 {
+		msg := "还没有可用的上游。模型名是 <code>&lt;上游名&gt;/&lt;模型ID&gt;</code>，" +
+			"新增模型前请先到「🔌 上游渠道」添加并启用一个。"
+		if skipped > 0 {
+			msg = fmt.Sprintf("有 %d 个上游的名称含 / 或 :，无法作为模型名前缀，请先改名。", skipped)
+		}
+		b.EditOrSend(chatID, msgID, msg, tg.InlineKB([][2]string{{"◀️ 返回", "a:md"}}))
+		return
+	}
+	msg := "➕ <b>新增模型</b>\n\n先选这个模型走哪个上游（决定模型名前缀）："
+	if skipped > 0 {
+		msg += fmt.Sprintf("\n\n<i>另有 %d 个上游的名称含 / 或 :，已跳过，请先改名。</i>", skipped)
+	}
+	rows = append(rows, [][2]string{{"◀️ 返回", "a:md"}})
+	b.EditOrSend(chatID, msgID, msg, tg.InlineKB(rows...))
+}
+
 func showModelDetail(b *core.Bot, chatID, msgID int64, name string) {
 	m := b.Cache.Snap().Models[name]
 	if m == nil {
@@ -184,6 +250,13 @@ func showModelDetail(b *core.Bot, chatID, msgID int64, name string) {
 
 	var sb strings.Builder
 	sb.WriteString("🤖 <b>模型：" + html.EscapeString(name) + "</b>  " + status + "\n\n")
+	if up, id := upstream.SplitModelName(name); up == "" {
+		sb.WriteString("<i>未绑定上游（旧格式）：任选一个支持该端点的上游。" +
+			"建议删掉后按 <code>上游名/模型ID</code> 重新添加。</i>\n\n")
+	} else {
+		sb.WriteString("上游: <code>" + html.EscapeString(up) + "</code>\n")
+		sb.WriteString("模型 ID: <code>" + html.EscapeString(id) + "</code>\n\n")
+	}
 	sb.WriteString("输入      $" + formatPrice(m.PromptPrice) + " /M tokens\n")
 	sb.WriteString("补全      $" + formatPrice(m.CompletionPrice) + " /M tokens\n")
 	sb.WriteString("缓存读取  $" + formatPrice(m.CacheReadPrice) + " /M tokens\n")
@@ -218,25 +291,33 @@ func handleModelNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 	chatID := m.Chat.ID
 
 	if p.Op == "md_new_name" {
-		if text == "" {
-			b.Send(chatID, "模型名不能为空，请重新输入：", nil)
+		id := strings.TrimSpace(text)
+		if id == "" {
+			b.Send(chatID, "模型 ID 不能为空，请重新输入：", nil)
 			return
 		}
+		if strings.ContainsAny(p.Target, "/:") {
+			b.DropPending(m.From.ID)
+			b.Send(chatID, "上游名含 / 或 :，拼不出模型名前缀。请先到「🔌 上游渠道」给它改名。", nil)
+			return
+		}
+		full := p.Target + "/" + id
 		// callback_data 上限 64 字节，"a:md:e:crp:" + name 是最长形式
-		if len(text)+len("a:md:e:crp:") > 64 {
+		if len(full)+len("a:md:e:crp:") > 64 {
 			b.DropPending(m.From.ID)
 			b.Send(chatID, fmt.Sprintf(
-				"模型名过长（%d 字节）。受 Telegram callback_data 64 字节限制，"+
-					"模型名不得超过 %d 字节。", len(text), 64-len("a:md:e:crp:")), nil)
+				"模型全名过长（%d 字节）。受 Telegram callback_data 64 字节限制，"+
+					"含上游前缀的模型名不得超过 %d 字节。", len(full), 64-len("a:md:e:crp:")), nil)
 			return
 		}
-		if b.Cache.Snap().Models[text] != nil {
+		if b.Cache.Snap().Models[full] != nil {
 			b.DropPending(m.From.ID)
 			b.Send(chatID, "该模型已存在，请到列表中编辑它。", nil)
 			return
 		}
-		b.AskInput(chatID, m.From.ID, "md_new_pp", text,
-			"请输入<b>输入价</b>（$ / 1M tokens，非负数，例如 0.15）：")
+		b.AskInput(chatID, m.From.ID, "md_new_pp", full,
+			"模型全名：<code>"+html.EscapeString(full)+"</code>\n\n"+
+				"请输入<b>输入价</b>（$ / 1M tokens，非负数，例如 0.15）：")
 		return
 	}
 
@@ -353,6 +434,17 @@ func toggleModelEnabled(b *core.Bot, name string) error {
 		return err
 	}
 	return nil
+}
+
+// legacyModelCount 数一下没有上游前缀的旧格式模型。
+func legacyModelCount(snap *store.Snapshot) int {
+	n := 0
+	for name := range snap.Models {
+		if up, _ := upstream.SplitModelName(name); up == "" {
+			n++
+		}
+	}
+	return n
 }
 
 // parsePrice 解析管理员输入的 $/M tokens 价格。必须非负——负价格会让开销
