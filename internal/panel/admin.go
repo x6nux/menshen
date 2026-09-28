@@ -26,19 +26,25 @@ func ShowMainMenu(b *core.Bot, chatID, msgID, uid int64) {
 	}
 
 	mine := snap.BotsOwnedBy(uid, main)
-	chats := 0
+	chats, workers := 0, 0
 	for _, r := range mine {
+		if !r.IsMain {
+			workers++
+		}
 		for _, c := range snap.ChatsOf(r.BotID) {
 			if c.Enabled {
 				chats++
 			}
 		}
 	}
-	label := "你的机器人"
 	if main {
-		label = "已接入机器人"
+		// 主 bot 不入群、不判定：和「生效群 0 个」混在一起报，会让人以为
+		// 是没配完，而不是设计如此。
+		fmt.Fprintf(&sb, "已接入机器人: %d 个（主 bot %d · 工作 bot %d）｜ 生效群: %d 个\n",
+			len(mine), len(mine)-workers, workers, chats)
+	} else {
+		fmt.Fprintf(&sb, "你的机器人: %d 个 ｜ 生效群: %d 个\n", len(mine), chats)
 	}
-	fmt.Fprintf(&sb, "%s: %d 个 ｜ 生效群: %d 个\n", label, len(mine), chats)
 
 	if main && antiad.GbanEnabled(b.Shared) {
 		fmt.Fprintf(&sb, "联合封禁: ✅ 已启用 ｜ 名单 %d 人\n", len(snap.Gban))
@@ -97,15 +103,28 @@ func bootstrapHint(b *core.Bot, uid int64, main bool) string {
 	if len(bots) == 0 {
 		miss = append(miss, "• 还没接入任何机器人")
 	} else {
-		has := false
+		// 主 bot 不入群、不判定，它名下没有群是设计如此，不能拿它判断
+		// 「配完了没有」——否则只有主 bot 的新部署会一直看到一条永远
+		// 消不掉的提示。真正要检查的是工作 bot。
+		workers, hasChat := 0, false
 		for _, r := range bots {
+			if r.IsMain {
+				continue
+			}
+			workers++
 			if len(snap.ChatsOf(r.BotID)) > 0 {
-				has = true
-				break
+				hasChat = true
 			}
 		}
-		if !has {
-			miss = append(miss, "• 机器人名下还没有群组，不会处理任何消息")
+		switch {
+		case workers == 0 && !b.Cfg.UseWebhook():
+			miss = append(miss, "• 还没有工作 bot：主 bot 只做配置管理、不判定。"+
+				"本服务是长轮询模式，接不了工作 bot，需先配 public_url 切到 webhook 模式")
+		case workers == 0:
+			miss = append(miss, "• 还没有工作 bot：主 bot 只做配置管理、不判定。"+
+				"到「🤖 我的机器人」接入一个，再把它拉进群")
+		case !hasChat:
+			miss = append(miss, "• 工作 bot 名下还没有群组，不会处理任何消息")
 		}
 	}
 	return strings.Join(miss, "\n")
