@@ -331,7 +331,7 @@ func writeHTMLHeaders(w http.ResponseWriter, nonce string) {
 	}
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'nonce-"+nonce+
-			" https://challenges.cloudflare.com; "+
+			"' https://challenges.cloudflare.com; "+
 			"frame-src https://challenges.cloudflare.com; connect-src 'self'; "+
 			"style-src 'unsafe-inline'")
 }

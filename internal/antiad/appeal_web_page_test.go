@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -328,11 +329,26 @@ func TestAppealPageHeadersAndExpiry(t *testing.T) {
 		t.Errorf("缺少 no-store / noindex 头: %v", h)
 	}
 	csp := h.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "nonce-") || !strings.Contains(csp, "challenges.cloudflare.com") {
-		t.Errorf("CSP 应放行 Turnstile 并带 nonce: %q", csp)
+	// nonce 必须整体被成对单引号包住（'nonce-xxx'）。少收尾那个引号时，
+	// CSP 解析器判定整个 script-src 非法、回退到 default-src 'self'，
+	// 页面上的内联脚本从此不执行 —— Turnstile 能解出来，但没有任何东西
+	// 会去提交，用户永远拿不到解禁码，而服务端日志里一行痕迹都没有。
+	m := regexp.MustCompile(`script-src 'nonce-([A-Za-z0-9+/=_-]+)'`).FindStringSubmatch(csp)
+	if m == nil {
+		t.Fatalf("CSP 的 nonce 表达式应形如 'nonce-<value>'（成对引号）: %q", csp)
 	}
-	if !strings.Contains(w.Body.String(), "cf-turnstile") ||
-		!strings.Contains(w.Body.String(), `data-sitekey="site"`) {
+	if !strings.Contains(csp, "challenges.cloudflare.com") {
+		t.Errorf("CSP 应放行 Turnstile 脚本: %q", csp)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `nonce="`+m[1]+`"`) {
+		t.Errorf("页面脚本的 nonce 应与 CSP 头一致：csp=%s", m[1])
+	}
+	if !strings.Contains(body, "function onToken") {
+		t.Error("页面应包含提交用的内联脚本")
+	}
+	if !strings.Contains(body, "cf-turnstile") ||
+		!strings.Contains(body, `data-sitekey="site"`) {
 		t.Error("页面应包含 Turnstile 组件")
 	}
 
