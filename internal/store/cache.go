@@ -90,9 +90,10 @@ var settingDefaults = map[string]string{
 	"antiad_exempt_users": "[]",  // 该 bot 的豁免名单
 	// 禁言档改为封禁出群（永久）。每群可单独覆盖（bot_chats.punish）。
 	"antiad_ban": "0",
-	// 判定成员 bot 的消息。默认豁免：群里的工具 bot 常发链接。
-	// bot 默认看不见其他 bot 的消息，开了也要对方满足 Bot-to-Bot 条件才收得到。
-	"antiad_judge_bots": "0",
+	// 判定普通成员 bot：默认开。豁免只给**有管理员权限**的 bot（由群
+	// 管理员判断兜住）；工具 bot 发什么判什么，0 = 豁免所有 bot（旧行为）。
+	// bot 默认看不见其他 bot 的消息，判到也要对方满足 Bot-to-Bot 条件才收得到。
+	"antiad_judge_bots": "1",
 	// 管理员私聊改为汇总：每隔这么多分钟最多一条。
 	"antiad_alert_every": "5",
 	// 汇总游标（antiad_log.id，按 bot 存在 bot_settings）。-1 = 还没初始化：

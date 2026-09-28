@@ -92,26 +92,27 @@ func TestChannelIdentityJudgedAndBannedAsChannel(t *testing.T) {
 	}
 }
 
-// TestAdExemptSpecialSenders：匿名管理员与自动转发是群主一方，判定成员 bot
-// 打开后也不判；成员 bot 默认豁免，打开 antiad_judge_bots 后才判。
+// TestAdExemptSpecialSenders：匿名管理员与自动转发是群主一方，任何开关下
+// 都不判；普通成员 bot 默认照判（有管理员权限的 bot 由末尾的群管理员判断
+// 豁免），关掉「判定普通成员 bot」才全豁免。
 func TestAdExemptSpecialSenders(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	snap := b.Cache.Snap()
 	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}) {
 		t.Error("匿名管理员应豁免")
 	}
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
-		t.Error("成员 bot 默认应豁免")
+	if adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
+		t.Error("没有管理员权限的 bot 默认应照判")
 	}
-	if err := b.PutBotSetting(b.BotID(), "antiad_judge_bots", "1"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_judge_bots", "0"); err != nil {
 		t.Fatal(err)
 	}
 	snap = b.Cache.Snap()
-	if adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
-		t.Error("开启判定成员 bot 后，非管理员 bot 不该豁免")
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
+		t.Error("关闭判定普通成员 bot 后应豁免")
 	}
 	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}) {
-		t.Error("开启判定成员 bot 后匿名管理员仍应豁免")
+		t.Error("匿名管理员仍应豁免")
 	}
 }
 

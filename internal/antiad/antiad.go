@@ -663,15 +663,15 @@ func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) boo
 		return true
 	}
 	// 关联频道自动转发（777000）：能往关联频道发帖的只有频道方，判它等于
-	// 判频道自己的帖子。匿名管理员就是管理员本人，打开「判定成员 bot」后也不判。
+	// 判频道自己的帖子。匿名管理员就是管理员本人，任何开关下都不判。
 	if u.ID == tgServiceUID || u.ID == groupAnonymousBotID {
 		return true
 	}
-	// 成员 bot 默认豁免：群里的工具 bot（RSS、签到）常发链接，判了会误删。
-	// 开启 antiad_judge_bots 后只豁免管理员 bot 与白名单——另一个反广告
-	// bot 通常是管理员，判它的告警会互相删来删去。
+	// bot 的豁免只给**有管理员权限**的——由末尾的群管理员判断兜住（另
+	// 一个反广告 bot 通常是管理员，判它的告警会互相删来删去）。普通成员
+	// bot（工具 bot）发什么判什么；antiad_judge_bots=0 才全豁免（旧行为）。
 	// 访客 bot 与频道身份不走这里：入口处已把发送者换成了召唤者/频道。
-	if u.IsBot && snap.BotSettingInt(b.BotID(), "antiad_judge_bots", 0) != 1 {
+	if u.IsBot && snap.BotSettingInt(b.BotID(), "antiad_judge_bots", 1) != 1 {
 		return true
 	}
 	// 主管理员与本 bot 的归属人豁免：他们要能在群里说话而不被自己部署

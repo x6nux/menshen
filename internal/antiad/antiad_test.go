@@ -259,9 +259,8 @@ func TestAdExempt(t *testing.T) {
 	if !adExempt(b, snap, -100, nil) {
 		t.Error("nil 发送者应豁免")
 	}
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}) {
-		t.Error("bot 应豁免")
-	}
+	// bot 与普通人同一条路径：没有管理员权限就不豁免（默认判普通成员
+	// bot，有管理员权限的 bot 由末尾的群管理员判断豁免）。
 	if !adExempt(b, snap, -100, &tg.TGUser{ID: 777}) {
 		t.Error("服务管理员应豁免")
 	}
@@ -269,16 +268,27 @@ func TestAdExempt(t *testing.T) {
 		t.Error("豁免名单内用户应豁免")
 	}
 	if fake.CountCalls("getChatMember") != 0 {
-		t.Error("前四条路径都是纯内存判断，不该发任何 API 请求")
+		t.Error("纯内存判断的路径不该发任何 API 请求")
 	}
 
-	// 普通人要查群管理员，查询结果为 member 则不豁免
+	// 普通人与 bot 都要查群管理员，查询结果为 member 则不豁免
 	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"member"}}`
 	if adExempt(b, snap, -100, &tg.TGUser{ID: 999}) {
 		t.Error("普通成员不该豁免")
 	}
-	if fake.CountCalls("getChatMember") != 1 {
-		t.Error("普通成员应触发一次群管理员查询")
+	if adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}) {
+		t.Error("没有管理员权限的 bot 不该豁免")
+	}
+	// 全豁免开关（判定普通成员 bot = 0）仍可用。
+	if err := b.PutBotSetting(b.BotID(), "antiad_judge_bots", "0"); err != nil {
+		t.Fatal(err)
+	}
+	snap = b.Cache.Snap()
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}) {
+		t.Error("关闭判定普通成员 bot 后 bot 应豁免")
+	}
+	if fake.CountCalls("getChatMember") != 2 {
+		t.Error("普通成员与普通 bot 应各触发一次群管理员查询")
 	}
 }
 

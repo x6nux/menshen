@@ -517,9 +517,10 @@ function viewWhite(){
     }).join('')+
     '<div class="row"><span>各群的群主与管理员</span><span class="badge ok">判定时实时查询</span></div>'+
     '<div class="row"><span>匿名管理员 / 关联频道转发</span><span class="badge ok">默认放行</span></div>'+
-    '<div class="row"><span>群里的普通 bot（工具 bot）</span><span class="badge ok">默认不判</span></div>'+
-    '<div class="hint" style="margin-top:6px">群主/管理员向 Telegram 实时查询，结果缓存 10 分钟；'+
-    'bot 的判定可在机器人详情页开启「判定 bot」后收紧。</div></div>';
+    '<div class="row"><span>有管理员权限的 bot</span><span class="badge ok">默认不判</span></div>'+
+    '<div class="row"><span>普通 bot（工具 bot）</span><span class="badge">默认照判</span></div>'+
+    '<div class="hint" style="margin-top:6px">群主/管理员向 Telegram 实时查询，结果缓存 10 分钟。'+
+    '工具 bot 默认与普通成员一样送检；要全豁免可在机器人详情页关闭「判定普通成员 bot」。</div></div>';
   return h;
 }
 
