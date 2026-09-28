@@ -181,11 +181,13 @@ func HandleNonStaffPrivate(b *core.Bot, m *tg.Message, text string) bool {
 
 // showAppealEntry 渲染申诉入口。payload 非空表示从 deep link 进来。
 func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
-	// 只接管我们发出的两种 deep link：进群限制通知的 ub<群号> 与
-	// 群内告警的 appeal；其余 payload 放回去给别的处理器。
+	// 只接管我们发出的 deep link：进群限制通知的 ub<群号>、群内告警与
+	// 私聊卡片的 log<记录号>、老的 appeal；其余 payload 放回去给别的处理器。
 	if payload != "" && payload != "appeal" {
 		if _, ok := parseUnbanPayload(payload); !ok {
-			return false
+			if _, ok := ParseLogPayload(payload); !ok {
+				return false
+			}
 		}
 	}
 

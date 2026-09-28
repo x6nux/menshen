@@ -1461,10 +1461,20 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 	var rows [][][2]string
 	if b.Username != "" {
 		rows = append(rows, [][2]string{{
-			"🛡 打开 bot 处理",
-			tg.URLBtn("https://t.me/" + b.Username + "?start=appeal")}})
+			"🛡 打开 bot 处理", tg.URLBtn(botDeepLink(b, logID))}})
 	}
 	return sb.String(), tg.InlineKB(rows...)
+}
+
+// botDeepLink 拼「打开 bot」的深链。带上记录号：管理员点进去直接落到
+// 那条记录卡片（panel.ShowLogCard 会再查一次权限），普通用户进申诉入口。
+// 没有记录号（理论上不该发生）时退回老的 appeal 载荷。
+func botDeepLink(b *core.Bot, logID int64) string {
+	payload := "appeal"
+	if logID > 0 {
+		payload = logPayload(logID)
+	}
+	return "https://t.me/" + b.Username + "?start=" + payload
 }
 
 // userLink 渲染可点开的用户 ID。不写昵称：广告号的昵称本身就是广告，
@@ -1561,8 +1571,7 @@ func adAlertLinks(b *core.Bot, logID int64) [][2]string {
 		row = append(row, [2]string{"📄 查看原文与理由", tg.URLBtn(u)})
 	}
 	if b.Username != "" {
-		row = append(row, [2]string{"📝 申诉",
-			tg.URLBtn("https://t.me/" + b.Username + "?start=appeal")})
+		row = append(row, [2]string{"📝 申诉", tg.URLBtn(botDeepLink(b, logID))})
 	}
 	return row
 }

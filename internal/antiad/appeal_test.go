@@ -43,6 +43,26 @@ func appealStatus(t *testing.T, b *core.Bot, uid int64) string {
 	return st
 }
 
+// TestAppealEntryAcceptsLogPayload：群内告警的按钮带的是 start=log<记录号>
+// —— 管理员点进记录卡片，普通用户进申诉入口。非管理员的这条 payload 必须
+// 被申诉入口接管，而不是被当成陌生参数放回去。
+func TestAppealEntryAcceptsLogPayload(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+
+	if !HandleNonStaffPrivate(b, appealDM(555), "/start log12") {
+		t.Fatal("log payload 应被申诉入口接管")
+	}
+	last := fake.LastCall("sendMessage")
+	if last == nil || !strings.Contains(last["text"].(string), "没有被本 bot 限制") {
+		t.Errorf("没有限制时应明确告知，得到 %v", last)
+	}
+
+	// 未知 payload 不接管：可能是别的处理器或未来格式的入口。
+	if HandleNonStaffPrivate(b, appealDM(555), "/start somethingelse") {
+		t.Error("未知 payload 不该被接管")
+	}
+}
+
 // TestAppealAIOverturnsAndLifts：AI 撤销原判时直接解除（含冷判定禁言），
 // 给申诉人回执并给归属人推简报卡片；申诉开销记在申诉单上，不污染判定账本。
 func TestAppealAIOverturnsAndLifts(t *testing.T) {

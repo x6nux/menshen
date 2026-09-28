@@ -139,6 +139,13 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	}
 
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
+		// 群内告警的「打开 bot 处理」带记录号：管理员直接落到那条记录
+		// 卡片（权限由 ShowLogCard 再查一次），不带记录号才是主菜单。
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
+		if id, ok := antiad.ParseLogPayload(payload); ok {
+			panel.ShowLogCard(b, m.Chat.ID, m.From.ID, id)
+			return
+		}
 		panel.ShowMainMenu(b, m.Chat.ID, 0, m.From.ID)
 		return
 	}

@@ -409,10 +409,11 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	if strings.Contains(text, "#12") || strings.Contains(text, "删除消息") {
 		t.Errorf("群内告警不该带处置细节:\n%s", text)
 	}
-	// 按钮只留一个：打开 bot 的申诉入口（携带 start=appeal 参数）。
+	// 按钮只留一个：打开 bot 的深链带记录号（管理员点进记录卡片，
+	// 普通用户点进申诉入口）。
 	kb := fmt.Sprint(p["reply_markup"])
-	if !strings.Contains(kb, "t.me/testbot?start=appeal") {
-		t.Errorf("告警应带打开 bot 的按钮:\n%s", kb)
+	if !strings.Contains(kb, "t.me/testbot?start=log12") {
+		t.Errorf("告警应带打开 bot 的按钮（含记录号）:\n%s", kb)
 	}
 	if got := strings.Count(kb, "url:"); got != 1 {
 		t.Errorf("按钮应只有一个，得到 %d 个：%s", got, kb)

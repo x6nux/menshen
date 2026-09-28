@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
@@ -122,6 +125,37 @@ func TestWorkerBotStillHandlesGroupMessage(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("工作 bot 应给群消息留底 1 行，得到 %d 行", n)
+	}
+}
+
+// TestStaffStartWithLogDeepLink：管理员从群内告警点「打开 bot 处理」
+// （start=log<记录号>）时直接落到那条记录卡片；普通 /start 仍是主菜单。
+func TestStaffStartWithLogDeepLink(t *testing.T) {
+	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
+
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,
+		 ad_kind,action,reason,created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		b.BotID(), -100, 555, 7, "加微信买号", "ad", 0.9, "so",
+		"promo", "deleted_muted", "推广", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := b.Store.Read.QueryRow(
+		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatch(b, &tg.Update{Message: &tg.Message{
+		MessageID: 1, Date: 1700000000,
+		Text: fmt.Sprintf("/start log%d", id),
+		From: &tg.TGUser{ID: 777, Username: "admin"},
+		Chat: &tg.Chat{ID: 777, Type: "private"},
+	}})
+	last := fake.LastCall("sendMessage")
+	if last == nil || !strings.Contains(last["text"].(string), "记录 #") {
+		t.Fatalf("深链应渲染记录 #%d 的卡片，得到 %v", id, last)
 	}
 }
 

@@ -35,6 +35,31 @@ func parseUnbanPayload(p string) (int64, bool) {
 	return -n, true
 }
 
+// logPayload 把记录号编码进 deep link 的 start 参数。
+//
+// 「打开 bot 处理」的按钮必须带记录号：不带的话管理员点进去只落到主菜单，
+// 看不出是哪条案件；被罚的人也说不清在申诉哪一次。记录号只在管理员私聊
+// 与群里出现过，本身不是秘密，不需要加密。
+func logPayload(logID int64) string {
+	return "log" + strconv.FormatInt(logID, 10)
+}
+
+// ParseLogPayload 还原记录号；第二个返回值为假表示这不是记录卡片的入口。
+//
+// 权限不在这里判：解析出来只表示「想打开哪条记录」，能不能看由面板的
+// CanManageBot 兜底；普通用户一律走申诉入口，看到的只有自己的限制。
+func ParseLogPayload(p string) (int64, bool) {
+	rest, ok := strings.CutPrefix(p, "log")
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
 // joinMuteRec 是 join_mutes 的一行。
 type joinMuteRec struct {
 	ChatID    int64
