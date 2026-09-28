@@ -362,7 +362,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		return aiResult{err: err} // 序列化都失败，重试多少次都一样
 	}
 
-	limit := msSetting(snap, "antiad_llm_ttft_ms", 5000)
+	limit := msSetting(snap, "antiad_llm_ttft_ms", 15000)
 	if ep == upstream.EPSystemOne {
 		limit = msSetting(snap, "antiad_so_timeout_ms", 2000)
 	}

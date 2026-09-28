@@ -108,6 +108,26 @@ func TestZeroTimeoutFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLLMFirstTokenDefaultIs15s：复判是「等大模型」，不是同步判定 ——
+// 推理模型的首字可以到十几秒。默认卡在 5 秒时，上游稍有抖动就会把正常
+// 请求当成卡住、立即重试，在上游已经吃紧时反而放大它的负载。
+func TestLLMFirstTokenDefaultIs15s(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if got := b.Cache.Snap().SettingInt("antiad_llm_ttft_ms", 0); got != 15000 {
+		t.Errorf("复判首字默认上限应为 15000ms，得到 %d", got)
+	}
+}
+
+// TestAIClientTimeoutCoversRetryBudget：客户端总超时不能小于一次判定的
+// 重试总预算。复判是流式，出了首字之后还要把话说完；客户端超时先到的话，
+// 一个还在预算内的正常复判会被当成失败重试，白花一次上游开销。
+func TestAIClientTimeoutCoversRetryBudget(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if b.AIClient.Timeout < aiTotalBudget {
+		t.Errorf("AIClient 总超时 %v 小于重试总预算 %v", b.AIClient.Timeout, aiTotalBudget)
+	}
+}
+
 // TestLLMStreamAssemblesContentAndUsage：复判走流式。内容要按块拼回完整的
 // JSON；用量要从最后一块里取到，否则面板上的开销永远是 0。请求里必须
 // 开 stream、并要求上游在流末附上用量。

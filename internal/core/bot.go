@@ -120,8 +120,11 @@ func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 }
 
 // aiClientTimeout 是判定调用 AI 上游的整体超时。
-// 一条群消息的同步判定，拖过 20 秒结果已经没有意义。
-const aiClientTimeout = 20 * time.Second
+//
+// 不能小于重试总预算（45 秒）：复判是流式，出了首字之后还要把话说完，
+// 客户端超时先到的话，一个还在预算内的正常复判会被当成失败重试。
+// systemone 不受影响 —— 它有自己的看门狗（2 秒）先掐。
+const aiClientTimeout = 45 * time.Second
 
 // ---- Bot ----
 
