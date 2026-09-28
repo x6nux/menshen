@@ -39,14 +39,14 @@ func newUnlockCode() (string, error) {
 }
 
 // issueUnlockCode 给申诉单签发解禁码（唯一索引兜底，撞码时重试）。
-func issueUnlockCode(b *core.Bot, appealID int64) (string, bool) {
+func issueUnlockCode(sh *core.Shared, appealID int64) (string, bool) {
 	for attempt := 0; attempt < 5; attempt++ {
 		code, err := newUnlockCode()
 		if err != nil {
 			return "", false
 		}
 		expires := time.Now().Add(unlockCodeTTL).Unix()
-		_, err = b.Store.Write.Exec(`UPDATE appeals SET code=?, code_expires=?,
+		_, err = sh.Store.Write.Exec(`UPDATE appeals SET code=?, code_expires=?,
 			status='code', updated_at=? WHERE id=?`,
 			code, expires, time.Now().Unix(), appealID)
 		if err == nil {

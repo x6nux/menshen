@@ -102,9 +102,9 @@ func createAppeal(b *core.Bot, uid int64, status string) (appealRec, error) {
 }
 
 // updateAppeal 只更新列名字面量来自调用方，不存在注入面。
-func updateAppeal(b *core.Bot, id int64, sets string, args ...any) {
+func updateAppeal(sh *core.Shared, id int64, sets string, args ...any) {
 	args = append(args, time.Now().Unix(), id)
-	if _, err := b.Store.Write.Exec(
+	if _, err := sh.Store.Write.Exec(
 		`UPDATE appeals SET `+sets+`, updated_at=? WHERE id=?`, args...); err != nil {
 		slog.Error("申诉单更新失败", "id", id, "err", err)
 	}
@@ -265,12 +265,12 @@ func captureAppealStatement(b *core.Bot, dmChat, uid int64, text string) bool {
 		return false
 	}
 	if time.Now().Unix()-ap.UpdatedAt > 10*60 {
-		updateAppeal(b, ap.ID, `status='expired'`)
+		updateAppeal(b.Shared, ap.ID, `status='expired'`)
 		b.Send(dmChat, "这张申诉单已经超时作废了，请重新发 /start 发起申诉。", nil)
 		return true
 	}
 	statement := core.TruncateRunes(strings.TrimSpace(text), appealStatementMax)
-	updateAppeal(b, ap.ID, `statement=?, status='ai'`, statement)
+	updateAppeal(b.Shared, ap.ID, `statement=?, status='ai'`, statement)
 	b.Send(dmChat, "✅ 已收到申诉理由，正在交给 AI 复核……", nil)
 	startAppealAI(b, ap.ID, uid)
 	return true
@@ -339,7 +339,7 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 	penalties := effectivePenalties(b, uid)
 	if len(penalties) == 0 {
 		// 限制在排队期间自然到期/被解除：直接结案。
-		updateAppeal(b, appealID, `status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
+		updateAppeal(b.Shared, appealID, `status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
 		b.Send(uid, "✅ 你名下的限制已经不存在了，无需申诉。", nil)
 		return
 	}
@@ -349,7 +349,7 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 	_, llmModels := snap.ModelsFor(b.BotID())
 	if len(llmModels) == 0 {
 		// 未配复判模型：跳过 AI，直接进网页（§1.6）。
-		updateAppeal(b, appealID, `ai_result='skipped', ai_reason='未配置复判模型'`)
+		updateAppeal(b.Shared, appealID, `ai_result='skipped', ai_reason='未配置复判模型'`)
 		enterWebOrNoWeb(b, appealID, uid, penalties)
 		return
 	}
@@ -359,13 +359,13 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 		// 出错**不**自动解除：现在有网页验证加解禁码兜底，而自动解除
 		// 覆盖联合封禁——出错就放行等于让人靠打挂上游来解开全平台封禁。
 		slog.Warn("申诉：AI 复核失败，转网页", "appeal", appealID, "uid", uid, "err", err)
-		updateAppeal(b, appealID, `ai_result='error', ai_reason=?`,
+		updateAppeal(b.Shared, appealID, `ai_result='error', ai_reason=?`,
 			core.TruncateRunes(err.Error(), 300))
 		enterWebOrNoWeb(b, appealID, uid, penalties)
 		return
 	}
 
-	updateAppeal(b, appealID,
+	updateAppeal(b.Shared, appealID,
 		`ai_result=?, ai_conf=?, ai_reason=?, ai_model=?, ai_cost=?`,
 		map[bool]string{true: "uphold", false: "overturn"}[v.Uphold],
 		v.Confidence, core.TruncateRunes(v.Reason, 300), v.Model, v.Cost)
@@ -549,27 +549,27 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 		}
 	}
 	unbanGateClear(b.Shared, uid)
-	updateAppeal(b, appealID, `status='lifted'`)
+	updateAppeal(b.Shared, appealID, `status='lifted'`)
 
 	ap, _ := loadAppealByID(b.Store, appealID)
 	b.Send(uid, "✅ <b>申诉通过，限制已解除</b>\n\n"+
 		"你现在可以在群里正常发言了。\n\n"+
 		"<i>请确认账号资料与发言不再包含推广或引流内容。</i>", nil)
-	pushAppealCard(b, ap, penalties, appealCardBrief, hadGban)
+	pushAppealCard(b, ap, penalties, appealCardBrief, hadGban, appealCardExtra{})
 	slog.Info("申诉：AI 撤销原判，已解除", "appeal", appealID, "uid", uid, "gban", hadGban)
 }
 
 // enterWebOrNoWeb 走网页验证；网页不可用时进入 noweb（§1.6）。
 func enterWebOrNoWeb(b *core.Bot, appealID, uid int64, penalties []appealPenalty) {
 	if !WebAvailable(b.Shared) || !turnstileConfigured(b.Shared) {
-		updateAppeal(b, appealID, `status='noweb'`)
+		updateAppeal(b.Shared, appealID, `status='noweb'`)
 		ap, _ := loadAppealByID(b.Store, appealID)
 		b.Send(uid, "你的申诉已提交复核。\n\n"+
 			"当前无法进行网页验证，请联系群管理员人工处理。", nil)
-		pushAppealCard(b, ap, penalties, appealCardNoWeb, hasGbanPenalty(penalties))
+		pushAppealCard(b, ap, penalties, appealCardNoWeb, hasGbanPenalty(penalties), appealCardExtra{})
 		return
 	}
-	updateAppeal(b, appealID, `status='web', web_since=?`, time.Now().Unix())
+	updateAppeal(b.Shared, appealID, `status='web', web_since=?`, time.Now().Unix())
 	link := AppealURL(b.Shared, appealID, uid)
 	b.Send(uid, "你的申诉需要完成<b>网页人机验证</b>：\n\n"+link+
 		"\n\n<i>请在 24 小时内用系统浏览器打开（Telegram 内置浏览器可能加载不出验证组件）。"+
@@ -603,9 +603,15 @@ const (
 	appealCardFailed
 )
 
+// appealCardExtra 是卡片上的补充信息：网页验证信号与关联账号。
+type appealCardExtra struct {
+	Hard, Soft   []string
+	Strong, Weak []int64
+}
+
 // pushAppealCard 把申诉进展推给 bot 归属人与主管理员。
 func pushAppealCard(b *core.Bot, ap appealRec, penalties []appealPenalty,
-	kind appealCardKind, withMains bool) {
+	kind appealCardKind, withMains bool, extra appealCardExtra) {
 
 	var sb strings.Builder
 	switch kind {
@@ -630,6 +636,21 @@ func pushAppealCard(b *core.Bot, ap appealRec, penalties []appealPenalty,
 	if ap.AIReason != "" {
 		fmt.Fprintf(&sb, "AI 理由：%s\n",
 			html.EscapeString(core.TruncateRunes(ap.AIReason, 300)))
+	}
+	if len(extra.Hard) > 0 {
+		fmt.Fprintf(&sb, "硬信号：%s\n",
+			html.EscapeString(strings.Join(extra.Hard, "；")))
+	}
+	if len(extra.Soft) > 0 {
+		fmt.Fprintf(&sb, "软信号（仅供参考）：%s\n",
+			html.EscapeString(strings.Join(extra.Soft, "；")))
+	}
+	if len(extra.Strong) > 0 {
+		fmt.Fprintf(&sb, "强关联账号（同指纹）：%s\n", relatedLine(b, extra.Strong))
+	}
+	if len(extra.Weak) > 0 {
+		fmt.Fprintf(&sb, "弱关联账号（30 天内同 IP，仅供参考）：%s\n",
+			relatedLine(b, extra.Weak))
 	}
 	if ap.Code != "" {
 		fmt.Fprintf(&sb, "\n解禁码：<code>%s</code>\n"+
@@ -672,4 +693,25 @@ func appealAIResultLabel(r string) string {
 		return "跳过复核"
 	}
 	return "未复核"
+}
+
+// relatedLine 渲染关联账号列表，每个带上现有标注。
+// 只展示，从不据此自动处置：指纹可伪造，同型号设备的指纹也很接近。
+func relatedLine(b *core.Bot, uids []int64) string {
+	snap := b.Cache.Snap()
+	parts := make([]string, 0, len(uids))
+	for _, uid := range uids {
+		mark := "无记录"
+		if _, ok := snap.Gban[uid]; ok {
+			mark = "🚫 联合封禁中"
+		} else {
+			var hits int64
+			if err := b.Store.Read.QueryRow(`SELECT COALESCE(SUM(ad_hits),0)
+				FROM group_members WHERE user_id=?`, uid).Scan(&hits); err == nil && hits > 0 {
+				mark = fmt.Sprintf("命中 %d 次", hits)
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s（%s）", userLink(uid), mark))
+	}
+	return strings.Join(parts, "、")
 }
