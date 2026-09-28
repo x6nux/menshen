@@ -268,7 +268,7 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		reason = "账号资料中含有推广或引流内容"
 	}
 
-	msgID := b.SendGetID(conf.ChatID, joinMuteNotice(b, u), joinMuteKB(b, conf.ChatID))
+	msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u), joinMuteKB(b, conf.ChatID))
 	saveJoinMute(b, conf.ChatID, u.ID, reason, msgID)
 	// 判定命中即把那条「XXX 已加入群组」的服务消息删掉：广告号的昵称
 	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。

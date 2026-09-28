@@ -119,10 +119,9 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 			"chat_id": conf.ChatID, "message_id": m.MessageID})
 	}
 	reply := func(text string) {
-		msgID := b.SendGetID(conf.ChatID, text, nil)
 		ttl := time.Duration(b.Cache.Snap().BotSettingInt(
 			b.BotID(), "antiad_alert_ttl", 0)) * time.Second
-		scheduleAlertCleanup(b, conf.ChatID, msgID, ttl)
+		groupNotice(b, conf.ChatID, text, nil, ttl)
 	}
 
 	now := time.Now().Unix()

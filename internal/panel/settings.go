@@ -56,6 +56,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_act_hard", "处置线：删除+禁言", "0-100 的整数，新人达到它才禁言", 0, 100, "antiad"},
 	{"antiad_act_soft", "处置线：删除", "0-100 的整数，低于它不处置", 0, 100, "antiad"},
 	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销。默认跟随全局，单 bot 可覆盖", 0, 1, "both"},
+	{"antiad_group_silent", "群内静默", "1 = 群里不发任何通知（告警、限制提示、命令回复都不发），判定与处置照常；0 = 正常发", 0, 1, "antiad"},
 	{"antiad_cold_conf", "冷判定采信线", "0-100 的整数，建议高于处置线——进群画像的证据更少", 0, 100, "antiad"},
 	{"antiad_cold_prefilter", "冷判定本地预筛", "1 = 开（只有资料可疑的才送检），0 = 关（人人送检）", 0, 1, "antiad"},
 	{"antiad_new_hours", "新人界定：进群小时数", "非负整数，小于它算新人", 0, 0, "antiad"},

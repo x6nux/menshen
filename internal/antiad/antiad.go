@@ -242,24 +242,24 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 		// 负数是频道 ID（以频道身份发言的记录就记在频道名下）。
 		uid, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
 		if err != nil || uid == 0 {
-			b.Send(m.Chat.ID, adCmdUsage, nil)
+			sendGroup(b, m.Chat.ID, adCmdUsage, nil)
 			return
 		}
 		target = &tg.TGUser{ID: uid}
 	default:
-		b.Send(m.Chat.ID, adCmdUsage, nil)
+		sendGroup(b, m.Chat.ID, adCmdUsage, nil)
 		return
 	}
 
 	if !b.AdLimits.Allow(fmt.Sprintf("ad:cmd:%d", m.From.ID),
 		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
-		b.Send(m.Chat.ID, "复查太频繁，请稍后再试。", nil)
+		sendGroup(b, m.Chat.ID, "复查太频繁，请稍后再试。", nil)
 		return
 	}
 
 	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit)
 	if len(hist) == 0 {
-		b.Send(m.Chat.ID, "该用户在本群没有留底消息，无法复查。", nil)
+		sendGroup(b, m.Chat.ID, "该用户在本群没有留底消息，无法复查。", nil)
 		return
 	}
 
@@ -285,7 +285,7 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	}
 
 	if !b.AdSubmit(func() { reviewAndAct(b, snap, conf, tgt, profile, state) }) {
-		b.Send(m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
+		sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
 	}
 }
 
@@ -322,8 +322,7 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 	})
 
 	if m.ReplyToMessage == nil || m.ReplyToMessage.From == nil {
-		scheduleAlertCleanup(b, conf.ChatID,
-			b.SendGetID(conf.ChatID, adbCmdUsage, nil), 30*time.Second)
+		groupNotice(b, conf.ChatID, adbCmdUsage, nil, 30*time.Second)
 		return
 	}
 	// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
@@ -335,8 +334,7 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 	snap := b.Cache.Snap()
 	if !b.AdLimits.Allow(fmt.Sprintf("adb:%d", m.From.ID),
 		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
-		scheduleAlertCleanup(b, conf.ChatID,
-			b.SendGetID(conf.ChatID, "操作太频繁，请稍后再试。", nil), 30*time.Second)
+		groupNotice(b, conf.ChatID, "操作太频繁，请稍后再试。", nil, 30*time.Second)
 		return
 	}
 
@@ -361,9 +359,7 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 	}
 
 	text, kb := renderAdAlertBrief(b, target, v, act, note, logID, conf.Dryrun)
-	scheduleAlertCleanup(b, conf.ChatID,
-		b.SendGetID(conf.ChatID, "🖐 <b>人工标记</b>\n"+text, kb),
-		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
+	groupNotice(b, conf.ChatID, "🖐 <b>人工标记</b>\n"+text, kb, time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 
 // reviewAndAct 跑复查并按处置矩阵动作，结果贴回群里。
@@ -1379,6 +1375,30 @@ func BumpAdHits(b *core.Bot, chatID, uid, delta int64) {
 	}
 }
 
+// groupSilent 报告这个 bot 是否开启了「群里不发任何通知」。
+//
+// 判定、删除、禁言全部照常，只是不在群里留任何 bot 消息 —— 有的群
+// 不希望 bot 参与对话，处置结果走管理员私聊与记录查询。
+func groupSilent(b *core.Bot) bool {
+	return b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_group_silent", 0) == 1
+}
+
+// sendGroup 在群里发一条消息；静默开关打开时什么也不发，返回 0。
+// 调用方拿到 0 就不要安排撤回（撤回一个不存在的消息号会删错东西）。
+func sendGroup(b *core.Bot, chatID int64, text string, kb any) int64 {
+	if groupSilent(b) {
+		return 0
+	}
+	return b.SendGetID(chatID, text, kb)
+}
+
+// groupNotice 在群里发一条自动撤回的提示；静默时不发也不安排撤回。
+func groupNotice(b *core.Bot, chatID int64, text string, kb any, ttl time.Duration) {
+	if id := sendGroup(b, chatID, text, kb); id != 0 {
+		scheduleAlertCleanup(b, chatID, id, ttl)
+	}
+}
+
 // sendAdAlert 把一次命中贴到群里（开了「群内展示」时）。管理员私聊不在这里发：
 // 攒成汇总由 FlushAdSummary 定时发，见 summary.go。逐条私聊在刷屏高峰里会
 // 刷爆私聊、撞上 TG 发送频率限制，把删除/禁言一起拖慢。
@@ -1390,7 +1410,8 @@ func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, ac
 	note string, logID int64, dryrun bool) {
 
 	// 默认关闭 —— 升级上来的部署不该突然在群里多出消息。
-	if !conf.GroupAlert || m.Chat == nil {
+	// 群内静默优先级更高：打开后这个 bot 在群里一个字都不发。
+	if !conf.GroupAlert || m.Chat == nil || groupSilent(b) {
 		return
 	}
 	// 按 (群, 人) 节流：一个刷屏的人不能把群刷成告警墙，也不能撞上 TG 对
@@ -1405,7 +1426,7 @@ func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, ac
 	// 贴在群里：处置结果对全群可见，该群的 TG 管理员能直接点按钮判断
 	// （见 adDispositionAllowed）。精简版：昵称与原文一个字都不能贴回去。
 	brief, bkb := renderAdAlertBrief(b, m, v, act, note, logID, dryrun)
-	scheduleAlertCleanup(b, m.Chat.ID, b.SendGetID(m.Chat.ID, brief, bkb),
+	groupNotice(b, m.Chat.ID, brief, bkb,
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 

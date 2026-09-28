@@ -28,7 +28,7 @@ func HandleAdwCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	}
 	ttl := time.Duration(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
 	reply := func(text string) {
-		scheduleAlertCleanup(b, conf.ChatID, b.SendGetID(conf.ChatID, text, nil), ttl)
+		groupNotice(b, conf.ChatID, text, nil, ttl)
 	}
 
 	var uid int64
