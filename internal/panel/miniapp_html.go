@@ -3,6 +3,10 @@ package panel
 // miniAppHTML 是 Mini App 的单页界面。所有数据经 /miniapp/api/* 读写，
 // 鉴权靠 Telegram WebApp 的 initData（服务端验签）。样式只用 Telegram
 // 主题变量与少量兜底色，深浅色都能看。
+//
+// 页面是两段式导航：机器人/群组/上游/模型/名单都是「先列表、点进去改
+// 配置」（SUB 记当前展开的条目），避免把所有配置平铺成一长页让人来回
+// 上下滑。返回用页内的「‹ 返回」和 Telegram 的返回按钮双保险。
 const miniAppHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -33,6 +37,9 @@ main{padding:0 12px}
 padding:6px 0;border-bottom:1px solid rgba(128,128,128,.12)}
 .row:last-child{border-bottom:0}
 .row .k{color:var(--hint);font-size:13px}
+.row.item{cursor:pointer}
+.row.item:active{background:rgba(128,128,128,.1)}
+.chev{color:var(--hint);font-size:16px;flex:0 0 auto}
 input,select,textarea{background:var(--bg);color:var(--fg);border:1px solid rgba(128,128,128,.3);
 border-radius:8px;padding:8px 10px;font-size:14px;width:100%}
 textarea{min-height:80px;font-family:ui-monospace,Menlo,monospace}
@@ -45,7 +52,7 @@ label.sw{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
 .hint{color:var(--hint);font-size:12px;line-height:1.5}
-.badge{font-size:11px;border-radius:6px;padding:2px 6px;background:rgba(128,128,128,.15)}
+.badge{font-size:11px;border-radius:6px;padding:2px 6px;background:rgba(128,128,128,.15);flex:0 0 auto}
 .badge.ok{background:rgba(60,180,100,.2)}
 .badge.no{background:rgba(224,82,82,.2)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#000c;
@@ -66,7 +73,8 @@ var tg = null, booted = false;
 function boot(){
   if (booted) return; booted = true;
   tg = (window.Telegram && window.Telegram.WebApp) || null;
-  if (tg) { try { tg.ready(); tg.expand(); } catch(e){} }
+  if (tg) { try { tg.ready(); tg.expand();
+    tg.BackButton.onClick(function(){ if(SUB) back(); }); } catch(e){} }
   if (!tg) {
     document.getElementById('view').innerHTML =
       '<div class="card">请通过 Telegram 里的菜单按钮「配置」打开本页。<br>' +
@@ -82,6 +90,11 @@ var _iv = setInterval(function(){
 }, 100);
 var botID = new URLSearchParams(location.search).get('bot') || '0';
 var S = null, TAB = 'overview';
+// SUB 是详情导航：形如 bot:43 / chat:43:-100999 / up:2 / md:a%2Fgpt-5-mini，
+// 空串表示停在列表页。切 tab 清空。
+var SUB = '';
+// LSUB 是「名单」页的内部分段；UPADD/MDADD 控制两个新增表单的展开。
+var LSUB = 'admins', UPADD = false, MDADD = false;
 var TABS = [['overview','概览'],['bots','机器人'],['chats','群组'],['upstreams','上游'],
   ['models','模型'],['settings','设置'],['lists','名单'],['logs','记录']];
 
@@ -107,6 +120,9 @@ function load(){ return api('state').then(function(d){ S=d; render(); })
   .catch(function(e){ document.getElementById('view').innerHTML =
     '<div class="card">❌ '+esc(e.message)+'</div>'; }); }
 
+function go(tab,key){ TAB=tab; SUB=key||''; render(); }
+function back(){ SUB=''; render(); }
+
 function render(){
   document.getElementById('who').textContent = (S.me.main?'主管理员':'次级管理员')+' · uid '+S.me.uid;
   var nav = document.getElementById('tabs'); nav.innerHTML='';
@@ -114,9 +130,11 @@ function render(){
     if(!S.me.main && (t[0]=='upstreams'||t[0]=='models'||t[0]=='lists')) return;
     var b=document.createElement('button'); b.textContent=t[1];
     if(TAB==t[0]) b.className='on';
-    b.onclick=function(){ TAB=t[0]; render(); };
+    b.onclick=function(){ go(t[0]); };
     nav.appendChild(b);
   });
+  // Telegram 返回按钮与页内「‹ 返回」等价；不在详情页就收起来。
+  try{ if(tg && tg.BackButton){ if(SUB) tg.BackButton.show(); else tg.BackButton.hide(); } }catch(e){}
   var v=document.getElementById('view');
   v.innerHTML = ({overview:viewOverview, bots:viewBots, chats:viewChats,
     upstreams:viewUpstreams, models:viewModels, settings:viewSettings,
@@ -124,6 +142,25 @@ function render(){
 }
 function toggleBtn(on, cb){ return '<button class="b" data-on="'+!!on+'" onclick="'+cb+'">'
   +(on?'已开启':'已关闭')+'</button>'; }
+function backRow(){ return '<div class="row" style="border:0;padding:0 0 8px">'+
+  '<button class="b g" onclick="back()">‹ 返回</button></div>'; }
+
+/* ---- 全局默认值：占位里画「30(全局)」 ---- */
+function gdef(key){
+  if(S.global && S.global[key]!=null && S.global[key]!=='') return S.global[key];
+  if(S.global_defaults && S.global_defaults[key]!=null && S.global_defaults[key]!=='')
+    return S.global_defaults[key];
+  return '';
+}
+// 模型列表键是 JSON 数组，展示成逗号分隔。
+function glist(key){ var v=gdef(key); try{ var a=JSON.parse(v);
+  if(a&&a.length) return a.join(', '); }catch(e){} return ''; }
+function gph(key){ var v=gdef(key); return v!=='' ? String(v)+'(全局)' : '全局未配置'; }
+
+function botById(id){ for(var i=0;i<S.bots.length;i++)
+  if(S.bots[i].bot_id==id) return S.bots[i]; return null; }
+function botOpts(){ return S.bots.map(function(b){
+  return '<option value="'+b.bot_id+'">'+esc(b.label)+'</option>'; }).join(''); }
 
 /* ---- 概览 ---- */
 function viewOverview(){
@@ -134,131 +171,204 @@ function viewOverview(){
     '<div class="row"><span class="k">折算开销</span><b>'+esc(st.cost_text)+'</b></div>'+
     '<div class="row"><span class="k">生效群</span><b>'+st.chats+'</b></div></div>';
   h+='<div class="card"><h3>机器人</h3>'+S.bots.map(function(b){
-    return '<div class="row"><span>'+esc(b.label)+(b.is_main?' <span class="badge">主 bot</span>':'')+
+    return '<div class="row item" onclick="go(\'bots\',\'bot:'+b.bot_id+'\')"><span>'+esc(b.label)+
+      (b.is_main?' <span class="badge">主 bot</span>':'')+
       '</span><span class="badge '+(b.live?'ok':'no')+'">'+(b.live?'运行中':'未运行')+'</span></div>';
   }).join('')+'</div>';
   return h;
 }
 
-/* ---- 机器人 ---- */
+/* ---- 机器人：列表 → 点进去改配置 ---- */
 function viewBots(){
-  return S.bots.map(function(b){
-    var bs=(S.bot_settings[String(b.bot_id)])||{};
-    var specs=S.specs.filter(function(sp){ return sp.group=='antiad'||sp.group=='both'; });
-    var h='<div class="card"><h3>'+esc(b.label)+' '+
-      (b.is_main?'<span class="badge">主 bot</span>':'')+' <span class="badge '+(b.live?'ok':'no')+'">'+
-      (b.live?'运行中':'未运行')+'</span></h3>'+
-      '<div class="row"><span class="k">启用</span>'+toggleBtn(b.enabled,
-        "act('bot',{bot_id:"+b.bot_id+",action:'"+(b.enabled?'disable':'enable')+"'},'已切换')")+'</div>'+
-      '<div class="row"><span class="k">判定模型（逗号分隔，按重试顺序）</span></div>'+
-      '<input value="'+esc((b.so_models||[]).join(', '))+'" placeholder="a/gpt-5-mini, b/gpt-5-mini" '+
-      'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'so\',value:this.value},\'已保存\')">'+
-      '<div class="row"><span class="k">复判模型（同上；留空跟随全局）</span></div>'+
-      '<input value="'+esc((b.llm_models||[]).join(', '))+'" placeholder="留空 = 全局默认" '+
-      'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'llm\',value:this.value},\'已保存\')">'+
-      '<div class="hint" style="margin-top:8px">单 bot 参数（覆盖全局）</div>';
-    specs.forEach(function(sp){
-      var val = (sp.key in bs) ? bs[sp.key] : '';
-      h+='<div class="row"><span class="k">'+esc(sp.label)+'</span>'+
-        '<input style="width:90px" value="'+esc(val)+'" placeholder="跟随全局" '+
-        'onchange="act(\'set\',{scope:\'bot\',bot_id:'+b.bot_id+',key:\''+sp.key+'\',value:this.value})"></div>';
-    });
-    h+='<div class="hint">'+esc('留空 = 删除覆盖、跟随全局')+'</div></div>';
-    return h;
-  }).join('') || '<div class="card">没有可管理的机器人</div>';
+  if(SUB.indexOf('bot:')==0){ var b=botById(SUB.slice(4)); if(b) return viewBotDetail(b); SUB=''; }
+  var h='<div class="card"><h3>机器人</h3>';
+  if(!S.bots.length) h+='<div class="hint">没有可管理的机器人</div>';
+  h+=S.bots.map(function(b){
+    return '<div class="row item" onclick="go(\'bots\',\'bot:'+b.bot_id+'\')">'+
+      '<span>'+esc(b.label)+(b.is_main?' <span class="badge">主 bot</span>':'')+'</span>'+
+      '<span class="badge '+(b.live?'ok':'no')+'">'+
+      (b.enabled?(b.live?'运行中':'未运行'):'已停用')+'</span>'+
+      '<span class="chev">›</span></div>';
+  }).join('');
+  return h+'</div>';
 }
-
-/* ---- 群组 ---- */
-function viewChats(){
-  var h='';
-  S.bots.forEach(function(b){
-    var cs=S.chats.filter(function(c){ return c.bot_id==b.bot_id; });
-    h+='<div class="card"><h3>'+esc(b.label)+' 的生效群</h3>';
-    if(!cs.length) h+='<div class="hint">（还没有群）</div>';
-    cs.forEach(function(c){
-      var mode=c.dryrun?'🧪 演练':'⚔️ 正式';
-      var punish=c.punish==0?'禁言':(c.punish==1?'封禁':'跟随');
-      h+='<div class="row"><span>'+esc(c.title||c.chat_id)+'<div class="mono">'+c.chat_id+'</div></span>'+
-        '<span><span class="badge">'+mode+'</span></span></div>'+
-        '<div class="row"><label class="sw"><input type="checkbox" '+(c.enabled?'checked':'')+
-          ' onchange="act(\'chat\',{bot_id:'+b.bot_id+',chat_id:'+c.chat_id+',action:\'update\',enabled:this.checked})"> 启用</label>'+
-        '<label class="sw"><input type="checkbox" '+(c.dryrun?'checked':'')+
-          ' onchange="act(\'chat\',{bot_id:'+b.bot_id+',chat_id:'+c.chat_id+',action:\'update\',dryrun:this.checked})"> 演练</label>'+
-        '<label class="sw"><input type="checkbox" '+(c.group_alert?'checked':'')+
-          ' onchange="act(\'chat\',{bot_id:'+b.bot_id+',chat_id:'+c.chat_id+',action:\'update\',group_alert:this.checked})"> 群内展示</label>'+
-        '<span class="badge">处罚:'+punish+'</span></div>';
-    });
-    h+='<div class="grid" style="margin-top:8px">'+
-      '<input id="addchat'+b.bot_id+'" placeholder="chat_id，如 -1001234567890">'+
-      '<button class="b" onclick="act(\'chat\',{bot_id:'+b.bot_id+
-      ',chat_id:document.getElementById(\'addchat'+b.bot_id+'\').value,action:\'add\'},\'已添加（默认演练）\')">添加群</button></div></div>';
+function viewBotDetail(b){
+  var bs=(S.bot_settings[String(b.bot_id)])||{};
+  var specs=S.specs.filter(function(sp){ return sp.group=='antiad'||sp.group=='both'; });
+  var gso=glist('antiad_so_models'), gllm=glist('antiad_llm_models');
+  var h=backRow();
+  h+='<div class="card"><h3>'+esc(b.label)+' '+
+    (b.is_main?'<span class="badge">主 bot</span>':'')+' <span class="badge '+(b.live?'ok':'no')+'">'+
+    (b.live?'运行中':'未运行')+'</span></h3>'+
+    '<div class="row"><span class="k">启用</span>'+toggleBtn(b.enabled,
+      "act('bot',{bot_id:"+b.bot_id+",action:'"+(b.enabled?'disable':'enable')+"'},'已切换')")+'</div>'+
+    '<div class="row"><span class="k">判定模型（逗号分隔，按重试顺序）</span></div>'+
+    '<input value="'+esc((b.so_models||[]).join(', '))+'" placeholder="'+
+    esc(gso?gso+'(全局)':'全局未配置')+'" '+
+    'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'so\',value:this.value},\'已保存\')">'+
+    '<div class="row"><span class="k">复判模型（同上）</span></div>'+
+    '<input value="'+esc((b.llm_models||[]).join(', '))+'" placeholder="'+
+    esc(gllm?gllm+'(全局)':'全局未配置')+'" '+
+    'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'llm\',value:this.value},\'已保存\')">'+
+    '<div class="hint" style="margin-top:8px">单 bot 参数（覆盖全局；清空 = 恢复全局）</div>';
+  specs.forEach(function(sp){
+    var val = (sp.key in bs) ? bs[sp.key] : '';
+    h+='<div class="row"><span class="k">'+esc(sp.label)+'</span>'+
+      '<input style="width:110px" value="'+esc(val)+'" placeholder="'+esc(gph(sp.key))+'" '+
+      'onchange="act(\'set\',{scope:\'bot\',bot_id:'+b.bot_id+',key:\''+sp.key+'\',value:this.value})"></div>';
   });
-  return h||'<div class="card">没有机器人</div>';
+  return h+'</div>';
 }
 
-/* ---- 上游（主管理员） ---- */
+/* ---- 群组：列表 → 点进去改配置 ---- */
+function chatById(bid,cid){ for(var i=0;i<S.chats.length;i++){
+  var c=S.chats[i]; if(c.bot_id==bid&&c.chat_id==cid) return c; } return null; }
+function viewChats(){
+  if(SUB.indexOf('chat:')==0){
+    var pp=SUB.slice(5).split(':');
+    var c=chatById(pp[0],pp[1]);
+    if(c) return viewChatDetail(c);
+    SUB='';
+  }
+  var h='<div class="card"><h3>生效群</h3>';
+  if(!S.chats.length) h+='<div class="hint">（还没有群）</div>';
+  h+=S.chats.map(function(c){
+    var b=botById(c.bot_id);
+    return '<div class="row item" onclick="go(\'chats\',\'chat:'+c.bot_id+':'+c.chat_id+'\')">'+
+      '<span>'+esc(c.title||c.chat_id)+'<div class="mono">'+c.chat_id+(b?' · '+esc(b.label):'')+'</div></span>'+
+      '<span class="badge '+(c.enabled?'ok':'no')+'">'+
+      (c.dryrun?'演练':(c.enabled?'判定中':'停用'))+'</span>'+
+      '<span class="chev">›</span></div>';
+  }).join('');
+  h+='</div>';
+  h+='<div class="card"><h3>添加群</h3>'+
+    '<select id="ca_bot">'+botOpts()+'</select>'+
+    '<input id="ca_id" placeholder="chat_id，如 -1001234567890" style="margin-top:6px">'+
+    '<button class="b" style="margin-top:6px" onclick="act(\'chat\',{bot_id:document.getElementById(\'ca_bot\').value,'+
+    'chat_id:document.getElementById(\'ca_id\').value,action:\'add\'},\'已添加（默认演练）\')">添加</button></div>';
+  return h;
+}
+function viewChatDetail(c){
+  var b=botById(c.bot_id);
+  var pre="act('chat',{bot_id:"+c.bot_id+",chat_id:"+c.chat_id+",action:'update',";
+  var h=backRow();
+  h+='<div class="card"><h3>'+esc(c.title||c.chat_id)+' <span class="badge">'+c.chat_id+'</span></h3>'+
+    '<div class="hint" style="margin-bottom:8px">所属：'+esc(b?b.label:'未知 bot')+'</div>'+
+    '<div class="row"><label class="sw"><input type="checkbox" '+(c.enabled?'checked':'')+
+      ' onchange="'+pre+'enabled:this.checked})"> 启用判定</label></div>'+
+    '<div class="row"><label class="sw"><input type="checkbox" '+(c.dryrun?'checked':'')+
+      ' onchange="'+pre+'dryrun:this.checked})"> 演练（只记不罚）</label></div>'+
+    '<div class="row"><label class="sw"><input type="checkbox" '+(c.group_alert?'checked':'')+
+      ' onchange="'+pre+'group_alert:this.checked})"> 群内展示判定结果</label></div>'+
+    '<div class="row"><span class="k">处罚方式</span>'+
+      '<select style="width:140px" onchange="'+pre+'punish:this.value})">'+
+      '<option value="-1"'+(c.punish==-1?' selected':'')+'>跟随 bot 设置</option>'+
+      '<option value="0"'+(c.punish==0?' selected':'')+'>禁言</option>'+
+      '<option value="1"'+(c.punish==1?' selected':'')+'>封禁出群</option></select></div>'+
+    '<button class="d" style="margin-top:10px" '+
+      'onclick="if(confirm(\'移除该群？判定与处置立即停止，配置一并删除。\'))act(\'chat\',{bot_id:'+c.bot_id+
+      ',chat_id:'+c.chat_id+',action:\'remove\'},\'已移除\')">移除该群</button>'+
+    '</div>';
+  return h;
+}
+
+/* ---- 上游（主管理员）：列表 → 详情 ---- */
+function upById(id){ for(var i=0;i<S.upstreams.length;i++)
+  if(S.upstreams[i].id==id) return S.upstreams[i]; return null; }
 function viewUpstreams(){
-  var h='<div class="card"><h3>新增上游</h3>'+
+  if(SUB.indexOf('up:')==0){ var u=upById(SUB.slice(3)); if(u) return viewUpDetail(u); SUB=''; }
+  var h='<div class="card"><h3>上游</h3>';
+  if(!S.upstreams.length) h+='<div class="hint">（还没有上游）</div>';
+  h+=S.upstreams.map(function(u){
+    return '<div class="row item" onclick="go(\'upstreams\',\'up:'+u.id+'\')">'+
+      '<span>'+esc(u.name)+'</span>'+
+      '<span class="badge '+(u.status?'ok':'no')+'">'+(u.status?'启用':'停用')+'</span>'+
+      '<span class="chev">›</span></div>';
+  }).join('')+'</div>';
+  h+='<div class="card"><h3>新增上游</h3>'+(UPADD?
     '<input id="up_name" placeholder="名称（模型名前缀，不含 / 和 :）">'+
     '<input id="up_url" placeholder="base_url，如 https://api.example.com" style="margin-top:6px">'+
     '<input id="up_key" placeholder="api_key" style="margin-top:6px">'+
     '<div class="row"><label class="sw"><input type="checkbox" id="up_chat" checked> chat</label>'+
     '<label class="sw"><input type="checkbox" id="up_so" checked> systemone</label></div>'+
+    '<div class="grid" style="margin-top:8px">'+
     '<button class="b" onclick="act(\'upstream\',{action:\'add\',name:document.getElementById(\'up_name\').value,'+
     'base_url:document.getElementById(\'up_url\').value,api_key:document.getElementById(\'up_key\').value,'+
-    'supports_chat:document.getElementById(\'up_chat\').checked,supports_systemone:document.getElementById(\'up_so\').checked},\'已添加\')">添加</button></div>';
-  S.upstreams.forEach(function(u){
-    h+='<div class="card"><h3>'+esc(u.name)+' <span class="badge '+(u.status?'ok':'no')+'">'+
-      (u.status?'启用':'停用')+'</span></h3>'+
-      '<div class="row"><span class="k">base_url</span></div><input value="'+esc(u.base_url)+'" '+
-      'onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',base_url:this.value})">'+
-      '<div class="row"><span class="k">api_key（当前 '+esc(u.api_key)+'）</span></div>'+
-      '<input placeholder="留空 = 不改" onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',api_key:this.value})">'+
-      '<div class="row"><label class="sw"><input type="checkbox" '+(u.supports_chat?'checked':'')+
-        ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',supports_chat:this.checked})"> chat</label>'+
-      '<label class="sw"><input type="checkbox" '+(u.supports_systemone?'checked':'')+
-        ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',supports_systemone:this.checked})"> systemone</label>'+
-      '<label class="sw"><input type="checkbox" '+(u.status?'checked':'')+
-        ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',status:this.checked})"> 启用</label></div>'+
-      '<div class="grid"><button class="b g" onclick="act(\'upstream\',{action:\'update\',id:'+u.id+
-      ',name:prompt(\'新名称\',\''+esc(u.name)+'\')},\'已改名\')">改名</button>'+
-      '<button class="d" onclick="if(confirm(\'删除该上游？\'))act(\'upstream\',{action:\'remove\',id:'+u.id+'},\'已删除\')">删除</button></div></div>';
-  });
+    'supports_chat:document.getElementById(\'up_chat\').checked,supports_systemone:document.getElementById(\'up_so\').checked},'+
+    '\'已添加\')">添加</button>'+
+    '<button class="b g" onclick="UPADD=false;render()">收起</button></div>'
+    :'<button class="b g" onclick="UPADD=true;render()">展开表单</button>')+'</div>';
+  return h;
+}
+function viewUpDetail(u){
+  var h=backRow();
+  h+='<div class="card"><h3>'+esc(u.name)+' <span class="badge '+(u.status?'ok':'no')+'">'+
+    (u.status?'启用':'停用')+'</span></h3>'+
+    '<div class="row"><span class="k">base_url</span></div><input value="'+esc(u.base_url)+'" '+
+    'onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',base_url:this.value})">'+
+    '<div class="row"><span class="k">api_key（当前 '+esc(u.api_key)+'）</span></div>'+
+    '<input placeholder="留空 = 不改" onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',api_key:this.value})">'+
+    '<div class="row"><label class="sw"><input type="checkbox" '+(u.supports_chat?'checked':'')+
+      ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',supports_chat:this.checked})"> chat</label>'+
+    '<label class="sw"><input type="checkbox" '+(u.supports_systemone?'checked':'')+
+      ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',supports_systemone:this.checked})"> systemone</label>'+
+    '<label class="sw"><input type="checkbox" '+(u.status?'checked':'')+
+      ' onchange="act(\'upstream\',{action:\'update\',id:'+u.id+',status:this.checked})"> 启用</label></div>'+
+    '<div class="grid" style="margin-top:8px"><button class="b g" onclick="act(\'upstream\',{action:\'update\',id:'+u.id+
+    ',name:prompt(\'新名称\',\''+esc(u.name)+'\')},\'已改名\')">改名</button>'+
+    '<button class="d" onclick="if(confirm(\'删除该上游？\'))act(\'upstream\',{action:\'remove\',id:'+u.id+'},\'已删除\')">删除</button></div></div>';
   return h;
 }
 
-/* ---- 模型（主管理员） ---- */
+/* ---- 模型（主管理员）：列表 → 详情 ---- */
+function modelByName(n){ for(var i=0;i<S.models.length;i++)
+  if(S.models[i].name==n) return S.models[i]; return null; }
 function viewModels(){
-  var opts=S.upstreams.filter(function(u){return u.status;}).map(function(u){
-    return '<option value="'+esc(u.name)+'">'+esc(u.name)+'</option>'; }).join('');
-  var h='<div class="card"><h3>新增模型</h3>'+
-    '<div class="grid"><select id="md_up">'+opts+'</select>'+
-    '<input id="md_id" placeholder="模型 ID，如 gpt-5-mini"></div>'+
+  if(SUB.indexOf('md:')==0){ var m=modelByName(decodeURIComponent(SUB.slice(3)));
+    if(m) return viewModelDetail(m); SUB=''; }
+  var h='<div class="card"><h3>模型</h3>';
+  if(!S.models.length) h+='<div class="hint">（还没有模型）</div>';
+  h+=S.models.map(function(m){
+    return '<div class="row item" onclick="go(\'models\',\'md:'+encodeURIComponent(m.name)+'\')">'+
+      '<span class="mono">'+esc(m.name)+'</span>'+
+      '<span class="badge '+(m.enabled?'ok':'no')+'">'+(m.enabled?'启用':'停用')+'</span>'+
+      '<span class="chev">›</span></div>';
+  }).join('')+'</div>';
+  h+='<div class="card"><h3>新增模型</h3>'+(MDADD?
+    '<div class="grid"><select id="md_up">'+
+    S.upstreams.filter(function(u){return u.status;}).map(function(u){
+      return '<option value="'+esc(u.name)+'">'+esc(u.name)+'</option>'; }).join('')+
+    '</select><input id="md_id" placeholder="模型 ID，如 gpt-5-mini"></div>'+
     '<div class="grid" style="margin-top:6px">'+
     '<input id="md_pp" placeholder="输入价 $/M">'+
     '<input id="md_cp" placeholder="补全价 $/M"></div>'+
     '<div class="grid" style="margin-top:6px">'+
     '<input id="md_crp" placeholder="缓存读取价">'+
     '<input id="md_cwp" placeholder="缓存创建价"></div>'+
-    '<button class="b" style="margin-top:8px" onclick="act(\'model\',{action:\'add\',upstream:document.getElementById(\'md_up\').value,'+
+    '<div class="grid" style="margin-top:8px">'+
+    '<button class="b" onclick="act(\'model\',{action:\'add\',upstream:document.getElementById(\'md_up\').value,'+
     'model_id:document.getElementById(\'md_id\').value,prompt_price:document.getElementById(\'md_pp\').value,'+
     'completion_price:document.getElementById(\'md_cp\').value,cache_read_price:document.getElementById(\'md_crp\').value,'+
-    'cache_write_price:document.getElementById(\'md_cwp\').value},\'已添加\')">添加</button></div>';
-  S.models.forEach(function(m){
-    h+='<div class="card"><h3>'+esc(m.name)+' <span class="badge '+(m.enabled?'ok':'no')+'">'+
-      (m.enabled?'启用':'停用')+'</span></h3>'+
-      '<div class="hint">上游 '+esc(m.upstream||'（旧格式）')+' ｜ 模型 ID '+esc(m.model_id)+'</div>'+
-      '<div class="grid" style="margin-top:6px">'+
-      '<input value="'+m.prompt_price+'" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',prompt_price:this.value})">'+
-      '<input value="'+m.completion_price+'" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',completion_price:this.value})">'+
-      '<input value="'+m.cache_read_price+'" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',cache_read_price:this.value})">'+
-      '<input value="'+m.cache_write_price+'" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',cache_write_price:this.value})">'+
-      '</div><div class="grid" style="margin-top:6px">'+
-      '<button class="b g" onclick="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',enabled:'+(!m.enabled)+'})">'+
-      (m.enabled?'停用':'启用')+'</button>'+
-      '<button class="d" onclick="if(confirm(\'删除该模型？\'))act(\'model\',{action:\'remove\',name:\''+esc(m.name)+'\'},\'已删除\')">删除</button>'+
-      '</div></div>';
-  });
+    'cache_write_price:document.getElementById(\'md_cwp\').value},\'已添加\')">添加</button>'+
+    '<button class="b g" onclick="MDADD=false;render()">收起</button></div>'
+    :'<button class="b g" onclick="MDADD=true;render()">展开表单</button>')+'</div>';
+  return h;
+}
+function viewModelDetail(m){
+  var h=backRow();
+  h+='<div class="card"><h3 class="mono">'+esc(m.name)+' <span class="badge '+(m.enabled?'ok':'no')+'">'+
+    (m.enabled?'启用':'停用')+'</span></h3>'+
+    '<div class="hint">上游 '+esc(m.upstream||'（旧格式）')+' ｜ 模型 ID '+esc(m.model_id)+'</div>'+
+    '<div class="grid" style="margin-top:6px">'+
+    '<input value="'+m.prompt_price+'" placeholder="输入价 $/M" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',prompt_price:this.value})">'+
+    '<input value="'+m.completion_price+'" placeholder="补全价 $/M" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',completion_price:this.value})">'+
+    '<input value="'+m.cache_read_price+'" placeholder="缓存读取价" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',cache_read_price:this.value})">'+
+    '<input value="'+m.cache_write_price+'" placeholder="缓存创建价" onchange="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',cache_write_price:this.value})">'+
+    '</div><div class="grid" style="margin-top:6px">'+
+    '<button class="b g" onclick="act(\'model\',{action:\'update\',name:\''+esc(m.name)+'\',enabled:'+(!m.enabled)+'})">'+
+    (m.enabled?'停用':'启用')+'</button>'+
+    '<button class="d" onclick="if(confirm(\'删除该模型？\'))act(\'model\',{action:\'remove\',name:\''+esc(m.name)+'\'},\'已删除\')">删除</button>'+
+    '</div></div>';
   return h;
 }
 
@@ -290,9 +400,18 @@ function viewSettings(){
   return h;
 }
 
-/* ---- 名单（主管理员） ---- */
+/* ---- 名单（主管理员）：分段切换，不再三张卡摞一页 ---- */
 function viewLists(){
-  var h='<div class="card"><h3>次级管理员</h3>'+
+  var tabs=[['admins','次级管理员'],['gban','联合封禁'],['white','白名单']];
+  var h='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:6px">'+
+    tabs.map(function(t){ return '<button style="flex:1" class="'+(LSUB==t[0]?'b':'b g')+
+      '" onclick="LSUB=\''+t[0]+'\';render()">'+t[1]+'</button>'; }).join('')+'</div></div>';
+  if(LSUB=='gban') return h+viewGban();
+  if(LSUB=='white') return h+viewWhite();
+  return h+viewAdmins();
+}
+function viewAdmins(){
+  return '<div class="card"><h3>次级管理员</h3>'+
     (S.admins||[]).map(function(a){
       return '<div class="row"><span class="mono">'+a.user_id+' '+esc(a.note)+'</span>'+
       '<button class="d" onclick="act(\'admin\',{action:\'remove\',user_id:'+a.user_id+',},\'已移除\')">移除</button></div>';
@@ -301,7 +420,9 @@ function viewLists(){
     '<input id="ad_note" placeholder="备注"></div>'+
     '<button class="b" style="margin-top:8px" onclick="act(\'admin\',{action:\'add\',user_id:document.getElementById(\'ad_uid\').value,'+
     'note:document.getElementById(\'ad_note\').value},\'已添加\')">添加</button></div>';
-  h+='<div class="card"><h3>联合封禁</h3>'+
+}
+function viewGban(){
+  return '<div class="card"><h3>联合封禁</h3>'+
     (S.gban||[]).map(function(g){
       return '<div class="row"><span class="mono">'+g.user_id+' '+esc(g.reason)+'</span>'+
       '<button class="d" onclick="if(confirm(\'解除封禁？\'))act(\'gban\',{action:\'remove\',user_id:'+g.user_id+'},\'已解除\')">解除</button></div>';
@@ -310,21 +431,35 @@ function viewLists(){
     '<input id="gb_reason" placeholder="原因"></div>'+
     '<button class="b" style="margin-top:8px" onclick="act(\'gban\',{action:\'add\',user_id:document.getElementById(\'gb_uid\').value,'+
     'reason:document.getElementById(\'gb_reason\').value},\'已加入\')">加入名单</button></div>';
-  h+='<div class="card"><h3>白名单</h3>'+
+}
+function viewWhite(){
+  var h='<div class="card"><h3>白名单</h3>'+
     (S.whitelist||[]).map(function(w){
       var scope = w.bot_id==0?'全平台':(w.chat_id==0?'bot 所有群':'群 '+w.chat_id);
       return '<div class="row"><span class="mono">'+w.user_id+' · '+scope+' · '+esc(w.source)+'</span>'+
       '<button class="d" onclick="act(\'whitelist\',{action:\'remove\',bot_id:'+w.bot_id+',chat_id:'+w.chat_id+
       ',user_id:'+w.user_id+'},\'已移除\')">移除</button></div>';
     }).join('')+
-    '<div class="grid" style="margin-top:8px"><select id="wl_bot">'+
-    S.bots.map(function(b){return '<option value="'+b.bot_id+'">'+esc(b.label)+'</option>';}).join('')+
-    '</select><input id="wl_uid" placeholder="user_id"></div>'+
+    '<div class="grid" style="margin-top:8px"><select id="wl_bot">'+botOpts()+'</select>'+
+    '<input id="wl_uid" placeholder="user_id"></div>'+
     '<div class="grid" style="margin-top:6px"><input id="wl_chat" placeholder="chat_id（0 = 该 bot 所有群）">'+
     '<input id="wl_hours" placeholder="小时（空 = 永久）"></div>'+
     '<button class="b" style="margin-top:8px" onclick="act(\'whitelist\',{action:\'add\',bot_id:document.getElementById(\'wl_bot\').value,'+
     'chat_id:document.getElementById(\'wl_chat\').value||0,user_id:document.getElementById(\'wl_uid\').value,'+
     'hours:document.getElementById(\'wl_hours\').value||0},\'已加入\')">加入白名单</button></div>';
+  // 默认豁免可视化：这些人不在白名单表里，但判定链路（adExempt）本来就放行。
+  // 列在这里只为让管理员能核对「谁不用判」，不要往这里加配置入口。
+  h+='<div class="card"><h3>默认豁免（内置，无需配置）</h3>'+
+    '<div class="hint">下面这些人的消息不送检、不处置。它们不在上面的白名单表里，是判定前的内置放行：</div>'+
+    '<div class="row"><span>主管理员（你）</span><span class="mono">uid '+S.me.uid+'</span></div>'+
+    S.bots.filter(function(b){return b.owner_id;}).map(function(b){
+      return '<div class="row"><span>「'+esc(b.label)+'」归属人</span><span class="mono">uid '+b.owner_id+'</span></div>';
+    }).join('')+
+    '<div class="row"><span>各群的群主与管理员</span><span class="badge ok">判定时实时查询</span></div>'+
+    '<div class="row"><span>匿名管理员 / 关联频道转发</span><span class="badge ok">默认放行</span></div>'+
+    '<div class="row"><span>群里的普通 bot（工具 bot）</span><span class="badge ok">默认不判</span></div>'+
+    '<div class="hint" style="margin-top:6px">群主/管理员向 Telegram 实时查询，结果缓存 10 分钟；'+
+    'bot 的判定可在机器人详情页开启「判定 bot」后收紧。</div></div>';
   return h;
 }
 

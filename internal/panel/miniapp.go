@@ -250,9 +250,21 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 
 	stats := miniStats(sh, uid, main)
 
+	// global_defaults 是 antiad/both 组设置与两个模型列表键的全局默认值，
+	// 所有管理员都下发：机器人页要拿它在输入框占位里画「30(全局)」，
+	// 而次级管理员看不到完整全局设置（global），不能指望从那里取。
+	defaults := map[string]any{}
+	for _, sp := range settingSpecs {
+		if sp.group == "antiad" || sp.group == "both" {
+			defaults[sp.key] = snap.Setting(sp.key)
+		}
+	}
+	defaults["antiad_so_models"] = snap.Setting("antiad_so_models")
+	defaults["antiad_llm_models"] = snap.Setting("antiad_llm_models")
+
 	out := map[string]any{
 		"me": me, "bots": bots, "chats": chats, "bot_settings": botSettings,
-		"specs": specs, "stats": stats,
+		"specs": specs, "stats": stats, "global_defaults": defaults,
 	}
 	if main {
 		out["global"] = snap.Settings

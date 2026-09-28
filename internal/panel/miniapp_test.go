@@ -181,6 +181,63 @@ func TestMiniSetPermissions(t *testing.T) {
 	}
 }
 
+// TestMiniStateGlobalDefaults：跟随全局的配置项要在输入框占位里显示
+// 「30(全局)」这样的全局默认值。次级管理员拿不到完整全局设置（global），
+// 但 antiad/both 组的全局默认与两个模型列表键必须单独下发，否则他们的
+// 机器人页画不出占位。主管理员同样要有，前端统一从这里取。
+func TestMiniStateGlobalDefaults(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.PutSetting("antiad_rpm_chat", "42"); err != nil {
+		t.Fatal(err)
+	}
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	sub := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+
+	w := miniDo(t, env.h, testToken2, sub, 43, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("次级管理员应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var st map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st["global"]; ok {
+		t.Error("次级管理员不应拿到完整全局设置")
+	}
+	gd, ok := st["global_defaults"].(map[string]any)
+	if !ok {
+		t.Fatal("状态里缺少 global_defaults")
+	}
+	if gd["antiad_rpm_chat"] != "42" {
+		t.Errorf("antiad_rpm_chat 全局默认应为 42，得到 %v", gd["antiad_rpm_chat"])
+	}
+	if _, ok := gd["antiad_so_models"]; !ok {
+		t.Error("判定模型的全局默认也要下发，供输入框回显")
+	}
+	if _, ok := gd["antiad_llm_models"]; !ok {
+		t.Error("复判模型的全局默认也要下发，供输入框回显")
+	}
+
+	// 主管理员也拿得到（前端统一从 global_defaults 取占位值）。
+	w = miniDo(t, env.h, testutil.TestToken, env.adminInit(), testutil.TestBotID, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("主管理员应 200，得到 %d", w.Code)
+	}
+	st = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if gd, ok = st["global_defaults"].(map[string]any); !ok || gd["antiad_rpm_chat"] != "42" {
+		t.Error("主管理员也应有 global_defaults")
+	}
+}
+
 // TestMiniMutations：群组添加/切换、白名单增删、模型新增（仅主管理员）。
 func TestMiniMutations(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
