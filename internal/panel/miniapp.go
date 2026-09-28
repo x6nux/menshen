@@ -335,6 +335,26 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 				"user_id": a.UserID, "note": a.Note})
 		}
 		out["admins"] = admins
+
+		// 归属候选：主管理员（配置）与次级管理员（库里），去重。
+		// 给前端的改派下拉用；次级管理员没有改派权，不下发。
+		opts := []map[string]any{}
+		seen := map[int64]bool{}
+		for _, id := range sh.Cfg.AdminIDs {
+			opts = append(opts, map[string]any{"user_id": id, "label": "主管理员"})
+			seen[id] = true
+		}
+		for _, a := range snap.Admins {
+			if seen[a.UserID] {
+				continue
+			}
+			label := "次级管理员"
+			if a.Note != "" {
+				label += " · " + a.Note
+			}
+			opts = append(opts, map[string]any{"user_id": a.UserID, "label": label})
+		}
+		out["owner_opts"] = opts
 	}
 	miniOK(w, out)
 }
@@ -514,6 +534,42 @@ func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 		}
 		if err := sh.Reg.SetBotEnabled(botID, action == "enable"); err != nil {
 			miniErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	case "remove":
+		if sh.Reg == nil {
+			miniErr(w, http.StatusInternalServerError, "注册表不可用")
+			return
+		}
+		// 主 bot 的拦截在 Unregister 里，这里不重复判断：错的人只该看到
+		// 一个「不能移除」，不该从文案差异里读出它是不是主 bot。
+		if err := sh.Reg.Unregister(botID); err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	case "owner":
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "只有主管理员能改归属")
+			return
+		}
+		rec := sh.Cache.Snap().Bots[botID]
+		if rec == nil {
+			miniErr(w, http.StatusBadRequest, "该 bot 不存在")
+			return
+		}
+		if rec.IsMain {
+			miniErr(w, http.StatusBadRequest, "主 bot 的归属由配置文件决定，不能改派")
+			return
+		}
+		ownerID := miniInt(body, "owner_id")
+		// 归属人必须是管理员：改派给一个普通用户，等于把这个 bot 变成
+		// 谁都管不了的黑盒，而它在群里的一切行为还在继续花钱。
+		if !sh.IsStaff(ownerID) {
+			miniErr(w, http.StatusBadRequest, "归属人必须是主管理员或次级管理员")
+			return
+		}
+		if err := sh.SetBotOwner(botID, ownerID); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
 			return
 		}
 	case "models":

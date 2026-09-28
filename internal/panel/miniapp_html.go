@@ -211,6 +211,20 @@ function viewBots(){
   }).join('');
   return h+'</div>';
 }
+/* 归属行：主 bot 的归属由配置文件决定，只读；工作 bot 主管理员可改派
+   （候选来自后端下发的 owner_opts），次级管理员只读。 */
+function ownerRow(b){
+  if(b.is_main || !S.me.main)
+    return '<div class="row"><span class="k">归属</span><span class="mono">uid '+b.owner_id+'</span></div>';
+  var sel='own_'+b.bot_id;
+  return '<div class="row"><span class="k">归属</span><select id="'+sel+'" style="width:150px">'+
+    (S.owner_opts||[]).map(function(o){
+      return '<option value="'+o.user_id+'"'+(o.user_id==b.owner_id?' selected':'')+'>'+
+        esc(o.label)+' · '+o.user_id+'</option>'; }).join('')+
+    '</select><button class="b" style="margin-left:6px" '+
+    'onclick="if(confirm(\'把该 bot 改派给所选管理员？\'))act(\'bot\',{bot_id:'+b.bot_id+
+    ',action:\'owner\',owner_id:document.getElementById(\''+sel+'\').value},\'已改派\')">改派</button></div>';
+}
 function viewBotDetail(b){
   var bs=(S.bot_settings[String(b.bot_id)])||{};
   var specs=S.specs.filter(function(sp){ return sp.group=='antiad'||sp.group=='both'; });
@@ -221,6 +235,7 @@ function viewBotDetail(b){
     (b.live?'运行中':'未运行')+'</span></h3>'+
     '<div class="row"><span class="k">启用</span>'+toggleBtn(b.enabled,
       "act('bot',{bot_id:"+b.bot_id+",action:'"+(b.enabled?'disable':'enable')+"'},'已切换')")+'</div>'+
+    ownerRow(b)+
     '<div class="row"><span class="k">判定模型（逗号分隔，按重试顺序）</span></div>'+
     '<input value="'+esc((b.so_models||[]).join(', '))+'" placeholder="'+
     esc(gso?gso+'(全局)':'全局未配置')+'" '+
@@ -236,6 +251,11 @@ function viewBotDetail(b){
       '<input style="width:110px" value="'+esc(val)+'" placeholder="'+esc(gph(sp.key))+'" '+
       'onchange="act(\'set\',{scope:\'bot\',bot_id:'+b.bot_id+',key:\''+sp.key+'\',value:this.value})"></div>';
   });
+  if(!b.is_main){
+    h+='<div class="row" style="border:0;padding-top:10px"><button class="d" style="width:100%" '+
+      'onclick="if(confirm(\'移除该 bot？它的群配置与阈值会一并删除，webhook 会被撤销；'+
+      '判定流水保留。\'))act(\'bot\',{bot_id:'+b.bot_id+',action:\'remove\'},\'已移除\')">移除该 bot</button></div>';
+  }
   return h+'</div>';
 }
 
