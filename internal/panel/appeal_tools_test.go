@@ -36,6 +36,26 @@ func TestHandleWhiteDM(t *testing.T) {
 	}
 }
 
+// TestHandleWhiteDMRejectsOtherAdminsBot：次管只能改自己名下 bot 的
+// 豁免名单，对别人的 bot 一律拒绝（否则等于给人开漏判通道）。
+func TestHandleWhiteDMRejectsOtherAdminsBot(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, dispatch)
+	if err := b.AddAdmin(888, "测试次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+
+	HandleWhiteDM(b, privMsg(888, "/white 555"), "/white 555")
+
+	if got := b.Cache.Snap().BotSettingInt64List(b.BotID(), "antiad_exempt_users"); len(got) != 0 {
+		t.Fatalf("次管不该能改他人 bot 的豁免名单，得到 %v", got)
+	}
+	if last := fake.LastCall("sendMessage"); last == nil ||
+		!strings.Contains(fmt.Sprint(last["text"]), "只能管理") {
+		t.Errorf("应回权限提示，得到 %v", last)
+	}
+}
+
 // TestShowBotExemptListsWhitelistAndRemoves：豁免页同时列出白名单行，
 // 并且能逐条移除。
 func TestShowBotExemptListsWhitelistAndRemoves(t *testing.T) {

@@ -788,6 +788,12 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 // 群里的 /white 是另一回事（本群白名单 + 本群解封，见 antiad.HandleAdwCommand）。
 func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
 	chatID := m.Chat.ID
+	// 与面板内所有 a:mb:* 分支同一条权限规则：次管只能管自己名下的 bot。
+	// 少了这道门，任何次管都能给别人的 bot 加豁免，把它变成漏判通道。
+	if !b.CanManageBot(m.From.ID, b.BotID()) {
+		b.Send(chatID, "你只能管理自己名下的 bot。", nil)
+		return
+	}
 	fields := strings.Fields(strings.TrimPrefix(text, "/white"))
 	if len(fields) > 0 && strings.HasPrefix(fields[0], "@") {
 		fields = fields[1:] // /white@botname <uid>

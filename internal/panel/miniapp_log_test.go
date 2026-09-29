@@ -47,18 +47,20 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 四条：两条被删除、一条放行、一条被护栏拦下。
+	// 四条：两条被删除、一条放行（新版写 'clean'）、一条被护栏拦下。
+	// 外加一条旧版遗留的 'none'：筛选要把它一起认下。
 	seed(1, 555, "ad", "deleted_muted", "加微信买号", "推广")
-	seed(2, 556, "none", "none", "今天天气不错", "")
+	seed(2, 556, "clean", "none", "今天天气不错", "")
 	seed(3, 557, "skipped", "skipped", "随便聊聊", "超出本群送检频率上限")
 	seed(4, 558, "ad", "deleted", "促销优惠", "推销")
+	seed(5, 559, "none", "none", "旧版遗留的正常记录", "")
 
 	if got := ids(call("logs", map[string]any{"verdict": "deleted"})); len(got) != 2 ||
 		!got[1] || !got[4] {
 		t.Errorf("默认已删除筛选应命中 #1 #4，得到 %v", got)
 	}
-	if got := ids(call("logs", map[string]any{"verdict": "clean"})); !got[2] || len(got) != 1 {
-		t.Errorf("正常筛选应命中 #2，得到 %v", got)
+	if got := ids(call("logs", map[string]any{"verdict": "clean"})); !got[2] || !got[5] || len(got) != 2 {
+		t.Errorf("正常筛选应命中 #2 与旧版 #5，得到 %v", got)
 	}
 	if got := ids(call("logs", map[string]any{"verdict": "skipped"})); !got[3] || len(got) != 1 {
 		t.Errorf("跳过筛选应命中 #3，得到 %v", got)

@@ -304,4 +304,28 @@ func TestMiniMutations(t *testing.T) {
 	if sh.Cache.Snap().Models["up1/m1"] == nil {
 		t.Error("模型没落库")
 	}
+	// 负价会让开销核算变成负数；超长模型名会撑爆 callback_data（64 字节）。
+	if w := call("model", map[string]any{"action": "add", "upstream": "up1",
+		"model_id": "m2", "prompt_price": -1}); w.Code != http.StatusBadRequest {
+		t.Errorf("负价格应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if w := call("model", map[string]any{"action": "add", "upstream": "up1",
+		"model_id": strings.Repeat("x", 60)}); w.Code != http.StatusBadRequest {
+		t.Errorf("超长模型名应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+}
+
+// TestMiniAppGlobalTogglesValidJS：三个全局开关的 onclick 必须是合法调用。
+// 曾经生成 act('set',{...value:1,'已切换')——对象字面量缺右括号，且 value
+// 传的是数字（服务端只认字符串），三个开关在 App 里完全点不动。
+func TestMiniAppGlobalTogglesValidJS(t *testing.T) {
+	for _, key := range []string{"antiad_enabled", "alert_copy_main", "gban_enabled"} {
+		open := "key:\\'" + key + "\\',value:\\'"
+		if !strings.Contains(miniAppHTML, open) {
+			t.Errorf("%s 的按钮应把 value 拼成带引号的字符串，缺 %q", key, open)
+		}
+		if !strings.Contains(miniAppHTML, "\\'},\\'已切换\\')") {
+			t.Error("开关按钮应在 okMsg 之前闭合对象字面量（value:'…'},'已切换'）")
+		}
+	}
 }

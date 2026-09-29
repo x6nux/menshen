@@ -235,16 +235,19 @@ function viewBotDetail(b){
     (b.live?'运行中':'未运行')+'</span></h3>'+
     '<div class="row"><span class="k">启用</span>'+toggleBtn(b.enabled,
       "act('bot',{bot_id:"+b.bot_id+",action:'"+(b.enabled?'disable':'enable')+"'},'已切换')")+'</div>'+
-    ownerRow(b)+
-    '<div class="row"><span class="k">判定模型（逗号分隔，按重试顺序）</span></div>'+
-    '<input value="'+esc((b.so_models||[]).join(', '))+'" placeholder="'+
-    esc(gso?gso+'(全局)':'全局未配置')+'" '+
-    'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'so\',value:this.value},\'已保存\')">'+
-    '<div class="row"><span class="k">复判模型（同上）</span></div>'+
-    '<input value="'+esc((b.llm_models||[]).join(', '))+'" placeholder="'+
-    esc(gllm?gllm+'(全局)':'全局未配置')+'" '+
-    'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'llm\',value:this.value},\'已保存\')">'+
-    '<div class="hint" style="margin-top:8px">单 bot 参数（覆盖全局；清空 = 恢复全局）</div>';
+    ownerRow(b);
+  if(S.me.main){
+    // 模型由主管理员配置（与 TG 面板一致）；次管看不到这两个输入框。
+    h+='<div class="row"><span class="k">判定模型（逗号分隔，按重试顺序）</span></div>'+
+      '<input value="'+esc((b.so_models||[]).join(', '))+'" placeholder="'+
+      esc(gso?gso+'(全局)':'全局未配置')+'" '+
+      'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'so\',value:this.value},\'已保存\')">'+
+      '<div class="row"><span class="k">复判模型（同上）</span></div>'+
+      '<input value="'+esc((b.llm_models||[]).join(', '))+'" placeholder="'+
+      esc(gllm?gllm+'(全局)':'全局未配置')+'" '+
+      'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'llm\',value:this.value},\'已保存\')">';
+  }
+  h+='<div class="hint" style="margin-top:8px">单 bot 参数（覆盖全局；清空 = 恢复全局）</div>';
   specs.forEach(function(sp){
     var val = (sp.key in bs) ? bs[sp.key] : '';
     h+='<div class="row"><span class="k">'+esc(sp.label)+'</span>'+
@@ -419,14 +422,14 @@ function viewSettings(){
   var g=S.global||{};
   var h='<div class="card"><h3>总开关</h3>'+
     '<div class="row"><span class="k">反广告总开关</span>'+
-    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'antiad_enabled\',value:'+
-      (g.antiad_enabled=='1'?'0':'1')+',\'已切换\')">'+(g.antiad_enabled=='1'?'已开启':'已关闭')+'</button></div>'+
+    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'antiad_enabled\',value:\''+
+      (g.antiad_enabled=='1'?'0':'1')+'\'},\'已切换\')">'+(g.antiad_enabled=='1'?'已开启':'已关闭')+'</button></div>'+
     '<div class="row"><span class="k">告警抄送主管理员</span>'+
-    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'alert_copy_main\',value:'+
-      (g.alert_copy_main=='1'?'0':'1')+',\'已切换\')">'+(g.alert_copy_main=='1'?'已开启':'已关闭')+'</button></div>'+
+    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'alert_copy_main\',value:\''+
+      (g.alert_copy_main=='1'?'0':'1')+'\'},\'已切换\')">'+(g.alert_copy_main=='1'?'已开启':'已关闭')+'</button></div>'+
     '<div class="row"><span class="k">联合封禁</span>'+
-    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'gban_enabled\',value:'+
-      (g.gban_enabled=='1'?'0':'1')+',\'已切换\')">'+(g.gban_enabled=='1'?'已开启':'已关闭')+'</button></div></div>';
+    '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'gban_enabled\',value:\''+
+      (g.gban_enabled=='1'?'0':'1')+'\'},\'已切换\')">'+(g.gban_enabled=='1'?'已开启':'已关闭')+'</button></div></div>';
   var specs=S.specs.filter(function(sp){ return sp.group==''||sp.group=='both'; });
   h+='<div class="card"><h3>全局参数</h3>'+specs.map(function(sp){
     return '<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+

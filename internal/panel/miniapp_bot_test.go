@@ -171,3 +171,25 @@ func TestMiniBotRemove(t *testing.T) {
 		t.Errorf("库里 bot 记录没被删除，剩 %d 行", n)
 	}
 }
+
+// TestMiniBotModelsMainOnly：判定模型只有主管理员能配（与 TG 面板的
+// a:mb:…:m 分支同一条规则），次管即使管得着自己的 bot 也不行。
+func TestMiniBotModelsMainOnly(t *testing.T) {
+	reg, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterMainTestBot(t, sh, testutil.TestToken, testutil.TestBotID, 777)
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	reg.LoadAll()
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	sub888 := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+
+	w := miniDo(t, env.h, testToken2, sub888, 43, "bot", map[string]any{
+		"bot_id": 43, "action": "models", "which": "so", "value": "up1/m1"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("次管配模型应 403，得到 %d：%s", w.Code, w.Body.String())
+	}
+}

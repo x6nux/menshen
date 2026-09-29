@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -573,6 +574,12 @@ func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 			return
 		}
 	case "models":
+		// 与 TG 面板一致（bots.go 的 a:mb:…:m 分支）：模型直接决定判定
+		// 质量与花掉多少钱，只有主管理员能配。
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "模型由主管理员配置")
+			return
+		}
 		which := miniStr(body, "which") // so / llm
 		if which != "so" && which != "llm" {
 			miniErr(w, http.StatusBadRequest, "which 必须是 so 或 llm")
@@ -648,8 +655,13 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			args = append(args, fmt.Sprint(v))
 		}
 		if v, ok := body["punish"]; ok {
+			p := miniInt(map[string]any{"v": v}, "v")
+			if p < -1 || p > 1 {
+				miniErr(w, http.StatusBadRequest, "punish 只能是 -1（跟随）、0（禁言）、1（封禁）")
+				return
+			}
 			cols = append(cols, "punish=?")
-			args = append(args, miniInt(map[string]any{"v": v}, "v"))
+			args = append(args, p)
 		}
 		if len(cols) > 0 {
 			args = append(args, botID, chatID)
@@ -688,6 +700,11 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 			miniErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if base := miniStr(body, "base_url"); !strings.HasPrefix(base, "http://") &&
+			!strings.HasPrefix(base, "https://") {
+			miniErr(w, http.StatusBadRequest, "base_url 必须以 http:// 或 https:// 开头")
+			return
+		}
 		if _, err := sh.Store.Write.Exec(`INSERT INTO upstreams
 			(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
 			VALUES (?,?,?,?,?,?,?)`, name, miniStr(body, "base_url"),
@@ -707,22 +724,42 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 			}
 		}
 		for _, f := range []string{"base_url", "api_key"} {
-			if v := miniStr(body, f); v != "" {
-				sh.Store.Write.Exec(`UPDATE upstreams SET `+f+`=? WHERE id=?`, v, id)
+			v := miniStr(body, f)
+			if v == "" {
+				continue
+			}
+			if f == "base_url" && !strings.HasPrefix(v, "http://") &&
+				!strings.HasPrefix(v, "https://") {
+				miniErr(w, http.StatusBadRequest, "base_url 必须以 http:// 或 https:// 开头")
+				return
+			}
+			if _, err := sh.Store.Write.Exec(
+				`UPDATE upstreams SET `+f+`=? WHERE id=?`, v, id); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
 			}
 		}
 		if _, ok := body["weight"]; ok {
-			sh.Store.Write.Exec(`UPDATE upstreams SET weight=? WHERE id=?`,
-				maxInt64(miniInt(body, "weight"), 1), id)
+			if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET weight=? WHERE id=?`,
+				maxInt64(miniInt(body, "weight"), 1), id); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
 		}
 		if _, ok := body["status"]; ok {
-			sh.Store.Write.Exec(`UPDATE upstreams SET status=? WHERE id=?`,
-				boolToInt64(miniBool(body, "status")), id)
+			if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET status=? WHERE id=?`,
+				boolToInt64(miniBool(body, "status")), id); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
 		}
 		for _, f := range []string{"supports_chat", "supports_systemone"} {
 			if _, ok := body[f]; ok {
-				sh.Store.Write.Exec(`UPDATE upstreams SET `+f+`=? WHERE id=?`,
-					boolToInt64(miniBool(body, f)), id)
+				if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET `+f+`=? WHERE id=?`,
+					boolToInt64(miniBool(body, f)), id); err != nil {
+					miniErr(w, http.StatusInternalServerError, "保存失败")
+					return
+				}
 			}
 		}
 	case "remove":
@@ -781,15 +818,28 @@ func miniModel(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 			return
 		}
 		name = upName + "/" + modelID
+		// callback_data 上限 64 字节：与 TG 面板同一条规则（见 model.go），
+		// 否则模型名超限后 Telegram 的模型页整页发不出去。
+		if len(name)+len("a:md:e:crp:") > 64 {
+			miniErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"模型全名过长（%d 字节），含上游前缀不得超过 %d 字节",
+				len(name), 64-len("a:md:e:crp:")))
+			return
+		}
 		if sh.Cache.Snap().Models[name] != nil {
 			miniErr(w, http.StatusBadRequest, "该模型已存在")
+			return
+		}
+		prices, err := miniPrices(body, "prompt_price", "completion_price",
+			"cache_read_price", "cache_write_price")
+		if err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if _, err := sh.Store.Write.Exec(`INSERT INTO models
 			(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
 			VALUES (?,?,?,?,?,1)`, name,
-			miniFloat(body, "prompt_price"), miniFloat(body, "completion_price"),
-			miniFloat(body, "cache_read_price"), miniFloat(body, "cache_write_price")); err != nil {
+			prices[0], prices[1], prices[2], prices[3]); err != nil {
 			miniErr(w, http.StatusInternalServerError, "添加失败")
 			return
 		}
@@ -812,13 +862,24 @@ func miniModel(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		for _, f := range []string{"prompt_price", "completion_price",
 			"cache_read_price", "cache_write_price"} {
 			if _, ok := body[f]; ok {
-				sh.Store.Write.Exec(`UPDATE models SET `+f+`=? WHERE name=?`,
-					miniFloat(body, f), name)
+				v, err := miniPrice(body, f)
+				if err != nil {
+					miniErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				if _, err := sh.Store.Write.Exec(
+					`UPDATE models SET `+f+`=? WHERE name=?`, v, name); err != nil {
+					miniErr(w, http.StatusInternalServerError, "保存失败")
+					return
+				}
 			}
 		}
 		if _, ok := body["enabled"]; ok {
-			sh.Store.Write.Exec(`UPDATE models SET enabled=? WHERE name=?`,
-				boolToInt64(miniBool(body, "enabled")), name)
+			if _, err := sh.Store.Write.Exec(`UPDATE models SET enabled=? WHERE name=?`,
+				boolToInt64(miniBool(body, "enabled")), name); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
 		}
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
@@ -838,7 +899,7 @@ func miniAdmin(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 	target := miniInt(body, "user_id")
 	switch miniStr(body, "action") {
 	case "add":
-		if target == 0 {
+		if target <= 0 {
 			miniErr(w, http.StatusBadRequest, "user_id 无效")
 			return
 		}
@@ -864,7 +925,7 @@ func miniGban(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	target := miniInt(body, "user_id")
 	switch miniStr(body, "action") {
 	case "add":
-		if target == 0 {
+		if target <= 0 {
 			miniErr(w, http.StatusBadRequest, "user_id 无效")
 			return
 		}
@@ -1051,7 +1112,9 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	case "ad":
 		condWhere += " AND verdict='ad'"
 	case "clean":
-		condWhere += " AND verdict='none'"
+		// 流水写入的是 'clean'（见 antiad.logAd）；'none' 是旧版遗留值，
+		// 一并认下，免得升级后老记录在筛选里消失。
+		condWhere += " AND verdict IN ('clean','none')"
 	case "skipped":
 		condWhere += " AND verdict='skipped'"
 	}
@@ -1353,6 +1416,47 @@ func miniFloat(body map[string]any, key string) float64 {
 		return f
 	}
 	return 0
+}
+
+// miniPrice 读取一个价格字段：缺省按 0 处理，出现负价、NaN、非数字一律拒绝。
+// 负价会让开销核算变成负数，NaN 会让面板上的数字直接变成 NaN。
+func miniPrice(body map[string]any, key string) (float64, error) {
+	v, ok := body[key]
+	if !ok {
+		return 0, nil
+	}
+	var f float64
+	switch t := v.(type) {
+	case float64:
+		f = t
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			var err error
+			f, err = strconv.ParseFloat(s, 64)
+			if err != nil {
+				return 0, fmt.Errorf("%s 必须是数字", key)
+			}
+		}
+	default:
+		return 0, fmt.Errorf("%s 必须是数字", key)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		return 0, fmt.Errorf("%s 必须是非负数", key)
+	}
+	return f, nil
+}
+
+// miniPrices 按顺序读取多个价格字段，缺省项按 0 处理。
+func miniPrices(body map[string]any, keys ...string) ([]float64, error) {
+	out := make([]float64, 0, len(keys))
+	for _, k := range keys {
+		f, err := miniPrice(body, k)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 func maxInt64(a, b int64) int64 {
