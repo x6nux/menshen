@@ -450,3 +450,31 @@ func TestWebRouterRoutesWPaths(t *testing.T) {
 		t.Error("不含 _w 段的路径不该被当成网页")
 	}
 }
+
+// TestSendOmitsNilKeyboard：kb 为 nil（包括 typed-nil map）时不得带
+// reply_markup。把 nil map 存进 any 会让「kb != nil」判真，payload 里出现
+// reply_markup:null，TG 直接回「object expected as reply markup」——群内
+// 告警曾经因此整条发不出去。
+func TestSendOmitsNilKeyboard(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	fake := b.TG.(*testutil.FakeTG)
+
+	var typedNil map[string]any
+	b.Send(1, "文字", nil)
+	b.Send(1, "文字", typedNil)
+	calls := fake.Calls("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("应发出两条，得到 %d", len(calls))
+	}
+	for i, p := range calls {
+		if v, ok := p["reply_markup"]; ok {
+			t.Errorf("第 %d 条不该带 reply_markup，得到 %v", i, v)
+		}
+	}
+
+	// 有键盘时必须带上，否则按钮全没了。
+	b.Send(1, "文字", tg.InlineKB([][2]string{{"按钮", "cb"}}))
+	if _, ok := fake.LastCall("sendMessage")["reply_markup"]; !ok {
+		t.Error("有键盘时应带 reply_markup")
+	}
+}

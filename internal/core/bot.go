@@ -387,7 +387,10 @@ func (b *Bot) DownloadFile(path string) ([]byte, error) {
 
 // ---- 发送与编辑 ----
 
-func (b *Bot) Send(chatID int64, text string, kb any) {
+// kb 用 map 而不是 any：把 nil map 存进 any 之后接口值并不等于 nil，
+// 直接塞进 payload 会序列化成 null，TG 回「object expected as reply markup」。
+// 类型是 map 时 nil 判断才可靠。
+func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
 	p := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
 	if kb != nil {
 		p["reply_markup"] = kb
@@ -399,7 +402,7 @@ func (b *Bot) Send(chatID int64, text string, kb any) {
 
 // sendGetID 与 send 相同，但返回新消息的 message_id（失败返回 0）。
 // 自动撤回要靠它：没有 message_id 就无从撤回。
-func (b *Bot) SendGetID(chatID int64, text string, kb any) int64 {
+func (b *Bot) SendGetID(chatID int64, text string, kb map[string]any) int64 {
 	p := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
 	if kb != nil {
 		p["reply_markup"] = kb
@@ -421,7 +424,7 @@ func (b *Bot) SendGetID(chatID int64, text string, kb any) int64 {
 	return resp.Result.MessageID
 }
 
-func (b *Bot) Edit(chatID, msgID int64, text string, kb any) {
+func (b *Bot) Edit(chatID, msgID int64, text string, kb map[string]any) {
 	p := map[string]any{"chat_id": chatID, "message_id": msgID,
 		"text": text, "parse_mode": "HTML"}
 	if kb != nil {
@@ -433,7 +436,7 @@ func (b *Bot) Edit(chatID, msgID int64, text string, kb any) {
 }
 
 // editOrSend 统一处理「回调里编辑原消息 / 文本输入后新发一条」两种入口。
-func (b *Bot) EditOrSend(chatID, msgID int64, text string, kb any) {
+func (b *Bot) EditOrSend(chatID, msgID int64, text string, kb map[string]any) {
 	if msgID == 0 {
 		b.Send(chatID, text, kb)
 		return

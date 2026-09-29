@@ -1448,7 +1448,7 @@ func groupSilent(b *core.Bot) bool {
 
 // sendGroup 在群里发一条消息；静默开关打开时什么也不发，返回 0。
 // 调用方拿到 0 就不要安排撤回（撤回一个不存在的消息号会删错东西）。
-func sendGroup(b *core.Bot, chatID int64, text string, kb any) int64 {
+func sendGroup(b *core.Bot, chatID int64, text string, kb map[string]any) int64 {
 	if groupSilent(b) {
 		return 0
 	}
@@ -1456,7 +1456,7 @@ func sendGroup(b *core.Bot, chatID int64, text string, kb any) int64 {
 }
 
 // groupNotice 在群里发一条自动撤回的提示；静默时不发也不安排撤回。
-func groupNotice(b *core.Bot, chatID int64, text string, kb any, ttl time.Duration) {
+func groupNotice(b *core.Bot, chatID int64, text string, kb map[string]any, ttl time.Duration) {
 	if id := sendGroup(b, chatID, text, kb); id != 0 {
 		scheduleAlertCleanup(b, chatID, id, ttl)
 	}

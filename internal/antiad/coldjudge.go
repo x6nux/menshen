@@ -418,7 +418,3 @@ func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string, logID int64) strin
 	}
 	return text
 }
-
-// joinMuteKB 已废弃：群内提示改用文本链接（见 groupLinks），不再挂内联
-// 按钮——按钮在部分客户端里容易被忽略，纯文本链接更直接、也能复制。
-func joinMuteKB(b *core.Bot, logID int64) map[string]any { return nil }
