@@ -285,13 +285,17 @@ func TestAdbHonorsBanMode(t *testing.T) {
 	}
 }
 
-// TestMuteLabel：0 = 永久禁言；其余按小时渲染。
+// TestMuteLabel：参数是分钟——0 = 永久禁言，能整除的按天/小时渲染。
 func TestMuteLabel(t *testing.T) {
-	if got := MuteLabel(0); got != "永久禁言" {
-		t.Errorf("MuteLabel(0) = %q，期望永久禁言", got)
-	}
-	if got := MuteLabel(6); got != "禁言 6 小时" {
-		t.Errorf("MuteLabel(6) = %q", got)
+	cases := []struct {
+		in   int64
+		want string
+	}{{0, "永久禁言"}, {5, "禁言 5 分钟"}, {90, "禁言 90 分钟"},
+		{360, "禁言 6 小时"}, {1440, "禁言 1 天"}, {2880, "禁言 2 天"}}
+	for _, c := range cases {
+		if got := MuteLabel(c.in); got != c.want {
+			t.Errorf("MuteLabel(%d) = %q，期望 %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -300,7 +304,7 @@ func TestMuteLabel(t *testing.T) {
 func TestPermanentMuteOmitsUntilDate(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,14 +323,14 @@ func TestPermanentMuteOmitsUntilDate(t *testing.T) {
 		t.Error("禁言权限集应为全 false")
 	}
 
-	// 限时档仍然带 until_date。
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "6"); err != nil {
+	// 限时档仍然带 until_date：360 分钟 = 6 小时。
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "360"); err != nil {
 		t.Fatal(err)
 	}
 	ApplyAction(b, testutil.GroupMsg(-100, 43, 8, "广告"), act, false)
 	p = fake.LastCall("restrictChatMember")
 	if d := untilOf(p); d < 5*3600 || d > 7*3600 {
-		t.Errorf("6 小时档的 until_date 应在 6 小时附近，得到 %d 秒", d)
+		t.Errorf("360 分钟档的 until_date 应在 6 小时附近，得到 %d 秒", d)
 	}
 }
 
@@ -335,7 +339,7 @@ func TestPermanentMuteOmitsUntilDate(t *testing.T) {
 func TestEffectivePenaltiesPermanentMute(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -431,7 +435,7 @@ func TestBoolVerdictMode(t *testing.T) {
 	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 	_, llmN := fakeAIWith(t, b, soReply("ad", 0.88, "porn_bait", "message"),
@@ -480,7 +484,7 @@ func TestBoolVerdictMode(t *testing.T) {
 func TestHashHitPunishesInBoolMode(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 	// 复判上游全部失败：判定链路要回退到别的路径，而不是整条瘫掉。

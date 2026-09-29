@@ -27,12 +27,19 @@ func MutedPermissions() map[string]any {
 	}
 }
 
-// MuteLabel 把禁言时长渲染成人话：0（或负数）= 永久禁言。
-func MuteLabel(hours int64) string {
-	if hours <= 0 {
+// MuteLabel 把禁言时长渲染成人话。参数是**分钟**：0 = 永久禁言；
+// 能整除的按天/小时渲染（1440 → 1 天、360 → 6 小时），余下的按分钟。
+func MuteLabel(minutes int64) string {
+	if minutes <= 0 {
 		return "永久禁言"
 	}
-	return fmt.Sprintf("禁言 %d 小时", hours)
+	switch {
+	case minutes%1440 == 0:
+		return fmt.Sprintf("禁言 %d 天", minutes/1440)
+	case minutes%60 == 0:
+		return fmt.Sprintf("禁言 %d 小时", minutes/60)
+	}
+	return fmt.Sprintf("禁言 %d 分钟", minutes)
 }
 
 // unmute 恢复默认权限。必须逐项给 true —— 再发一次全 false

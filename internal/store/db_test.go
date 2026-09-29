@@ -236,3 +236,55 @@ func TestOpenPragmas(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateMuteUnit：老库把禁言时长按**小时**存（antiad_mute_hours），启动
+// 时要换算成**分钟**（antiad_mute_minutes ×60）；0（永久禁言）换算后仍是 0，
+// 脏值不动（回落默认），旧键一律删掉——迁移只生效一次。
+func TestMigrateMuteUnit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unit.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+		`INSERT INTO settings (k,v) VALUES ('antiad_mute_hours','24')`,
+		`CREATE TABLE bot_settings (bot_id INTEGER NOT NULL, k TEXT NOT NULL,
+			v TEXT NOT NULL, PRIMARY KEY (bot_id,k))`,
+		`INSERT INTO bot_settings (bot_id,k,v) VALUES (42,'antiad_mute_hours','0')`,
+		`INSERT INTO bot_settings (bot_id,k,v) VALUES (43,'antiad_mute_hours','abc')`,
+	} {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatalf("造老库失败: %v", err)
+		}
+	}
+	old.Close()
+
+	for round := 0; round < 2; round++ { // 第二次打开不该重复换算
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("第 %d 次启动失败: %v", round+1, err)
+		}
+		var v string
+		if err := s.Read.QueryRow(`SELECT v FROM settings
+			WHERE k='antiad_mute_minutes'`).Scan(&v); err != nil || v != "1440" {
+			t.Fatalf("24 小时应换算成 1440 分钟，得到 %q（err=%v）", v, err)
+		}
+		if err := s.Read.QueryRow(`SELECT v FROM bot_settings
+			WHERE bot_id=42 AND k='antiad_mute_minutes'`).Scan(&v); err != nil || v != "0" {
+			t.Errorf("永久禁言（0）换算后应仍是 0，得到 %q（err=%v）", v, err)
+		}
+		var n int
+		s.Read.QueryRow(`SELECT COUNT(*) FROM bot_settings WHERE bot_id=43`).Scan(&n)
+		if n != 0 {
+			t.Errorf("非数字的脏值不写新键，得到 %d 行", n)
+		}
+		s.Read.QueryRow(`SELECT COUNT(*) FROM settings WHERE k='antiad_mute_hours'`).Scan(&n)
+		if n != 0 {
+			t.Errorf("旧键应删掉，剩 %d 行", n)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

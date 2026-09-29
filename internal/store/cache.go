@@ -77,12 +77,12 @@ var settingDefaults = map[string]string{
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
 	// 引入浮点要改动整套设置面板机制，不值当。
-	"antiad_so_trust":   "80", // systemone 置信度采信线
-	"antiad_act_hard":   "90", // 删除 + 禁言线
-	"antiad_act_soft":   "75", // 删除线
-	"antiad_new_hours":  "72", // 新人时长界
-	"antiad_new_msgs":   "10", // 新人消息数界
-	"antiad_mute_hours": "24",
+	"antiad_so_trust":     "80", // systemone 置信度采信线
+	"antiad_act_hard":     "90", // 删除 + 禁言线
+	"antiad_act_soft":     "75", // 删除线
+	"antiad_new_hours":    "72", // 新人时长界
+	"antiad_new_msgs":     "10", // 新人消息数界
+	"antiad_mute_minutes": "1440",
 	// 滥用护栏：全量送检是明知成本的选择，这几项只堵滥用，不改设计。
 	// 窗口长度沿用 limiter.go 的 1 分钟。0 = 不限。
 	"antiad_rpm_chat":  "30", // 每群每分钟送检上限
@@ -97,7 +97,7 @@ var settingDefaults = map[string]string{
 	"antiad_alert_severe":   "2",  // 短撤回的危害度阈值（0-3 的整数）
 	"antiad_dm_admins":      "1",  // 是否私聊 owner
 	"antiad_exempt_users":   "[]", // 该 bot 的豁免名单
-	// 禁言档改为封禁出群（永久）。每群可单独覆盖（bot_chats.punish）。
+	// 禁言时长（分钟）：0 = 永久禁言。每群可单独覆盖处罚方式（bot_chats.punish）。
 	"antiad_ban": "0",
 	// 仅删除档附一记 5 分钟短禁言：只删不罚的话，发广告的人删完就能接着发；
 	// 而老人档的长禁言又太伤。短禁言只堵连发，社交代价小。

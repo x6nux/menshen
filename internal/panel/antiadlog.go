@@ -452,15 +452,26 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		antiad.ForgetAdHash(b, row.Text)
 		antiad.BumpAdHits(b, row.ChatID, row.UserID, -1)
 		// 这条判定作废了，由它派生的联合封禁也得一起撤：名单是跨所有接入群
-		// 执行的，留着等于让一条被判错的记录继续全平台封人。只有服务管理员
-		// 能动名单（群管理员点的误判只解本群，不动全平台名单）。
-		lifted := ""
+		// 执行的，留着等于让一条被判错的记录继续全平台封人。
+		//   - 服务管理员：撤全局组 + 自己的专属组；主管理员额外撤**记录所属
+		//     bot 归属人**的专属组（否则误判撤了，人在那个归属人的群里还封着）
+		//   - 群管理员（只是 TG 群管，不是服务管理员）：不动名单，只解本群
+		var lifted []string
 		if b.IsStaff(q.From.ID) {
-			lifted = antiad.AdminLiftGban(b.Shared, q.From.ID, row.UserID)
+			if s := antiad.AdminLiftGban(b.Shared, q.From.ID, row.UserID); s != "" {
+				lifted = append(lifted, s)
+			}
+			if b.IsMain(q.From.ID) {
+				if rec := b.Cache.Snap().Bots[row.BotID]; rec != nil && rec.OwnerID != q.From.ID {
+					if s := antiad.AdminLiftGban(b.Shared, rec.OwnerID, row.UserID); s != "" {
+						lifted = append(lifted, s)
+					}
+				}
+			}
 		}
 		reason := "管理员标记误判"
-		if lifted != "" {
-			reason += "，已撤除" + lifted
+		if len(lifted) > 0 {
+			reason += "，已撤除" + strings.Join(lifted, "、")
 		}
 		antiad.UpdateAdLog(b, row.ID, "undone", appendReason(row.Reason, reason))
 		if !unmuted {
@@ -468,8 +479,8 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 			return
 		}
 		msg := "已标记误判并解除限制"
-		if lifted != "" {
-			msg += "；已撤除" + lifted
+		if len(lifted) > 0 {
+			msg += "；已撤除" + strings.Join(lifted, "、")
 		}
 		b.AnswerCallback(q.ID, msg)
 
@@ -502,13 +513,13 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		b.AnswerCallback(q.ID, "已删除")
 
 	case "mute":
-		hours := b.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_hours", 24)
+		minutes := b.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
 		if ok, desc := antiad.MuteSender(b, row.ChatID, row.UserID,
-			time.Duration(hours)*time.Hour); !ok {
+			time.Duration(minutes)*time.Minute); !ok {
 			b.AnswerCallback(q.ID, "禁言失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
-		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(hours))
+		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(minutes))
 		// 同 del 分支：undone/banned 不能被这次禁言覆盖。
 		if row.Action == "undone" || row.Action == "banned" {
 			antiad.UpdateAdLog(b, row.ID, row.Action, reason)

@@ -603,18 +603,24 @@ function settingOf(botID,key){
   var d=S.global_defaults||{};
   return d[key]!=null?d[key]:'';
 }
+/* muteText 把分钟数渲染成人话：0 = 永久禁言；能整除的按天/小时。 */
+function muteText(v){
+  var n=parseInt(v,10);
+  if(!isFinite(n)||n<=0) return '永久禁言';
+  if(n%1440===0) return '禁言 '+(n/1440)+' 天';
+  if(n%60===0) return '禁言 '+(n/60)+' 小时';
+  return '禁言 '+n+' 分钟';
+}
 /* punishLabel 把「跟随/禁言/封禁」渲染成实际会执行的动作。
    只写「禁言」而不写时长时，很容易以为永久封禁已经生效。 */
 function punishLabel(botID,punish){
-  var hours=settingOf(botID,'antiad_mute_hours')||'24';
+  var mute=muteText(settingOf(botID,'antiad_mute_minutes')||'1440');
   if(punish==1) return '封禁出群（永久）';
-  var mute=(hours==='0')?'永久禁言':('禁言 '+hours+' 小时');
   if(punish==0) return mute;
   return settingOf(botID,'antiad_ban')=='1' ? '封禁出群（永久）' : mute;
 }
 function muteOptLabel(botID){
-  var hours=settingOf(botID,'antiad_mute_hours')||'24';
-  return (hours==='0')?'永久禁言':('禁言 '+hours+' 小时');
+  return muteText(settingOf(botID,'antiad_mute_minutes')||'1440');
 }
 function logact(a,id){
   api('logact',{id:id,action:a}).then(function(){

@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -316,6 +318,10 @@ func Open(path string) (*Store, error) {
 		write.Close()
 		return nil, err
 	}
+	if err := migrateSettingUnits(write); err != nil {
+		write.Close()
+		return nil, err
+	}
 	if err := ensureIndexes(write); err != nil {
 		write.Close()
 		return nil, err
@@ -377,6 +383,74 @@ func migrate(db *sql.DB) error {
 			continue
 		}
 		if _, err := db.Exec("ALTER TABLE " + c.table + " ADD COLUMN " + c.col + " " + c.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateSettingUnits 把按旧单位存的设置换算成新单位。目前只有禁言时长：
+// antiad_mute_hours（小时）→ antiad_mute_minutes（分钟）。
+//
+// 老部署里 0 表示永久禁言，乘 60 之后仍是 0；非数字的脏值不换算（新键缺省，
+// 即回到默认 24 小时），但旧键一律删掉——留着的话读侧会以为它还生效。
+// 换算完删除旧键，所以这段迁移只会生效一次。
+func migrateSettingUnits(w *sql.DB) error {
+	conv := func(v string) (string, bool) {
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return "", false
+		}
+		return strconv.FormatInt(n*60, 10), true
+	}
+
+	var gv string
+	switch err := w.QueryRow(`SELECT v FROM settings WHERE k='antiad_mute_hours'`).Scan(&gv); {
+	case err == nil:
+		if nv, ok := conv(gv); ok {
+			if _, err := w.Exec(`INSERT INTO settings (k,v)
+				VALUES ('antiad_mute_minutes',?) ON CONFLICT(k) DO NOTHING`, nv); err != nil {
+				return err
+			}
+		}
+		if _, err := w.Exec(`DELETE FROM settings WHERE k='antiad_mute_hours'`); err != nil {
+			return err
+		}
+	case err != sql.ErrNoRows:
+		return err
+	}
+
+	rows, err := w.Query(`SELECT bot_id,v FROM bot_settings WHERE k='antiad_mute_hours'`)
+	if err != nil {
+		return err
+	}
+	type rec struct {
+		botID int64
+		v     string
+	}
+	var list []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.botID, &r.v); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range list {
+		if nv, ok := conv(r.v); ok {
+			if _, err := w.Exec(`INSERT INTO bot_settings (bot_id,k,v)
+				VALUES (?,'antiad_mute_minutes',?) ON CONFLICT(bot_id,k) DO NOTHING`,
+				r.botID, nv); err != nil {
+				return err
+			}
+		}
+		if _, err := w.Exec(`DELETE FROM bot_settings
+			WHERE bot_id=? AND k='antiad_mute_hours'`, r.botID); err != nil {
 			return err
 		}
 	}

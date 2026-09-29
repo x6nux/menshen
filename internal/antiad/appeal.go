@@ -149,10 +149,10 @@ func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 		rows.Close()
 	}
 
-	hours := sh.Cache.Snap().BotSettingInt(botID, "antiad_mute_hours", 24)
+	minutes := sh.Cache.Snap().BotSettingInt(botID, "antiad_mute_minutes", 1440)
 	since := int64(0)
-	if hours > 0 {
-		since = time.Now().Unix() - hours*3600
+	if minutes > 0 {
+		since = time.Now().Unix() - minutes*60
 	}
 	rows, err = sh.Store.Read.Query(`SELECT chat_id,text,reason,created_at,action
 		FROM antiad_log WHERE bot_id=? AND user_id=? AND created_at > ? AND lifted_at = 0

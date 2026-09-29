@@ -119,12 +119,13 @@ func TestChatDetailShowsPunishDuration(t *testing.T) {
 
 	showChatDetail(b, 777, 0, b.BotID(), -100)
 	text := fmt.Sprint(fake.LastCall("sendMessage")["text"])
-	if !strings.Contains(text, "禁言 24 小时") || !strings.Contains(text, "要改成永久禁言") {
+	// 默认 1440 分钟 → 渲染成「禁言 1 天」。
+	if !strings.Contains(text, "禁言 1 天") || !strings.Contains(text, "要改成永久禁言") {
 		t.Fatalf("应写明禁言时长与改法:\n%s", text)
 	}
 
 	// 禁言时长 0 = 永久禁言：人留在群里、发不了言。
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 	showChatDetail(b, 777, 0, b.BotID(), -100)
@@ -176,6 +177,44 @@ func TestFalsePositiveLiftsGban(t *testing.T) {
 	if action != "undone" {
 		t.Errorf("流水应标记 undone，得到 %q", action)
 	}
+	if !strings.Contains(reason, "联合封禁") {
+		t.Errorf("理由里应注明撤了名单，得到 %q", reason)
+	}
+}
+
+// TestFalsePositiveLiftsRecordOwnerGban：主管理员在别人的 bot 记录上点误判，
+// 既要撤操作者自己的账本，也要撤**记录所属 bot 归属人**的专属组——否则
+// 误判撤了，人在那个归属人的群里还封着。
+func TestFalsePositiveLiftsRecordOwnerGban(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, dispatch)
+	sh := b.Shared
+	testutil.EnableAntiad(t, b, -100)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	// 另一个归属人（888）的 bot，与它名下的群。
+	const token2 = "123456789:AAAnotherBot_for_gban_test_00000001"
+	testutil.RegisterTestBot(t, sh, token2, 43, 888)
+	if err := antiad.GbanOwnAddBan(sh, 888, 555, "自动判定：测试", -100); err != nil {
+		t.Fatal(err)
+	}
+
+	// 记录挂在 888 的 bot 名下。
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log (chat_id,user_id,message_id,
+		text,verdict,confidence,decider,ad_kind,action,reason,created_at,bot_id)
+		VALUES (-100,555,7,'ping0.cc','ad',0.62,'systemone+llm','promo','gban_muted','',0,43)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+
+	HandleAdminCallback(b, cb(777, "a:ad:fp:"+itoa(id)))
+
+	if _, in := sh.Cache.Snap().GbanOwnBans[888][555]; in {
+		t.Error("主管理员点误判应撤掉记录所属 bot 归属人专属组里的条目")
+	}
+	var reason string
+	b.Store.Read.QueryRow(`SELECT reason FROM antiad_log WHERE id=?`, id).Scan(&reason)
 	if !strings.Contains(reason, "联合封禁") {
 		t.Errorf("理由里应注明撤了名单，得到 %q", reason)
 	}

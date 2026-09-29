@@ -118,7 +118,7 @@ func TestSpecsInSectionsOrder(t *testing.T) {
 		}
 		return -1
 	}
-	a, b2 := idx("antiad_mute_hours"), idx("antiad_ban")
+	a, b2 := idx("antiad_mute_minutes"), idx("antiad_ban")
 	c, d := idx("antiad_short_mute"), idx("antiad_bool_verdict")
 	if a < 0 || b2 < 0 || c < 0 || d < 0 || !(a < b2 && b2 < c && c < d) {
 		t.Errorf("禁言时长/改为封禁/短禁言/定档应相邻，得到 %d %d %d %d", a, b2, c, d)

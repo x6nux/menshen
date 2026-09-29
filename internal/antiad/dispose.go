@@ -108,8 +108,8 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 		}
 	}
 	if act.Mute {
-		hours := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
-		d := time.Duration(hours) * time.Hour
+		minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
+		d := time.Duration(minutes) * time.Minute
 		if act.Temp {
 			d = tempMute
 		}

@@ -350,7 +350,7 @@ func TestClampPage(t *testing.T) {
 
 // TestMiniBotAntiBanSettingPersists：bot 级「禁言改为封禁」的写入必须落库、
 // 进快照、并让该 bot 名下跟随的群立刻改为永久封禁。
-// 用户报过「设置了永久封禁却还是禁言 24 小时」，先守住这条链路。
+// 用户报过「设置了永久封禁却还是按默认时长禁言」，先守住这条链路。
 func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -381,8 +381,8 @@ func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := st["global_defaults"].(map[string]any)["antiad_mute_hours"]; !ok {
-		t.Error("状态里应包含 antiad_mute_hours 全局默认值")
+	if _, ok := st["global_defaults"].(map[string]any)["antiad_mute_minutes"]; !ok {
+		t.Error("状态里应包含 antiad_mute_minutes 全局默认值")
 	}
 }
 
@@ -411,11 +411,11 @@ func TestMiniGlobalDefaultsAndModels(t *testing.T) {
 	init := env.adminInit()
 
 	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
-		map[string]any{"scope": "global", "key": "antiad_mute_hours", "value": "0"})
+		map[string]any{"scope": "global", "key": "antiad_mute_minutes", "value": "0"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("全局默认参数应可写，得到 %d：%s", w.Code, w.Body.String())
 	}
-	if got := sh.Cache.Snap().Setting("antiad_mute_hours"); got != "0" {
+	if got := sh.Cache.Snap().Setting("antiad_mute_minutes"); got != "0" {
 		t.Errorf("全局默认没落上，得到 %q", got)
 	}
 
@@ -486,7 +486,7 @@ func TestMiniStateSections(t *testing.T) {
 	if names[0] != "处置与分档" {
 		t.Errorf("第一个分组应是「处置与分档」，得到 %q", names[0])
 	}
-	for _, want := range []string{"antiad_mute_hours", "log_retention_days", "antiad_cold"} {
+	for _, want := range []string{"antiad_mute_minutes", "log_retention_days", "antiad_cold"} {
 		if !keys[want] {
 			t.Errorf("合并后的分组里缺少 %s（全局项与 bot 默认值应在同一视图）", want)
 		}

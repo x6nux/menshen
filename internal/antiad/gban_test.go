@@ -176,7 +176,7 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 	if err := b.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
 	snap := b.Cache.Snap()
