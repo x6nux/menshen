@@ -454,3 +454,41 @@ func TestMiniGlobalDefaultsAndModels(t *testing.T) {
 		t.Errorf("未登记的识图模型应 400，得到 %d", w.Code)
 	}
 }
+
+// TestMiniStateSections：设置页的合并视图——同一张卡里既有全局项
+// （记录保留天数）也有各 bot 的默认值（禁言时长），并按主题分组下发。
+func TestMiniStateSections(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	env := &miniTestEnv{t: t, h: MiniAppHandler(b.Shared), now: time.Now().Unix()}
+	init := env.adminInit()
+
+	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("state 应 200，得到 %d", w.Code)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	secs, ok := st["sections"].([]any)
+	if !ok || len(secs) == 0 {
+		t.Fatalf("state 应带 sections，得到 %v", st["sections"])
+	}
+	keys := map[string]bool{}
+	var names []string
+	for _, s := range secs {
+		m := s.(map[string]any)
+		names = append(names, m["name"].(string))
+		for _, sp := range m["specs"].([]any) {
+			keys[sp.(map[string]any)["key"].(string)] = true
+		}
+	}
+	if names[0] != "处置与分档" {
+		t.Errorf("第一个分组应是「处置与分档」，得到 %q", names[0])
+	}
+	for _, want := range []string{"antiad_mute_hours", "log_retention_days", "antiad_cold"} {
+		if !keys[want] {
+			t.Errorf("合并后的分组里缺少 %s（全局项与 bot 默认值应在同一视图）", want)
+		}
+	}
+}

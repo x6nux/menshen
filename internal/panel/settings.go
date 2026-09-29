@@ -108,16 +108,102 @@ func settingSpecByKey(k string) *settingSpec {
 	return nil
 }
 
-// specsInGroup 按分组过滤，g="" 取全局设置面板的项。
+// settingSections 决定面板上的分组与顺序：同类、关联的选项排在一起。
+//
+// 分组只按**主题**分，与作用域无关——作用域是另一件事（settingSpec.group：
+// 全局项 / 每个 bot 可覆盖），同一个参数常常既能设全局默认、又能被单个 bot
+// 覆盖，两个面板共用这份顺序，界面才不会一边一个样。
+//
+// 没列进来的设置项归入「其他」排在最后：新增设置项最多是暂时没有归属，
+// 不会从界面上消失。
+var settingSections = []struct {
+	name string
+	keys []string
+}{
+	{"处置与分档", []string{
+		"antiad_new_hours", "antiad_new_msgs",
+		"antiad_act_hard", "antiad_act_soft",
+		"antiad_mute_hours", "antiad_ban",
+		"antiad_short_mute", "antiad_bool_verdict",
+	}},
+	{"判定与模型", []string{
+		"antiad_so_trust", "antiad_ctx_msgs",
+		"antiad_so_timeout_ms", "antiad_llm_ttft_ms",
+		"antiad_hedge_retries", "antiad_hedge_minutes", "antiad_hedge_fanout",
+	}},
+	{"进群冷判定", []string{
+		"antiad_cold", "antiad_cold_conf", "antiad_cold_prefilter", "antiad_unban_base",
+	}},
+	{"通知与展示", []string{
+		"antiad_dm_admins", "antiad_alert_every",
+		"antiad_alert_ttl", "antiad_alert_ttl_hard", "antiad_alert_severe",
+		"antiad_group_silent", "antiad_alert_rpm",
+	}},
+	{"护栏与成本", []string{
+		"antiad_rpm_chat", "antiad_cmd_rpm",
+		"log_retention_days", "max_bots_per_admin",
+		"antiad_upstream_alert_after", "antiad_upstream_alert_minutes",
+	}},
+	{"学习与名单", []string{
+		"antiad_digest_min", "antiad_digest_max",
+		"antiad_judge_bots", "gban_global",
+	}},
+}
+
+// specGroup 是一组按主题排好的设置项，供面板渲染分组标题。
+type specGroup struct {
+	Name  string
+	Specs []settingSpec
+}
+
+// specsInSections 按主题顺序给出设置项。keep 为 nil 表示全要；否则只保留
+// keep 为真的项（顺序不变）。未列入 settingSections 的项归入「其他」。
+func specsInSections(keep func(settingSpec) bool) []specGroup {
+	take := func(sp settingSpec) bool { return keep == nil || keep(sp) }
+	seen := map[string]bool{}
+	var out []specGroup
+	for _, sec := range settingSections {
+		g := specGroup{Name: sec.name}
+		for _, k := range sec.keys {
+			if seen[k] {
+				continue
+			}
+			sp := settingSpecByKey(k)
+			if sp == nil {
+				continue
+			}
+			seen[k] = true
+			if take(*sp) {
+				g.Specs = append(g.Specs, *sp)
+			}
+		}
+		if len(g.Specs) > 0 {
+			out = append(out, g)
+		}
+	}
+	var rest []settingSpec
+	for _, sp := range settingSpecs {
+		if !seen[sp.key] && take(sp) {
+			rest = append(rest, sp)
+		}
+	}
+	if len(rest) > 0 {
+		out = append(out, specGroup{Name: "其他", Specs: rest})
+	}
+	return out
+}
+
+// specsInGroup 按作用域过滤，g="" 取全局设置面板的项。
 //
 // "both" 表示两处都要出现：全局设置页给默认值（仅主管理员能改），
 // 每个 bot 的参数页可以覆盖（带 ✏️），不覆盖就跟随全局。
+// 返回的顺序与面板一致（按主题分组）。
 func specsInGroup(g string) []settingSpec {
-	out := make([]settingSpec, 0, len(settingSpecs))
-	for _, sp := range settingSpecs {
-		if sp.group == g || sp.group == "both" {
-			out = append(out, sp)
-		}
+	var out []settingSpec
+	for _, sec := range specsInSections(func(sp settingSpec) bool {
+		return sp.group == g || sp.group == "both"
+	}) {
+		out = append(out, sec.Specs...)
 	}
 	return out
 }
@@ -313,9 +399,14 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 	}
 	sb.WriteString("\n")
 
-	for _, sp := range specsInGroup("") {
-		sb.WriteString(html.EscapeString(sp.label) + "：<code>" +
-			html.EscapeString(snap.Setting(sp.key)) + "</code>\n")
+	for _, g := range specsInSections(func(sp settingSpec) bool {
+		return sp.group == "" || sp.group == "both"
+	}) {
+		sb.WriteString("\n<b>" + html.EscapeString(g.Name) + "</b>\n")
+		for _, sp := range g.Specs {
+			sb.WriteString(html.EscapeString(sp.label) + "：<code>" +
+				html.EscapeString(snap.Setting(sp.key)) + "</code>\n")
+		}
 	}
 
 	sb.WriteString("\n<b>默认模型</b>（按重试顺序，可在每个 bot 上单独覆盖）\n")

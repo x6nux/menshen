@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"slices"
 	"testing"
 
 	"menshen/internal/testutil"
@@ -78,5 +79,64 @@ func TestColdJudgeIsGlobalWithPerBotOverride(t *testing.T) {
 	}
 	if got := snap.BotSettingInt(botID, "antiad_cold", 0); got != 1 {
 		t.Fatalf("撤销覆盖后应回到全局值 1，得到 %d", got)
+	}
+}
+
+// TestSpecsInSectionsOrder：所有设置项都要出现在分组里且只出现一次，
+// 主题顺序固定、同类选项相邻；按作用域过滤后顺序不变。
+func TestSpecsInSectionsOrder(t *testing.T) {
+	groups := specsInSections(nil)
+	seen := map[string]int{}
+	total := 0
+	var names []string
+	for _, g := range groups {
+		names = append(names, g.Name)
+		for _, sp := range g.Specs {
+			seen[sp.key]++
+			total++
+		}
+	}
+	if total != len(settingSpecs) {
+		t.Errorf("分组共 %d 项，settingSpecs 共 %d 项", total, len(settingSpecs))
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Errorf("%s 出现了 %d 次", k, n)
+		}
+	}
+	want := []string{"处置与分档", "判定与模型", "进群冷判定", "通知与展示", "护栏与成本", "学习与名单"}
+	if !slices.Equal(names, want) {
+		t.Errorf("分组顺序 = %v，期望 %v", names, want)
+	}
+
+	// 处置相关的选项必须排在一起（用户要求「同类、关联的在一起」）。
+	idx := func(k string) int {
+		for i, sp := range groups[0].Specs {
+			if sp.key == k {
+				return i
+			}
+		}
+		return -1
+	}
+	a, b2 := idx("antiad_mute_hours"), idx("antiad_ban")
+	c, d := idx("antiad_short_mute"), idx("antiad_bool_verdict")
+	if a < 0 || b2 < 0 || c < 0 || d < 0 || !(a < b2 && b2 < c && c < d) {
+		t.Errorf("禁言时长/改为封禁/短禁言/定档应相邻，得到 %d %d %d %d", a, b2, c, d)
+	}
+
+	// 按作用域过滤（bot 页）后不该混进纯全局项，顺序保持主题分组。
+	var bot []string
+	for _, g := range specsInSections(func(sp settingSpec) bool {
+		return sp.group == "antiad" || sp.group == "both"
+	}) {
+		for _, sp := range g.Specs {
+			bot = append(bot, sp.key)
+		}
+	}
+	if slices.Contains(bot, "log_retention_days") {
+		t.Error("bot 参数页不该出现纯全局项")
+	}
+	if !slices.Contains(bot, "antiad_cold") {
+		t.Error("both 作用域的项两个页面都要有")
 	}
 }

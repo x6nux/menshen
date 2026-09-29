@@ -51,6 +51,7 @@ button:disabled{opacity:.5}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
 .hint{color:var(--hint);font-size:12px;line-height:1.5}
+.sec{font-weight:600;font-size:13px;color:#555;margin:12px 0 2px}
 .badge{font-size:11px;border-radius:6px;padding:2px 6px;background:rgba(128,128,128,.15);flex:0 0 auto}
 .badge.ok{background:rgba(60,180,100,.2)}
 .badge.no{background:rgba(224,82,82,.2)}
@@ -146,7 +147,8 @@ function render(){
   document.getElementById('who').textContent = (S.me.main?'主管理员':'次级管理员')+' · uid '+S.me.uid;
   var nav = document.getElementById('tabs'); nav.innerHTML='';
   TABS.forEach(function(t){
-    if(!S.me.main && (t[0]=='upstreams'||t[0]=='models')) return;
+    // 上游 / 模型 / 设置都是主管理员专属：次管在机器人页里改自己 bot 的参数。
+    if(!S.me.main && (t[0]=='upstreams'||t[0]=='models'||t[0]=='settings')) return;
     var b=document.createElement('button'); b.textContent=t[1];
     if(TAB==t[0]) b.className='on';
     b.onclick=function(){ go(t[0]); };
@@ -227,7 +229,6 @@ function ownerRow(b){
 }
 function viewBotDetail(b){
   var bs=(S.bot_settings[String(b.bot_id)])||{};
-  var specs=S.specs.filter(function(sp){ return sp.group=='antiad'||sp.group=='both'; });
   var gso=glist('antiad_so_models'), gllm=glist('antiad_llm_models');
   var h=backRow();
   h+='<div class="card"><h3>'+esc(b.label)+' '+
@@ -248,11 +249,16 @@ function viewBotDetail(b){
       'onchange="act(\'bot\',{bot_id:'+b.bot_id+',action:\'models\',which:\'llm\',value:this.value},\'已保存\')">';
   }
   h+='<div class="hint" style="margin-top:8px">单 bot 参数（覆盖全局；清空 = 恢复全局）</div>';
-  specs.forEach(function(sp){
-    var val = (sp.key in bs) ? bs[sp.key] : '';
-    h+='<div class="row"><span class="k">'+esc(sp.label)+'</span>'+
-      '<input style="width:110px" value="'+esc(val)+'" placeholder="'+esc(gph(sp.key))+'" '+
-      'onchange="act(\'set\',{scope:\'bot\',bot_id:'+b.bot_id+',key:\''+sp.key+'\',value:this.value})"></div>';
+  (S.sections||[]).forEach(function(sec){
+    var specs=sec.specs.filter(function(sp){ return sp.group=='antiad'||sp.group=='both'; });
+    if(!specs.length) return;
+    h+='<div class="sec">'+esc(sec.name)+'</div>';
+    specs.forEach(function(sp){
+      var val = (sp.key in bs) ? bs[sp.key] : '';
+      h+='<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+
+        '<input style="width:110px" value="'+esc(val)+'" placeholder="'+esc(gph(sp.key))+'" '+
+        'onchange="act(\'set\',{scope:\'bot\',bot_id:'+b.bot_id+',key:\''+sp.key+'\',value:this.value})"></div>';
+    });
   });
   if(!b.is_main){
     h+='<div class="row" style="border:0;padding-top:10px"><button class="d" style="width:100%" '+
@@ -433,23 +439,18 @@ function viewSettings(){
     '<div class="row"><span class="k">联合封禁</span>'+
     '<button class="b" onclick="act(\'set\',{scope:\'global\',key:\'gban_enabled\',value:\''+
       (g.gban_enabled=='1'?'0':'1')+'\'},\'已切换\')">'+(g.gban_enabled=='1'?'已开启':'已关闭')+'</button></div></div>';
-  var specs=S.specs.filter(function(sp){ return sp.group==''||sp.group=='both'; });
-  h+='<div class="card"><h3>全局参数</h3>'+specs.map(function(sp){
-    return '<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+
-      '<input style="width:110px" value="'+esc(g[sp.key]||'')+'" '+
-      'onchange="act(\'set\',{scope:\'global\',key:\''+sp.key+'\',value:this.value})"></div>';
-  }).join('')+'</div>';
-  if(S.me.main){
-    // 各 bot 的默认值（bot 页里的「全局 XX」就是这里）：此前只有 per-bot
-    // 覆盖，全局默认没地方改。
-    var bspecs=S.specs.filter(function(sp){ return sp.group=='antiad'; });
-    h+='<div class="card"><h3>全局默认参数</h3>'+
-      '<div class="hint" style="margin-bottom:8px">各 bot 未覆盖时用它；bot 页里对应「全局 XX」占位。</div>'+
-      bspecs.map(function(sp){
+  h+='<div class="card"><h3>全局设置</h3>'+
+    '<div class="hint" style="margin-bottom:6px">各 bot 未覆盖时用这里的值；单个 bot 可在机器人页覆盖。'+
+    '「全局参数」与「全局默认参数」已合并，按主题分组。</div>'+
+    (S.sections||[]).map(function(sec){
+      var rows=sec.specs.map(function(sp){
         return '<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+
           '<input style="width:110px" value="'+esc(g[sp.key]||'')+'" '+
           'onchange="act(\'set\',{scope:\'global\',key:\''+sp.key+'\',value:this.value})"></div>';
-      }).join('')+'</div>';
+      }).join('');
+      return rows?'<div class="sec">'+esc(sec.name)+'</div>'+rows:'';
+    }).join('')+'</div>';
+  if(S.me.main){
     h+='<div class="card"><h3>默认模型</h3>'+
       '<div class="row"><span class="k">判定模型（systemone）</span></div>'+
       '<input value="'+esc(g.antiad_so_models||'')+'" placeholder="上游名/模型ID，多个用逗号分隔" '+

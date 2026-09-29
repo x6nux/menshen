@@ -134,6 +134,14 @@ func miniOK(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// specMeta 是下发给 Mini App 的设置项元信息（不含值）。
+func specMeta(sp settingSpec) map[string]any {
+	return map[string]any{
+		"key": sp.key, "label": sp.label, "hint": sp.hint,
+		"min": sp.min, "max": sp.max, "group": sp.group,
+	}
+}
+
 // miniCanManageBot 与面板的 CanManageBot 同一套规则。
 func miniCanManageBot(sh *core.Shared, uid, botID int64) bool {
 	if sh.IsMain(uid) {
@@ -253,10 +261,17 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 
 	specs := make([]map[string]any, 0, len(settingSpecs))
 	for _, sp := range settingSpecs {
-		specs = append(specs, map[string]any{
-			"key": sp.key, "label": sp.label, "hint": sp.hint,
-			"min": sp.min, "max": sp.max, "group": sp.group,
-		})
+		specs = append(specs, specMeta(sp))
+	}
+	// sections 是按主题分好组的同一批设置项：全局设置页与 bot 页共用它，
+	// 同类选项排在一起，两个页面不会各有一个顺序。
+	sections := make([]map[string]any, 0, len(settingSections))
+	for _, g := range specsInSections(nil) {
+		items := make([]map[string]any, 0, len(g.Specs))
+		for _, sp := range g.Specs {
+			items = append(items, specMeta(sp))
+		}
+		sections = append(sections, map[string]any{"name": g.Name, "specs": items})
 	}
 
 	stats := miniStats(sh, uid, main)
@@ -275,7 +290,8 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 
 	out := map[string]any{
 		"me": me, "bots": bots, "chats": chats, "bot_settings": botSettings,
-		"specs": specs, "stats": stats, "global_defaults": defaults,
+		"specs": specs, "sections": sections, "stats": stats,
+		"global_defaults": defaults,
 	}
 	if main {
 		out["global"] = snap.Settings

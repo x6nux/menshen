@@ -711,14 +711,22 @@ func showBotConfig(b *core.Bot, chatID, msgID, botID int64) {
 	sb.WriteString("<i>带 ✏️ 的是本 bot 的专属值，其余沿用全局默认。</i>\n\n")
 
 	var rows [][][2]string
+	for _, g := range specsInSections(func(sp settingSpec) bool {
+		return sp.group == "antiad" || sp.group == "both"
+	}) {
+		sb.WriteString("\n<b>" + html.EscapeString(g.Name) + "</b>\n")
+		for _, sp := range g.Specs {
+			cur := snap.BotSetting(botID, sp.key)
+			mark := ""
+			if _, overridden := snap.BotSettings[botID][sp.key]; overridden {
+				mark = "✏️"
+			}
+			fmt.Fprintf(&sb, "• %s: <code>%s</code> %s\n",
+				html.EscapeString(sp.label), html.EscapeString(cur), mark)
+		}
+	}
 	for _, sp := range specsInGroup("antiad") {
 		cur := snap.BotSetting(botID, sp.key)
-		mark := ""
-		if _, overridden := snap.BotSettings[botID][sp.key]; overridden {
-			mark = "✏️"
-		}
-		fmt.Fprintf(&sb, "• %s: <code>%s</code> %s\n",
-			html.EscapeString(sp.label), html.EscapeString(cur), mark)
 		rows = append(rows, [][2]string{{
 			fmt.Sprintf("%s (%s)", sp.label, cur),
 			fmt.Sprintf("a:st:b:%d:%s", botID, sp.key),
