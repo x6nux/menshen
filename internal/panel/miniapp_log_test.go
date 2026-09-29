@@ -366,3 +366,59 @@ func TestMiniGbanScopes(t *testing.T) {
 	}
 	_ = reg
 }
+
+// TestMiniAppealsOpenFilterServerSide：未结筛选必须放在查询里。只筛已取回的
+// 那 20 行的话，更新更早的未结单永远不会出现在「未结」页里，管理员会漏掉
+// 真正要处理的单子。
+func TestMiniAppealsOpenFilterServerSide(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+
+	// 一条最老的未结单 + 24 条更新的已结单。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'noweb',?,?)`,
+		testutil.TestBotID, 555, env.now-1000, env.now-1000); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 24; i++ {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO appeals
+			(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'lifted',?,?)`,
+			testutil.TestBotID, int64(1000+i), env.now, env.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	call := func(body map[string]any) map[string]any {
+		w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "appeals", body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("appeals 应 200，得到 %d：%s", w.Code, w.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	all := call(map[string]any{"page": 1})
+	if total := int64(all["total"].(float64)); total != 25 {
+		t.Errorf("全部应为 25 张，得到 %d", total)
+	}
+	if rows := all["appeals"].([]any); len(rows) != 20 {
+		t.Errorf("全部第 1 页应为 20 行，得到 %d", len(rows))
+	}
+
+	open := call(map[string]any{"page": 1, "filter": "open"})
+	rows := open["appeals"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("未结应只有 1 张，得到 %d 行：%v", len(rows), rows)
+	}
+	if got := rows[0].(map[string]any)["status"]; got != "noweb" {
+		t.Errorf("未结筛选应命中 noweb 那张，得到 %v", got)
+	}
+	if total := int64(open["total"].(float64)); total != 1 {
+		t.Errorf("未结总数应为 1，得到 %d", total)
+	}
+}

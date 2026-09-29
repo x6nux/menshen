@@ -928,9 +928,7 @@ func handleAdminsCallback(b *core.Bot, q *tg.CallbackQuery) {
 const gbanPageSize = 10
 
 func showGban(b *core.Bot, chatID, msgID int64, page int) {
-	if page < 1 {
-		page = 1
-	}
+	page = clampPageInt(page)
 	on := antiad.GbanEnabled(b.Shared)
 	total := len(b.Cache.Snap().Gban)
 

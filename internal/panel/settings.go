@@ -680,29 +680,9 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 // 运维完全看不见。
 // parseModelList 解析逗号分隔的模型名列表：逐个校验存在且启用，去重但
 // 保持输入顺序（顺序即重试顺序）。返回的错误直接给管理员看。
+// parseModelList 校验并去重一份逗号分隔的模型列表。
 func parseModelList(b *core.Bot, text string) ([]string, error) {
-	snap := b.Cache.Snap()
-	var out []string
-	seen := map[string]bool{}
-	for _, raw := range strings.Split(text, ",") {
-		name := strings.TrimSpace(raw)
-		if name == "" || seen[name] {
-			continue
-		}
-		m := snap.Models[name]
-		if m == nil {
-			return nil, fmt.Errorf("模型 %s 不在「模型定价」里", name)
-		}
-		if !m.Enabled {
-			return nil, fmt.Errorf("模型 %s 已被停用", name)
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("至少要填一个模型名")
-	}
-	return out, nil
+	return parseModelListSnap(b.Cache.Snap(), text)
 }
 
 // modelsJSON 把模型列表序列化成设置值。

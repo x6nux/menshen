@@ -393,20 +393,7 @@ func miniStats(sh *core.Shared, uid int64, main bool) map[string]any {
 
 // miniBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数。
 func miniBotsClause(sh *core.Shared, uid int64, main bool) (string, []any) {
-	if main {
-		return "", nil
-	}
-	owned := sh.Cache.Snap().BotsOwnedBy(uid, false)
-	if len(owned) == 0 {
-		return " AND 0", nil
-	}
-	holders := make([]string, 0, len(owned))
-	args := make([]any, 0, len(owned))
-	for _, r := range owned {
-		holders = append(holders, "?")
-		args = append(args, r.BotID)
-	}
-	return " AND bot_id IN (" + strings.Join(holders, ",") + ")", args
+	return botsClause(sh, uid, main)
 }
 
 func miniWhitelistRows(sh *core.Shared, uid int64, main bool) []map[string]any {
@@ -1096,10 +1083,7 @@ func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at i
 }
 
 func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	page := miniInt(body, "page")
-	if page < 1 {
-		page = 1
-	}
+	page := clampPage(miniInt(body, "page"))
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
 
 	// 筛选与搜索。默认无筛选（前端会带 verdict=deleted 进来）：
@@ -1277,11 +1261,19 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 }
 
 func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	page := miniInt(body, "page")
-	if page < 1 {
-		page = 1
-	}
+	page := clampPage(miniInt(body, "page"))
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	// 「未结」筛选放在查询里：只筛已取回的那 20 行的话，更新更早的未结单
+	// 永远不出现在列表里，管理员会漏掉真正要处理的单子。
+	if miniStr(body, "filter") == "open" {
+		clauseWhere += " AND status IN (" + store.AppealOpenStatusesSQL + ")"
+	}
+	var total int64
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals
+		WHERE 1=1`+clauseWhere, clauseArgs...).Scan(&total); err != nil {
+		miniErr(w, http.StatusInternalServerError, "查询失败")
+		return
+	}
 	rows, err := sh.Store.Read.Query(`SELECT id,bot_id,user_id,status,statement,
 		ai_result,ai_conf,ai_reason,ai_model,web_attempts,code,code_expires,
 		created_at,updated_at FROM appeals WHERE 1=1`+clauseWhere+
@@ -1311,17 +1303,15 @@ func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[str
 			})
 		}
 	}
-	miniOK(w, map[string]any{"appeals": out, "page": page})
+	miniOK(w, map[string]any{"appeals": out, "page": page, "total": total})
 }
 
 // miniAppealDetail 单张申诉单：全字段加兑换与网页验证记录。
 func miniAppealDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	id := miniInt(body, "id")
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
-	row := sh.Store.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
-		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
-		code,code_expires,created_at,updated_at FROM appeals
-		WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
+	row := sh.Store.Read.QueryRow(`SELECT `+antiad.AppealColumns+`
+		FROM appeals WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
 	var aid, botID, userID, cost, attempts, webSince, codeExp, at, upd int64
 	var status, statement, aiResult, aiReason, aiModel, code string
 	var conf float64

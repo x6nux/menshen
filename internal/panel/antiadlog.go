@@ -39,9 +39,34 @@ func adTodayStats(b *core.Bot) (checked, hits, fps, cost int64) {
 	return
 }
 
-// adChatHealth 检查 bot 在该群的权限，返回一句人话。
-// 结果不缓存：面板是低频操作，而这里恰恰要的是实时真相。
+// chatHealthTTL 是群权限自检结果的缓存时长。
+//
+// 这一步要发 getChatMember，而它跑在 bot 的串行更新路径上（面板回调与群
+// 消息共用同一个 worker）：TG 慢时最坏 40 秒收不到新消息。两分钟对「bot
+// 是不是管理员」这种低频变化足够实时——权限刚变完重开一次面板就是最新值。
+const chatHealthTTL = 2 * time.Minute
+
+type chatHealthEntry struct {
+	text   string
+	expire time.Time
+}
+
+// adChatHealth 检查 bot 在该群的权限，返回一句人话（结果缓存两分钟）。
 func adChatHealth(b *core.Bot, chatID int64) string {
+	key := fmt.Sprintf("%d:%d", b.BotID(), chatID)
+	if v, ok := b.ChatHealthCache.Load(key); ok {
+		if e, ok := v.(chatHealthEntry); ok && time.Now().Before(e.expire) {
+			return e.text
+		}
+	}
+	text := queryChatHealth(b, chatID)
+	b.ChatHealthCache.Store(key, chatHealthEntry{
+		text: text, expire: time.Now().Add(chatHealthTTL)})
+	return text
+}
+
+// queryChatHealth 向 TG 查一次群权限。
+func queryChatHealth(b *core.Bot, chatID int64) string {
 	raw, err := b.TG.Call("getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": b.BotID(),
 	})
@@ -59,6 +84,17 @@ func adChatHealth(b *core.Bot, chatID int64) string {
 		return "✅ 权限正常"
 	}
 	return "⚠️ bot 非管理员，该群收不到普通消息"
+}
+
+// GCChatHealthCache 清理过期的自检结果，防止 map 无限增长。
+func GCChatHealthCache(sh *core.Shared) {
+	now := time.Now()
+	sh.ChatHealthCache.Range(func(k, v any) bool {
+		if e, ok := v.(chatHealthEntry); ok && now.After(e.expire) {
+			sh.ChatHealthCache.Delete(k)
+		}
+		return true
+	})
 }
 
 func modelLabel(v string) string {
@@ -109,9 +145,7 @@ const adLogPageSize = 10
 // 按 bot_id 过滤是权限边界的一部分：次级管理员只能看自己 bot 判的东西，
 // 而流水里有群消息原文。
 func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) {
-	if page < 1 {
-		page = 1
-	}
+	page = clampPageInt(page)
 	where := `WHERE bot_id=?`
 	if !all {
 		where += ` AND verdict='ad'`
@@ -205,6 +239,30 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 	}
 	rowsKB = append(rowsKB, [][2]string{{"◀️ 返回", back}})
 	b.Edit(chatID, msgID, sb.String(), tg.InlineKB(rowsKB...))
+}
+
+// maxPanelPage 是分页上限。页码没有上限时 (page-1)*size 会算出巨大的
+// OFFSET（极端值还会溢出成负数），一次查询就把库扫一遍。
+const maxPanelPage = 10000
+
+func clampPageInt(p int) int {
+	if p < 1 {
+		return 1
+	}
+	if p > maxPanelPage {
+		return maxPanelPage
+	}
+	return p
+}
+
+func clampPage(p int64) int64 {
+	if p < 1 {
+		return 1
+	}
+	if p > maxPanelPage {
+		return maxPanelPage
+	}
+	return p
 }
 
 // actionLabel 见 antiad.ActionLabel：词汇表归写流水的那一方所有。
@@ -502,9 +560,7 @@ const userLogsPerPage = 10
 
 // showUserLogs 渲染列表并原地编辑（msgID 为 0 时新发一条）。
 func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
-	if page < 1 {
-		page = 1
-	}
+	page = clampPageInt(page)
 	where, args := managedBotsClause(b, uid)
 	if where == " AND 0" {
 		b.EditOrSend(chatID, msgID, "你名下没有机器人。", nil)
@@ -575,11 +631,18 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
 
 // managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数。
 // 主管理员看全部；次级管理员只看自己名下 bot 的记录。
+// managedBotsClause 返回「只看此人名下的 bot」的 SQL 片段与参数。
 func managedBotsClause(b *core.Bot, uid int64) (string, []any) {
-	if b.IsMain(uid) {
+	return botsClause(b.Shared, uid, b.IsMain(uid))
+}
+
+// botsClause 是上面两个入口的共同实现：主管理员不设限；名下没有 bot 时
+// 用 AND 0 让查询必然为空（而不是不过滤、把别人的记录漏出去）。
+func botsClause(sh *core.Shared, uid int64, main bool) (string, []any) {
+	if main {
 		return "", nil
 	}
-	owned := b.Cache.Snap().BotsOwnedBy(uid, false)
+	owned := sh.Cache.Snap().BotsOwnedBy(uid, false)
 	if len(owned) == 0 {
 		return " AND 0", nil
 	}
@@ -600,10 +663,7 @@ func navFromCallback(data string) (uid, page int64) {
 	}
 	uid, _ = strconv.ParseInt(parts[4], 10, 64)
 	page, _ = strconv.ParseInt(parts[5], 10, 64)
-	if page < 1 {
-		page = 1
-	}
-	return uid, page
+	return uid, clampPage(page)
 }
 
 // kbWithNav 给卡片上的回调按钮追加 ":<uid>:<page>"，让处置后的重绘

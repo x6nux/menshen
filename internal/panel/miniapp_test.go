@@ -329,3 +329,20 @@ func TestMiniAppGlobalTogglesValidJS(t *testing.T) {
 		}
 	}
 }
+
+// TestClampPage：页码必须有上限。没有上限时 (page-1)*size 会算出巨大的
+// OFFSET（极端值还会溢出成负数），一次查询就把库扫一遍。
+func TestClampPage(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want int64
+	}{{0, 1}, {-5, 1}, {3, 3}, {maxPanelPage + 1, maxPanelPage}, {1 << 62, maxPanelPage}}
+	for _, c := range cases {
+		if got := clampPage(c.in); got != c.want {
+			t.Errorf("clampPage(%d) = %d, 期望 %d", c.in, got, c.want)
+		}
+	}
+	if got := clampPageInt(int(^uint(0) >> 1)); got != maxPanelPage {
+		t.Errorf("clampPageInt(MaxInt) = %d, 期望 %d", got, maxPanelPage)
+	}
+}

@@ -564,7 +564,14 @@ function apAI(r){ return {uphold:'维持原判',overturn:'撤销原判',error:'�
   skipped:'跳过复核'}[r]||'未复核'; }
 function chatTitleOf(cid){ for(var i=0;i<S.chats.length;i++)
   if(S.chats[i].chat_id==cid) return S.chats[i].title; return ''; }
-function logact(a,id){ act('logact',{id:id,action:a},'已执行'); }
+function logact(a,id){
+  api('logact',{id:id,action:a}).then(function(){
+    toast('已执行');
+    // 详情缓存作废：操作后旧卡片会继续显示旧状态并重复给已执行的按钮。
+    if(S.LD) delete S.LD[id];
+    return load();
+  }).catch(function(e){ toast('❌ '+e.message); });
+}
 function apact(a,id){ act('appealact',{id:id,action:a},'已执行'); }
 
 /* ---- 记录：筛选 + 搜索 + 列表 → 详情可操作 ---- */
@@ -664,12 +671,18 @@ function viewAppeals(){
 }
 function pageAppeals(d){ APPAGE=Math.max(1,APPAGE+d); loadAppeals(); }
 function loadAppeals(){
-  api('appeals',{page:APPAGE}).then(function(d){
+  // 筛选交给服务端：只筛已取回的这一页，更新更早的未结单永远不会出现。
+  api('appeals',{page:APPAGE,filter:APF}).then(function(d){
     S.APS=d.appeals;
+    // 详情页也依赖 S.APS：拿到新数据后原地重绘，否则操作后一直显示旧状态。
+    if(SUB.indexOf('ap:')==0){
+      var cur=(S.APS||[]).filter(function(x){return x.id==+SUB.slice(3);})[0];
+      var v=document.getElementById('view');
+      if(cur&&v) v.innerHTML=viewAppealDetail(cur);
+      return;
+    }
     var el=document.getElementById('apbox'); if(!el) return;
-    var open=['statement','ai','web','noweb','code'];
-    var rows=d.appeals.filter(function(a){ return !APF || open.indexOf(a.status)>=0; });
-    el.innerHTML = rows.map(function(a){
+    el.innerHTML = d.appeals.map(function(a){
       return '<div class="row item" onclick="go(\'appeals\',\'ap:'+a.id+'\')">'+
         '<span><span class="mono">#'+a.id+' · uid '+a.user_id+'</span> '+
         '<span class="badge '+(a.status=='lifted'||a.status=='redeemed'?'ok':
