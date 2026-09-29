@@ -159,6 +159,35 @@ func TestStaffStartWithLogDeepLink(t *testing.T) {
 	}
 }
 
+// TestStaffStartWithUnbanDeepLink：管理员点群内冷判定通知的「📝 申诉」
+// （ub<记录号>）时，直接落到那条冷判定记录卡片。
+func TestStaffStartWithUnbanDeepLink(t *testing.T) {
+	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,
+		 ad_kind,action,reason,created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		b.BotID(), -100, 555, 0, "资料里有联系方式", "ad", 1, "systemone",
+		"scam", "join_muted", "进群冷判定", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := b.Store.Read.QueryRow(
+		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	dispatch(b, &tg.Update{Message: &tg.Message{
+		MessageID: 1, Date: 1700000000,
+		Text: fmt.Sprintf("/start ub%d", id),
+		From: &tg.TGUser{ID: 777, Username: "admin"},
+		Chat: &tg.Chat{ID: 777, Type: "private"},
+	}})
+	last := fake.LastCall("sendMessage")
+	if last == nil || !strings.Contains(last["text"].(string), "记录 #") {
+		t.Fatalf("ub 深链应打开冷判定记录 #%d，得到 %v", id, last)
+	}
+}
+
 // TestMainBotStillServesPanel 确认限制只针对「群」，私聊面板不受影响：
 // 配置管理与接入其他 bot 正是主 bot 的本职。
 func TestMainBotStillServesPanel(t *testing.T) {

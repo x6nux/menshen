@@ -13,17 +13,17 @@ import (
 	"menshen/internal/tg"
 )
 
-// unbanPayload 把群号编码进 deep link 的 start 参数。
+// unbanPayload 把冷判定记录号编码进 deep link 的 start 参数。
 //
-// Telegram 的 start payload 只允许 A-Z a-z 0-9 _ -，而群号是负数，
-// 减号在这个字符集里但放在开头容易被各种中间层吃掉，所以统一去掉符号
-// 再加前缀。群号本身不是秘密（群成员都看得到），不需要加密。
-func unbanPayload(chatID int64) string {
-	return "ub" + strconv.FormatInt(-chatID, 10)
+// Telegram 的 start payload 只允许 A-Z a-z 0-9 _ -。记录号本身不是秘密
+// （只在管理员私聊的卡片与群里出现过），不需要加密；它的用途是让管理员
+// 点进来直接落到那条冷判定记录，被限制的人看到的仍是申诉入口。
+func unbanPayload(logID int64) string {
+	return "ub" + strconv.FormatInt(logID, 10)
 }
 
-// parseUnbanPayload 还原群号。第二个返回值为假表示这不是解除限制的入口。
-func parseUnbanPayload(p string) (int64, bool) {
+// ParseUnbanPayload 还原冷判定记录号。第二个返回值为假表示这不是它的入口。
+func ParseUnbanPayload(p string) (int64, bool) {
 	rest, ok := strings.CutPrefix(p, "ub")
 	if !ok {
 		return 0, false
@@ -32,7 +32,7 @@ func parseUnbanPayload(p string) (int64, bool) {
 	if err != nil || n <= 0 {
 		return 0, false
 	}
-	return -n, true
+	return n, true
 }
 
 // logPayload 把记录号编码进 deep link 的 start 参数。

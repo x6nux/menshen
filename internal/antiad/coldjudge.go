@@ -272,24 +272,24 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		reason = "账号资料中含有推广或引流内容"
 	}
 
+	// 先落流水：群内通知的按钮要带记录号（ub<记录号>），管理员点进来
+	// 是这条冷判定的记录卡片，被限制的人点进来是申诉入口。
+	logID := logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
+		From: u, Text: joinProfileText(u, bio, v)},
+		v, "join_muted", "进群冷判定")
+
 	// 群内通知与命中告警共用「群内展示」开关（conf.GroupAlert）：群主不想
 	// 让 bot 说话时，禁言照常执行，只是不在群里挂出来。发出来就安排到点
 	// 自动撤回——通知的信息价值在本人看到之后就没有了，申诉入口在私聊里。
-	// 静默开关在 sendGroup 里已经生效。
+	// 静默开关在 sendGroup 里已经生效。明显账号（高置信高危害）只弹一小会。
 	if conf.GroupAlert {
-		ttl := time.Duration(b.Cache.Snap().BotSettingInt(
-			b.BotID(), "antiad_alert_ttl", 300)) * time.Second
-		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, reason), joinMuteKB(b, conf.ChatID))
-		scheduleAlertCleanup(b, conf.ChatID, msgID, ttl)
+		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, reason), joinMuteKB(b, logID))
+		scheduleAlertCleanup(b, conf.ChatID, msgID, alertTTL(b, b.Cache.Snap(), v))
 	}
 	saveJoinMute(b, conf.ChatID, u.ID, reason, 0)
 	// 判定命中即把那条「XXX 已加入群组」的服务消息删掉：广告号的昵称
 	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。
 	deleteJoinNotice(b, conf.ChatID, u.ID)
-
-	logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
-		From: u, Text: joinProfileText(u, bio, v)},
-		v, "join_muted", "进群冷判定")
 
 	slog.Info("冷判定：已限制发言",
 		"chat", conf.ChatID, "uid", u.ID, "置信度", v.Confidence)
@@ -381,7 +381,10 @@ func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string) string {
 // 用 deep link 而不是 callback：解除流程要出验证码、要等对方改完资料，
 // 这些都不适合刷在群里；而 Telegram 不允许 bot 主动向没交互过的人
 // 发起私聊，deep link 是把人引进私聊的唯一办法。
-func joinMuteKB(b *core.Bot, chatID int64) map[string]any {
+//
+// 参数带冷判定记录号（ub<记录号>）：管理员点进来落到那条记录卡片，
+// 被限制的人点进来是申诉入口 —— 同一颗按钮按身份分流。
+func joinMuteKB(b *core.Bot, logID int64) map[string]any {
 	if b.Username == "" {
 		// 拿不到自己的用户名就拼不出 deep link。退回到纯文字提示，
 		// 总比挂一个点不动的按钮强。
@@ -389,6 +392,6 @@ func joinMuteKB(b *core.Bot, chatID int64) map[string]any {
 	}
 	return tg.InlineKB([][2]string{{
 		"📝 申诉",
-		tg.URLBtn(fmt.Sprintf("https://t.me/%s?start=%s", b.Username, unbanPayload(chatID))),
+		tg.URLBtn(fmt.Sprintf("https://t.me/%s?start=%s", b.Username, unbanPayload(logID))),
 	}})
 }

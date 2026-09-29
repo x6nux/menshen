@@ -52,19 +52,19 @@ func TestColdSuspiciousNoUsernameIsNotASignal(t *testing.T) {
 	}
 }
 
-// TestUnbanPayloadRoundTrip 确认群号能原样走一圈回来。
+// TestUnbanPayloadRoundTrip 确认冷判定记录号能原样走一圈回来。
 func TestUnbanPayloadRoundTrip(t *testing.T) {
-	for _, chatID := range []int64{-100, -1001976894016} {
-		got, ok := parseUnbanPayload(unbanPayload(chatID))
-		if !ok || got != chatID {
-			t.Errorf("往返 %d 得到 (%d, %v)", chatID, got, ok)
+	for _, logID := range []int64{1, 42, 1001976894016} {
+		got, ok := ParseUnbanPayload(unbanPayload(logID))
+		if !ok || got != logID {
+			t.Errorf("往返 %d 得到 (%d, %v)", logID, got, ok)
 		}
 	}
 
-	// 不是解除入口的 payload 不能被认走：/start 还有别的用法。
+	// 不是这个入口的 payload 不能被认走：/start 还有别的用法。
 	for _, p := range []string{"", "ub", "start", "ub0", "ub-5", "ubabc"} {
-		if _, ok := parseUnbanPayload(p); ok {
-			t.Errorf("parseUnbanPayload(%q) 不该被认作解除入口", p)
+		if _, ok := ParseUnbanPayload(p); ok {
+			t.Errorf("ParseUnbanPayload(%q) 不该被认作解除入口", p)
 		}
 	}
 }
@@ -135,7 +135,7 @@ func TestAppealEntryNoMute(t *testing.T) {
 
 	m := &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 555},
 		Chat: &tg.Chat{ID: 555, Type: "private"}}
-	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(-100)) {
+	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(1)) {
 		t.Fatal("进群限制的 deep link 应当被接管")
 	}
 	if fake.CountCalls("sendMessage") != 1 {
@@ -155,7 +155,7 @@ func TestAppealEntryListsPenalties(t *testing.T) {
 
 	m := &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 555},
 		Chat: &tg.Chat{ID: 555, Type: "private"}}
-	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(-100)) {
+	if !HandleNonStaffPrivate(b, m, "/start "+unbanPayload(1)) {
 		t.Fatal("应当被接管")
 	}
 	last := fake.LastCall("sendMessage")
@@ -258,6 +258,16 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 	if !strings.Contains(text, "tg://user?id=555") ||
 		!strings.Contains(text, "简介写着推广内容引流") {
 		t.Errorf("通知应是一行 uid + 原因:\n%s", text)
+	}
+	// 按钮带冷判定记录号：管理员点进来落到记录卡片，被限制的人进申诉入口。
+	var logID int64
+	if err := b.Store.Read.QueryRow(
+		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
+		t.Fatal(err)
+	}
+	kb := fmt.Sprint(p["reply_markup"])
+	if !strings.Contains(kb, fmt.Sprintf("t.me/testbot?start=ub%d", logID)) {
+		t.Errorf("通知按钮应带记录号 ub%d:\n%s", logID, kb)
 	}
 	var cleanup int
 	if err := b.Store.Read.QueryRow(

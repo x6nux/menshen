@@ -70,7 +70,7 @@ func TestAppealAIOverturnsAndLifts(t *testing.T) {
 	appealAI(t, b, false, "资料已改正")
 	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
 
-	if !HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(-100)) {
+	if !HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1)) {
 		t.Fatal("申诉入口应被接管")
 	}
 	HandleAppealCallback(b, appealGo(555))
@@ -110,7 +110,7 @@ func TestAppealUpholdFallsBackToNoWeb(t *testing.T) {
 	appealAI(t, b, true, "仍是广告")
 	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
 
-	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(-100))
+	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 	HandleAppealCallback(b, appealGo(555))
 	waitIdle(t, b)
 
@@ -144,7 +144,7 @@ func TestAppealUpholdGoesToWeb(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(-100))
+	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 	HandleAppealCallback(b, appealGo(555))
 	waitIdle(t, b)
 
@@ -196,7 +196,7 @@ func TestAppealSingleOpen(t *testing.T) {
 	}
 	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
 
-	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(-100))
+	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 
 	last := fake.LastCall("sendMessage")
 	text, _ := last["text"].(string)
