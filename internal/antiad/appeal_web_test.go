@@ -113,7 +113,7 @@ func TestWhitelistExemptsFromAdExempt(t *testing.T) {
 	if err := b.Cache.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if !adExempt(b, b.Cache.Snap(), -100, &tg.TGUser{ID: 555}) {
+	if !adExempt(b, b.Cache.Snap(), -100, &tg.TGUser{ID: 555}, false) {
 		t.Error("全平台白名单应豁免")
 	}
 	if n := fake.CountCalls("getChatMember"); n != 0 {

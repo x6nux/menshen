@@ -41,13 +41,18 @@ type groupMember struct {
 	JoinedAt, FirstSeen int64
 	MsgCount, LastMsgAt int64
 	AdHits              int64
+	// Whitelisted 是 /white 的本群白名单。随画像一起读出来，判定链路
+	// 就不必再为每条消息单查一次这一列。
+	Whitelisted bool
 }
 
 func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 	gm := groupMember{ChatID: chatID, UserID: uid}
-	err := s.Read.QueryRow(`SELECT joined_at,first_seen,msg_count,last_msg_at,ad_hits
+	err := s.Read.QueryRow(`SELECT joined_at,first_seen,msg_count,last_msg_at,
+		ad_hits,whitelisted
 		FROM group_members WHERE chat_id=? AND user_id=?`, chatID, uid).
-		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt, &gm.AdHits)
+		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
+			&gm.AdHits, &gm.Whitelisted)
 	if err != nil {
 		return gm, false
 	}
@@ -98,31 +103,55 @@ func isMemberStatus(s string) bool {
 
 // recordJoin 写入进群时刻。已有记录则只更新 joined_at，
 // 不动 msg_count —— 退群重进的人，历史发言量仍是有效画像。
-func recordJoin(b *core.Bot, chatID, uid, at int64) {
-	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+//
+// 返回更新后的画像（含 whitelisted）：进群路径接着就要判白名单与豁免，
+// RETURNING 顺手带回来，省掉一次单查。
+func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
+	gm := groupMember{ChatID: chatID, UserID: uid}
+	err := b.Store.Write.QueryRow(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
 		VALUES (?,?,?,?,0,0,0)
-		ON CONFLICT(chat_id,user_id) DO UPDATE SET joined_at=excluded.joined_at`,
-		chatID, uid, at, at); err != nil {
+		ON CONFLICT(chat_id,user_id) DO UPDATE SET joined_at=excluded.joined_at
+		RETURNING joined_at,first_seen,msg_count,last_msg_at,ad_hits,whitelisted`,
+		chatID, uid, at, at).
+		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
+			&gm.AdHits, &gm.Whitelisted)
+	if err != nil {
 		slog.Error("反广告：记录进群失败", "chat", chatID, "uid", uid, "err", err)
+		if got, ok := loadMember(b.Store, chatID, uid); ok {
+			return got
+		}
 	}
+	return gm
 }
 
 // touchMember 记一条发言并返回更新后的画像。
 //
 // first_seen 只在插入时写，后续发言不得覆盖：它是 joined_at 缺失时
 // 唯一的年龄下界，被每条消息刷新的话所有人都会永远是「刚出现」。
+//
+// 用 RETURNING 一条语句拿回更新后的整行：这是每条群消息的必经之路，
+// 而写连接只有一条，INSERT+SELECT 两次往返就是两次排队。顺带把
+// whitelisted 带回来，判定链路不必再单查一次白名单。
 func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
-	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+	gm := groupMember{ChatID: chatID, UserID: uid}
+	err := b.Store.Write.QueryRow(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
 		VALUES (?,?,0,?,1,?,0)
 		ON CONFLICT(chat_id,user_id) DO UPDATE SET
 		  msg_count = msg_count + 1,
-		  last_msg_at = excluded.last_msg_at`,
-		chatID, uid, at, at); err != nil {
+		  last_msg_at = excluded.last_msg_at
+		RETURNING joined_at,first_seen,msg_count,last_msg_at,ad_hits,whitelisted`,
+		chatID, uid, at, at).
+		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
+			&gm.AdHits, &gm.Whitelisted)
+	if err != nil {
 		slog.Error("反广告：记录发言失败", "chat", chatID, "uid", uid, "err", err)
+		// 退回一次显式读取，尽量别把画像丢成零值。
+		if got, ok := loadMember(b.Store, chatID, uid); ok {
+			return got
+		}
 	}
-	gm, _ := loadMember(b.Store, chatID, uid)
 	return gm
 }
 
@@ -481,7 +510,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 
 	// 联合封禁在发言路径同样生效（进群路径是 gbanGuard）：白名单优先，
 	// 命中即禁言、删除本条，不再留底、不再送检。
-	if GbanMessageGuard(b, m.Chat.ID, m.From, m.MessageID) {
+	if GbanMessageGuard(b, m.Chat.ID, m.From, m.MessageID, gm.Whitelisted) {
 		return
 	}
 
@@ -513,7 +542,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
-	if adExempt(b, snap, m.Chat.ID, m.From) {
+	if adExempt(b, snap, m.Chat.ID, m.From, gm.Whitelisted) {
 		return
 	}
 
@@ -657,8 +686,11 @@ type chatAdminEntry struct {
 // adExempt 报告该发送者是否跳过判定。
 //
 // 顺序按成本排：三个纯内存判断在前，唯一要发 API 的群管理员判断在最后，
-// 且带 10 分钟缓存。
-func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) bool {
+// 且带 10 分钟缓存。whitelisted 由调用方从画像行带进来（见 touchMember），
+// 省掉一次「本群白名单」单查。
+func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser,
+	whitelisted bool) bool {
+
 	if u == nil {
 		return true
 	}
@@ -683,8 +715,8 @@ func adExempt(b *core.Bot, snap *store.Snapshot, chatID int64, u *tg.TGUser) boo
 	if slices.Contains(snap.BotSettingInt64List(b.BotID(), "antiad_exempt_users"), u.ID) {
 		return true
 	}
-	// 按群白名单要一次本地读库，仍排在唯一要发 TG API 的群管理员判断之前。
-	if isGroupWhitelisted(b, chatID, u.ID) {
+	// 按群白名单（/white）：画像行里已带出来。
+	if whitelisted {
 		return true
 	}
 	// 申诉解禁 / /white 产生的白名单：纯内存判断，同样排在群管理员之前。
@@ -1178,8 +1210,12 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	}
 	if m.Chat != nil {
 		st.Chat = adChatInfo{ID: m.Chat.ID, Title: m.Chat.Title}
-		st.RecentContext = recentOwn(b.Store, m,
-			int(snap.BotSettingInt(b.BotID(), "antiad_ctx_msgs", 6)))
+		// 第一条消息没有「此前」可带：msgs_in_group 是含本条的计数，
+		// 为 1 时直接跳过，省一次留底查询。
+		if p.MsgsInGroup > 1 {
+			st.RecentContext = recentOwn(b.Store, m,
+				int(snap.BotSettingInt(b.BotID(), "antiad_ctx_msgs", 6)))
+		}
 	}
 
 	// 显性特征由 TG 的 entities 直接给出，结构化标注比让模型
@@ -1553,6 +1589,10 @@ func scheduleAlertCleanup(b *core.Bot, chatID, msgID int64, ttl time.Duration) {
 
 // SweepAlertCleanup 撤回这个 bot 到点的群内告警。每条只试一次：撤不掉的
 // （已被人删掉、超过 TG 的 48 小时删除期限）重试也没用。
+//
+// 按群聚合后用 deleteMessages 批量删（TG 单次最多 100 条）：逐条
+// deleteMessage 在告警多时会把分钟 tick 拖住几百个往返。DB 行在整轮结束
+// 后用一条 DELETE 收尾。
 func SweepAlertCleanup(b *core.Bot, now time.Time) {
 	rows, err := b.Store.Read.Query(`SELECT chat_id,message_id FROM alert_cleanup
 		WHERE bot_id=? AND due_at <= ? LIMIT 200`, b.BotID(), now.Unix())
@@ -1560,17 +1600,47 @@ func SweepAlertCleanup(b *core.Bot, now time.Time) {
 		slog.Error("反广告：读取待撤回告警失败", "err", err)
 		return
 	}
-	var due [][2]int64
+	byChat := map[int64][]int64{}
+	var chatOrder []int64
 	for rows.Next() {
 		var c, m int64
-		if rows.Scan(&c, &m) == nil {
-			due = append(due, [2]int64{c, m})
+		if rows.Scan(&c, &m) != nil {
+			continue
 		}
+		if _, ok := byChat[c]; !ok {
+			chatOrder = append(chatOrder, c)
+		}
+		byChat[c] = append(byChat[c], m)
 	}
 	rows.Close()
-	for _, d := range due {
-		b.TG.Call("deleteMessage", map[string]any{"chat_id": d[0], "message_id": d[1]})
-		b.Store.Write.Exec(`DELETE FROM alert_cleanup WHERE chat_id=? AND message_id=?`, d[0], d[1])
+	if err := rows.Err(); err != nil {
+		slog.Error("反广告：待撤回告警读取中断，本轮结果可能不完整", "err", err)
+	}
+	if len(chatOrder) == 0 {
+		return
+	}
+
+	for _, chatID := range chatOrder {
+		ids := byChat[chatID]
+		if ok, desc := deleteMessages(b, chatID, ids); !ok {
+			slog.Warn("反广告：撤回群内告警失败", "chat", chatID,
+				"count", len(ids), "tg_error", desc)
+		}
+	}
+
+	// 一次清掉本轮读到的行：主键精确匹配，不用 bot_id+due_at 的粗粒度
+	// 条件——那会连带删掉 SELECT 之后才到点、本轮没处理的行。
+	ph := make([]string, 0, len(byChat))
+	args := make([]any, 0, len(byChat)*2)
+	for _, chatID := range chatOrder {
+		for _, msgID := range byChat[chatID] {
+			ph = append(ph, "(?,?)")
+			args = append(args, chatID, msgID)
+		}
+	}
+	if _, err := b.Store.Write.Exec(`DELETE FROM alert_cleanup
+		WHERE (chat_id,message_id) IN (`+strings.Join(ph, ",")+`)`, args...); err != nil {
+		slog.Error("反广告：清理待撤回告警记录失败", "err", err)
 	}
 }
 

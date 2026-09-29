@@ -22,7 +22,7 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	if u == nil {
 		return
 	}
-	recordJoin(b, conf.ChatID, u.ID, at)
+	gm := recordJoin(b, conf.ChatID, u.ID, at)
 
 	// 同一次入群 TG 会推两份（chat_member 与 new_chat_members 服务消息），
 	// 下面的拦截与冷判定只该跑一次。落库幂等，放在去重之前无妨。
@@ -33,7 +33,8 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 
 	// 白名单先于联合封禁拦截与冷判定：在群里解封过的人，一重新进群
 	// 不该又被拦下。
-	if b.Cache.Snap().Whitelisted(b.BotID(), conf.ChatID, u.ID, time.Now().Unix()) {
+	if gm.Whitelisted ||
+		b.Cache.Snap().Whitelisted(b.BotID(), conf.ChatID, u.ID, time.Now().Unix()) {
 		return
 	}
 
@@ -49,7 +50,7 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	if snap.BotSettingInt(b.BotID(), "antiad_cold", 0) != 1 {
 		return
 	}
-	if adExempt(b, snap, conf.ChatID, u) {
+	if adExempt(b, snap, conf.ChatID, u, gm.Whitelisted) {
 		return
 	}
 

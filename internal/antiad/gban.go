@@ -65,15 +65,12 @@ func maybeGban(b *core.Bot, srcChat, uid int64, reason string) {
 	if !GbanEnabled(b.Shared) {
 		return
 	}
-	if err := GbanOwnAddBan(b.Shared, b.Owner(), uid, reason, srcChat); err != nil {
-		slog.Error("联合封禁：专属组入账失败", "uid", uid, "err", err)
-	}
 	shared := botInGlobal(b.Cache.Snap(), b.BotID())
-	if shared {
-		if err := GbanAdd(b.Shared, uid, reason, srcChat, b.BotID()); err != nil {
-			slog.Error("联合封禁：入名单失败", "uid", uid, "err", err)
-			return
-		}
+	// 两条记录一次写完、只刷新一次快照：逐条写会各重建一次全量配置
+	// （十几条查询），而刷屏高峰里这是每条最高档处置都要付的。
+	if err := gbanRecordBoth(b.Shared, b.Owner(), uid, reason, srcChat, b.BotID(), shared); err != nil {
+		slog.Error("联合封禁：入账失败", "uid", uid, "err", err)
+		return
 	}
 	go func() {
 		if shared {
@@ -81,6 +78,29 @@ func maybeGban(b *core.Bot, srcChat, uid int64, reason string) {
 		}
 		EnforceGbanOwn(b.Shared, b.Owner(), uid)
 	}()
+}
+
+// gbanRecordBoth 一次写入专属组与（shared 为真时）全局组，最后只刷新
+// 一次快照。两个 INSERT 都是 ON CONFLICT DO NOTHING，重复命中不报错。
+func gbanRecordBoth(sh *core.Shared, ownerID, uid int64, reason string, srcChat, byBot int64,
+	shared bool) error {
+
+	now := time.Now().Unix()
+	if _, err := sh.Store.Write.Exec(`INSERT INTO gban_own_bans
+		(owner_id,user_id,reason,src_chat,created_at) VALUES (?,?,?,?,?)
+		ON CONFLICT(owner_id,user_id) DO NOTHING`,
+		ownerID, uid, core.TruncateRunes(reason, 200), srcChat, now); err != nil {
+		return err
+	}
+	if shared {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO gban
+			(user_id,reason,src_chat,by_bot,created_at) VALUES (?,?,?,?,?)
+			ON CONFLICT(user_id) DO NOTHING`,
+			uid, core.TruncateRunes(reason, 200), srcChat, byBot, now); err != nil {
+			return err
+		}
+	}
+	return sh.Cache.Reload()
 }
 
 // gbanAdd 把人写进名单。已在名单里时保留最早那条记录 ——
@@ -355,12 +375,20 @@ func gbanGuard(b *core.Bot, chatID int64, u *tg.TGUser) bool {
 // 「本群解封」就是白名单，管理员放行的人不该再被名单拦下。命中即禁言、
 // 删除本条并落一条流水，不再留底、不再送检。
 // 返回 true 表示这条消息已按联合封禁处理完，调用方直接返回。
-func GbanMessageGuard(b *core.Bot, chatID int64, u *tg.TGUser, msgID int64) bool {
+//
+// whitelisted 是调用方从画像行带出来的 /white 标记（见 touchMember）。
+func GbanMessageGuard(b *core.Bot, chatID int64, u *tg.TGUser, msgID int64,
+	whitelisted bool) bool {
+
 	if u == nil || u.ID < 0 {
 		return false
 	}
+	// 总开关默认关：先看它，别为每条群消息白查一次白名单（快照线性扫）。
+	if !GbanEnabled(b.Shared) {
+		return false
+	}
 	// 与 adExempt 同源的两组白名单：/white 的本群名单与解禁码白名单。
-	if isGroupWhitelisted(b, chatID, u.ID) ||
+	if whitelisted ||
 		b.Cache.Snap().Whitelisted(b.BotID(), chatID, u.ID, time.Now().Unix()) {
 		return false
 	}
@@ -424,6 +452,10 @@ func GbanReasonLabel(r string) string {
 //
 // 非法值（0 / 负数 / 非数字）一律回落到 30 天而不是把 cutoff 算成「现在」——
 // 后者会把全部历史一次性删光，且不可逆。
+//
+// 全部走 deleteBatched：写连接固定为 1，一条大 DELETE 从第一行到提交都持有
+// 写锁，期间所有群消息的留底与流水都在后面排队（广告洪峰时正好是最不能停的
+// 时候）。分批之间会让出写连接，消息写入得以插队。
 func CleanupData(sh *core.Shared) {
 	days := sh.Cache.Snap().SettingInt("log_retention_days", 30)
 	if days < 1 {
@@ -432,13 +464,11 @@ func CleanupData(sh *core.Shared) {
 	cut := time.Now().Unix() - days*86400
 
 	// antiad_log 存着群消息原文，不能永久留在库里。
-	if _, err := sh.Store.Write.Exec(
-		`DELETE FROM antiad_log WHERE created_at < ?`, cut); err != nil {
+	if _, err := deleteBatched(sh, "antiad_log", "created_at < ?", cut); err != nil {
 		slog.Error("清理判定流水失败", "err", err)
 	}
 	// group_messages 是群聊原文的留底，与 antiad_log 同寿。
-	if _, err := sh.Store.Write.Exec(
-		`DELETE FROM group_messages WHERE at < ?`, cut); err != nil {
+	if _, err := deleteBatched(sh, "group_messages", "at < ?", cut); err != nil {
 		slog.Error("清理群消息留底失败", "err", err)
 	}
 	// group_members 同样是群聊衍生数据（TG user_id + 发言计数），保留策略
@@ -447,38 +477,63 @@ func CleanupData(sh *core.Shared) {
 	// 「最近活动」取发言与进群里较晚的那个：只看 last_msg_at 的话，进群后
 	// 还没发言的人（last_msg_at 为 0）第一轮就被删掉，丢了进群时间。
 	// 白名单（/white）是管理员的明确决定，不随不发言过期。
-	if _, err := sh.Store.Write.Exec(`DELETE FROM group_members
-		WHERE MAX(last_msg_at, joined_at) < ? AND ad_hits = 0 AND whitelisted = 0`,
-		cut); err != nil {
+	// 谓词写成两个单列比较（MAX(a,b) < c 等价于 a < c AND b < c），
+	// 这样 last_msg_at 上的索引才用得上。
+	if _, err := deleteBatched(sh, "group_members",
+		"last_msg_at < ? AND joined_at < ? AND ad_hits = 0 AND whitelisted = 0",
+		cut, cut); err != nil {
 		slog.Error("清理群成员画像失败", "err", err)
 	}
 	// 内容哈希按最近一次命中过期：广告模板换得很快，久不出现的留着只是占地方。
-	if _, err := sh.Store.Write.Exec(
-		`DELETE FROM ad_hashes WHERE last_hit_at < ?`, cut); err != nil {
+	if _, err := deleteBatched(sh, "ad_hashes", "last_hit_at < ?", cut); err != nil {
 		slog.Error("清理内容哈希失败", "err", err)
 	}
 	// 待撤回告警里 bot 已被删掉、没人去撤的残留行。
-	if _, err := sh.Store.Write.Exec(
-		`DELETE FROM alert_cleanup WHERE due_at < ?`, cut); err != nil {
+	if _, err := deleteBatched(sh, "alert_cleanup", "due_at < ?", cut); err != nil {
 		slog.Error("清理待撤回告警失败", "err", err)
 	}
 	// 申诉与网页验证：过保留期的结案单与验证记录一起清；未结单不动
-	// （用户可能还在流程里）。
-	if _, err := sh.Store.Write.Exec(`DELETE FROM web_checks WHERE created_at < ?`,
-		cut); err != nil {
+	// （用户可能还在流程里，noweb 的还在等管理员处理）。
+	if _, err := deleteBatched(sh, "web_checks", "created_at < ?", cut); err != nil {
 		slog.Error("清理网页验证记录失败", "err", err)
 	}
-	if _, err := sh.Store.Write.Exec(`DELETE FROM appeals WHERE updated_at < ?
-		AND status NOT IN ('statement','ai','web','code')`, cut); err != nil {
+	if _, err := deleteBatched(sh, "appeals", `updated_at < ? AND status NOT IN
+		('statement','ai','web','code','noweb')`, cut); err != nil {
 		slog.Error("清理申诉单失败", "err", err)
 	}
-	if _, err := sh.Store.Write.Exec(`DELETE FROM appeal_redeems
-		WHERE appeal_id NOT IN (SELECT id FROM appeals)`); err != nil {
+	if _, err := deleteBatched(sh, "appeal_redeems",
+		"appeal_id NOT IN (SELECT id FROM appeals)"); err != nil {
 		slog.Error("清理兑换记录失败", "err", err)
 	}
 	// 过期的白名单：到点即失效，删掉后恢复正常检查。
-	if _, err := sh.Store.Write.Exec(`DELETE FROM ad_whitelist
-		WHERE expires_at != 0 AND expires_at < ?`, time.Now().Unix()); err != nil {
+	if _, err := deleteBatched(sh, "ad_whitelist",
+		"expires_at != 0 AND expires_at < ?", time.Now().Unix()); err != nil {
 		slog.Error("清理过期白名单失败", "err", err)
+	}
+}
+
+// cleanupBatch 是每批删除的行数。取几千：一批的锁持有时间是毫秒级，
+// 又不会让循环因为批次太小而跑几百轮。
+const cleanupBatch = 5000
+
+// deleteBatched 分批删除过期行，返回删除总数。
+//
+// SQLite 的 DELETE 默认不支持 LIMIT（未开 SQLITE_ENABLE_UPDATE_DELETE_LIMIT），
+// 所以用 rowid 子查询分批。table 与 cond 只来自本包的字面量，不存在注入面。
+func deleteBatched(sh *core.Shared, table, cond string, args ...any) (int64, error) {
+	var total int64
+	for {
+		q := `DELETE FROM ` + table + ` WHERE rowid IN (
+			SELECT rowid FROM ` + table + ` WHERE ` + cond + ` LIMIT ?)`
+		all := append(append([]any{}, args...), cleanupBatch)
+		res, err := sh.Store.Write.Exec(q, all...)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < cleanupBatch {
+			return total, nil
+		}
 	}
 }

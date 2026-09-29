@@ -257,27 +257,31 @@ func TestAdExempt(t *testing.T) {
 	}
 	snap := b.Cache.Snap()
 
-	if !adExempt(b, snap, -100, nil) {
+	if !adExempt(b, snap, -100, nil, false) {
 		t.Error("nil 发送者应豁免")
 	}
 	// bot 与普通人同一条路径：没有管理员权限就不豁免（默认判普通成员
 	// bot，有管理员权限的 bot 由末尾的群管理员判断豁免）。
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 777}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 777}, false) {
 		t.Error("服务管理员应豁免")
 	}
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 555}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 555}, false) {
 		t.Error("豁免名单内用户应豁免")
 	}
 	if fake.CountCalls("getChatMember") != 0 {
 		t.Error("纯内存判断的路径不该发任何 API 请求")
 	}
+	// 画像行带出来的 /white 标记：不查库、不查 API 直接豁免。
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 666}, true) {
+		t.Error("画像行里的白名单标记应豁免")
+	}
 
 	// 普通人与 bot 都要查群管理员，查询结果为 member 则不豁免
 	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"member"}}`
-	if adExempt(b, snap, -100, &tg.TGUser{ID: 999}) {
+	if adExempt(b, snap, -100, &tg.TGUser{ID: 999}, false) {
 		t.Error("普通成员不该豁免")
 	}
-	if adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}) {
+	if adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}, false) {
 		t.Error("没有管理员权限的 bot 不该豁免")
 	}
 	// 全豁免开关（判定普通成员 bot = 0）仍可用。
@@ -285,7 +289,7 @@ func TestAdExempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap = b.Cache.Snap()
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 1, IsBot: true}, false) {
 		t.Error("关闭判定普通成员 bot 后 bot 应豁免")
 	}
 	if fake.CountCalls("getChatMember") != 2 {
@@ -329,7 +333,8 @@ func TestIsChatAdminFailClosed(t *testing.T) {
 // 的帖子，处置还会去禁言这个官方账号。
 func TestAdExemptLinkedChannelForward(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
-	if !adExempt(b, b.Cache.Snap(), -100, &tg.TGUser{ID: 777000, FirstName: "Telegram"}) {
+	if !adExempt(b, b.Cache.Snap(), -100,
+		&tg.TGUser{ID: 777000, FirstName: "Telegram"}, false) {
 		t.Error("777000 频道自动转发应豁免")
 	}
 	if fake.CountCalls("getChatMember") != 0 {
@@ -353,7 +358,7 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 	m := testutil.GroupMsg(-100, 42, 5, "当前这条")
 	recordMessage(b, -100, 5, 42, "当前这条", 1004, "")
 
-	st := buildState(b, b.Cache.Snap(), m, senderProfile{})
+	st := buildState(b, b.Cache.Snap(), m, senderProfile{MsgsInGroup: 5})
 
 	var got []string
 	for _, c := range st.RecentContext {
@@ -365,9 +370,17 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 	}
 
 	// /check <user_id> 这类没有具体消息的路径（MessageID=0）同样只给 n 条。
-	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 0, "代表消息"), senderProfile{})
+	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 0, "代表消息"),
+		senderProfile{MsgsInGroup: 5})
 	if n := len(st.RecentContext); n != 2 {
 		t.Errorf("没有当前消息可排除时给了 %d 条，期望 2 条", n)
+	}
+
+	// 第一条消息没有「此前」可带（msgs_in_group 含本条）：跳过留底查询。
+	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 6, "第一条"),
+		senderProfile{MsgsInGroup: 1})
+	if len(st.RecentContext) != 0 {
+		t.Errorf("首条消息不该带上下文，得到 %v", st.RecentContext)
 	}
 }
 

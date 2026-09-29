@@ -140,6 +140,9 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 	}
 
 	redeemInChat(b, ap, conf.ChatID, m.From.ID)
+	if err := b.Cache.Reload(); err != nil {
+		slog.Error("申诉：群内兑换后刷新快照失败", "err", err)
+	}
 	deleteMsg()
 	reply(fmt.Sprintf("✅ %s 已解除限制，24 小时内不受反广告检查。",
 		userLink(ap.UserID)))
@@ -169,8 +172,9 @@ func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 		b.CallOK("unbanChatMember", map[string]any{
 			"chat_id": chatID, "user_id": ap.UserID, "only_if_banned": true})
 	}
-	// 4) 白名单 24 小时。
-	writeWhitelist(b.Shared, ap.BotID, chatID, ap.UserID, 24*time.Hour, "appeal", byUID)
+	// 4) 白名单 24 小时。只写库不刷快照：一次兑换可能覆盖很多群，
+	// 调用方在整轮结束后统一刷一次。
+	writeWhitelistQuiet(b.Shared, ap.BotID, chatID, ap.UserID, 24*time.Hour, "appeal", byUID)
 	// 5) 兑换记录：主键保证每个群只兑换一次。
 	b.Store.Write.Exec(`INSERT OR IGNORE INTO appeal_redeems
 		(appeal_id,chat_id,by_uid,at) VALUES (?,?,?,?)`,
@@ -181,20 +185,29 @@ func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 func writeWhitelist(sh *core.Shared, botID, chatID, uid int64,
 	ttl time.Duration, source string, byUID int64) error {
 
+	if err := writeWhitelistQuiet(sh, botID, chatID, uid, ttl, source, byUID); err != nil {
+		return err
+	}
+	return sh.Cache.Reload()
+}
+
+// writeWhitelistQuiet 只写库、不刷新快照。给一次操作要写多条的调用方用：
+// 逐条刷新会在兑换这类循环里重建 N 次全量快照，调用方最后刷一次即可。
+func writeWhitelistQuiet(sh *core.Shared, botID, chatID, uid int64,
+	ttl time.Duration, source string, byUID int64) error {
+
 	expires := int64(0)
 	if ttl > 0 {
 		expires = time.Now().Add(ttl).Unix()
 	}
-	if _, err := sh.Store.Write.Exec(`INSERT INTO ad_whitelist
+	_, err := sh.Store.Write.Exec(`INSERT INTO ad_whitelist
 		(bot_id,chat_id,user_id,expires_at,source,by_uid,created_at)
 		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(bot_id,chat_id,user_id) DO UPDATE SET
 		  expires_at=excluded.expires_at, source=excluded.source,
 		  by_uid=excluded.by_uid, created_at=excluded.created_at`,
-		botID, chatID, uid, expires, source, byUID, time.Now().Unix()); err != nil {
-		return err
-	}
-	return sh.Cache.Reload()
+		botID, chatID, uid, expires, source, byUID, time.Now().Unix())
+	return err
 }
 
 // AddWhitelist 是 writeWhitelist 的导出版，供面板与 Mini App 写白名单
@@ -304,14 +317,18 @@ func HandleDirectRedeem(b *core.Bot, m *tg.Message, code string) {
 		}
 	}
 
-	// 白名单：主管理员写全平台，归属人写该 bot 名下所有群。
+	// 白名单：主管理员写全平台，归属人写该 bot 名下所有群。逐群的白名单行
+	// 已经在 redeemInChat 里写完（不刷快照），这里补上最后一条并统一刷新。
 	wBot, wChat := ap.BotID, int64(0)
 	if isMain {
 		wBot, wChat = 0, 0
 	}
-	if err := writeWhitelist(b.Shared, wBot, wChat, ap.UserID,
+	if err := writeWhitelistQuiet(b.Shared, wBot, wChat, ap.UserID,
 		24*time.Hour, "appeal", uid); err != nil {
 		failNotes = append(failNotes, "白名单写入失败："+err.Error())
+	}
+	if err := b.Cache.Reload(); err != nil {
+		slog.Error("申诉：兑换后刷新快照失败", "err", err)
 	}
 
 	updateAppeal(b.Shared, ap.ID, `status='redeemed'`)

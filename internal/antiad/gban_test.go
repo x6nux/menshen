@@ -74,7 +74,7 @@ func TestGbanMessageGuard(t *testing.T) {
 	}
 
 	m := testutil.GroupMsg(-100, 999, 5, "hello")
-	if !GbanMessageGuard(b, -100, m.From, m.MessageID) {
+	if !GbanMessageGuard(b, -100, m.From, m.MessageID, false) {
 		t.Fatal("名单内的人发言应被拦下")
 	}
 	p := fake.LastCall("restrictChatMember")
@@ -95,11 +95,12 @@ func TestGbanMessageGuard(t *testing.T) {
 		t.Errorf("应落 gban_muted 流水（err=%v action=%s）", err, action)
 	}
 
-	// /white 本群解封（白名单）优先于名单：命中放行。
+	// /white 本群解封（白名单）优先于名单：命中放行。标记由调用方从
+	// 画像行带进来（见 touchMember），这里直接传 true。
 	if err := setGroupWhitelist(b, -100, 999, true); err != nil {
 		t.Fatal(err)
 	}
-	if GbanMessageGuard(b, -100, m.From, 6) {
+	if GbanMessageGuard(b, -100, m.From, 6, true) {
 		t.Error("白名单用户不应被联合封禁拦下")
 	}
 }

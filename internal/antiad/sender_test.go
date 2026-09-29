@@ -98,20 +98,20 @@ func TestChannelIdentityJudgedAndBannedAsChannel(t *testing.T) {
 func TestAdExemptSpecialSenders(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	snap := b.Cache.Snap()
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}, false) {
 		t.Error("匿名管理员应豁免")
 	}
-	if adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
+	if adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}, false) {
 		t.Error("没有管理员权限的 bot 默认应照判")
 	}
 	if err := b.PutBotSetting(b.BotID(), "antiad_judge_bots", "0"); err != nil {
 		t.Fatal(err)
 	}
 	snap = b.Cache.Snap()
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: 7, IsBot: true}, false) {
 		t.Error("关闭判定普通成员 bot 后应豁免")
 	}
-	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}) {
+	if !adExempt(b, snap, -100, &tg.TGUser{ID: groupAnonymousBotID, IsBot: true}, false) {
 		t.Error("匿名管理员仍应豁免")
 	}
 }
