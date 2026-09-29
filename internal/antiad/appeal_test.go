@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/core"
 	"menshen/internal/testutil"
@@ -243,5 +244,121 @@ func TestAppealSingleOpen(t *testing.T) {
 	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)
 	if n != 1 {
 		t.Errorf("不该重复建单，实际 %d 张", n)
+	}
+}
+
+// TestAppealStatementDirectGo：提示里写着「不想写理由就直接交给 AI」，
+// 出口必须真的存在——按「直接申诉」应把这张单推进 AI，而不是只重复提示。
+func TestAppealStatementDirectGo(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	appealAI(t, b, false, "资料已改正")
+	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+
+	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
+		From: &tg.TGUser{ID: 555},
+		Message: &tg.Message{MessageID: 5,
+			Chat: &tg.Chat{ID: 555, Type: "private"}}})
+	if st := appealStatus(t, b, 555); st != "statement" {
+		t.Fatalf("应先进入 statement，得到 %q", st)
+	}
+
+	HandleAppealCallback(b, appealGo(555))
+	waitIdle(t, b)
+
+	if st := appealStatus(t, b, 555); st != "lifted" {
+		t.Errorf("「直接申诉」应推进 AI 并结案，得到 %q", st)
+	}
+	var n int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)
+	if n != 1 {
+		t.Errorf("应复用同一张单，实际 %d 张", n)
+	}
+}
+
+// TestAppealStatementCancel：取消按钮把单子作废，之后可以重新发起。
+func TestAppealStatementCancel(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+
+	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
+		From: &tg.TGUser{ID: 555},
+		Message: &tg.Message{MessageID: 5,
+			Chat: &tg.Chat{ID: 555, Type: "private"}}})
+	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:cancel",
+		From: &tg.TGUser{ID: 555},
+		Message: &tg.Message{MessageID: 5,
+			Chat: &tg.Chat{ID: 555, Type: "private"}}})
+
+	if st := appealStatus(t, b, 555); st != "expired" {
+		t.Fatalf("取消后应为 expired，得到 %q", st)
+	}
+	// 作废的单不再占位：再点「直接申诉」可以建新单。
+	appealAI(t, b, false, "资料已改正")
+	HandleAppealCallback(b, appealGo(555))
+	waitIdle(t, b)
+	var n int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)
+	if n != 2 {
+		t.Errorf("作废后应能重新发起，实际 %d 张", n)
+	}
+}
+
+// TestAppealWebWindowRenews：网页窗口过期后 /start 自动续 24 小时并重发
+// 链接。不续的话用户永久卡在一个 410 的链接上。
+func TestAppealWebWindowRenews(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	b.Cfg.PublicURL = "https://ad.example.com"
+	old := time.Now().Unix() - int64(appealWebWindow/time.Second) - 3600
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,web_since,created_at,updated_at)
+		VALUES (?,?, 'web', ?, ?, ?)`, b.BotID(), 555, old, old, old); err != nil {
+		t.Fatal(err)
+	}
+	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+
+	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
+
+	if text, _ := fake.LastCall("sendMessage")["text"].(string); !strings.Contains(text, "/_w/ap/") {
+		t.Errorf("过期后应重发验证链接:\n%s", text)
+	}
+	var since int64
+	b.Store.Read.QueryRow(`SELECT web_since FROM appeals WHERE user_id=555`).Scan(&since)
+	if since <= old {
+		t.Errorf("web_since 应被续期，得到 %d（旧值 %d）", since, old)
+	}
+}
+
+// TestAppealNoWebBlocksNewAppeal：noweb 也算未结单——允许重复发起的话，
+// 用户每点一次就重跑一遍 AI 复核、重推一张管理员卡片。
+func TestAppealNoWebBlocksNewAppeal(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,ai_result,created_at,updated_at)
+		VALUES (?,?, 'noweb', 'uphold', ?, ?)`, b.BotID(), 555, now, now); err != nil {
+		t.Fatal(err)
+	}
+	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+
+	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
+
+	text, _ := fake.LastCall("sendMessage")["text"].(string)
+	if !strings.Contains(text, "管理员") {
+		t.Errorf("noweb 应告知等待管理员处理:\n%s", text)
+	}
+	var n int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)
+	if n != 1 {
+		t.Errorf("noweb 未结时不该重复建单，实际 %d 张", n)
+	}
+	// 管理员的「人工通过」要能处理 noweb（此前会被判「已结案」）。
+	if err := AdminLiftAppeal(b, 1, 1); err != nil {
+		t.Fatalf("人工通过 noweb 单应成功: %v", err)
+	}
+	if st := appealStatus(t, b, 555); st != "lifted" {
+		t.Errorf("人工通过后应为 lifted，得到 %q", st)
 	}
 }

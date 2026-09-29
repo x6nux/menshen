@@ -40,8 +40,9 @@ type appealRec struct {
 	UpdatedAt   int64
 }
 
-// 未结状态：同一人对同一 bot 同时只能有一张。
-var appealOpenStatuses = []string{"statement", "ai", "web", "code"}
+// 未结状态：同一人对同一 bot 同时只能有一张。noweb（等管理员人工处理）
+// 也算未结——不算的话用户可以反复发起，每次都要重跑一遍 AI 复核。
+var appealOpenStatuses = []string{"statement", "ai", "web", "code", "noweb"}
 
 // appealPenalty 是一条有效限制。
 type appealPenalty struct {
@@ -67,7 +68,8 @@ func openAppeal(s *store.Store, botID, uid int64) (appealRec, bool) {
 	return scanAppeal(s.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
 		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
 		code,code_expires,created_at,updated_at FROM appeals
-		WHERE bot_id=? AND user_id=? AND status IN ('statement','ai','web','code')
+		WHERE bot_id=? AND user_id=? AND status IN
+			('statement','ai','web','code','noweb')
 		ORDER BY id DESC LIMIT 1`, botID, uid))
 }
 
@@ -213,7 +215,7 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 	}
 
 	if ap, ok := openAppeal(b.Store, b.BotID(), uid); ok {
-		showAppealProgress(b, dmChat, ap, penalties)
+		showAppealProgress(b, dmChat, ap)
 		return true
 	}
 
@@ -250,14 +252,27 @@ func penaltyLines(penalties []appealPenalty) string {
 }
 
 // showAppealProgress 展示已有申诉单的进度（再次 /start 时）。
-func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec, penalties []appealPenalty) {
+func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec) {
 	switch ap.Status {
 	case "statement":
 		b.Send(dmChat, "📝 你有一张进行中的申诉单，正在等你的<b>申诉理由</b>。\n\n"+
-			"请直接发送理由（不超过 200 字）；不想要理由就发 <code>/start</code> 重新选择。", nil)
+			"请直接发送理由（不超过 200 字）；不想写理由就直接交给 AI，也可以取消这张单。",
+			tg.InlineKB(
+				[][2]string{{"⏩ 直接申诉", "a:ap:go"}},
+				[][2]string{{"🗑 取消申诉", "a:ap:cancel"}},
+			))
 	case "ai":
 		b.Send(dmChat, "⏳ 你的申诉正在由 AI 复核，请稍候。", nil)
 	case "web":
+		// 窗口过期后自动续一个 24 小时并重发链接。不续的话用户会永久卡在
+		// 一个 410 的链接上：页面让他「回 bot 重新申诉」，而回到这里时
+		// openAppeal 仍认这张单，只会再发回同一条死链。
+		if ap.WebSince == 0 ||
+			time.Now().Unix()-ap.WebSince >= int64(appealWebWindow/time.Second) {
+			now := time.Now().Unix()
+			updateAppeal(b.Shared, ap.ID, `web_since=?`, now)
+			ap.WebSince = now
+		}
 		link := AppealURL(b.Shared, ap.ID, ap.UserID)
 		if link == "" {
 			b.Send(dmChat, "⏳ 你的申诉正在等网页验证，但网页当前不可用，"+
@@ -268,6 +283,10 @@ func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec, penalties []app
 			"\n\n<i>链接 24 小时内有效。验证通过后会给你一个解禁码。</i>", nil)
 	case "code":
 		sendUnlockCode(b, dmChat, ap)
+	case "noweb":
+		b.Send(dmChat, "⏳ 你的申诉已提交复核，当前无法进行网页验证，"+
+			"正在等管理员人工处理。\n\n<i>请勿重复发起申诉；若长时间没有结果，"+
+			"可联系群管理员。</i>", nil)
 	}
 }
 
@@ -307,7 +326,15 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		// 已有未结单就不再建：同一人同一 bot 只能有一张。
 		if ap, ok := openAppeal(b.Store, b.BotID(), uid); ok {
-			showAppealProgress(b, dmChat, ap, effectivePenalties(b, uid))
+			// statement 状态下「直接申诉」就地推进：提示里写着可以不写
+			// 理由，出口必须真的存在，否则用户被卡在死路上。
+			if parts[2] == "go" && ap.Status == "statement" {
+				updateAppeal(b.Shared, ap.ID, `status='ai'`)
+				b.Send(dmChat, "✅ 已跳过理由，正在交给 AI 复核……", nil)
+				startAppealAI(b, ap.ID, uid)
+				return
+			}
+			showAppealProgress(b, dmChat, ap)
 			return
 		}
 		if ok, wait := unbanGateCheck(b.Shared, uid); !ok {
@@ -331,6 +358,16 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		startAppealAI(b, ap.ID, uid)
+
+	case "cancel":
+		b.AnswerCallback(q.ID, "")
+		ap, ok := openAppeal(b.Store, b.BotID(), uid)
+		if !ok || ap.Status != "statement" {
+			b.Send(dmChat, "当前没有可取消的申诉单。", nil)
+			return
+		}
+		updateAppeal(b.Shared, ap.ID, `status='expired'`)
+		b.Send(dmChat, "已取消这张申诉单。要重新申诉就发 /start。", nil)
 	}
 }
 

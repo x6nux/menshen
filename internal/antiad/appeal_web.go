@@ -197,9 +197,14 @@ func appealPageGet(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap a
 	fmt.Fprint(w, page)
 }
 
-// appealWebUsable 报告申诉单是否还在可验证窗口内（web 状态、24 小时内）。
+// appealWebWindow 是网页验证链接的有效窗口。链接签名不过期，过期由
+// web_since 判定；用户在 bot 里再点一次 /start 会自动续一个窗口。
+const appealWebWindow = 24 * time.Hour
+
+// appealWebUsable 报告申诉单是否还在可验证窗口内（web 状态、窗口内）。
 func appealWebUsable(ap appealRec, now int64) bool {
-	return ap.Status == "web" && ap.WebSince != 0 && now-ap.WebSince < 24*3600
+	return ap.Status == "web" && ap.WebSince != 0 &&
+		now-ap.WebSince < int64(appealWebWindow/time.Second)
 }
 
 // appealPagePost 处理验证提交。
