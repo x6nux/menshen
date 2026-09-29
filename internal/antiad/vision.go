@@ -134,41 +134,79 @@ func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, vision
 	if model == "" {
 		return "", visionSpend{}, fmt.Errorf("未配置识图模型")
 	}
-	reply, err := aiCall(b.Shared, upstream.EPChat, []string{model}, map[string]any{
-		"temperature": 0,
-		"stream":      true, "stream_options": map[string]any{"include_usage": true},
-		"messages": []any{
-			map[string]any{"role": "system", "content": visionPrompt},
-			map[string]any{"role": "user", "content": []any{
-				map[string]any{"type": "text", "text": "描述这张图片。"},
-				map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}},
-			}},
-		},
-	}, upstreamNotifier(b))
-	spend := visionSpend{reply.Usage, reply.Cost}
-	if err != nil {
-		return "", spend, err
+
+	var spend visionSpend
+	for attempt := 0; attempt < 2; attempt++ {
+		reply, err := aiCall(b.Shared, upstream.EPChat, []string{model}, map[string]any{
+			"temperature": 0,
+			"stream":      true, "stream_options": map[string]any{"include_usage": true},
+			"messages": []any{
+				map[string]any{"role": "system", "content": visionPrompt},
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": "描述这张图片。"},
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}},
+				}},
+			},
+		}, upstreamNotifier(b))
+		spend.Usage.PromptTokens += reply.Usage.PromptTokens
+		spend.Usage.CompletionTokens += reply.Usage.CompletionTokens
+		spend.Usage.CacheReadTokens += reply.Usage.CacheReadTokens
+		spend.Usage.CacheWriteTokens += reply.Usage.CacheWriteTokens
+		spend.Cost += reply.Cost
+		if err != nil {
+			return "", spend, err
+		}
+
+		desc, thinking, err := visionReplyText(reply.Raw)
+		if err != nil {
+			return "", spend, err
+		}
+		desc = oneLine(desc)
+		if desc == "" && thinking != "" {
+			// 推理模型偶发把话全说在思考里、正文一个字没有（线上见过
+			// completion_tokens=55 而 content 为空）。思考同样是模型对
+			// 图片的描述，拿来用，比整条判定失败放行强。
+			desc = oneLine(thinking)
+			slog.Info("反广告：识图只有思考内容，改用思考当描述", "模型", reply.Model)
+		}
+		if desc != "" {
+			desc = core.TruncateRunes(desc, visionDescMax)
+			b.VisionCache.Store(v.uniqueID, visionEntry{desc, time.Now().Add(visionTTL)})
+			return v.label + desc, spend, nil
+		}
+		if attempt == 0 {
+			slog.Warn("反广告：识图模型没有返回内容，重试一次", "模型", reply.Model)
+		}
 	}
-	raw := reply.Raw
+	return "", spend, fmt.Errorf("识图模型没有返回描述")
+}
+
+// visionReplyText 从识图响应里取出正文与思考内容。
+//
+// 流式响应由 readChatStream 拼回非流式形状，思考内容放在 reasoning_content
+// 字段里；非流式响应也可能自带该字段，一并读。
+func visionReplyText(raw json.RawMessage) (content, thinking string, err error) {
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if json.Unmarshal(raw, &resp) != nil || len(resp.Choices) == 0 {
-		return "", spend, fmt.Errorf("识图响应无法解析")
+		return "", "", fmt.Errorf("识图响应无法解析")
 	}
-	// 压成一行：换行会让后面几行看起来像不带前缀的正文。
-	desc := core.TruncateRunes(strings.Join(strings.Fields(resp.Choices[0].Message.Content), " "),
-		visionDescMax)
-	if desc == "" {
-		return "", spend, fmt.Errorf("识图模型没有返回描述")
+	m := resp.Choices[0].Message
+	if m.ReasoningContent != "" {
+		return m.Content, m.ReasoningContent, nil
 	}
-	b.VisionCache.Store(v.uniqueID, visionEntry{desc, time.Now().Add(visionTTL)})
-	return v.label + desc, spend, nil
+	return m.Content, m.Reasoning, nil
 }
+
+// oneLine 压成一行：换行会让后面几行看起来像不带前缀的正文。
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // GCVisionCache 清理过期条目，防止 map 无限增长。
 func GCVisionCache(sh *core.Shared) {

@@ -449,7 +449,7 @@ func upName(u *upstream.Upstream) string {
 // role 的空块不算（有的网关会立刻回它，算进去首字检测就形同虚设）；思考
 // 内容要算（推理模型先吐思考，不算的话它们每次都会被当成卡住）。
 func readChatStream(r io.Reader, onFirst func()) (json.RawMessage, error) {
-	var content strings.Builder
+	var content, thinking strings.Builder
 	var usage json.RawMessage
 	first := false
 	sc := bufio.NewScanner(r)
@@ -488,6 +488,10 @@ func readChatStream(r io.Reader, onFirst func()) (json.RawMessage, error) {
 				onFirst()
 			}
 			content.WriteString(d.Content)
+			// 思考内容单独攒着：识图那条路上，推理模型偶发把全部输出放进
+			// 思考、正文为空；调用方可以把思考当描述兜底。
+			thinking.WriteString(d.ReasoningContent)
+			thinking.WriteString(d.Reasoning)
 		}
 		// 用量在流末那一块（stream_options.include_usage），它的 choices 为空。
 		if len(chunk.Usage) > 0 && string(chunk.Usage) != "null" {
@@ -498,8 +502,9 @@ func readChatStream(r io.Reader, onFirst func()) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"choices": []map[string]any{{"message": map[string]string{"content": content.String()}}},
-		"usage":   usage,
+		"choices": []map[string]any{{"message": map[string]string{
+			"content": content.String(), "reasoning_content": thinking.String()}}},
+		"usage": usage,
 	})
 }
 

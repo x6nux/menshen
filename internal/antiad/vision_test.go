@@ -123,6 +123,81 @@ func TestPurePhotoJudgedWithVision(t *testing.T) {
 	}
 }
 
+// TestVisionFallsBackToReasoning：推理模型偶发把话全说在思考里、正文为空
+// （线上真实发生过：completion_tokens=55、content 一个字没有）。思考同样是
+// 模型对图片的描述，拿来当描述用，比整条判定失败放行强。
+func TestVisionFallsBackToReasoning(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	seen := new(atomic.Value)
+	seen.Store("")
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/systemone"):
+			seen.Store(string(body))
+			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
+		case strings.Contains(string(body), `"vision-model"`):
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"图里有一行文字 abc123\"}}]}\n\n"))
+			w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+		}
+	})
+	if err := b.PutSetting("antiad_vision_model", "vision-model"); err != nil {
+		t.Fatal(err)
+	}
+	fakeFiles(t, b, fake, 200)
+
+	HandleGroupMessage(b, photoMsg(1, "uR"))
+	waitIdle(t, b)
+	if s := seen.Load().(string); !strings.Contains(s, "abc123") {
+		t.Errorf("只有思考内容时也应把描述并进正文，得到 %s", s)
+	}
+}
+
+// TestVisionEmptyResponseRetries：一次空响应（连思考都没有）应重试一次；
+// 第二次正常就救回来。两次都空才判失败。
+func TestVisionEmptyResponseRetries(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	var visionN atomic.Int32
+	seen := new(atomic.Value)
+	seen.Store("")
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/systemone"):
+			seen.Store(string(body))
+			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
+		case strings.Contains(string(body), `"vision-model"`):
+			w.Header().Set("Content-Type", "text/event-stream")
+			if visionN.Add(1) == 1 {
+				w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+			} else {
+				w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"重试后的描述 abc123\"}}]}\n\n"))
+			}
+			w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+		}
+	})
+	if err := b.PutSetting("antiad_vision_model", "vision-model"); err != nil {
+		t.Fatal(err)
+	}
+	fakeFiles(t, b, fake, 200)
+
+	HandleGroupMessage(b, photoMsg(1, "uE"))
+	waitIdle(t, b)
+	if n := visionN.Load(); n != 2 {
+		t.Errorf("空响应应重试一次，识图请求 %d 次", n)
+	}
+	if s := seen.Load().(string); !strings.Contains(s, "重试后的描述") {
+		t.Errorf("重试成功的描述应并进正文，得到 %s", s)
+	}
+}
+
 // TestVisionFailureLetsPass：识图失败与判定失败同向，放行；下载错误里不得带 token。
 func TestVisionFailureLetsPass(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
