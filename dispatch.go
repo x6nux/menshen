@@ -111,14 +111,18 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	// 一律忽略」处理会把整条申诉通道堵死。
 	if !b.IsStaff(m.From.ID) {
 		if !antiad.HandleNonStaffPrivate(b, m, text) && strings.HasPrefix(text, "/start") {
-			// 主 bot 不入群、不判定（被拉进群会自动退出），「拉进群并设为
-			// 管理员」这种引导对它就是错的：对它只如实说一句没有权限。
+			// 主 bot 不入群、不判定（被拉进群会自动退出）：对它只如实说
+			// 一句没有权限。
 			if b.IsMainBot() {
 				b.Send(m.Chat.ID, "你没有权限使用本 bot。", nil)
 				return
 			}
-			b.Send(m.Chat.ID,
-				"本 bot 是群组反广告助手，把它拉进群并设为管理员即可工作。", nil)
+			// 工作 bot：普通用户上门多半是来求解封的。有禁言或联合封禁的
+			// 上面已经进了申诉入口，走到这里说明名下没有被限制 —— 如实
+			// 告知即可，不要引导他「把 bot 拉进群」：群要管理员在面板里
+			// 添加，他拉进去也不工作。
+			b.Send(m.Chat.ID, "你目前没有被本 bot 限制。\n\n"+
+				"如果你在某个群里被限制发言，请从群内 bot 消息里的「📝 申诉」按钮进入。", nil)
 		}
 		return
 	}

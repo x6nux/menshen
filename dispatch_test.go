@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"menshen/internal/antiad"
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
 )
@@ -214,9 +215,32 @@ func TestMainBotNonStaffStartSaysNoPermission(t *testing.T) {
 
 	workBot, fake2, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
 	dispatch(workBot, msg())
-	if p := fake2.LastCall("sendMessage"); p == nil ||
-		!strings.Contains(p["text"].(string), "反广告助手") {
-		t.Errorf("工作 bot 的引导提示应保持不变: %v", p)
+	p2 := fake2.LastCall("sendMessage")
+	if p2 == nil {
+		t.Fatal("工作 bot 对陌生人也应回复")
+	}
+	if text := p2["text"].(string); strings.Contains(text, "拉进群") {
+		t.Errorf("工作 bot 也不该引导拉群（群要管理员在面板里添加）:\n%s", text)
+	} else if !strings.Contains(text, "没有被本 bot 限制") {
+		t.Errorf("没有限制时应如实告知，得到:\n%s", text)
+	}
+}
+
+// TestWorkBotNonStaffStartOnGbanShowsAppeal：被联合封禁的人私聊 /start
+// 应直接进申诉入口 —— 普通用户来找 bot 多半就是为了解封。
+func TestWorkBotNonStaffStartOnGbanShowsAppeal(t *testing.T) {
+	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	if err := antiad.GbanAdd(b.Shared, 12345, "赌博引流", -100, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	dispatch(b, &tg.Update{Message: &tg.Message{
+		MessageID: 1, Date: 1700000000, Text: "/start",
+		From: &tg.TGUser{ID: 12345, Username: "random"},
+		Chat: &tg.Chat{ID: 12345, Type: "private"},
+	}})
+	p := fake.LastCall("sendMessage")
+	if p == nil || !strings.Contains(p["text"].(string), "联合封禁") {
+		t.Fatalf("被联合封禁的人 /start 应进申诉入口并写明封禁，得到 %v", p)
 	}
 }
 
