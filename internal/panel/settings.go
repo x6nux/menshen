@@ -40,7 +40,7 @@ var tzSpec = settingSpec{key: "tz_name", label: "展示时区",
 // groupFooterSpec 是群内提示尾部的附加链接（字符串型）。与 tzSpec 一样
 // 不走整数校验，输入与 Mini App 各有一份专门处理。
 var groupFooterSpec = settingSpec{key: "antiad_group_footer", label: "群内提示附加链接",
-	hint: "原样附在群内告警与进群限制通知末尾，例如：② 电报使用指南 (https://t.me/TGwikiAppBot)；填 - 清空"}
+	hint: "原样附在群内告警与进群限制通知末尾，例如：② 使用指南 (https://t.me/your_link)；填 - 清空"}
 
 // stringSpecByKey 返回字符串型设置项（不走 settingSpecs 的整数校验）。
 func stringSpecByKey(k string) *settingSpec {

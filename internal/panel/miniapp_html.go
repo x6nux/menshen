@@ -446,7 +446,7 @@ function viewSettings(){
   h+='<div class="card"><h3>群内提示附加链接</h3>'+
     '<div class="row"><span class="k">原样附在群内告警与进群限制通知的末尾</span></div>'+
     '<input value="'+esc(g.antiad_group_footer||'')+'" '+
-    'placeholder="② 电报使用指南 (https://t.me/TGwikiAppBot)" '+
+    'placeholder="② 使用指南 (https://t.me/your_link)" '+
     'onchange="act(\'set\',{scope:\'global\',key:\'antiad_group_footer\',value:this.value},\'已保存\')"></div>';
   h+='<div class="card"><h3>形态摘要</h3>'+
     '<textarea id="dg">'+esc(S.digest||'')+'</textarea>'+
