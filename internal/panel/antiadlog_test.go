@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -106,5 +107,30 @@ func TestAdChatHealthCached(t *testing.T) {
 	}
 	if n := fake.CountCalls("getChatMember"); n != 1 {
 		t.Errorf("三次渲染只该查一次，实际 %d 次", n)
+	}
+}
+
+// TestChatDetailShowsPunishDuration：群详情要写明禁言的时长与实际处罚，
+// 并在未开启封禁时给出改法。只写「禁言」会让人以为永久封禁已生效。
+func TestChatDetailShowsPunishDuration(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	showChatDetail(b, 777, 0, b.BotID(), -100)
+	text := fmt.Sprint(fake.LastCall("sendMessage")["text"])
+	if !strings.Contains(text, "禁言 24 小时") || !strings.Contains(text, "要改成永久封禁") {
+		t.Fatalf("应写明禁言时长与改法:\n%s", text)
+	}
+
+	if err := b.PutBotSetting(b.BotID(), "antiad_ban", "1"); err != nil {
+		t.Fatal(err)
+	}
+	showChatDetail(b, 777, 0, b.BotID(), -100)
+	text = fmt.Sprint(fake.LastCall("sendMessage")["text"])
+	if !strings.Contains(text, "封禁出群（永久）") {
+		t.Fatalf("开启封禁后应显示永久封禁:\n%s", text)
+	}
+	if strings.Contains(text, "要改成永久封禁") {
+		t.Error("已开启封禁时不该再提示改法")
 	}
 }

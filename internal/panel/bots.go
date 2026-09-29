@@ -297,7 +297,10 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 		sb.WriteString("群内展示: 🔕 关\n")
 	}
 	snap := b.Cache.Snap()
-	punish := "🔇 禁言"
+	// 显示实际会执行的处罚：只写「禁言」而不写时长，很容易让人以为
+	// 永久封禁已经生效（默认 24 小时，而「改为封禁」是另一个开关）。
+	muteHours := snap.BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
+	punish := fmt.Sprintf("🔇 禁言 %d 小时", muteHours)
 	if snap.BanMode(c) {
 		punish = "🚫 封禁出群（永久）"
 	}
@@ -305,6 +308,10 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 		punish += "（跟随 bot 设置）"
 	}
 	sb.WriteString("处罚方式: " + punish + "\n")
+	if !snap.BanMode(c) {
+		sb.WriteString("<i>要改成永久封禁：把本 bot 参数页的「禁言改为封禁」设为 1，" +
+			"或把本群处罚方式切成「封禁出群」。</i>\n")
+	}
 
 	// 实时查一次权限：bot 不是群管理员的话，整条链路静默失效，
 	// 面板一切正常、日志干净、什么都没判。这是最常见的部署事故。
@@ -692,6 +699,13 @@ func showBotConfig(b *core.Bot, chatID, msgID, botID int64) {
 
 	var sb strings.Builder
 	sb.WriteString("⚙️ <b>阈值与参数</b>\n\n")
+	if rec := snap.Bots[botID]; rec != nil && rec.IsMain {
+		// 主 bot 不入群、不判定：在它这里改判定参数不会对任何群生效，
+		// 用户很容易改完以为已经生效。
+		sb.WriteString("⚠️ <b>这是主 bot</b>：它只做配置管理与接入其他 bot，" +
+			"不入群、不判定。这里改的参数不会作用于任何群——" +
+			"请到工作 bot 的参数页设置。\n\n")
+	}
 	sb.WriteString("采信线以下的判定会转给大模型复判；\n")
 	sb.WriteString("处置线决定删除与禁言的触发点，新人比老人低一档。\n")
 	sb.WriteString("<i>带 ✏️ 的是本 bot 的专属值，其余沿用全局默认。</i>\n\n")

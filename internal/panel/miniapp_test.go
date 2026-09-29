@@ -346,3 +346,56 @@ func TestClampPage(t *testing.T) {
 		t.Errorf("clampPageInt(MaxInt) = %d, 期望 %d", got, maxPanelPage)
 	}
 }
+
+// TestMiniBotAntiBanSettingPersists：bot 级「禁言改为封禁」的写入必须落库、
+// 进快照、并让该 bot 名下跟随的群立刻改为永久封禁。
+// 用户报过「设置了永久封禁却还是禁言 24 小时」，先守住这条链路。
+func TestMiniBotAntiBanSettingPersists(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.EnableAntiad(t, b, -100)
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+
+	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "bot", "bot_id": testutil.TestBotID,
+			"key": "antiad_ban", "value": "1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("写入应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().BotSetting(testutil.TestBotID, "antiad_ban"); got != "1" {
+		t.Fatalf("bot 覆盖没生效，得到 %q", got)
+	}
+	c, _ := sh.Cache.Snap().ChatConf(testutil.TestBotID, -100)
+	if !sh.Cache.Snap().BanMode(c) {
+		t.Error("开启后跟随 bot 的群应改为永久封禁")
+	}
+
+	// 状态里要能拿到全局默认，界面才能把「跟随」解析成实际处罚。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("state 应 200，得到 %d", w.Code)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st["global_defaults"].(map[string]any)["antiad_mute_hours"]; !ok {
+		t.Error("状态里应包含 antiad_mute_hours 全局默认值")
+	}
+}
+
+// TestMiniAppChatDetailShowsEffectivePunish：群详情要显示实际会执行的处罚
+// 与时长——只写「禁言」时，很容易以为永久封禁已经生效。
+func TestMiniAppChatDetailShowsEffectivePunish(t *testing.T) {
+	for _, want := range []string{
+		"实际执行",
+		"跟随 bot 设置",
+		"禁言 '+esc(settingOf(c.bot_id,'antiad_mute_hours')||'24')+' 小时",
+		"要改成永久封禁",
+	} {
+		if !strings.Contains(miniAppHTML, want) {
+			t.Errorf("群详情缺少 %q", want)
+		}
+	}
+}

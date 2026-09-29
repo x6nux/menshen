@@ -306,10 +306,13 @@ function viewChatDetail(c){
     '<div class="row"><label class="sw"><input type="checkbox" '+(c.group_alert?'checked':'')+
       ' onchange="'+pre+'group_alert:this.checked})"><span class="tr"></span> 群内展示判定结果</label></div>'+
     '<div class="row"><span class="k">处罚方式</span>'+
-      '<select style="width:140px" onchange="'+pre+'punish:this.value})">'+
+      '<select style="width:170px" onchange="'+pre+'punish:this.value})">'+
       '<option value="-1"'+(c.punish==-1?' selected':'')+'>跟随 bot 设置</option>'+
-      '<option value="0"'+(c.punish==0?' selected':'')+'>禁言</option>'+
-      '<option value="1"'+(c.punish==1?' selected':'')+'>封禁出群</option></select></div>'+
+      '<option value="0"'+(c.punish==0?' selected':'')+'>禁言 '+esc(settingOf(c.bot_id,'antiad_mute_hours')||'24')+' 小时</option>'+
+      '<option value="1"'+(c.punish==1?' selected':'')+'>封禁出群（永久）</option></select></div>'+
+    '<div class="row"><span class="k">实际执行</span><span>'+esc(punishLabel(c.bot_id,c.punish))+'</span></div>'+
+    (punishLabel(c.bot_id,c.punish).indexOf('禁言')===0?
+      '<div class="hint">要改成永久封禁：把本 bot 的「禁言改为封禁」设为 1（参数页），或把上面切成「封禁出群」。</div>':'')+
     '<button class="d" style="margin-top:10px" '+
       'onclick="if(confirm(\'移除该群？判定与处置立即停止，配置一并删除。\'))act(\'chat\',{bot_id:'+c.bot_id+
       ',chat_id:'+c.chat_id+',action:\'remove\'},\'已移除\')">移除该群</button>'+
@@ -564,6 +567,22 @@ function apAI(r){ return {uphold:'维持原判',overturn:'撤销原判',error:'�
   skipped:'跳过复核'}[r]||'未复核'; }
 function chatTitleOf(cid){ for(var i=0;i<S.chats.length;i++)
   if(S.chats[i].chat_id==cid) return S.chats[i].title; return ''; }
+/* settingOf 取某个 bot 的实际生效值：bot 覆盖优先，否则全局默认。 */
+function settingOf(botID,key){
+  var o=(S.bot_settings[String(botID)]||{});
+  if(o[key]!=null&&o[key]!=='') return o[key];
+  var d=S.global_defaults||{};
+  return d[key]!=null?d[key]:'';
+}
+/* punishLabel 把「跟随/禁言/封禁」渲染成实际会执行的动作。
+   只写「禁言」而不写时长时，很容易以为永久封禁已经生效。 */
+function punishLabel(botID,punish){
+  var hours=settingOf(botID,'antiad_mute_hours')||'24';
+  if(punish==1) return '封禁出群（永久）';
+  var mute='禁言 '+hours+' 小时';
+  if(punish==0) return mute;
+  return settingOf(botID,'antiad_ban')=='1' ? '封禁出群（永久）' : mute;
+}
 function logact(a,id){
   api('logact',{id:id,action:a}).then(function(){
     toast('已执行');
