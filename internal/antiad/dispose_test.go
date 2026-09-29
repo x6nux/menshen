@@ -420,3 +420,55 @@ func TestShortMuteOnDeletedTier(t *testing.T) {
 		t.Errorf("开关关闭时不该禁言，多出 %d 次", after-before)
 	}
 }
+
+// TestBoolVerdictMode：打开「按模型结论定档」后，只看模型的是/否结论，
+// 不看置信度——同一条广告的置信度在 88%/95% 之间抖动，卡 90% 硬线会让
+// 它时而只删、时而禁言。老人仍只删不禁（底线不变）。
+func TestBoolVerdictMode(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+	_, llmN := fakeAIWith(t, b, soReply("ad", 0.88, "porn_bait", "message"),
+		llmReply(true, 0.82, "porn_bait", "message"))
+
+	// 新人：置信度只有 82%，按旧规则只会「删除 + 短禁言」。
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "探花 9000 一单"))
+	waitIdle(t, b)
+
+	mutes := fake.Calls("restrictChatMember")
+	if len(mutes) == 0 {
+		t.Fatal("bool 模式下模型判为广告就该禁言，实际一次都没禁")
+	}
+	last := mutes[len(mutes)-1]
+	if _, has := last["until_date"]; has {
+		t.Errorf("mute_hours=0 时该是永久禁言，不该带 until_date: %v", last["until_date"])
+	}
+	if _, action, _ := logRow(t, b); action != "deleted_muted" {
+		t.Errorf("动作应为 deleted_muted，得到 %q", action)
+	}
+	if llmN.Load() == 0 {
+		t.Error("要禁言时应过复判")
+	}
+
+	// 老人：bool 模式不改变「老人只删不禁」的底线。
+	const msgDate = int64(1700000000)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
+		VALUES (-100,43,?,?,50,0,0)`, msgDate-100*3600, msgDate-100*3600); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.CountCalls("restrictChatMember")
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 43, 8, "探花 9000 一单"))
+	waitIdle(t, b)
+	if after := fake.CountCalls("restrictChatMember"); after != before {
+		t.Errorf("老人不该被自动禁言，多出 %d 次", after-before)
+	}
+	if _, action, _ := logRow(t, b); action != "deleted" {
+		t.Errorf("老人动作应为 deleted，得到 %q", action)
+	}
+}

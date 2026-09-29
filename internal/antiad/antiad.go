@@ -1373,6 +1373,17 @@ func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) a
 	if !v.IsAd {
 		return adAction{Name: "none"}
 	}
+	// 「按模型结论定档」：只看模型的是/否结论，不看置信度。大模型在同一类
+	// 内容上的置信度抖动很大（同一条广告可能 88% 也可能 95%），卡 90% 硬线
+	// 会让「明显是广告」的内容时而只删、时而禁言。老人仍只删不禁——那是
+	// 误伤成本和社会代价的底线，与本开关无关。
+	if snap.BotSettingInt(b.BotID(), "antiad_bool_verdict", 0) == 1 {
+		if newbie {
+			return adAction{Delete: true, Mute: true, Alert: true,
+				Purge: v.Scope == "account", Name: "deleted_muted"}
+		}
+		return adAction{Delete: true, Alert: true, Name: "deleted"}
+	}
 	id := b.BotID()
 	conf := v.Confidence * 100
 	hard := float64(snap.BotSettingInt(id, "antiad_act_hard", 90))
