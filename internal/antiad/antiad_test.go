@@ -342,6 +342,26 @@ func TestAdExemptLinkedChannelForward(t *testing.T) {
 	}
 }
 
+// TestGroupMessageSkipsWhenProfileUnreadable：画像读失败时不得继续判定。
+// 零值画像会让 isNewbie 为真，把老成员按最严档删+禁言——失败方向反了；
+// 宁可不判这一条，也不能误伤。
+func TestGroupMessageSkipsWhenProfileUnreadable(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// 把读写连接都关掉，模拟画像读取失败。
+	b.Store.Read.Close()
+	b.Store.Write.Close()
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "加微信买号 日入5000"))
+
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("画像读不到时不该禁言，实际 %d 次", n)
+	}
+	if n := fake.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("画像读不到时不该删除，实际 %d 次", n)
+	}
+}
+
 // TestBuildStateRecentContextIsOwnHistory：recent_context 只取发送者本人的留底。
 // 别人的发言（尤其是带「［引用］」载荷的广告）混进来，模型会把它当成本条
 // 消息引用的内容——线上真实误判过。

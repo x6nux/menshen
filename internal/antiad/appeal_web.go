@@ -46,16 +46,28 @@ func EnsureWebSecret(sh *core.Shared) error {
 
 // webSig 是网页链接的签名：hex(HMAC-SHA256(secret, msg))[:32]。
 // 用途前缀写进 msg（ap: / apv: / v: / vp:），一处的签名拿不到另一处用。
+//
+// 密钥缺失时返回空串：绝不能退化成「用空密钥签名」——那样任何人都能
+// 按公开的格式算出合法签名，顺序枚举 id 读取申诉理由与原文。
 func webSig(sh *core.Shared, msg string) string {
 	secret := sh.Cache.Snap().Setting("web_secret")
+	if secret == "" {
+		return ""
+	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(msg))
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 
-// webSigOK 校验签名，常数时间比较。
+// webSigOK 校验签名，常数时间比较。密钥缺失或签名为空一律不通过。
 func webSigOK(sh *core.Shared, msg, sig string) bool {
+	if sig == "" {
+		return false
+	}
 	want := webSig(sh, msg)
+	if want == "" {
+		return false
+	}
 	return hmac.Equal([]byte(want), []byte(sig))
 }
 
@@ -75,13 +87,14 @@ func logViewPostSig(sh *core.Shared, id, exp int64) string {
 	return webSig(sh, fmt.Sprintf("vp:%d:%d", id, exp))
 }
 
-// webURL 拼出对外链接；网页不可用（没配 public_url）时返回空串，
-// 调用方按「网页不可用」处理。
+// webURL 拼出对外链接；网页不可用（没配 public_url 或缺签名密钥）时
+// 返回空串，调用方按「网页不可用」处理。缺密钥时还发链接的话，页面上
+// 的签名校验形同虚设。
 func webURL(sh *core.Shared, path string) string {
-	base := strings.TrimRight(sh.Cfg.PublicURL, "/")
-	if base == "" {
+	if !WebAvailable(sh) {
 		return ""
 	}
+	base := strings.TrimRight(sh.Cfg.PublicURL, "/")
 	return base + "/_w/" + path
 }
 

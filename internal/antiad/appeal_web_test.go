@@ -1,8 +1,12 @@
 package antiad
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"menshen/internal/testutil"
@@ -25,6 +29,39 @@ func TestWebSecretGeneratedOnce(t *testing.T) {
 	}
 	if got := b.Cache.Snap().Setting("web_secret"); got != first {
 		t.Error("已存在密钥时不该重新生成")
+	}
+}
+
+// TestWebSignatureRequiresSecret：密钥缺失时签名与链接都必须为空。
+// 退化成「用空密钥签名」的话，任何人都能按公开格式算出合法 HMAC，
+// 顺序枚举 apv/<id> 就能读到申诉理由与原文。
+func TestWebSignatureRequiresSecret(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	b.Cfg.PublicURL = "https://ad.example.com"
+
+	if sig := appealSig(b.Shared, 1, 555); sig != "" {
+		t.Errorf("缺密钥时签名应为空，得到 %q", sig)
+	}
+	// 空密钥伪造的签名不得通过。
+	mac := hmac.New(sha256.New, []byte(""))
+	mac.Write([]byte("apv:1"))
+	forged := hex.EncodeToString(mac.Sum(nil))[:32]
+	if webSigOK(b.Shared, "apv:1", forged) {
+		t.Error("空密钥伪造的签名不应通过校验")
+	}
+	if webSigOK(b.Shared, "apv:1", "") {
+		t.Error("空签名不应通过校验")
+	}
+	if u := LogViewURL(b.Shared, 1); u != "" {
+		t.Errorf("缺密钥时不该发查看页链接，得到 %q", u)
+	}
+
+	// 生成密钥后恢复正常。
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	if u := LogViewURL(b.Shared, 1); !strings.Contains(u, "/_w/v/1/") {
+		t.Errorf("有密钥后应能拼出链接，得到 %q", u)
 	}
 }
 

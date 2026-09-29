@@ -44,6 +44,10 @@ type groupMember struct {
 	// Whitelisted 是 /white 的本群白名单。随画像一起读出来，判定链路
 	// 就不必再为每条消息单查一次这一列。
 	Whitelisted bool
+	// Known 表示这一行确实读到了。读失败时为零值，而零值画像会让
+	// isNewbie 把老成员当新人从重处置——失败方向反了，所以调用方
+	// 必须先看这个标记。
+	Known bool
 }
 
 func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
@@ -56,6 +60,7 @@ func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 	if err != nil {
 		return gm, false
 	}
+	gm.Known = true
 	return gm, true
 }
 
@@ -121,7 +126,9 @@ func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
 		if got, ok := loadMember(b.Store, chatID, uid); ok {
 			return got
 		}
+		return gm // Known=false：调用方按「画像未知」处理
 	}
+	gm.Known = true
 	return gm
 }
 
@@ -151,7 +158,9 @@ func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
 		if got, ok := loadMember(b.Store, chatID, uid); ok {
 			return got
 		}
+		return gm // Known=false：调用方按「画像未知」处理
 	}
+	gm.Known = true
 	return gm
 }
 
@@ -304,7 +313,12 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 		}
 	}
 	tgt := &tg.Message{Chat: m.Chat, From: target, MessageID: targetMsgID, Text: repText}
-	gm, _ := loadMember(b.Store, m.Chat.ID, target.ID)
+	gm, ok := loadMember(b.Store, m.Chat.ID, target.ID)
+	if !ok {
+		// 读不到画像时复查按新人档处置会误伤：直接放弃这次复查。
+		sendGroup(b, m.Chat.ID, "读取该用户的画像失败，请稍后再试。", nil)
+		return
+	}
 	profile := buildProfile(b, tgt, gm, time.Now().Unix())
 	state := buildState(b, snap, tgt, profile)
 	state.ReviewHistory = make([]core.CtxMsg, 0, len(hist))
@@ -483,6 +497,13 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		gm, _ = loadMember(b.Store, m.Chat.ID, m.From.ID)
 	} else {
 		gm = touchMember(b, m.Chat.ID, m.From.ID, at)
+	}
+	// 画像读失败：不判、不处置。零值画像会让 isNewbie 把老成员当新人、
+	// 按最严档删+禁言——失败方向反了。宁可不判这一条，也不能误伤。
+	if !gm.Known {
+		slog.Warn("反广告：画像读取失败，本条不判定", "chat", m.Chat.ID, "uid", m.From.ID)
+		logAd(b, m, adVerdict{Reason: "成员画像读取失败"}, "none", "画像读取失败，未判定")
+		return
 	}
 
 	// 解禁码兑换：四条门槛全满足才截下这条消息（见 handleGroupRedeem），

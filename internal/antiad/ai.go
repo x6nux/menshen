@@ -1091,6 +1091,11 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 	return out
 }
 
+// digestRunning 保证形态总结不重入。面板的「立即重新总结」每次点击都会
+// 起一轮（go RunAdDigest(force=true)），重复点击会并发调大模型、竞态写
+// 摘要与游标，还会把同一批样本总结出两个版本。
+var digestRunning atomic.Bool
+
 // runAdDigest 把已确认的广告样本与误判样本总结成一段形态摘要，
 // 回注入后续判定。force 为真时无视样本数阈值（面板上的「立即重新总结」）。
 //
@@ -1098,6 +1103,12 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 //
 // 挂在 shared 上：摘要是全局的一份，多 bot 接入时也只该总结一次。
 func RunAdDigest(sh *core.Shared, force bool) {
+	if !digestRunning.CompareAndSwap(false, true) {
+		slog.Info("反广告：形态总结已在运行，跳过这一轮")
+		return
+	}
+	defer digestRunning.Store(false)
+
 	snap := sh.Cache.Snap()
 	_, llmModels := snap.ModelsFor(0)
 	if len(llmModels) == 0 {

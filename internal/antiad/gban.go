@@ -19,6 +19,10 @@ import (
 // 直接撞上 Telegram 对 bot 的全局速率限制，连正常的业务消息一起发不出。
 const gbanFanout = 4
 
+// gbanSem 是进程级的执行闸。每个调用各拿一份信号量的话，并发的命中叠加
+// 起来对 TG 的实际并发就是无上限的（刷屏高峰里命中会接连发生）。
+var gbanSem = make(chan struct{}, gbanFanout)
+
 // gbanEnabled 报告联合封禁总开关。它是全局的，只有主管理员能动 ——
 // 一次操作会波及所有接入方的所有群。
 func GbanEnabled(sh *core.Shared) bool {
@@ -65,11 +69,21 @@ func maybeGban(b *core.Bot, srcChat, uid int64, reason string) {
 	if !GbanEnabled(b.Shared) {
 		return
 	}
-	shared := botInGlobal(b.Cache.Snap(), b.BotID())
+	snap := b.Cache.Snap()
+	shared := botInGlobal(snap, b.BotID())
+	// 已在适用名单里的人不再重复全平台扇出：刷屏号连着几条消息都判到最高档
+	// 时，每一条都扇出几百个 banChatMember 只是撞 TG 的限流。
+	_, ownListed := snap.GbanOwnBans[b.Owner()][uid]
+	_, globalListed := snap.Gban[uid]
+	alreadyEnforced := ownListed && (!shared || globalListed)
+
 	// 两条记录一次写完、只刷新一次快照：逐条写会各重建一次全量配置
 	// （十几条查询），而刷屏高峰里这是每条最高档处置都要付的。
 	if err := gbanRecordBoth(b.Shared, b.Owner(), uid, reason, srcChat, b.BotID(), shared); err != nil {
 		slog.Error("联合封禁：入账失败", "uid", uid, "err", err)
+		return
+	}
+	if alreadyEnforced {
 		return
 	}
 	go func() {
@@ -194,7 +208,7 @@ func EnforceGban(sh *core.Shared, uid int64, reason string) {
 // 的语义是「先踢出群再解封」，会把无辜的人踢出去。
 func gbanFanover(sh *core.Shared, uid int64, method string, chats []int64,
 	onlyIfBanned bool) int {
-	sem := make(chan struct{}, gbanFanout)
+	sem := gbanSem
 	done := make(chan struct{})
 	n := 0
 
@@ -497,8 +511,8 @@ func CleanupData(sh *core.Shared) {
 	if _, err := deleteBatched(sh, "web_checks", "created_at < ?", cut); err != nil {
 		slog.Error("清理网页验证记录失败", "err", err)
 	}
-	if _, err := deleteBatched(sh, "appeals", `updated_at < ? AND status NOT IN
-		('statement','ai','web','code','noweb')`, cut); err != nil {
+	if _, err := deleteBatched(sh, "appeals", `updated_at < ? AND status NOT IN (`+
+		store.AppealOpenStatusesSQL+`)`, cut); err != nil {
 		slog.Error("清理申诉单失败", "err", err)
 	}
 	if _, err := deleteBatched(sh, "appeal_redeems",
