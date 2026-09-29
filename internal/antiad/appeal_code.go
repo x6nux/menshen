@@ -279,7 +279,9 @@ func HandleDirectRedeem(b *core.Bot, m *tg.Message, code string) {
 		}
 	}
 
-	// 联合封禁：只有主管理员能解名单。
+	// 联合封禁：全局名单只有主管理员能解（那是全平台的决定）；专属组的
+	// 账本归 bot 的归属人，归属人（或主管理员）兑换时一并解除 —— 只解群
+	// 里的禁言不动名单的话，他人重新进群又会被拦。
 	gbanNote := "联合封禁名单未动（那是全平台的决定）"
 	if isMain {
 		if _, inList := snap.Gban[ap.UserID]; inList {
@@ -287,6 +289,18 @@ func HandleDirectRedeem(b *core.Bot, m *tg.Message, code string) {
 			gbanNote = "已解除联合封禁（全平台）"
 		} else {
 			gbanNote = "此人不在联合封禁名单里"
+		}
+	}
+	if rec := snap.Bots[ap.BotID]; rec != nil {
+		if _, inList := snap.GbanOwnBans[rec.OwnerID][ap.UserID]; inList &&
+			(isMain || uid == rec.OwnerID) {
+			if err := GbanOwnRemoveBan(b.Shared, rec.OwnerID, ap.UserID); err != nil {
+				failNotes = append(failNotes, "专属联合封禁解除失败："+err.Error())
+			} else if isMain {
+				gbanNote += "；已解除专属联合封禁"
+			} else {
+				gbanNote = "已解除专属联合封禁"
+			}
 		}
 	}
 

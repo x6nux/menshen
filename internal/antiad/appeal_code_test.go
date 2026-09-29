@@ -147,6 +147,27 @@ func TestGroupRedeemExpiredAndSelf(t *testing.T) {
 
 // TestDirectRedeemScopes：归属人兑换只解本 bot 名下的群、不动联合封禁名单；
 // 主管理员兑换解全平台并解除联合封禁。
+// TestDirectRedeemLiftsOwnGban：归属人兑换解禁码时，专属组的账本一并解除
+// （那是他自己的名单）；不解除的话人重新进群又会被拦。
+func TestDirectRedeemLiftsOwnGban(t *testing.T) {
+	b, _, _ := testutil.NewTestBotOwned(t, 1, 2) // 主管理员 1、归属人 2
+	if err := GbanOwnSetEnabled(b.Shared, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnAddBan(b.Shared, 2, 555, "赌博引流", -100); err != nil {
+		t.Fatal(err)
+	}
+	const code = "MSU-OWNB-AN01"
+	insertCodedAppeal(t, b, 555, code, time.Now().Add(time.Hour).Unix())
+
+	HandleDirectRedeem(b, &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 2},
+		Chat: &tg.Chat{ID: 2, Type: "private"}}, code)
+
+	if _, still := b.Cache.Snap().GbanOwnBans[2][555]; still {
+		t.Error("归属人兑换后专属组账本应解除")
+	}
+}
+
 func TestDirectRedeemScopes(t *testing.T) {
 	b, _, _ := testutil.NewTestBotOwned(t, 1, 2) // 主管理员 1、归属人 2
 	testutil.EnableAntiad(t, b, -100)

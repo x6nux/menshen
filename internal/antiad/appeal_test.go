@@ -63,6 +63,39 @@ func TestAppealEntryAcceptsLogPayload(t *testing.T) {
 	}
 }
 
+// TestAppealLiftsOwnGban：专属联合封禁（bot 归属人的账本）在对应 bot 上
+// 受理：入口要认出这条限制，AI 撤销时要把它从账本里移掉 —— 只解群里的
+// 禁言不动名单的话，他重新进群又会被拦。
+func TestAppealLiftsOwnGban(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if err := b.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnSetEnabled(b.Shared, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnSetChat(b.Shared, 1, -100, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnAddBan(b.Shared, 1, 555, "赌博引流", -100); err != nil {
+		t.Fatal(err)
+	}
+	appealAI(t, b, false, "资料已改正")
+
+	if !HandleNonStaffPrivate(b, appealDM(555), "/start") {
+		t.Fatal("专属联合封禁的人 /start 应进申诉入口")
+	}
+	HandleAppealCallback(b, appealGo(555))
+	waitIdle(t, b)
+
+	if _, still := b.Cache.Snap().GbanOwnBans[1][555]; still {
+		t.Error("AI 撤销后应把专属组账本条目标掉")
+	}
+	if st := appealStatus(t, b, 555); st != "lifted" {
+		t.Errorf("申诉单应进入 lifted，得到 %q", st)
+	}
+}
+
 // TestAppealAIOverturnsAndLifts：AI 撤销原判时直接解除（含冷判定禁言），
 // 给申诉人回执并给归属人推简报卡片；申诉开销记在申诉单上，不污染判定账本。
 func TestAppealAIOverturnsAndLifts(t *testing.T) {

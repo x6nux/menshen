@@ -244,6 +244,24 @@ func TestWorkBotNonStaffStartOnGbanShowsAppeal(t *testing.T) {
 	}
 }
 
+// TestMainBotGlobalGbanAppeal：全局联合封禁的申诉主 bot 也受理 —— 它是
+// 全局组对外的入口；专属组的封禁才归对应的工作 bot。
+func TestMainBotGlobalGbanAppeal(t *testing.T) {
+	mainBot, fake, sh := testutil.NewTestMainBotDispatch(t, 777, 777, nil)
+	if err := antiad.GbanAdd(sh, 12345, "赌博引流", -100, testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	dispatch(mainBot, &tg.Update{Message: &tg.Message{
+		MessageID: 1, Date: 1700000000, Text: "/start",
+		From: &tg.TGUser{ID: 12345, Username: "random"},
+		Chat: &tg.Chat{ID: 12345, Type: "private"},
+	}})
+	p := fake.LastCall("sendMessage")
+	if p == nil || !strings.Contains(p["text"].(string), "联合封禁") {
+		t.Fatalf("全局封禁的人 /start 应进申诉入口，得到 %v", p)
+	}
+}
+
 // TestMainBotStillServesPanel 确认限制只针对「群」，私聊面板不受影响：
 // 配置管理与接入其他 bot 正是主 bot 的本职。
 func TestMainBotStillServesPanel(t *testing.T) {

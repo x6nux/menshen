@@ -153,6 +153,18 @@ func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 		out = append(out, appealPenalty{Type: "gban", ChatID: g.SrcChat,
 			Reason: g.Reason, At: g.CreatedAt})
 	}
+
+	// 专属联合封禁（本 bot 归属人的账本）：它只在本 bot 名下圈定的群里
+	// 执行，所以申诉入口也在对应 bot —— 全局组的申诉才去主 bot。主 bot
+	// 不判定、没有群，不进这一支；组关了或没圈群的执行上没有覆盖，不算。
+	snap := b.Cache.Snap()
+	if rec := snap.Bots[b.BotID()]; rec != nil && !rec.IsMain &&
+		snap.GbanOwnOn(rec.OwnerID) && len(snap.GbanOwnChats[rec.OwnerID]) > 0 {
+		if g, ok := snap.GbanOwnBans[rec.OwnerID][uid]; ok {
+			out = append(out, appealPenalty{Type: "gban_own", ChatID: g.SrcChat,
+				Reason: g.Reason, At: g.CreatedAt})
+		}
+	}
 	return out
 }
 
@@ -230,6 +242,8 @@ func penaltyLines(penalties []appealPenalty) string {
 			fmt.Fprintf(&sb, "• 消息判定处置（群 <code>%d</code>）\n", p.ChatID)
 		case "gban":
 			sb.WriteString("• 联合封禁（全平台）\n")
+		case "gban_own":
+			sb.WriteString("• 联合封禁（本 bot 名下群组）\n")
 		}
 	}
 	return sb.String()
@@ -538,6 +552,15 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 		case "gban":
 			hadGban = true
 			LiftGban(b.Shared, uid)
+		case "gban_own":
+			// 专属组：账本归 bot 的归属人，AI 撤销同样要把它移掉，
+			// 否则他重新进群又会被拦。
+			hadGban = true
+			if rec := b.Cache.Snap().Bots[b.BotID()]; rec != nil {
+				if err := GbanOwnRemoveBan(b.Shared, rec.OwnerID, uid); err != nil {
+					slog.Error("申诉：解除专属联合封禁失败", "uid", uid, "err", err)
+				}
+			}
 		}
 	}
 	unbanGateClear(b.Shared, uid)
