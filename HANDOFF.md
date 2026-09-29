@@ -1,11 +1,11 @@
 # 交接文档（门神 Menshen）
 
-> 交接时间：2026-09-28（晚场更新）｜ 仓库：https://github.com/x6nux/menshen ｜ 分支：main（已全部推送，最新 `b158f3a`）
+> 交接时间：2026-09-28（晚场更新）｜ 仓库：https://github.com/x6nux/menshen ｜ 分支：main（已全部推送，最新 `383ae21`）
 > 本文不含任何密钥。服务器密码、bot token 与 Turnstile 密钥在 `dev/deploy.md`（本机文件，未提交）。
 
 ## 1. 一句话现状
 
-线上 dev 实例（`https://menshen.free.edu.kg`）跑 `b158f3a`：主 bot 提供面板 /
+线上 dev 实例（`https://menshen.free.edu.kg`）跑 `383ae21`：主 bot 提供面板 /
 Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定（该群目前是**演练模式**）。
 申诉网页子系统已端到端验证过（合成单，已清理）：Turnstile → siteverify → 签发解禁码全通。
 唯一没跑过的是「真实处罚 → 真人申诉 → 兑换」这条链。
@@ -45,6 +45,8 @@ Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定�
 | `be2b712` | 明显广告（置信度 ≥ 处置线 且危害度 ≥ 2）的群内提醒只弹 30 秒（`antiad_alert_ttl_hard`） | 测试 |
 | `bfedf05` | 识图拿**思考内容**兜底（推理模型偶发正文为空）+ 空响应重试一次 | 测试 + 上游实测复现 |
 | `b158f3a` | 复判同时给理由与**危害度**；群内提醒改半行短结论（广告 置信度:95%，危害度:2.2），完整理由留在流水/卡片/查看页 | 测试 |
+| `94087c0` | 冷判定预筛补资金盘/代收线（代收代付、USDT、@联系方式等） | 测试 |
+| `383ae21` | **冷判定预筛默认关闭**：人人送检（判定模型便宜，门口不漏人优先） | 测试 |
 
 **命令改名（用户要求）**：`/ad`→`/check`、`/adb`→`/ban`、`/adw`→`/white`；
 管理员私聊新增 `/log <id>`、`/user <uid>`。旧命令不再响应。
@@ -59,7 +61,7 @@ Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定�
 | 域名 | `https://menshen.free.edu.kg`（Cloudflare 回源 80，TLS 在 CF 终止） |
 | 服务 | systemd `menshen-dev`，`/opt/menshen-dev/menshen`，配置 `/opt/menshen-dev/config.yaml`，库 `/opt/menshen-dev/data/data.db` |
 | bot | 主 `@admenshen_bot`（8715529198，运行中）；工作 `@anti_ad_ai_bot`（7674016285，**已启用、运行中**） |
-| 部署版本 | `b158f3a`（2026-09-29 14:4x 部署）；升级时把停用期间积压的 216 条陈旧更新丢弃了（`deleteWebhook?drop_pending_updates=true` 后重新注册） |
+| 部署版本 | `383ae21`（2026-09-29 16:0x 部署）；升级时把停用期间积压的 216 条陈旧更新丢弃了（`deleteWebhook?drop_pending_updates=true` 后重新注册） |
 | 上游/模型 | 单上游 `lfree`；`antiad_so_model=lfree/jev-1.13`、`antiad_llm_model=lfree/mimo-v2.5`（旧单值键，读侧兼容） |
 | 生效群 | 工作 bot 名下 1 个：`-1001976894016`「优选IP」，`enabled=1`、**`dryrun=1`（演练）**、群内展示开、处罚跟随 bot（默认禁言 24h） |
 | 全局状态 | 总开关**已开**；冷判定为工作 bot 单独开（`antiad_cold=1`）；`antiad_judge_bots=1`（仅豁免管理员 bot，本次升级新默认） |
