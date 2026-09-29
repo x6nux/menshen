@@ -97,6 +97,15 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 
 	text := strings.TrimSpace(m.Text)
 
+	// 私聊 /start 的深链参数只在点击按钮的那一下出现，出问题（「参数读不到」）
+	// 时没有别的证据可查：到没到、到的是什么、走哪一支、点在哪个 bot 上，
+	// 全看这一行。
+	if text == "/start" || strings.HasPrefix(text, "/start ") {
+		slog.Info("私聊 /start", "bot", b.BotID(), "uid", m.From.ID,
+			"payload", strings.TrimSpace(strings.TrimPrefix(text, "/start")),
+			"staff", b.IsStaff(m.From.ID))
+	}
+
 	// 非管理员的私聊全部交给申诉通道：deep link、申诉理由输入、解禁码提示。
 	// 它必须排在权限判断之前：被限制发言的正是普通用户，按「非管理员
 	// 一律忽略」处理会把整条申诉通道堵死。
