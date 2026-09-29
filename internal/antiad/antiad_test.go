@@ -2,7 +2,6 @@ package antiad
 
 import (
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -534,14 +533,40 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	if strings.Contains(text, "#12") || strings.Contains(text, "删除消息") {
 		t.Errorf("群内告警不该带处置细节:\n%s", text)
 	}
-	// 按钮只留一个：打开 bot 的深链带记录号（管理员点进记录卡片，
-	// 普通用户点进申诉入口）。
-	kb := fmt.Sprint(p["reply_markup"])
-	if !strings.Contains(kb, "t.me/testbot?start=log12") {
-		t.Errorf("告警应带打开 bot 的按钮（含记录号）:\n%s", kb)
+	// 文本链接带记录号：管理员点进记录卡片，普通用户进申诉入口。
+	// 群内提示已从内联按钮改为文本链接（按钮在部分客户端容易被忽略）。
+	if !strings.Contains(text, "① 点我申诉 (https://t.me/testbot?start=log12)") {
+		t.Errorf("告警应带申诉文本链接（含记录号）:\n%s", text)
 	}
-	if got := strings.Count(kb, "url:"); got != 1 {
-		t.Errorf("按钮应只有一个，得到 %d 个：%s", got, kb)
+	if p["reply_markup"] != nil {
+		t.Errorf("群内告警不该再挂内联按钮，得到 %v", p["reply_markup"])
+	}
+}
+
+// TestGroupFooterAppended：全局设置里的「群内附加链接」要原样附在群内提示
+// 末尾（转义后），例如「② 电报使用指南 (…)」。
+func TestGroupFooterAppended(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if err := b.PutSetting("antiad_group_footer",
+		"② 电报使用指南 (https://t.me/TGwikiAppBot)"); err != nil {
+		t.Fatal(err)
+	}
+	m := testutil.GroupMsg(-100, 42, 7, "广告")
+	text, _ := renderAdAlertBrief(b, m,
+		adVerdict{IsAd: true, Confidence: 0.9, Decider: "llm"},
+		adAction{Delete: true, Alert: true, Name: "deleted"}, "", 12, false)
+	if !strings.Contains(text, "② 电报使用指南 (https://t.me/TGwikiAppBot)") {
+		t.Fatalf("群内提示应附上附加链接:\n%s", text)
+	}
+	// 附加文本里的 HTML 按纯文本渲染，不得改排版。
+	if err := b.PutSetting("antiad_group_footer", "<b>加粗</b>"); err != nil {
+		t.Fatal(err)
+	}
+	text, _ = renderAdAlertBrief(b, m,
+		adVerdict{IsAd: true, Confidence: 0.9, Decider: "llm"},
+		adAction{Delete: true, Alert: true, Name: "deleted"}, "", 12, false)
+	if strings.Contains(text, "<b>加粗</b>") || !strings.Contains(text, "&lt;b&gt;") {
+		t.Errorf("附加文本应被转义:\n%s", text)
 	}
 }
 

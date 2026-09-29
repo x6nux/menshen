@@ -300,15 +300,18 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 	if !strings.Contains(stored, "简介写着推广内容引流") {
 		t.Errorf("完整理由应留在冷判定记录里，得到 %q", stored)
 	}
-	// 按钮带冷判定记录号：管理员点进来落到记录卡片，被限制的人进申诉入口。
+	// 文本链接带冷判定记录号：管理员点进来落到记录卡片，被限制的人进申诉入口。
+	// 群内提示已从内联按钮改为文本链接（按钮在部分客户端容易被忽略）。
 	var logID int64
 	if err := b.Store.Read.QueryRow(
 		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
 		t.Fatal(err)
 	}
-	kb := fmt.Sprint(p["reply_markup"])
-	if !strings.Contains(kb, fmt.Sprintf("t.me/testbot?start=ub%d", logID)) {
-		t.Errorf("通知按钮应带记录号 ub%d:\n%s", logID, kb)
+	if !strings.Contains(text, fmt.Sprintf("① 点我申诉 (https://t.me/testbot?start=log%d)", logID)) {
+		t.Errorf("通知应带申诉文本链接（含记录号 %d）:\n%s", logID, text)
+	}
+	if p["reply_markup"] != nil {
+		t.Errorf("群内通知不该再挂内联按钮，得到 %v", p["reply_markup"])
 	}
 	var cleanup int
 	if err := b.Store.Read.QueryRow(

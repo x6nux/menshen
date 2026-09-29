@@ -1533,14 +1533,13 @@ func verdictBrief(v adVerdict) string {
 	return s
 }
 
-// renderAdAlertBrief 渲染群内版告警：一行「uid + 结论」，外加一个打开
-// bot 的按钮（携带 start=appeal 参数，申诉入口在 bot 里接）。
+// renderAdAlertBrief 渲染群内版告警：一行「uid + 结论」，尾部跟文本链接
+// （① 申诉入口，② 管理员在全局设置里挂的附加链接）。
 //
 // 群里在场的人只在意「谁、因为什么」，置信度、处置动作、记录编号这些
-// 细节都收进流水与私聊汇总；处置按钮（判定正确/误判/删除/禁言）也一并
-// 收掉——误判申诉走按钮进 bot，补刀操作走配置台的记录页。昵称与原文
-// 照旧一个字不贴：广告号的昵称和正文本身就是广告，bot 把它们发回群里
-// 等于替它再发一遍（删除白做），还会让 bot 自己被 TG 当成广告号封掉。
+// 细节都收进流水与私聊汇总。昵称与原文照旧一个字不贴：广告号的昵称和正文
+// 本身就是广告，bot 把它们发回群里等于替它再发一遍（删除白做），还会让
+// bot 自己被 TG 当成广告号封掉。
 //
 // 演练标识不能省：没有它，群里会以为广告已经被删了。
 func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
@@ -1555,12 +1554,30 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 	if s := verdictBrief(v); s != "" {
 		sb.WriteString(" · " + html.EscapeString(s))
 	}
-	var rows [][][2]string
-	if b.Username != "" {
-		rows = append(rows, [][2]string{{
-			"🛡 打开 bot 处理", tg.URLBtn(botDeepLink(b, logID))}})
+	if links := groupLinks(b, logID); links != "" {
+		sb.WriteString("\n" + links)
 	}
-	return sb.String(), tg.InlineKB(rows...)
+	return sb.String(), nil
+}
+
+// groupLinks 渲染群内提示尾部的文本链接块：
+//
+//	① 点我申诉 (https://t.me/<bot>?start=<记录号>)
+//	② <全局设置里的附加链接原文>
+//
+// 用文本链接而不是内联按钮：按钮在部分客户端里容易被忽略，纯文本里的
+// 裸链接人人都点得动、也复制得走。带记录号的 deep link 按身份分流——
+// 管理员点进记录卡片，被限制的人进申诉入口（与旧按钮一致）。
+func groupLinks(b *core.Bot, logID int64) string {
+	var lines []string
+	if b.Username != "" {
+		lines = append(lines, "① 点我申诉 ("+botDeepLink(b, logID)+")")
+	}
+	if extra := strings.TrimSpace(b.Cache.Snap().Setting("antiad_group_footer")); extra != "" {
+		// 附加文本由管理员填写，按纯文本转义：里面出现 HTML 时不该改排版。
+		lines = append(lines, html.EscapeString(extra))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // botDeepLink 拼「打开 bot」的深链。带上记录号：管理员点进去直接落到

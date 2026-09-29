@@ -321,7 +321,7 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		if groupText == "" {
 			groupText = reason
 		}
-		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, groupText), joinMuteKB(b, logID))
+		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, groupText, logID), nil)
 		scheduleAlertCleanup(b, conf.ChatID, msgID, alertTTL(b, b.Cache.Snap(), v))
 	}
 	saveJoinMute(b, conf.ChatID, u.ID, reason, 0)
@@ -400,36 +400,25 @@ func GCJoinNotices(sh *core.Shared) {
 	})
 }
 
-// joinMuteNotice 渲染群内那条告知消息：一行「uid + 原因」。
+// joinMuteNotice 渲染群内那条告知消息：一行「uid + 原因」，尾部跟文本链接
+// （① 申诉入口，② 全局设置里的附加链接）。
 //
 // 不写昵称也不写资料：两者常常就是广告本身（昵称里的引流话术、理由里
 // 引述的简介链接），bot 把它们发进群等于替广告号再发一遍，还会让 bot
 // 自己被当成广告号封掉。面向本人的具体改正建议放在私聊的申诉流程里给
 // （appeal.go），群内这条只负责让在场的人知道「谁、被限制发言了」。
-func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string) string {
+func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string, logID int64) string {
 	r := strings.TrimSpace(reason)
 	if r == "" {
 		r = "账号资料中含有推广或引流内容"
 	}
-	return "🔒 " + userLink(u.ID) + " · " + html.EscapeString(core.TruncateRunes(r, 80))
+	text := "🔒 " + userLink(u.ID) + " · " + html.EscapeString(core.TruncateRunes(r, 80))
+	if links := groupLinks(b, logID); links != "" {
+		text += "\n" + links
+	}
+	return text
 }
 
-// joinMuteKB 是群内那条通知上的按钮。
-//
-// 用 deep link 而不是 callback：解除流程要出验证码、要等对方改完资料，
-// 这些都不适合刷在群里；而 Telegram 不允许 bot 主动向没交互过的人
-// 发起私聊，deep link 是把人引进私聊的唯一办法。
-//
-// 参数带冷判定记录号（ub<记录号>）：管理员点进来落到那条记录卡片，
-// 被限制的人点进来是申诉入口 —— 同一颗按钮按身份分流。
-func joinMuteKB(b *core.Bot, logID int64) map[string]any {
-	if b.Username == "" {
-		// 拿不到自己的用户名就拼不出 deep link。退回到纯文字提示，
-		// 总比挂一个点不动的按钮强。
-		return nil
-	}
-	return tg.InlineKB([][2]string{{
-		"📝 申诉",
-		tg.URLBtn(fmt.Sprintf("https://t.me/%s?start=%s", b.Username, unbanPayload(logID))),
-	}})
-}
+// joinMuteKB 已废弃：群内提示改用文本链接（见 groupLinks），不再挂内联
+// 按钮——按钮在部分客户端里容易被忽略，纯文本链接更直接、也能复制。
+func joinMuteKB(b *core.Bot, logID int64) map[string]any { return nil }

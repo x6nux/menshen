@@ -454,6 +454,25 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 		}
 		miniOK(w, map[string]any{"ok": true})
 		return
+	case "antiad_group_footer":
+		// 群内提示尾部的附加文本（自由文本）：填 - 或清空 = 去掉。
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
+			return
+		}
+		if val == "-" {
+			val = ""
+		}
+		if len([]rune(val)) > 300 {
+			miniErr(w, http.StatusBadRequest, "附加文本过长（上限 300 字）")
+			return
+		}
+		if err := sh.PutSetting("antiad_group_footer", val); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		miniOK(w, map[string]any{"ok": true})
+		return
 	}
 
 	sp := settingSpecByKey(key)

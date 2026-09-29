@@ -37,6 +37,22 @@ type settingSpec struct {
 var tzSpec = settingSpec{key: "tz_name", label: "展示时区",
 	hint: "IANA 时区名，如 Asia/Shanghai、Europe/London；填 - 恢复默认 Asia/Shanghai"}
 
+// groupFooterSpec 是群内提示尾部的附加链接（字符串型）。与 tzSpec 一样
+// 不走整数校验，输入与 Mini App 各有一份专门处理。
+var groupFooterSpec = settingSpec{key: "antiad_group_footer", label: "群内提示附加链接",
+	hint: "原样附在群内告警与进群限制通知末尾，例如：② 电报使用指南 (https://t.me/TGwikiAppBot)；填 - 清空"}
+
+// stringSpecByKey 返回字符串型设置项（不走 settingSpecs 的整数校验）。
+func stringSpecByKey(k string) *settingSpec {
+	switch k {
+	case tzSpec.key:
+		return &tzSpec
+	case groupFooterSpec.key:
+		return &groupFooterSpec
+	}
+	return nil
+}
+
 // settingSpecs 决定面板的展示顺序与校验规则。
 //
 // 不在此表的另外三类：布尔开关（antiad_enabled / gban_enabled 等）走
@@ -148,8 +164,8 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		sp := settingSpecByKey(parts[3])
-		if sp == nil && parts[3] == tzSpec.key {
-			sp = &tzSpec
+		if sp == nil {
+			sp = stringSpecByKey(parts[3])
 		}
 		if sp == nil || (sp.group != "" && sp.group != "both") {
 			b.AnswerCallback(q.ID, "未知设置项")
@@ -339,6 +355,9 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 	}
 	rows = append(rows, [][2]string{{
 		"🌏 展示时区 · " + snap.Setting("tz_name"), "a:st:e:" + tzSpec.key}})
+	rows = append(rows, [][2]string{{
+		"📎 群内附加链接 · " + btnValue(snap.Setting(groupFooterSpec.key)),
+		"a:st:e:" + groupFooterSpec.key}})
 	rows = append(rows, [][2]string{{"◀️ 返回主菜单", "a:main"}})
 
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
@@ -364,24 +383,34 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			return
 		}
 		sp := settingSpecByKey(key)
-		if sp == nil && key == tzSpec.key {
-			// 时区是字符串型：只认 IANA 名称，其余一律打回重填。
-			name := strings.TrimSpace(text)
-			if name == "-" {
-				name = "Asia/Shanghai"
-			}
-			if _, err := time.LoadLocation(name); err != nil {
-				b.Send(chatID, "不是有效的 IANA 时区名（如 Asia/Shanghai、"+
-					"Europe/London），请重新输入：", nil)
-				return
+		if ssp := stringSpecByKey(key); sp == nil && ssp != nil {
+			val := strings.TrimSpace(text)
+			if key == tzSpec.key {
+				// 时区只认 IANA 名称，其余一律打回重填。
+				if val == "-" {
+					val = "Asia/Shanghai"
+				}
+				if _, err := time.LoadLocation(val); err != nil {
+					b.Send(chatID, "不是有效的 IANA 时区名（如 Asia/Shanghai、"+
+						"Europe/London），请重新输入：", nil)
+					return
+				}
+			} else {
+				// 附加链接是自由文本：填 - 清空；转义留到渲染时做。
+				if val == "-" {
+					val = ""
+				}
+				if len([]rune(val)) > 300 {
+					b.Send(chatID, "附加文本过长（上限 300 字），请重新输入：", nil)
+					return
+				}
 			}
 			b.DropPending(uid)
-			if err := b.PutSetting("tz_name", name); err != nil {
+			if err := b.PutSetting(key, val); err != nil {
 				b.Send(chatID, "保存失败。", nil)
 				return
 			}
-			b.Send(chatID, "✅ 展示时区已设为 <code>"+
-				html.EscapeString(name)+"</code>", nil)
+			b.Send(chatID, "✅ 已更新<b>"+html.EscapeString(ssp.label)+"</b>。", nil)
 			showSettings(b, chatID, 0)
 			return
 		}
