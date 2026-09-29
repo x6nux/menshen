@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"menshen/internal/antiad"
 	"menshen/internal/core"
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
@@ -143,5 +144,39 @@ func TestChatDetailShowsPunishDuration(t *testing.T) {
 	}
 	if strings.Contains(text, "要改成永久") {
 		t.Error("已开启封禁时不该再提示改法")
+	}
+}
+
+// TestFalsePositiveLiftsGban：误判时由这条判定派生的联合封禁也要撤——
+// 名单跨所有接入群执行，留着等于让一条被判错的记录继续全平台封人
+// （线上真实事件：ping0.cc 被误判后，人还留在名单里）。
+func TestFalsePositiveLiftsGban(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, dispatch)
+	sh := b.Shared
+	testutil.EnableAntiad(t, b, -100)
+	if err := antiad.GbanAdd(sh, 555, "自动判定：测试", -100, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := antiad.GbanOwnAddBan(sh, b.Owner(), 555, "自动判定：测试", -100); err != nil {
+		t.Fatal(err)
+	}
+	id := seedLog(t, b, 555, "ping0.cc", "deleted_muted")
+
+	HandleAdminCallback(b, cb(777, "a:ad:fp:"+itoa(id)))
+
+	if _, in := sh.Cache.Snap().Gban[555]; in {
+		t.Error("误判应撤掉全局联合封禁")
+	}
+	if _, in := sh.Cache.Snap().GbanOwnBans[777][555]; in {
+		t.Error("误判应撤掉操作者专属组里的条目")
+	}
+	var action, reason string
+	b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log WHERE id=?`, id).
+		Scan(&action, &reason)
+	if action != "undone" {
+		t.Errorf("流水应标记 undone，得到 %q", action)
+	}
+	if !strings.Contains(reason, "联合封禁") {
+		t.Errorf("理由里应注明撤了名单，得到 %q", reason)
 	}
 }

@@ -227,6 +227,18 @@ func deleteMessages(b *core.Bot, chatID int64, ids []int64) (bool, string) {
 	return true, ""
 }
 
+// gbanWorthy 报告这次判定够不够格进联合封禁名单。
+//
+// 联合封禁会把人从**所有**接入群一起请出去，比单群禁言重得多，所以除了
+// 「是广告 + 要罚」之外还要一条**独立的证据线**：按置信度分档时「禁言档」
+// 本身就意味着过了处置线；按模型结论定档（antiad_bool_verdict）时置信度
+// 不参与档位，必须把这条线单独补回来——否则 62% 的误报也会把人全平台封掉。
+func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
+	hard := float64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
+	severe := float64(snap.BotSettingInt(b.BotID(), "antiad_alert_severe", 2))
+	return v.Confidence*100 >= hard || v.Severity >= severe
+}
+
 // logAction 是记进流水的动作名。演练期加 dryrun: 前缀：那些动作从未真实
 // 发生，误判处理据此不去解禁。
 func logAction(act adAction, dryrun bool) string {
@@ -323,9 +335,9 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	// 应该还是干净的。复判判为正常的也不算。
 	if v.IsAd && act.Name != "none" && !dryrun {
 		BumpAdHits(b, m.Chat.ID, m.From.ID, 1)
-		// 联合封禁只认最高档：那一档意味着置信度过了 hard 线，而联合封禁会
-		// 把人从所有接入群一起请出去，证据不足不能动。
-		if act.Mute || act.Ban {
+		// 联合封禁只认证据够硬的：它会把人从所有接入群一起请出去，而
+		// 按模型结论定档时档位不带置信度信息（见 gbanWorthy）。
+		if (act.Mute || act.Ban) && gbanWorthy(b, snap, v) {
 			maybeGban(b, m.Chat.ID, m.From.ID, "自动判定："+core.TruncateRunes(v.Reason, 80))
 		}
 	}

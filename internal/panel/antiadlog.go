@@ -441,7 +441,9 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		// 那是演练模式唯一的漏点。
 		unmuted, desc := true, ""
 		switch row.Action {
-		case "muted", "deleted_muted":
+		case "muted", "deleted_muted", "gban_muted":
+			// gban_muted 是联合封禁在发言路径上的禁言（不是名单本身）：
+			// 名单另由下面的 AdminLiftGban 撤，但群里的禁言也得解掉。
 			unmuted, desc = antiad.Unmute(b, row.ChatID, row.UserID)
 		case "banned", "deleted_banned":
 			unmuted, desc = antiad.Unban(b, row.ChatID, row.UserID)
@@ -449,12 +451,27 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		// 同样的内容别再被当成广告直接删（见 antiad 的内容哈希）。
 		antiad.ForgetAdHash(b, row.Text)
 		antiad.BumpAdHits(b, row.ChatID, row.UserID, -1)
-		antiad.UpdateAdLog(b, row.ID, "undone", appendReason(row.Reason, "管理员标记误判"))
+		// 这条判定作废了，由它派生的联合封禁也得一起撤：名单是跨所有接入群
+		// 执行的，留着等于让一条被判错的记录继续全平台封人。只有服务管理员
+		// 能动名单（群管理员点的误判只解本群，不动全平台名单）。
+		lifted := ""
+		if b.IsStaff(q.From.ID) {
+			lifted = antiad.AdminLiftGban(b.Shared, q.From.ID, row.UserID)
+		}
+		reason := "管理员标记误判"
+		if lifted != "" {
+			reason += "，已撤除" + lifted
+		}
+		antiad.UpdateAdLog(b, row.ID, "undone", appendReason(row.Reason, reason))
 		if !unmuted {
 			b.AnswerCallback(q.ID, "已标记误判，但解除限制失败: "+core.TruncateRunes(desc, 40))
 			return
 		}
-		b.AnswerCallback(q.ID, "已标记误判并解除限制")
+		msg := "已标记误判并解除限制"
+		if lifted != "" {
+			msg += "；已撤除" + lifted
+		}
+		b.AnswerCallback(q.ID, msg)
 
 	case "del":
 		if ok, desc := b.CallOK("deleteMessage", map[string]any{

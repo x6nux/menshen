@@ -165,3 +165,45 @@ func TestAdminLiftGban(t *testing.T) {
 		t.Errorf("不在名单里应返回空串，得到 %q", got)
 	}
 }
+
+// TestGbanNeedsHardEvidence：联合封禁会把人从所有接入群请出去，必须有一条
+// 独立于档位的证据线。按模型结论定档时置信度不参与档位，62% 的误报曾经
+// 因此被写进名单（线上真实事件，管理员随即标了误判）。
+func TestGbanNeedsHardEvidence(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	fake := b.TG.(*testutil.FakeTG)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+	snap := b.Cache.Snap()
+
+	low := adVerdict{IsAd: true, Confidence: 0.62, Decider: "systemone+llm"}
+	if gbanWorthy(b, snap, low) {
+		t.Error("62% 的判定不够格进联合封禁")
+	}
+	high := adVerdict{IsAd: true, Confidence: 0.95, Decider: "systemone+llm"}
+	if !gbanWorthy(b, snap, high) {
+		t.Error("95% 的判定应够格")
+	}
+	// 危害度高的（systemone 判色情/诈骗）即使置信度没到线也算。
+	severe := adVerdict{IsAd: true, Confidence: 0.7, Severity: 2.5, Decider: "systemone"}
+	if !gbanWorthy(b, snap, severe) {
+		t.Error("危害度达阈值时应够格")
+	}
+
+	// 端到端：bool 模式下 62% 的新人广告只禁言、不进名单。
+	fakeAIWith(t, b, soReply("ad", 0.62, "promo", "message"),
+		llmReply(true, 0.62, "promo", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "ping0.cc"))
+	waitIdle(t, b)
+	if _, in := b.Cache.Snap().Gban[42]; in {
+		t.Error("低置信误报不该进联合封禁名单")
+	}
+	if n := fake.CountCalls("restrictChatMember"); n == 0 {
+		t.Error("单群禁言照常执行")
+	}
+}
