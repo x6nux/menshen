@@ -85,6 +85,35 @@ func TestAICallDoesNotRetry4xx(t *testing.T) {
 	}
 }
 
+// TestSystemOneReasonFormat：初判理由的格式是给人看的：不带 "systemone"
+// 前缀（来源在记录卡片上另有字段），is_ad 选项翻成人话，置信度/危害度
+// 带冒号。
+func TestSystemOneReasonFormat(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	choice := "ad"
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"answers":{"is_ad":{"choice":"` + choice + `","confidence":1},` +
+			`"ad_kind":{"choice":"scam"},"ad_scope":{"choice":"message"},` +
+			`"severity":{"score":2.2}}}`))
+	})
+
+	v, err := judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "判定 广告 置信度:100%，危害度:2.2"; v.Reason != want {
+		t.Errorf("广告初判理由 = %q，期望 %q", v.Reason, want)
+	}
+	choice = "clean"
+	v, err = judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "判定 正常 置信度:100%，危害度:2.2"; v.Reason != want {
+		t.Errorf("正常初判理由 = %q，期望 %q", v.Reason, want)
+	}
+}
+
 // TestVerdictCarriesModel 确认模型名一路带到 verdict 上：换模型后校准阈值，
 // 第一件事就是知道眼前这条结论出自哪个模型。Decider 只说走了几级，说不出是谁。
 func TestVerdictCarriesModel(t *testing.T) {

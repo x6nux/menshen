@@ -37,8 +37,11 @@ type adVerdict struct {
 	// message = 只有这条消息是。前者连带删除此人近期的全部消息；后者的内容
 	// 会记成哈希，同样的内容再出现直接删（见 hash.go）。
 	Scope string
-	Usage billing.Usage
-	Cost  int64 // quota
+	// Severity 是 systemone 给的危害度（0-3，可带小数）。复判的 JSON 里
+	// 没有这一项，所以复判结论恒为 0；群内提醒的短撤回只认初判这条。
+	Severity float64
+	Usage    billing.Usage
+	Cost     int64 // quota
 }
 
 const (
@@ -724,14 +727,28 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 		Confidence: isAd.Confidence,
 		Kind:       resp.Answers["ad_kind"].Choice,
 		Scope:      resp.Answers["ad_scope"].Choice,
+		Severity:   resp.Answers["severity"].Score,
 		Decider:    "systemone",
 		Model:      reply.Model,
 		Usage:      reply.Usage,
 		Cost:       reply.Cost,
 	}
-	v.Reason = fmt.Sprintf("systemone 判定 %s，置信度 %.0f%%，危害度 %.1f",
-		isAd.Choice, isAd.Confidence*100, resp.Answers["severity"].Score)
+	v.Reason = fmt.Sprintf("判定 %s 置信度:%.0f%%，危害度:%.1f",
+		soChoiceLabel(isAd.Choice), isAd.Confidence*100, v.Severity)
 	return v, nil
+}
+
+// soChoiceLabel 把 systemone 的 is_ad 选项翻成人话。decider 不进这句：
+// 来源在记录卡片上另有字段，理由里再写一遍只是噪音。模型回出名单外的
+// 值时原样带出 —— 猜成「正常」会把异常吞掉。
+func soChoiceLabel(choice string) string {
+	switch choice {
+	case "ad":
+		return "广告"
+	case "clean":
+		return "正常"
+	}
+	return choice
 }
 
 // llmSystemPrompt 是复判的 system 提示词。
