@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -725,5 +726,34 @@ func TestGroupNoticeDisablesPreview(t *testing.T) {
 	b.Send(777, "文字", nil)
 	if _, has := fake.LastCall("sendMessage")["link_preview_options"]; has {
 		t.Error("私聊消息不该被关掉预览")
+	}
+}
+
+// TestCheckResultDisablesPreview：群内复查结果也要关掉链接预览——它带申诉
+// deep link，客户端会挂一张预览卡片（bot 链接常带 START 按钮）。这是唯一
+// 没走 sendGroup 的群内消息，漏了它等于「新加的 bot 群里还是弹预览」。
+func TestCheckResultDisablesPreview(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAI(t, b, nil) // 默认两级都判广告
+	recordMessage(b, -100, 1, 555, "加微信买号 日入5000", 1700000000, "")
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 555"))
+	waitIdle(t, b)
+
+	var found bool
+	for _, p := range fake.Calls("sendMessage") {
+		if int64(p["chat_id"].(float64)) != -100 ||
+			!strings.Contains(fmt.Sprint(p["text"]), "复查结果") {
+			continue
+		}
+		found = true
+		opts, ok := p["link_preview_options"].(map[string]any)
+		if !ok || opts["is_disabled"] != true {
+			t.Errorf("复查结果应关掉链接预览，得到 %v", p["link_preview_options"])
+		}
+	}
+	if !found {
+		t.Fatal("没有发出复查结果消息")
 	}
 }

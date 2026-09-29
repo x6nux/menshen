@@ -315,9 +315,13 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	tgt := &tg.Message{Chat: m.Chat, From: target, MessageID: targetMsgID, Text: repText}
 	gm, ok := loadMember(b.Store, m.Chat.ID, target.ID)
 	if !ok {
-		// 读不到画像时复查按新人档处置会误伤：直接放弃这次复查。
-		sendGroup(b, m.Chat.ID, "读取该用户的画像失败，请稍后再试。", nil)
-		return
+		// 没有画像行（比如目标只发过言、画像还没建，或清理过）时不能直接
+		// 放弃复查：留底已经取到了，用留底条数当发言数，年龄按未知处理
+		// （AgeKnown=false，isNewbie 不拿年龄轴加重怀疑）。
+		slog.Warn("反广告：复查目标没有画像行，按留底条数估算",
+			"chat", m.Chat.ID, "uid", target.ID)
+		gm = groupMember{ChatID: m.Chat.ID, UserID: target.ID,
+			MsgCount: int64(len(hist)), Known: true}
 	}
 	profile := buildProfile(b, tgt, gm, time.Now().Unix())
 	state := buildState(b, snap, tgt, profile)
@@ -438,7 +442,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	// 与自动告警的群内版用同一份渲染：同一个渠道不该有两种长度，
 	// 也同样不把广告原文整段贴回群里。
 	text, kb := renderAdAlertBrief(b, tgt, v, act, note, logID, dryrun)
-	scheduleAlertCleanup(b, chatID, b.SendGetID(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
+	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 
