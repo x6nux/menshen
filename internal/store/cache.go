@@ -230,6 +230,9 @@ type Snapshot struct {
 	GbanOwnBans  map[int64]map[int64]GbanRec
 	// Whitelist 是申诉解禁 / /white 产生的白名单，量小，线性扫即可。
 	Whitelist []WhiteRec
+
+	// loc 是展示与调度用的时区，构建快照时解析一次（见 Location）。
+	loc *time.Location
 }
 
 func (s *Snapshot) Setting(k string) string { return s.Settings[k] }
@@ -241,16 +244,29 @@ func (s *Snapshot) SettingInt(k string, def int64) int64 {
 	return def
 }
 
-// Location 返回展示与调度使用的时区：优先 tz_name（IANA 名称），
-// 未配或配错时回落到旧的 tz_offset 小时偏移——老部署升级后行为不变，
-// 也不必做数据迁移。
+// Location 返回展示与调度使用的时区。快照构建时解析一次：Go 的
+// time.LoadLocation 不缓存，每次调用都要重读并解析 tzdata，而面板
+// 每次渲染都会调它。
 func (s *Snapshot) Location() *time.Location {
-	if name := strings.TrimSpace(s.Settings["tz_name"]); name != "" {
+	if s.loc != nil {
+		return s.loc
+	}
+	// 手工构造的 Snapshot（测试、零值）没有预解析，现场算一份。
+	return resolveLocation(s.Settings)
+}
+
+// resolveLocation 优先 tz_name（IANA 名称），未配或配错时回落到旧的
+// tz_offset 小时偏移——老部署升级后行为不变，也不必做数据迁移。
+func resolveLocation(settings map[string]string) *time.Location {
+	if name := strings.TrimSpace(settings["tz_name"]); name != "" {
 		if loc, err := time.LoadLocation(name); err == nil {
 			return loc
 		}
 	}
-	off := s.SettingInt("tz_offset", 8)
+	off := int64(8)
+	if v, err := strconv.ParseInt(settings["tz_offset"], 10, 64); err == nil {
+		off = v
+	}
 	return time.FixedZone("UTC"+strconv.FormatInt(off, 10), int(off)*3600)
 }
 
@@ -469,6 +485,7 @@ func (c *Cache) Reload() error {
 	if err := c.loadSettings(snap, tx); err != nil {
 		return err
 	}
+	snap.loc = resolveLocation(snap.Settings)
 	if err := c.loadTenancy(snap, tx); err != nil {
 		return err
 	}

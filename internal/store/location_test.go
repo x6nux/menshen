@@ -52,3 +52,25 @@ func TestSnapshotLocation(t *testing.T) {
 		t.Errorf("非法 tz_name 应回落 tz_offset=-3，得到 %s", off)
 	}
 }
+
+// TestSnapshotLocationCached：Location 在构建快照时解析一次并缓存。
+// Go 的 time.LoadLocation 不缓存，每次调用都要重读并解析 tzdata，而
+// 面板每次渲染都会调它。
+func TestSnapshotLocationCached(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "loc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c, err := NewCache(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := c.Snap()
+	if got := snap.Location().String(); got != "Asia/Shanghai" {
+		t.Fatalf("默认时区应为 Asia/Shanghai，得到 %s", got)
+	}
+	if snap.Location() != snap.Location() {
+		t.Error("同一快照应返回同一个 *Location（构建时解析一次）")
+	}
+}

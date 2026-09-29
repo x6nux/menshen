@@ -235,14 +235,22 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 		Addr:    cfg.ListenAddr,
 		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh)},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
+		// 只设 ReadHeaderTimeout 挡不住慢速发 body 的连接：它会一直占着
+		// goroutine 与内存（暴露到回环之外时就是廉价的 slowloris）。
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
 		slog.Info("webhook 模式启动", "addr", cfg.ListenAddr,
 			"public_url", cfg.PublicURL, "version", version,
 			"tg_api", cfg.TGAPIBase, "已接入", reg.Size())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP 服务退出", "err", err)
+			// webhook 模式没有别的输入通道：监听失败就是全停，必须退出让
+			// 运维（或容器编排）看见，而不是留着一个收不到更新的进程。
+			slog.Error("HTTP 服务退出，进程退出", "err", err)
+			os.Exit(1)
 		}
 	}()
 	return srv

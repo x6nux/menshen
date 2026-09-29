@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"menshen/internal/core"
 	"menshen/internal/testutil"
@@ -151,5 +153,23 @@ func TestEnsureMainBotDemotesOldMain(t *testing.T) {
 	}
 	if rec := snap.Bots[testutil.TestBotID]; rec == nil || rec.IsMain {
 		t.Errorf("旧主 bot 应降级为工作 bot，得到 %+v", rec)
+	}
+}
+
+// TestWebhookServerTimeouts：只设 ReadHeaderTimeout 挡不住慢速发 body 的
+// 连接——它会一直占着 goroutine 与内存。四项超时都必须就位。
+func TestWebhookServerTimeouts(t *testing.T) {
+	sh, reg := newMainBotEnv(t)
+	sh.Cfg.ListenAddr = "127.0.0.1:0"
+	srv := startWebhook(sh.Cfg, reg, sh)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 ||
+		srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("HTTP 超时不全: header=%v read=%v write=%v idle=%v",
+			srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout)
 	}
 }
