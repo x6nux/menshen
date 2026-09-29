@@ -90,3 +90,21 @@ func TestChatPunishCycles(t *testing.T) {
 		}
 	}
 }
+
+// TestAdChatHealthCached：群权限自检要发 getChatMember，而它跑在 bot 的
+// 串行更新路径上（TG 慢时最坏 40 秒不收新消息）。同一群的重复渲染必须
+// 命中缓存。
+func TestAdChatHealthCached(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, dispatch)
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+
+	for i := 0; i < 3; i++ {
+		if got := adChatHealth(b, -100); !strings.Contains(got, "权限正常") {
+			t.Fatalf("应识别为管理员，得到 %q", got)
+		}
+	}
+	if n := fake.CountCalls("getChatMember"); n != 1 {
+		t.Errorf("三次渲染只该查一次，实际 %d 次", n)
+	}
+}
