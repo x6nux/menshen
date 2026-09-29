@@ -203,10 +203,15 @@ func appealPageGet(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap a
 	nonce := newNonce()
 	writeHTMLHeaders(w, nonce)
 	days := sh.Cache.Snap().SettingInt("log_retention_days", 30)
+	account, limits, msgs, ai := appealPageInfo(sh, ap)
 	page := strings.ReplaceAll(appealPageHTML, "{{NONCE}}", nonce)
 	page = strings.ReplaceAll(page, "{{SITEKEY}}", html.EscapeString(sh.Cfg.TurnstileSiteKey))
 	page = strings.ReplaceAll(page, "{{CDATA}}", strconv.FormatInt(ap.ID, 10))
 	page = strings.ReplaceAll(page, "{{DAYS}}", strconv.FormatInt(days, 10))
+	page = strings.ReplaceAll(page, "{{ACCOUNT}}", account)
+	page = strings.ReplaceAll(page, "{{LIMITS}}", limits)
+	page = strings.ReplaceAll(page, "{{MSGS}}", msgs)
+	page = strings.ReplaceAll(page, "{{AI}}", ai)
 	fmt.Fprint(w, page)
 }
 
@@ -300,7 +305,7 @@ func notifyCodeIssued(sh *core.Shared, ap appealRec, ip, fp string, soft []strin
 	strong, weak := relatedAccounts(sh, fp, ip, ap.UserID)
 	if b := botFor(sh, ap.BotID); b != nil {
 		sendUnlockCode(b, ap.UserID, ap)
-		pushAppealCard(b, ap, effectivePenalties(b, ap.UserID), appealCardFull,
+		pushAppealCard(b, ap, effectivePenalties(b.Shared, b.BotID(), ap.UserID), appealCardFull,
 			apHasGban(sh, ap.UserID), appealCardExtra{Soft: soft, Strong: strong, Weak: weak})
 	}
 	slog.Info("申诉：网页验证通过，已签发解禁码", "appeal", ap.ID, "uid", ap.UserID)
@@ -311,7 +316,7 @@ func notifyAppealRejected(sh *core.Shared, ap appealRec, hard, soft []string, ip
 	strong, weak := relatedAccounts(sh, fp, ip, ap.UserID)
 	if b := botFor(sh, ap.BotID); b != nil {
 		b.Send(ap.UserID, "你的申诉未通过网页验证，请联系群管理员处理。", nil)
-		pushAppealCard(b, ap, effectivePenalties(b, ap.UserID), appealCardFailed,
+		pushAppealCard(b, ap, effectivePenalties(b.Shared, b.BotID(), ap.UserID), appealCardFailed,
 			apHasGban(sh, ap.UserID), appealCardExtra{
 				Hard: hard, Soft: soft, Strong: strong, Weak: weak})
 	}

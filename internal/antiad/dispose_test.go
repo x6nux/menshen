@@ -347,13 +347,13 @@ func TestEffectivePenaltiesPermanentMute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := effectivePenalties(b, 555)
+	got := effectivePenalties(b.Shared, b.BotID(), 555)
 	if len(got) != 1 || got[0].Action != "deleted_muted" {
 		t.Fatalf("永久禁言应列出历史禁言，得到 %+v", got)
 	}
 	// 人工解除（LiftMute / 兑换 / 申诉撤销都会走 MarkPenaltiesLifted）。
 	MarkPenaltiesLifted(b, -100, 555)
-	if got := effectivePenalties(b, 555); len(got) != 0 {
+	if got := effectivePenalties(b.Shared, b.BotID(), 555); len(got) != 0 {
 		t.Fatalf("已解除的处罚不该再列出，得到 %+v", got)
 	}
 }

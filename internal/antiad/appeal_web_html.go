@@ -15,7 +15,13 @@ const appealPageHTML = `<!doctype html>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:24px;
  max-width:560px;margin:0 auto;line-height:1.6;color:#1a1a1a;background:#fafafa}
 h1{font-size:20px;margin:8px 0 16px}
+h2{font-size:15px;margin:0 0 8px}
 .card{background:#fff;border:1px solid #e5e5e5;border-radius:10px;padding:16px;margin-bottom:16px}
+ul.plain{margin:0;padding-left:18px}
+ul.plain li{margin-bottom:10px;font-size:14px}
+.sub{font-size:13px;color:#555;margin-top:4px;word-break:break-word}
+.ts{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#888}
+.tip{font-size:13px;color:#666;margin:8px 0 0}
 .warn{color:#8a5a00;background:#fff8e6;border:1px solid #f0d9a8;border-radius:8px;
  padding:10px 12px;font-size:13px;margin-bottom:16px}
 #out{margin-top:16px;font-size:15px;white-space:pre-wrap}
@@ -26,6 +32,26 @@ h1{font-size:20px;margin:8px 0 16px}
 <body>
 <h1>申诉验证</h1>
 <div class="warn">为防止滥用，本页会记录你的 IP 与浏览器特征，仅用于反垃圾审核，保留 {{DAYS}} 天。</div>
+<div class="card">
+  <h2>为什么被限制</h2>
+  <ul class="plain">{{LIMITS}}</ul>
+</div>
+<div class="card">
+  <h2>账号信息</h2>
+  {{ACCOUNT}}
+  <p class="tip">这些是 bot 判定时记下的资料。广告号的昵称、用户名或简介里常写着推广、
+  收益承诺或引流话术，即使某条消息看起来无害也会被整体判为广告号——把资料改干净再申诉，
+  通过率会高很多。</p>
+</div>
+<div class="card">
+  <h2>你在群里的发言（留底）</h2>
+  {{MSGS}}
+  <p class="tip">以上是 bot 留底的你的发言，最多显示最近 100 条、每条 300 字；留底保留 {{DAYS}} 天。</p>
+</div>
+<div class="card">
+  <h2>AI 复核结论</h2>
+  {{AI}}
+</div>
 <div class="card">
   <p>完成下方的人机验证后，会给你一个<b>解禁码</b>，把它交给群管理员即可解除限制。</p>
   <div class="cf-turnstile" data-sitekey="{{SITEKEY}}" data-action="appeal"

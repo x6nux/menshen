@@ -6,16 +6,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"menshen/internal/core"
+	"menshen/internal/store"
 )
 
 // ---- 客户端特征、自动化信号、指纹 ----
@@ -260,6 +263,168 @@ func verifyTurnstile(sh *core.Shared, token, ip string, appealID int64) (bool, s
 		return false, "cdata 不符: " + out.CData
 	}
 	return true, ""
+}
+
+// appealPageInfo 渲染验证页上的「账号信息」「为什么被限制」「你在群里的发言」
+// 与「AI 复核结论」。
+//
+// 这个页面是用户唯一能看到自己处罚依据的地方：只写「完成验证拿解禁码」
+// 的话，他既不知道为什么被罚、也不知道该改什么，只能盲点一遍。内容全部
+// 来自本单与本人流水（签名 URL，只给本人看），逐项转义。
+func appealPageInfo(sh *core.Shared, ap appealRec) (account, limits, msgs, ai string) {
+	loc := sh.Cache.Snap().Location()
+	ts := func(unix int64) string {
+		if unix <= 0 {
+			return ""
+		}
+		return time.Unix(unix, 0).In(loc).Format("2006-01-02 15:04")
+	}
+
+	// 账号信息：判定当时的昵称与用户名。广告号被处置后常改名，所以取
+	// 流水里记下的那一份，而不是现场查（现场也多半查不到：没私聊过）。
+	var name string
+	sh.Store.Read.QueryRow(`SELECT user_name FROM antiad_log
+		WHERE bot_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		ap.BotID, ap.UserID).Scan(&name)
+	var ab strings.Builder
+	fmt.Fprintf(&ab, "<p>用户 ID：<code>%d</code>", ap.UserID)
+	if strings.TrimSpace(name) != "" {
+		ab.WriteString("<br>判定时的昵称：" + html.EscapeString(name))
+	}
+	ab.WriteString("</p>")
+
+	var lb strings.Builder
+	for _, p := range effectivePenalties(sh, ap.BotID, ap.UserID) {
+		lb.WriteString("<li>")
+		switch p.Type {
+		case "join_profile":
+			fmt.Fprintf(&lb, "进群资料审核限制 · 群 <code>%d</code>", p.ChatID)
+		case "message":
+			fmt.Fprintf(&lb, "消息判定处置 · 群 <code>%d</code>", p.ChatID)
+		case "gban":
+			lb.WriteString("联合封禁 · 全平台")
+		case "gban_own":
+			lb.WriteString("联合封禁 · 本 bot 名下群组")
+		}
+		if t := ts(p.At); t != "" {
+			lb.WriteString(" · " + t)
+		}
+		if r := strings.TrimSpace(p.Reason); r != "" {
+			lb.WriteString(`<div class="sub">理由：` +
+				html.EscapeString(core.TruncateRunes(r, 400)) + `</div>`)
+		}
+		if t := strings.TrimSpace(p.Text); t != "" {
+			lb.WriteString(`<div class="sub">原消息：` +
+				html.EscapeString(core.TruncateRunes(t, 400)) + `</div>`)
+		}
+		lb.WriteString("</li>")
+	}
+	if lb.Len() == 0 {
+		lb.WriteString("<li>本 bot 名下已查不到仍在生效的限制，可能已经解除。</li>")
+	}
+
+	// 发言记录：给本人看他在这些群里的留底。这是「为什么被罚」最直接的
+	// 证据，用户往往看到自己的原话就明白了。
+	msgs = appealPageMsgs(sh, ap, loc)
+
+	var aiB strings.Builder
+	switch ap.AIResult {
+	case "uphold":
+		aiB.WriteString("<p>AI 复核后<b>维持原判</b>")
+	case "overturn":
+		aiB.WriteString("<p>AI 复核后撤销原判")
+	case "error":
+		aiB.WriteString("<p>AI 复核时出错（未自动解除）")
+	case "skipped":
+		aiB.WriteString("<p>AI 复核已跳过")
+	default:
+		aiB.WriteString("<p>还没有 AI 复核结论")
+	}
+	if ap.AIConf > 0 {
+		fmt.Fprintf(&aiB, "（置信度 %.0f%%", ap.AIConf*100)
+		if ap.AIModel != "" {
+			aiB.WriteString(" · " + html.EscapeString(ap.AIModel))
+		}
+		aiB.WriteString("）")
+	} else if ap.AIModel != "" {
+		aiB.WriteString("（" + html.EscapeString(ap.AIModel) + "）")
+	}
+	aiB.WriteString("</p>")
+	if r := strings.TrimSpace(ap.AIReason); r != "" {
+		aiB.WriteString(`<div class="sub">` +
+			html.EscapeString(core.TruncateRunes(r, 400)) + `</div>`)
+	}
+	if s := strings.TrimSpace(ap.Statement); s != "" {
+		aiB.WriteString(`<div class="sub">你的申诉理由：` +
+			html.EscapeString(core.TruncateRunes(s, 200)) + `</div>`)
+	}
+	ai = aiB.String()
+	account = ab.String()
+	limits = lb.String()
+	return
+}
+
+// appealPageMsgLimit 是验证页上展示的发言条数与单条字数上限。
+// 「所有发言」按留底展示，但页面不能被一个刷了几千条的号撑爆。
+const (
+	appealPageMsgLimit  = 100
+	appealPageMsgLength = 300
+)
+
+// appealPageMsgs 渲染此人在本 bot 名下各群的发言留底（最近的在前）。
+// 群名取配置里的标题，取不到就只写 chat_id。
+func appealPageMsgs(sh *core.Shared, ap appealRec, loc *time.Location) string {
+	snap := sh.Cache.Snap()
+	chats := snap.ChatsOf(ap.BotID)
+	if len(chats) == 0 {
+		// 群配置已被移除，但留底还在：退回到处罚流水里出现过的群。
+		seen := map[int64]bool{}
+		for _, p := range effectivePenalties(sh, ap.BotID, ap.UserID) {
+			if p.ChatID != 0 && !seen[p.ChatID] {
+				seen[p.ChatID] = true
+				chats = append(chats, store.BotChat{BotID: ap.BotID, ChatID: p.ChatID})
+			}
+		}
+	}
+	var sb strings.Builder
+	total := 0
+	for _, c := range chats {
+		if total >= appealPageMsgLimit {
+			break
+		}
+		rows, err := sh.Store.Read.Query(`SELECT text,at FROM group_messages
+			WHERE chat_id=? AND user_id=? AND text != '' ORDER BY at DESC LIMIT ?`,
+			c.ChatID, ap.UserID, appealPageMsgLimit-total)
+		if err != nil {
+			continue
+		}
+		var items []string
+		for rows.Next() {
+			var text string
+			var at int64
+			if rows.Scan(&text, &at) != nil {
+				continue
+			}
+			items = append(items, `<li><span class="ts">`+
+				time.Unix(at, 0).In(loc).Format("01-02 15:04")+`</span> `+
+				html.EscapeString(core.TruncateRunes(text, appealPageMsgLength))+`</li>`)
+		}
+		rows.Close()
+		if len(items) == 0 {
+			continue
+		}
+		total += len(items)
+		title := strconv.FormatInt(c.ChatID, 10)
+		if strings.TrimSpace(c.Title) != "" {
+			title = html.EscapeString(c.Title)
+		}
+		fmt.Fprintf(&sb, `<div class="sub">群 %s</div><ul class="plain">%s</ul>`,
+			title, strings.Join(items, ""))
+	}
+	if sb.Len() == 0 {
+		return "<p>没有查到你的发言留底（可能已过保留期，或你还没在本 bot 的群里发过言）。</p>"
+	}
+	return sb.String()
 }
 
 // newNonce 生成 CSP 脚本 nonce。

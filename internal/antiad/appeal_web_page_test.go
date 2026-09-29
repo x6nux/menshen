@@ -363,3 +363,70 @@ func TestAppealPageHeadersAndExpiry(t *testing.T) {
 		t.Errorf("过期链接应 410，得到 %d", w.Code)
 	}
 }
+
+// TestAppealPageShowsEvidence：验证页要展示「为什么被限制 + 账号信息 +
+// 发言留底 + AI 复核结论」。只写「完成验证拿解禁码」时，用户既不知道
+// 为什么被罚、也不知道该改什么，只能盲点一遍。
+func TestAppealPageShowsEvidence(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	b.Cfg.PublicURL = "https://ad.example.com"
+	b.Cfg.TurnstileSiteKey, b.Cfg.TurnstileSecret = "site", "secret"
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	testutil.EnableAntiad(t, b, -100)
+	now := time.Now().Unix()
+
+	// 一条处罚流水（含判定时的昵称、理由与原文）。
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,user_name,lifted_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+		b.BotID(), -100, 555, 1, "加微信买号", "ad", 0.95, "so", "scam",
+		"deleted_muted", "昵称里写着日入5000", now-60, "张三 (@zs)"); err != nil {
+		t.Fatal(err)
+	}
+	// 两条发言留底。
+	for i, text := range []string{"加微信买号", "日入过万 <script>alert(1)</script>"} {
+		if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+			(chat_id,message_id,user_id,text,at) VALUES (-100,?,555,?,?)`,
+			i+1, text, now-120+int64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 申诉单：web 状态 + AI 维持原判 + 申诉理由。
+	res, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,statement,ai_result,ai_conf,ai_reason,ai_model,
+		 web_since,created_at,updated_at)
+		VALUES (?,?,'web','我改资料了','uphold',0.92,'资料仍写着推广','m1',?,?,?)`,
+		b.BotID(), 555, now, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appealID, _ := res.LastInsertId()
+	path := fmt.Sprintf("/_w/ap/%d/%s", appealID, appealSig(b.Shared, appealID, 555))
+
+	w := httptest.NewRecorder()
+	WebHandler(b.Shared).ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("验证页应 200，得到 %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"为什么被限制", "消息判定处置", "昵称里写着日入5000",
+		"账号信息", "张三 (@zs)",
+		"你在群里的发言",
+		"AI 复核", "维持原判", "资料仍写着推广", "我改资料了",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("页面缺少 %q", want)
+		}
+	}
+	// 用户内容必须转义：原文里的脚本不能活。
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("发言留底必须 HTML 转义")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Error("发言留底应转义后展示")
+	}
+}

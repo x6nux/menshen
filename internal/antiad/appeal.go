@@ -130,11 +130,14 @@ func updateAppeal(sh *core.Shared, id int64, sets string, args ...any) {
 // 时间窗按「禁言时长」取：禁言档是限时的，过期的处罚不必再列。禁言时长
 // 配成 0（永久禁言）时不设时间窗，改由 lifted_at 标记人工解除——永久禁言
 // 不会自己到期，不这样区分的话入口会永远显示「限制中」。
-func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
+//
+// 参数是 Shared + botID 而不是 *Bot：网页处理器也要用它（验证页要展示
+// 「为什么被限制」），而那一刻 bot 实例可能根本没在运行。
+func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 	var out []appealPenalty
 
-	rows, err := b.Store.Read.Query(`SELECT chat_id,reason,created_at FROM join_mutes
-		WHERE bot_id=? AND user_id=?`, b.BotID(), uid)
+	rows, err := sh.Store.Read.Query(`SELECT chat_id,reason,created_at FROM join_mutes
+		WHERE bot_id=? AND user_id=?`, botID, uid)
 	if err == nil {
 		for rows.Next() {
 			var p appealPenalty
@@ -146,15 +149,15 @@ func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 		rows.Close()
 	}
 
-	hours := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
+	hours := sh.Cache.Snap().BotSettingInt(botID, "antiad_mute_hours", 24)
 	since := int64(0)
 	if hours > 0 {
 		since = time.Now().Unix() - hours*3600
 	}
-	rows, err = b.Store.Read.Query(`SELECT chat_id,text,reason,created_at,action
+	rows, err = sh.Store.Read.Query(`SELECT chat_id,text,reason,created_at,action
 		FROM antiad_log WHERE bot_id=? AND user_id=? AND created_at > ? AND lifted_at = 0
 		AND action IN ('deleted_muted','muted','deleted_banned','banned')
-		ORDER BY id DESC LIMIT 10`, b.BotID(), uid, since)
+		ORDER BY id DESC LIMIT 10`, botID, uid, since)
 	if err == nil {
 		for rows.Next() {
 			var p appealPenalty
@@ -166,7 +169,7 @@ func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 		rows.Close()
 	}
 
-	if g, ok := b.Cache.Snap().Gban[uid]; ok {
+	if g, ok := sh.Cache.Snap().Gban[uid]; ok {
 		out = append(out, appealPenalty{Type: "gban", ChatID: g.SrcChat,
 			Reason: g.Reason, At: g.CreatedAt})
 	}
@@ -174,8 +177,8 @@ func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 	// 专属联合封禁（本 bot 归属人的账本）：它只在本 bot 名下圈定的群里
 	// 执行，所以申诉入口也在对应 bot —— 全局组的申诉才去主 bot。主 bot
 	// 不判定、没有群，不进这一支；组关了或没圈群的执行上没有覆盖，不算。
-	snap := b.Cache.Snap()
-	if rec := snap.Bots[b.BotID()]; rec != nil && !rec.IsMain &&
+	snap := sh.Cache.Snap()
+	if rec := snap.Bots[botID]; rec != nil && !rec.IsMain &&
 		snap.GbanOwnOn(rec.OwnerID) && len(snap.GbanOwnChats[rec.OwnerID]) > 0 {
 		if g, ok := snap.GbanOwnBans[rec.OwnerID][uid]; ok {
 			out = append(out, appealPenalty{Type: "gban_own", ChatID: g.SrcChat,
@@ -220,7 +223,7 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 		}
 	}
 
-	penalties := effectivePenalties(b, uid)
+	penalties := effectivePenalties(b.Shared, b.BotID(), uid)
 	if len(penalties) == 0 {
 		if payload == "" {
 			return false // 交给通用介绍语
@@ -248,7 +251,9 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 	return true
 }
 
-// penaltyLines 渲染限制清单。
+// penaltyLines 渲染限制清单。带上理由：只写「消息判定处置（群 X）」时
+// 用户根本不知道自己为什么被罚，申诉就无从谈起；理由里那句 AI 结论
+// （原文摘要 + 判定依据）才是他需要看到的东西。
 func penaltyLines(penalties []appealPenalty) string {
 	var sb strings.Builder
 	for _, p := range penalties {
@@ -261,6 +266,14 @@ func penaltyLines(penalties []appealPenalty) string {
 			sb.WriteString("• 联合封禁（全平台）\n")
 		case "gban_own":
 			sb.WriteString("• 联合封禁（本 bot 名下群组）\n")
+		}
+		if r := strings.TrimSpace(p.Reason); r != "" {
+			fmt.Fprintf(&sb, "　理由：%s\n",
+				html.EscapeString(core.TruncateRunes(r, 200)))
+		}
+		if t := strings.TrimSpace(p.Text); t != "" {
+			fmt.Fprintf(&sb, "　原消息：%s\n",
+				html.EscapeString(core.TruncateRunes(t, 200)))
 		}
 	}
 	return sb.String()
@@ -429,7 +442,7 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 	if !ok || ap.Status != "ai" {
 		return
 	}
-	penalties := effectivePenalties(b, uid)
+	penalties := effectivePenalties(b.Shared, b.BotID(), uid)
 	if len(penalties) == 0 {
 		// 限制在排队期间自然到期/被解除：直接结案。
 		updateAppeal(b.Shared, appealID, `status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)

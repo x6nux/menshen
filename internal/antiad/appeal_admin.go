@@ -28,7 +28,7 @@ func AdminLiftAppeal(b *core.Bot, appealID, byUID int64) error {
 	if !appealOpen(ap.Status) {
 		return fmt.Errorf("该申诉单已结案")
 	}
-	penalties := effectivePenalties(b, ap.UserID)
+	penalties := effectivePenalties(b.Shared, b.BotID(), ap.UserID)
 	if len(penalties) == 0 {
 		updateAppeal(b.Shared, ap.ID,
 			`status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
@@ -71,8 +71,8 @@ func AdminIssueCode(b *core.Bot, appealID int64) (string, error) {
 	}
 	ap, _ = loadAppealByID(b.Store, ap.ID)
 	sendUnlockCode(b, ap.UserID, ap)
-	pushAppealCard(b, ap, effectivePenalties(b, ap.UserID),
-		appealCardFull, hasGbanPenalty(effectivePenalties(b, ap.UserID)), appealCardExtra{})
+	pushAppealCard(b, ap, effectivePenalties(b.Shared, b.BotID(), ap.UserID),
+		appealCardFull, hasGbanPenalty(effectivePenalties(b.Shared, b.BotID(), ap.UserID)), appealCardExtra{})
 	slog.Info("申诉：管理员人工签发解禁码", "appeal", ap.ID)
 	return code, nil
 }
