@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -79,5 +80,20 @@ func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
 				"chat_id": chatID, "message_id": rec.NoticeMsg})
 		}
 	}
+	MarkPenaltiesLifted(b, chatID, uid)
 	return true, ""
+}
+
+// MarkPenaltiesLifted 把某人在某群尚未标记解除的处罚流水标成已解除。
+//
+// 申诉入口按「仍在生效的处罚」决定要不要给入口。限时禁言靠时间窗自然过期，
+// 而永久禁言不会——人工解除、申诉撤销、解禁码兑换都必须落这个标记，
+// 否则入口会永远显示「你还在限制中」。
+func MarkPenaltiesLifted(b *core.Bot, chatID, uid int64) {
+	if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET lifted_at=?
+		WHERE bot_id=? AND chat_id=? AND user_id=? AND lifted_at=0
+		AND action IN ('deleted_muted','muted','deleted_banned','banned')`,
+		time.Now().Unix(), b.BotID(), chatID, uid); err != nil {
+		slog.Error("反广告：标记处罚已解除失败", "chat", chatID, "uid", uid, "err", err)
+	}
 }

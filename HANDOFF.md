@@ -64,9 +64,9 @@ Mini App / 申诉网页，**工作 bot 已启用**并在「优选IP」群判定�
 | 域名 | `https://menshen.free.edu.kg`（Cloudflare 回源 80，TLS 在 CF 终止） |
 | 服务 | systemd `menshen-dev`，`/opt/menshen-dev/menshen`，配置 `/opt/menshen-dev/config.yaml`，库 `/opt/menshen-dev/data/data.db` |
 | bot | 主 `@admenshen_bot`（8715529198，运行中）；工作 `@anti_ad_ai_bot`（7674016285，**已启用、运行中**） |
-| 部署版本 | `491a8d0`（2026-09-29 17:4x 部署）；升级时把停用期间积压的 216 条陈旧更新丢弃了（`deleteWebhook?drop_pending_updates=true` 后重新注册） |
+| 部署版本 | `491a8d0` → **本会话全部修复后的 main（`ded0b94` + 永久禁言提交）**，2026-09-29 17:42 部署；旧二进制备份为 `/opt/menshen-dev/menshen.bak-*`。首启会自动补建索引与 `antiad_log.lifted_at` 列（小库瞬时完成） |
 | 上游/模型 | 单上游 `lfree`；`antiad_so_model=lfree/jev-1.13`、`antiad_llm_model=lfree/mimo-v2.5`（旧单值键，读侧兼容） |
-| 生效群 | 工作 bot 名下 1 个：`-1001976894016`「优选IP」，`enabled=1`、**`dryrun=0`（正式）**、群内展示开、处罚跟随 bot；`bot_settings.antiad_ban=1`（禁言档=**永久封禁**，2026-09-29 开启） |
+| 生效群 | 工作 bot 名下 1 个：`-1001976894016`「优选IP」，`enabled=1`、**`dryrun=0`（正式）**、群内展示开、处罚跟随 bot；`bot_settings.antiad_mute_hours=0`（**永久禁言**，人留在群里发不了言，2026-09-29 设置） |
 | 全局状态 | 总开关**已开**；冷判定为工作 bot 单独开（`antiad_cold=1`）；`antiad_judge_bots=1`（仅豁免管理员 bot，本次升级新默认） |
 | 网页链路 | **Turnstile 已配**（`turnstile_site_key`/`turnstile_secret` 在服务器 config.yaml，域名白名单含 `menshen.free.edu.kg`）；`client_ip_header: CF-Connecting-IP`；验证页实测能签发解禁码 |
 | 数据 | 申诉单 0 / 白名单 0 / 合成验证单已清理（`web_checks` 0） |

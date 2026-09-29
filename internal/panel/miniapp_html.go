@@ -308,11 +308,11 @@ function viewChatDetail(c){
     '<div class="row"><span class="k">处罚方式</span>'+
       '<select style="width:170px" onchange="'+pre+'punish:this.value})">'+
       '<option value="-1"'+(c.punish==-1?' selected':'')+'>跟随 bot 设置</option>'+
-      '<option value="0"'+(c.punish==0?' selected':'')+'>禁言 '+esc(settingOf(c.bot_id,'antiad_mute_hours')||'24')+' 小时</option>'+
+      '<option value="0"'+(c.punish==0?' selected':'')+'>'+esc(muteOptLabel(c.bot_id))+'</option>'+
       '<option value="1"'+(c.punish==1?' selected':'')+'>封禁出群（永久）</option></select></div>'+
     '<div class="row"><span class="k">实际执行</span><span>'+esc(punishLabel(c.bot_id,c.punish))+'</span></div>'+
     (punishLabel(c.bot_id,c.punish).indexOf('禁言')===0?
-      '<div class="hint">要改成永久封禁：把本 bot 的「禁言改为封禁」设为 1（参数页），或把上面切成「封禁出群」。</div>':'')+
+      '<div class="hint">要改成永久禁言：把本 bot 的「禁言时长（小时）」设为 0；要踢出群就选「封禁出群」。</div>':'')+
     '<button class="d" style="margin-top:10px" '+
       'onclick="if(confirm(\'移除该群？判定与处置立即停止，配置一并删除。\'))act(\'chat\',{bot_id:'+c.bot_id+
       ',chat_id:'+c.chat_id+',action:\'remove\'},\'已移除\')">移除该群</button>'+
@@ -579,9 +579,13 @@ function settingOf(botID,key){
 function punishLabel(botID,punish){
   var hours=settingOf(botID,'antiad_mute_hours')||'24';
   if(punish==1) return '封禁出群（永久）';
-  var mute='禁言 '+hours+' 小时';
+  var mute=(hours==='0')?'永久禁言':('禁言 '+hours+' 小时');
   if(punish==0) return mute;
   return settingOf(botID,'antiad_ban')=='1' ? '封禁出群（永久）' : mute;
+}
+function muteOptLabel(botID){
+  var hours=settingOf(botID,'antiad_mute_hours')||'24';
+  return (hours==='0')?'永久禁言':('禁言 '+hours+' 小时');
 }
 function logact(a,id){
   api('logact',{id:id,action:a}).then(function(){
@@ -658,7 +662,7 @@ function viewLogDetail(l){
   h+='<div class="card"><h3>操作</h3>'+
     '<div class="grid">'+
     '<button class="b g" onclick="logact(\'review\','+l.id+')">🔎 AI 复查</button>'+
-    '<button class="b g" onclick="logact(\'unmute\','+l.id+')">🔓 解除禁言</button>'+
+    '<button class="b g" onclick="logact(\'unmute\','+l.id+')">🔓 解除限制</button>'+
     '<button class="b g" onclick="logact(\'white\','+l.id+')">🤍 加白名单 24h</button>'+
     '<button class="b" onclick="if(confirm(\'不经 AI 直接按最高档处置？\'))logact(\'ban\','+l.id+')">🖐 人工标记广告</button>'+
     '</div>'+

@@ -300,7 +300,7 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 	// 显示实际会执行的处罚：只写「禁言」而不写时长，很容易让人以为
 	// 永久封禁已经生效（默认 24 小时，而「改为封禁」是另一个开关）。
 	muteHours := snap.BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
-	punish := fmt.Sprintf("🔇 禁言 %d 小时", muteHours)
+	punish := "🔇 " + antiad.MuteLabel(muteHours)
 	if snap.BanMode(c) {
 		punish = "🚫 封禁出群（永久）"
 	}
@@ -308,9 +308,9 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 		punish += "（跟随 bot 设置）"
 	}
 	sb.WriteString("处罚方式: " + punish + "\n")
-	if !snap.BanMode(c) {
-		sb.WriteString("<i>要改成永久封禁：把本 bot 参数页的「禁言改为封禁」设为 1，" +
-			"或把本群处罚方式切成「封禁出群」。</i>\n")
+	if !snap.BanMode(c) && muteHours > 0 {
+		sb.WriteString("<i>要改成永久禁言：把本 bot 参数页的「禁言时长」设为 0；" +
+			"要改成永久封禁出群：把「禁言改为封禁」设为 1，或把本群处罚方式切成「封禁出群」。</i>\n")
 	}
 
 	// 实时查一次权限：bot 不是群管理员的话，整条链路静默失效，

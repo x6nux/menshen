@@ -166,6 +166,13 @@ func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 		slog.Warn("申诉：兑换时解除禁言失败", "chat", chatID,
 			"uid", ap.UserID, "err", desc)
 	}
+	// 1.1) 记录上是封禁的还要解封：只发「权限全开」不会把人放回群里。
+	// only_if_banned 是必须的——对没被封的人解封等于把他踢出去。
+	b.CallOK("unbanChatMember", map[string]any{
+		"chat_id": chatID, "user_id": ap.UserID, "only_if_banned": true})
+	// 永久禁言不会自己到期：解除后必须落标记，否则申诉入口会一直把
+	// 这个人列为「仍在限制中」。
+	MarkPenaltiesLifted(b, chatID, ap.UserID)
 	// 2) 冷判定的限制记录与群通知。
 	if rec, ok := loadJoinMute(b.Store, chatID, ap.UserID); ok {
 		dropJoinMute(b, chatID, ap.UserID)

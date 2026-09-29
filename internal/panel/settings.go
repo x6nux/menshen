@@ -66,7 +66,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_cold_prefilter", "冷判定本地预筛", "1 = 开（只有资料可疑的才送检，省 AI 开销），0 = 关（人人送检，默认）", 0, 1, "antiad"},
 	{"antiad_new_hours", "新人界定：进群小时数", "非负整数，小于它算新人", 0, 0, "antiad"},
 	{"antiad_new_msgs", "新人界定：群内消息数", "非负整数，少于它算新人", 0, 0, "antiad"},
-	{"antiad_mute_hours", "禁言时长（小时）", "正整数", 1, 0, "antiad"},
+	{"antiad_mute_hours", "禁言时长（小时）", "非负整数，0 = 永久禁言（人留在群里、发不了言）；正整数 = 禁言这么多小时", 0, 0, "antiad"},
 	{"antiad_rpm_chat", "每群每分钟送检上限", "非负整数，0 = 不限；防刷屏烧钱", 0, 0, "antiad"},
 	{"antiad_alert_rpm", "同一人每分钟告警上限", "非负整数，0 = 不限；防刷爆私聊", 0, 0, "antiad"},
 	{"antiad_cmd_rpm", "每人每分钟命令上限", "非负整数，0 = 不限；/check 一次要跑两个模型", 0, 0, "antiad"},

@@ -1182,11 +1182,11 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 	id := miniInt(body, "id")
 	action := miniStr(body, "action")
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
-	row := sh.Store.Read.QueryRow(`SELECT bot_id,chat_id,user_id,message_id,text
+	row := sh.Store.Read.QueryRow(`SELECT bot_id,chat_id,user_id,message_id,text,action
 		FROM antiad_log WHERE id=?`+clauseWhere, append([]any{id}, clauseArgs...)...)
 	var botID, chatID, userID, msgID int64
-	var text string
-	if row.Scan(&botID, &chatID, &userID, &msgID, &text) != nil {
+	var text, rowAction string
+	if row.Scan(&botID, &chatID, &userID, &msgID, &text, &rowAction) != nil {
 		miniErr(w, http.StatusNotFound, "记录不存在")
 		return
 	}
@@ -1231,7 +1231,15 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			return
 		}
 	case "unmute":
-		if ok2, desc := antiad.LiftMute(inst, chatID, userID); !ok2 {
+		// 记录上是封禁的就解封（unbanChatMember），否则解禁言。二者不可
+		// 互换：对已被封禁的人发「权限全开」不会把他放回群里。
+		if rowAction == "banned" || rowAction == "deleted_banned" {
+			if ok2, desc := antiad.Unban(inst, chatID, userID); !ok2 {
+				miniErr(w, http.StatusBadRequest, "解除失败："+desc)
+				return
+			}
+			antiad.MarkPenaltiesLifted(inst, chatID, userID)
+		} else if ok2, desc := antiad.LiftMute(inst, chatID, userID); !ok2 {
 			miniErr(w, http.StatusBadRequest, "解除失败："+desc)
 			return
 		}

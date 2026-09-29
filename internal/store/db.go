@@ -363,6 +363,10 @@ func migrate(db *sql.DB) error {
 		// user_name：判定当时的昵称与用户名。广告号被处置后常改名，
 		// 事后再查就对不上了，所以判定时就要记下来。
 		{"antiad_log", "user_name", "TEXT NOT NULL DEFAULT ''"},
+		// lifted_at：这条处罚被人工解除（或申诉撤销）的时刻。
+		// 永久禁言没有到期时间，靠时间窗推断「是否仍在限制中」会把
+		// 已解除的也一直列出来，所以解除时要落一个显式标记。
+		{"antiad_log", "lifted_at", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

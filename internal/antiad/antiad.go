@@ -1670,7 +1670,10 @@ func SweepAlertCleanup(b *core.Bot, now time.Time) {
 //
 // 按钮按「当前还能做什么」动态生成：已经删过的不再给删除按钮。
 // callback_data 形如 a:ad:fp:12345，远在 64 字节以内。
-func adAlertRows(act adAction, note string, logID int64, dryrun bool) [][][2]string {
+// muteLabel 由调用方按本 bot 的禁言时长渲染（永久禁言要看得出来）。
+func adAlertRows(act adAction, note string, logID int64, dryrun bool,
+	muteLabel string) [][][2]string {
+
 	rows := [][][2]string{{
 		{"✅ 判定正确", fmt.Sprintf("a:ad:ok:%d", logID)},
 		{"↩️ 误判", fmt.Sprintf("a:ad:fp:%d", logID)},
@@ -1682,7 +1685,7 @@ func adAlertRows(act adAction, note string, logID int64, dryrun bool) [][][2]str
 		manual = append(manual, [2]string{"🗑 删除", fmt.Sprintf("a:ad:del:%d", logID)})
 	}
 	if dryrun || (!act.Mute && !act.Ban) || strings.Contains(note, noteMuteFailed) {
-		manual = append(manual, [2]string{"🔇 禁言", fmt.Sprintf("a:ad:mute:%d", logID)})
+		manual = append(manual, [2]string{muteLabel, fmt.Sprintf("a:ad:mute:%d", logID)})
 	}
 	if len(manual) > 0 {
 		rows = append(rows, manual)

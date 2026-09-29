@@ -491,7 +491,7 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 			b.AnswerCallback(q.ID, "禁言失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
-		reason := appendReason(row.Reason, fmt.Sprintf("管理员手工禁言 %d 小时", hours))
+		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(hours))
 		// 同 del 分支：undone/banned 不能被这次禁言覆盖。
 		if row.Action == "undone" || row.Action == "banned" {
 			antiad.UpdateAdLog(b, row.ID, row.Action, reason)

@@ -391,8 +391,9 @@ func TestMiniAppChatDetailShowsEffectivePunish(t *testing.T) {
 	for _, want := range []string{
 		"实际执行",
 		"跟随 bot 设置",
-		"禁言 '+esc(settingOf(c.bot_id,'antiad_mute_hours')||'24')+' 小时",
-		"要改成永久封禁",
+		"muteOptLabel(c.bot_id)",
+		"永久禁言",
+		"要改成永久禁言",
 	} {
 		if !strings.Contains(miniAppHTML, want) {
 			t.Errorf("群详情缺少 %q", want)

@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"fmt"
 	"log/slog"
 
 	"menshen/internal/core"
@@ -24,6 +25,14 @@ func MutedPermissions() map[string]any {
 		"can_send_other_messages":   false,
 		"can_add_web_page_previews": false,
 	}
+}
+
+// MuteLabel 把禁言时长渲染成人话：0（或负数）= 永久禁言。
+func MuteLabel(hours int64) string {
+	if hours <= 0 {
+		return "永久禁言"
+	}
+	return fmt.Sprintf("禁言 %d 小时", hours)
 }
 
 // unmute 恢复默认权限。必须逐项给 true —— 再发一次全 false

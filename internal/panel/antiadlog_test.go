@@ -118,10 +118,21 @@ func TestChatDetailShowsPunishDuration(t *testing.T) {
 
 	showChatDetail(b, 777, 0, b.BotID(), -100)
 	text := fmt.Sprint(fake.LastCall("sendMessage")["text"])
-	if !strings.Contains(text, "禁言 24 小时") || !strings.Contains(text, "要改成永久封禁") {
+	if !strings.Contains(text, "禁言 24 小时") || !strings.Contains(text, "要改成永久禁言") {
 		t.Fatalf("应写明禁言时长与改法:\n%s", text)
 	}
 
+	// 禁言时长 0 = 永久禁言：人留在群里、发不了言。
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+	showChatDetail(b, 777, 0, b.BotID(), -100)
+	text = fmt.Sprint(fake.LastCall("sendMessage")["text"])
+	if !strings.Contains(text, "永久禁言") || strings.Contains(text, "要改成永久禁言") {
+		t.Fatalf("配成 0 后应显示永久禁言且不再提示改法:\n%s", text)
+	}
+
+	// 开启封禁后显示永久封禁出群（优先级高于禁言时长）。
 	if err := b.PutBotSetting(b.BotID(), "antiad_ban", "1"); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +141,7 @@ func TestChatDetailShowsPunishDuration(t *testing.T) {
 	if !strings.Contains(text, "封禁出群（永久）") {
 		t.Fatalf("开启封禁后应显示永久封禁:\n%s", text)
 	}
-	if strings.Contains(text, "要改成永久封禁") {
+	if strings.Contains(text, "要改成永久") {
 		t.Error("已开启封禁时不该再提示改法")
 	}
 }

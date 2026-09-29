@@ -223,13 +223,13 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
 
 	// 全部成功：不再给删除/禁言按钮
-	rows := adAlertRows(act, "", 7, false)
+	rows := adAlertRows(act, "", 7, false, "🔇 禁言")
 	if hasBtn(rows, "a:ad:del:7") || hasBtn(rows, "a:ad:mute:7") {
 		t.Error("处置成功后不该再给补刀按钮")
 	}
 
 	// 删除失败：删除按钮必须回来，禁言按钮仍然不给
-	rows = adAlertRows(act, noteDeleteFailed+": no rights", 7, false)
+	rows = adAlertRows(act, noteDeleteFailed+": no rights", 7, false, "🔇 禁言")
 	if !hasBtn(rows, "a:ad:del:7") {
 		t.Error("删除失败后必须给回删除按钮")
 	}
@@ -238,7 +238,7 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	}
 
 	// 演练模式：两个都要给，因为实际什么都没执行
-	rows = adAlertRows(act, "", 7, true)
+	rows = adAlertRows(act, "", 7, true, "🔇 禁言")
 	if !hasBtn(rows, "a:ad:del:7") || !hasBtn(rows, "a:ad:mute:7") {
 		t.Error("演练模式下两个补刀按钮都要给")
 	}

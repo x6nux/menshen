@@ -283,3 +283,77 @@ func TestAdbHonorsBanMode(t *testing.T) {
 		t.Error("/ban 在封禁群里应封禁而不是禁言")
 	}
 }
+
+// TestMuteLabel：0 = 永久禁言；其余按小时渲染。
+func TestMuteLabel(t *testing.T) {
+	if got := MuteLabel(0); got != "永久禁言" {
+		t.Errorf("MuteLabel(0) = %q，期望永久禁言", got)
+	}
+	if got := MuteLabel(6); got != "禁言 6 小时" {
+		t.Errorf("MuteLabel(6) = %q", got)
+	}
+}
+
+// TestPermanentMuteOmitsUntilDate：禁言时长配成 0 = 永久禁言。不带 until_date
+// 的 restrictChatMember 就是无限期：人留在群里，但发不了言。
+func TestPermanentMuteOmitsUntilDate(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+
+	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+	if note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false); note != "" {
+		t.Fatalf("处置应成功，得到 %q", note)
+	}
+	p := fake.LastCall("restrictChatMember")
+	if p == nil {
+		t.Fatal("应发出 restrictChatMember")
+	}
+	if _, ok := p["until_date"]; ok {
+		t.Errorf("永久禁言不该带 until_date，得到 %v", p["until_date"])
+	}
+	if perms := p["permissions"].(map[string]any); perms["can_send_messages"] != false {
+		t.Error("禁言权限集应为全 false")
+	}
+
+	// 限时档仍然带 until_date。
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "6"); err != nil {
+		t.Fatal(err)
+	}
+	ApplyAction(b, testutil.GroupMsg(-100, 43, 8, "广告"), act, false)
+	p = fake.LastCall("restrictChatMember")
+	if d := untilOf(p); d < 5*3600 || d > 7*3600 {
+		t.Errorf("6 小时档的 until_date 应在 6 小时附近，得到 %d 秒", d)
+	}
+}
+
+// TestEffectivePenaltiesPermanentMute：永久禁言不会自己到期，不能再靠时间窗
+// 判断「是否仍在限制中」——历史禁言要列出来，人工解除后必须消失。
+func TestEffectivePenaltiesPermanentMute(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 一条 30 天前的禁言记录：限时档会被时间窗过滤掉，永久档要列出来。
+	id := logAd(b, &tg.Message{Chat: &tg.Chat{ID: -100},
+		From: &tg.TGUser{ID: 555}, MessageID: 1, Text: "广告"},
+		adVerdict{IsAd: true, Confidence: 0.9, Decider: "so"}, "deleted_muted", "")
+	old := time.Now().Unix() - 30*86400
+	if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET created_at=? WHERE id=?`, old, id); err != nil {
+		t.Fatal(err)
+	}
+
+	got := effectivePenalties(b, 555)
+	if len(got) != 1 || got[0].Action != "deleted_muted" {
+		t.Fatalf("永久禁言应列出历史禁言，得到 %+v", got)
+	}
+	// 人工解除（LiftMute / 兑换 / 申诉撤销都会走 MarkPenaltiesLifted）。
+	MarkPenaltiesLifted(b, -100, 555)
+	if got := effectivePenalties(b, 555); len(got) != 0 {
+		t.Fatalf("已解除的处罚不该再列出，得到 %+v", got)
+	}
+}

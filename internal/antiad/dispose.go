@@ -98,7 +98,8 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 		}
 	}
 	if act.Mute {
-		d := time.Duration(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)) * time.Hour
+		hours := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
+		d := time.Duration(hours) * time.Hour
 		if act.Temp {
 			d = tempMute
 		}
@@ -114,18 +115,22 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 	return strings.Join(notes, "; ")
 }
 
-// MuteSender 限时禁言。频道身份（负 ID）没有成员权限可改，只能
-// banChatSenderChat，且不支持限时。
+// MuteSender 限时禁言；d <= 0 表示永久禁言（不带 until_date 的
+// restrictChatMember 就是无限期，人留在群里但发不了言）。
+// 频道身份（负 ID）没有成员权限可改，只能 banChatSenderChat，且不支持限时。
 func MuteSender(b *core.Bot, chatID, uid int64, d time.Duration) (bool, string) {
 	if uid < 0 {
 		return b.CallOK("banChatSenderChat", map[string]any{
 			"chat_id": chatID, "sender_chat_id": uid})
 	}
-	return b.CallOK("restrictChatMember", map[string]any{
+	payload := map[string]any{
 		"chat_id": chatID, "user_id": uid,
-		"until_date":  time.Now().Add(d).Unix(),
 		"permissions": MutedPermissions(),
-	})
+	}
+	if d > 0 {
+		payload["until_date"] = time.Now().Add(d).Unix()
+	}
+	return b.CallOK("restrictChatMember", payload)
 }
 
 // BanSender 封禁出群（永久）。频道身份走 banChatSenderChat。

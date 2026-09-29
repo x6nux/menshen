@@ -48,11 +48,14 @@ var appealOpenStatuses = store.AppealOpenStatuses
 
 // appealPenalty 是一条有效限制。
 type appealPenalty struct {
-	Type   string // join_profile / message / gban
+	Type   string // join_profile / message / gban / gban_own
 	ChatID int64
 	Text   string
 	Reason string
 	At     int64
+	// Action 是流水里的处置动作（muted / deleted_banned / …）。解除时
+	// 要据此选解禁还是解封：对已被封禁的人发「权限全开」不会把他放回群里。
+	Action string
 }
 
 const appealStatementMax = 200
@@ -123,6 +126,10 @@ func updateAppeal(sh *core.Shared, id int64, sets string, args ...any) {
 //
 // 三类：冷判定禁言（join_mutes）、消息判定禁言（antiad_log 的处置行）、
 // 联合封禁（快照）。都为空时没有申诉可言。
+//
+// 时间窗按「禁言时长」取：禁言档是限时的，过期的处罚不必再列。禁言时长
+// 配成 0（永久禁言）时不设时间窗，改由 lifted_at 标记人工解除——永久禁言
+// 不会自己到期，不这样区分的话入口会永远显示「限制中」。
 func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 	var out []appealPenalty
 
@@ -140,16 +147,19 @@ func effectivePenalties(b *core.Bot, uid int64) []appealPenalty {
 	}
 
 	hours := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_hours", 24)
-	since := time.Now().Unix() - hours*3600
-	rows, err = b.Store.Read.Query(`SELECT chat_id,text,reason,created_at
-		FROM antiad_log WHERE bot_id=? AND user_id=? AND created_at > ?
+	since := int64(0)
+	if hours > 0 {
+		since = time.Now().Unix() - hours*3600
+	}
+	rows, err = b.Store.Read.Query(`SELECT chat_id,text,reason,created_at,action
+		FROM antiad_log WHERE bot_id=? AND user_id=? AND created_at > ? AND lifted_at = 0
 		AND action IN ('deleted_muted','muted','deleted_banned','banned')
 		ORDER BY id DESC LIMIT 10`, b.BotID(), uid, since)
 	if err == nil {
 		for rows.Next() {
 			var p appealPenalty
 			p.Type = "message"
-			if rows.Scan(&p.ChatID, &p.Text, &p.Reason, &p.At) == nil {
+			if rows.Scan(&p.ChatID, &p.Text, &p.Reason, &p.At, &p.Action) == nil {
 				out = append(out, p)
 			}
 		}
@@ -613,7 +623,17 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 				continue
 			}
 		case "message":
-			if ok, desc := Unmute(b, p.ChatID, uid); !ok {
+			// 记录上是封禁的就解封：对已被封禁的人发「权限全开」不会把他
+			// 放回群里，而他重新进群又会被当广告号处理。
+			if p.Action == "banned" || p.Action == "deleted_banned" {
+				if ok, desc := Unban(b, p.ChatID, uid); !ok {
+					slog.Warn("申诉：解除封禁失败", "chat", p.ChatID, "uid", uid, "err", desc)
+				} else {
+					MarkPenaltiesLifted(b, p.ChatID, uid)
+				}
+				continue
+			}
+			if ok, desc := LiftMute(b, p.ChatID, uid); !ok {
 				slog.Warn("申诉：解除禁言失败", "chat", p.ChatID, "uid", uid, "err", desc)
 			}
 		case "gban":
