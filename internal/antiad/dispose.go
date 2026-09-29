@@ -19,6 +19,10 @@ type adAction struct {
 	// Mute 与 Ban 互斥：禁言档按本群设置可改为封禁出群（见 planAction）。
 	Mute bool
 	Ban  bool
+	// Short 是「仅删除」档附带的一记短时禁言（tempMute）。刻意不并入 Mute：
+	// Mute 会触发大模型复判与复判前的临时禁言，而这一档不值得为它多花
+	// 一次复判——短禁言只是堵住删完就接着发的空档。
+	Short bool
 	// Purge 是连带删除此人近期的全部消息（账号本身就是广告号时）。
 	// 不单列动作名：流水里仍记 deleted_muted，另在理由里注明（见 logNote）。
 	Purge bool
@@ -50,9 +54,15 @@ const (
 	purgeNote = "连带删除此人近期全部消息"
 )
 
-// planAction 按判定结论与本群设置定处置：禁言档在封禁模式下改为封禁出群。
+// planAction 按判定结论与本群设置定处置：禁言档在封禁模式下改为封禁出群；
+// 「仅删除」档可选附一记短时禁言（antiad_short_mute）。
 func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bool, v adVerdict) adAction {
-	return withPunish(decideAction(b, snap, newbie, v), snap.BanMode(conf))
+	act := withPunish(decideAction(b, snap, newbie, v), snap.BanMode(conf))
+	if act.Name == "deleted" &&
+		snap.BotSettingInt(b.BotID(), "antiad_short_mute", 0) == 1 {
+		act.Short = true
+	}
+	return act
 }
 
 // withPunish 把禁言档换成封禁（ban 为真时）。/ban 与自动判定共用。
@@ -104,6 +114,13 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 			d = tempMute
 		}
 		if ok, desc := MuteSender(b, m.Chat.ID, m.From.ID, d); !ok {
+			notes = append(notes, noteMuteFailed+": "+desc)
+		}
+	}
+	// 仅删除档的短禁言。频道身份（负 ID）跳过：MuteSender 对频道走的是
+	// banChatSenderChat，那是永久封频道，比这一档该有的分量重得多。
+	if act.Short && m.From.ID > 0 {
+		if ok, desc := MuteSender(b, m.Chat.ID, m.From.ID, tempMute); !ok {
 			notes = append(notes, noteMuteFailed+": "+desc)
 		}
 	}
@@ -275,7 +292,7 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	if v.Decider == deciderHash {
 		// 只凭哈希、没有复判模型的结论：只删不罚。禁言交给复判模型决定，
 		// 不沿用当初那条的处罚——后来者的资料与资历都没判过。
-		act.Mute, act.Ban, act.Purge = false, false, false
+		act.Mute, act.Ban, act.Purge, act.Short = false, false, false, false
 		if act.Delete {
 			act.Name = "deleted"
 		}
@@ -285,6 +302,13 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	todo := act
 	todo.Delete = act.Delete && !pre.Delete
 	note := joinNotes(preNote, ApplyAction(b, m, todo, dryrun))
+	if act.Short {
+		p := fmt.Sprintf("附短时禁言 %d 分钟", int(tempMute/time.Minute))
+		if dryrun {
+			p = "本应" + p
+		}
+		note = joinNotes(note, p)
+	}
 	if pre.Delete && !act.Delete {
 		// 终判不删，先删掉的也回不来了：照实记成删过。
 		act.Delete, act.Name = true, "deleted"

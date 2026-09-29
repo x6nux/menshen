@@ -99,6 +99,9 @@ var settingDefaults = map[string]string{
 	"antiad_exempt_users":   "[]", // 该 bot 的豁免名单
 	// 禁言档改为封禁出群（永久）。每群可单独覆盖（bot_chats.punish）。
 	"antiad_ban": "0",
+	// 仅删除档附一记 5 分钟短禁言：只删不罚的话，发广告的人删完就能接着发；
+	// 而老人档的长禁言又太伤。短禁言只堵连发，社交代价小。
+	"antiad_short_mute": "0",
 	// 判定普通成员 bot：默认开。豁免只给**有管理员权限**的 bot（由群
 	// 管理员判断兜住）；工具 bot 发什么判什么，0 = 豁免所有 bot（旧行为）。
 	// bot 默认看不见其他 bot 的消息，判到也要对方满足 Bot-to-Bot 条件才收得到。

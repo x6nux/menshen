@@ -357,3 +357,66 @@ func TestEffectivePenaltiesPermanentMute(t *testing.T) {
 		t.Fatalf("已解除的处罚不该再列出，得到 %+v", got)
 	}
 }
+
+// TestShortMuteOnDeletedTier：开启 antiad_short_mute 后，「仅删除」档要附一记
+// 5 分钟短禁言——只删不罚的话，发广告的人删完就能接着发。它刻意不触发大模型
+// 复判（Short 不并入 Mute），否则这一档每条都要多花一次复判。
+func TestShortMuteOnDeletedTier(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_short_mute", "1"); err != nil {
+		t.Fatal(err)
+	}
+	_, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
+		llmReply(true, 0.95, "scam", "message"))
+
+	// 老人（发言 50 条、100 小时前进群）高置信：矩阵给「删除」，不触发复判。
+	// 时间基准用消息自带的 Date（1700000000）：用 time.Now() 会算出「进群
+	// 时间在未来」，AgeHours 归零反而变回新人。
+	const msgDate = int64(1700000000)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
+		VALUES (-100,42,?,?,50,0,0)`,
+		msgDate-100*3600, msgDate-100*3600); err != nil {
+		t.Fatal(err)
+	}
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "日入过万 私聊"))
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("deleteMessage"); n != 1 {
+		t.Fatalf("应删除消息，实际 %d 次", n)
+	}
+	mutes := fake.Calls("restrictChatMember")
+	if len(mutes) != 1 {
+		for i, p := range mutes {
+			t.Logf("mute[%d]: until=%v perms=%v", i, p["until_date"], p["permissions"])
+		}
+		_, action, reason := logRow(t, b)
+		t.Logf("log: action=%q reason=%q", action, reason)
+		t.Fatalf("仅删除档应附一次短禁言，实际 %d 次", len(mutes))
+	}
+	if d := untilOf(mutes[0]); d < 4*60 || d > 6*60 {
+		t.Errorf("短禁言应约 5 分钟，得到 %d 秒", d)
+	}
+	if llmN.Load() != 0 {
+		t.Errorf("仅删除档不该触发复判，实际 %d 次", llmN.Load())
+	}
+	_, action, reason := logRow(t, b)
+	if action != "deleted" {
+		t.Errorf("动作名应保持 deleted（短禁言不并进处罚档），得到 %q", action)
+	}
+	if !strings.Contains(reason, "短时禁言") {
+		t.Errorf("理由里应注明短禁言:\n%s", reason)
+	}
+
+	// 关掉开关：只删不禁。
+	if err := b.PutBotSetting(b.BotID(), "antiad_short_mute", "0"); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.CountCalls("restrictChatMember")
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 8, "日入过万 私聊"))
+	waitIdle(t, b)
+	if after := fake.CountCalls("restrictChatMember"); after != before {
+		t.Errorf("开关关闭时不该禁言，多出 %d 次", after-before)
+	}
+}
