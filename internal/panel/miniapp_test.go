@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -398,5 +399,58 @@ func TestMiniAppChatDetailShowsEffectivePunish(t *testing.T) {
 		if !strings.Contains(miniAppHTML, want) {
 			t.Errorf("群详情缺少 %q", want)
 		}
+	}
+}
+
+// TestMiniGlobalDefaultsAndModels：Mini App 要能改「全局默认参数」与
+// 「默认模型」。此前只能设 per-bot 覆盖，各 bot 页里的「全局 XX」没地方改。
+func TestMiniGlobalDefaultsAndModels(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+
+	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_mute_hours", "value": "0"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("全局默认参数应可写，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().Setting("antiad_mute_hours"); got != "0" {
+		t.Errorf("全局默认没落上，得到 %q", got)
+	}
+
+	// 默认模型列表：必须是已登记且启用的模型。
+	for _, n := range []string{"up1/m1", "up1/m2"} {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO models (name,prompt_price,
+			completion_price,cache_read_price,cache_write_price,enabled)
+			VALUES (?,0,0,0,0,1)`, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_so_models",
+			"value": "up1/m1, up1/m2"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("默认模型列表应可写，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().SettingStrings("antiad_so_models"); !slices.Equal(got, []string{"up1/m1", "up1/m2"}) {
+		t.Errorf("默认模型列表没落上，得到 %v", got)
+	}
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_vision_model", "value": "up1/m1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("识图模型应可写，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().Setting("antiad_vision_model"); got != "up1/m1" {
+		t.Errorf("识图模型没落上，得到 %q", got)
+	}
+	// 未登记的模型要拒绝。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_vision_model", "value": "nope/m9"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("未登记的识图模型应 400，得到 %d", w.Code)
 	}
 }

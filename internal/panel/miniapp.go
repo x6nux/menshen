@@ -473,6 +473,57 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 		}
 		miniOK(w, map[string]any{"ok": true})
 		return
+	case "antiad_so_models", "antiad_llm_models", "antiad_vision_model":
+		// 全局默认模型（各 bot 不覆盖时用它）：与 TG 面板的「默认模型」同一份数据。
+		if !sh.IsMain(uid) {
+			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
+			return
+		}
+		snap := sh.Cache.Snap()
+		if key == "antiad_vision_model" {
+			if val != "" {
+				if m := snap.Models[val]; m == nil || !m.Enabled {
+					miniErr(w, http.StatusBadRequest, "该模型不在「模型」页里，或已被停用")
+					return
+				}
+			}
+			if err := sh.PutSetting(key, val); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
+			miniOK(w, map[string]any{"ok": true})
+			return
+		}
+		if legacy := map[string]string{
+			"antiad_so_models":  "antiad_so_model",
+			"antiad_llm_models": "antiad_llm_model",
+		}[key]; legacy != "" {
+			// 清掉旧单值键：留着的话，列表被清空后读侧会回退到它，
+			// 出现「面板显示空、实际还跑着旧模型」的错位。
+			if err := sh.PutSetting(legacy, ""); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
+		}
+		if val == "" || val == "-" {
+			if err := sh.PutSetting(key, "[]"); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
+			}
+			miniOK(w, map[string]any{"ok": true})
+			return
+		}
+		models, err := parseModelListSnap(snap, val)
+		if err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := sh.PutSetting(key, modelsJSON(models)); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		miniOK(w, map[string]any{"ok": true})
+		return
 	}
 
 	sp := settingSpecByKey(key)
@@ -495,10 +546,9 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 			val = sh.Cache.Snap().Setting(key)
 		}
 	} else {
-		if sp.group != "" && sp.group != "both" {
-			miniErr(w, http.StatusBadRequest, "该项只能按 bot 设置")
-			return
-		}
+		// 全局值：主管理员可以给 antiad 组设**全局默认**（各 bot 不覆盖时
+		// 用它；此前只有面板的 per-bot 页，全局默认没地方改），其余全局项
+		// 同样只有主管理员能动。
 		if !sh.IsMain(uid) {
 			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
 			return

@@ -439,6 +439,29 @@ function viewSettings(){
       '<input style="width:110px" value="'+esc(g[sp.key]||'')+'" '+
       'onchange="act(\'set\',{scope:\'global\',key:\''+sp.key+'\',value:this.value})"></div>';
   }).join('')+'</div>';
+  if(S.me.main){
+    // 各 bot 的默认值（bot 页里的「全局 XX」就是这里）：此前只有 per-bot
+    // 覆盖，全局默认没地方改。
+    var bspecs=S.specs.filter(function(sp){ return sp.group=='antiad'; });
+    h+='<div class="card"><h3>全局默认参数</h3>'+
+      '<div class="hint" style="margin-bottom:8px">各 bot 未覆盖时用它；bot 页里对应「全局 XX」占位。</div>'+
+      bspecs.map(function(sp){
+        return '<div class="row"><span class="k">'+esc(sp.label)+'<div class="hint">'+esc(sp.hint)+'</div></span>'+
+          '<input style="width:110px" value="'+esc(g[sp.key]||'')+'" '+
+          'onchange="act(\'set\',{scope:\'global\',key:\''+sp.key+'\',value:this.value})"></div>';
+      }).join('')+'</div>';
+    h+='<div class="card"><h3>默认模型</h3>'+
+      '<div class="row"><span class="k">判定模型（systemone）</span></div>'+
+      '<input value="'+esc(g.antiad_so_models||'')+'" placeholder="上游名/模型ID，多个用逗号分隔" '+
+      'onchange="act(\'set\',{scope:\'global\',key:\'antiad_so_models\',value:this.value},\'已保存\')">'+
+      '<div class="row"><span class="k">复判模型（大模型）</span></div>'+
+      '<input value="'+esc(g.antiad_llm_models||'')+'" placeholder="上游名/模型ID，多个用逗号分隔" '+
+      'onchange="act(\'set\',{scope:\'global\',key:\'antiad_llm_models\',value:this.value},\'已保存\')">'+
+      '<div class="row"><span class="k">识图模型</span></div>'+
+      '<input value="'+esc(g.antiad_vision_model||'')+'" placeholder="上游名/模型ID（留空 = 图片与贴纸不判）" '+
+      'onchange="act(\'set\',{scope:\'global\',key:\'antiad_vision_model\',value:this.value},\'已保存\')">'+
+      '<div class="hint">按重试顺序排列；必须是「模型」页里已登记且启用的模型。</div></div>';
+  }
   h+='<div class="card"><h3>展示时区</h3>'+
     '<div class="row"><span class="k">IANA 时区名，所有时间按它显示</span></div>'+
     '<input value="'+esc(g.tz_name||'')+'" placeholder="Asia/Shanghai" '+
