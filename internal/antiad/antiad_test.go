@@ -11,10 +11,14 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestDecideAction 锁住处置矩阵。老人永远不自动禁言——
+// TestDecideAction 锁住「按置信度分档」的处置矩阵（bool 模式默认开，
+// 这条测试显式关掉它以覆盖矩阵本身）。老人永远不自动禁言——
 // 误伤一个长期成员的社交代价远大于漏一条广告。
 func TestDecideAction(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
+	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "0"); err != nil {
+		t.Fatal(err)
+	}
 	snap := b.Cache.Snap()
 
 	cases := []struct {
