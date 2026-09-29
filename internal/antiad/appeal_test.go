@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -360,5 +361,42 @@ func TestAppealNoWebBlocksNewAppeal(t *testing.T) {
 	}
 	if st := appealStatus(t, b, 555); st != "lifted" {
 		t.Errorf("人工通过后应为 lifted，得到 %q", st)
+	}
+}
+
+// TestStartAppealAISingleFlight：同一张单的重复触发不得跑两遍 AI。
+// 用户重复点「直接申诉」、管理员连点「重跑复核」都会走到这里。
+func TestStartAppealAISingleFlight(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	var calls atomic.Int32
+	release := make(chan struct{})
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"{\"uphold\":true,\"confidence\":0.9,\"reason\":\"维持\"}"}}]}`))
+	})
+	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'ai',?,?)`,
+		b.BotID(), 555, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	startAppealAI(b, 1, 555)
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("第一轮应发出一次请求，得到 %d", got)
+	}
+	startAppealAI(b, 1, 555) // 重复触发
+	close(release)
+	waitIdle(t, b)
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("重复触发应只跑一次 AI，得到 %d", got)
 	}
 }

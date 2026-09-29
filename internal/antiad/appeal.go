@@ -6,6 +6,7 @@ import (
 	"html"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -42,7 +43,8 @@ type appealRec struct {
 
 // 未结状态：同一人对同一 bot 同时只能有一张。noweb（等管理员人工处理）
 // 也算未结——不算的话用户可以反复发起，每次都要重跑一遍 AI 复核。
-var appealOpenStatuses = []string{"statement", "ai", "web", "code", "noweb"}
+// 集合定义在 store：保留期清理与未结唯一索引用的是同一份。
+var appealOpenStatuses = store.AppealOpenStatuses
 
 // appealPenalty 是一条有效限制。
 type appealPenalty struct {
@@ -57,19 +59,22 @@ const appealStatementMax = 200
 
 // ---- 存储 ----
 
+// AppealColumns 是 appeals 表的完整投影。它出现在三处读单（按 id、按未结、
+// 按解禁码）与 Mini App 详情里，任何一处漏改列都会在运行期才炸——统一放这里。
+const AppealColumns = `id,bot_id,user_id,status,statement,ai_result,ai_conf,
+	ai_reason,ai_model,ai_cost,web_attempts,web_since,code,code_expires,
+	created_at,updated_at`
+
 func loadAppealByID(s *store.Store, id int64) (appealRec, bool) {
-	return scanAppeal(s.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
-		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
-		code,code_expires,created_at,updated_at FROM appeals WHERE id=?`, id))
+	return scanAppeal(s.Read.QueryRow(`SELECT `+AppealColumns+`
+		FROM appeals WHERE id=?`, id))
 }
 
 // openAppeal 返回此人在这台 bot 上未结的申诉单（最多一张）。
 func openAppeal(s *store.Store, botID, uid int64) (appealRec, bool) {
-	return scanAppeal(s.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
-		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
-		code,code_expires,created_at,updated_at FROM appeals
-		WHERE bot_id=? AND user_id=? AND status IN
-			('statement','ai','web','code','noweb')
+	return scanAppeal(s.Read.QueryRow(`SELECT `+AppealColumns+`
+		FROM appeals
+		WHERE bot_id=? AND user_id=? AND status IN (`+store.AppealOpenStatusesSQL+`)
 		ORDER BY id DESC LIMIT 1`, botID, uid))
 }
 
@@ -305,7 +310,19 @@ func captureAppealStatement(b *core.Bot, dmChat, uid int64, text string) bool {
 		return true
 	}
 	statement := core.TruncateRunes(strings.TrimSpace(text), appealStatementMax)
-	updateAppeal(b.Shared, ap.ID, `statement=?, status='ai'`, statement)
+	// 带状态条件：同一张单被两条消息同时认领时，只该有一条成为理由。
+	res, err := b.Store.Write.Exec(`UPDATE appeals SET statement=?, status='ai',
+		updated_at=? WHERE id=? AND status='statement'`,
+		statement, time.Now().Unix(), ap.ID)
+	if err != nil {
+		slog.Error("申诉：保存申诉理由失败", "appeal", ap.ID, "err", err)
+		b.Send(dmChat, "保存失败，请稍后重试。", nil)
+		return true
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		b.Send(dmChat, "这张申诉单已经提交过了，无需重复发送。", nil)
+		return true
+	}
 	b.Send(dmChat, "✅ 已收到申诉理由，正在交给 AI 复核……", nil)
 	startAppealAI(b, ap.ID, uid)
 	return true
@@ -373,9 +390,22 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 
 // ---- AI 复判 ----
 
+// appealAIRunning 保证同一张申诉单同时只有一次 AI 复核在跑。用户重复点
+// 「直接申诉」、管理员连点「重跑复核」、以及队列重试都可能触发第二次，
+// 重复跑会双倍花钱并竞态流转状态。
+var appealAIRunning sync.Map // appealID -> struct{}
+
 // startAppealAI 把申诉复判投进判定 worker 池。
 func startAppealAI(b *core.Bot, appealID, uid int64) {
-	if !b.AdSubmit(func() { runAppealAI(b, appealID, uid) }) {
+	if _, dup := appealAIRunning.LoadOrStore(appealID, struct{}{}); dup {
+		slog.Info("申诉：该单的 AI 复核已在运行，忽略重复触发", "appeal", appealID)
+		return
+	}
+	if !b.AdSubmit(func() {
+		defer appealAIRunning.Delete(appealID)
+		runAppealAI(b, appealID, uid)
+	}) {
+		appealAIRunning.Delete(appealID)
 		// 队列满时申诉单保持可重试：让他在 /start 里再点一次。
 		b.Send(uid, "系统繁忙，请稍后再发一次 /start 重试。", nil)
 		slog.Warn("申诉：判定队列已满", "appeal", appealID, "uid", uid)

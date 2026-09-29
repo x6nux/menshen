@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"menshen/internal/core"
 )
@@ -77,7 +78,7 @@ func AdminIssueCode(b *core.Bot, appealID int64) (string, error) {
 }
 
 // AdminRerunAppealAI 重跑 AI 复判：复核出错、或想用最新资料重新评估时用。
-// 只对还没结案的单子开放；运行中的复判以 status='ai' 为准，重复点击无害。
+// 只对还没结案的单子开放；同一张单的重复触发由 startAppealAI 的单飞挡住。
 func AdminRerunAppealAI(b *core.Bot, appealID int64) error {
 	ap, ok := loadAppealByID(b.Store, appealID)
 	if !ok {
@@ -86,7 +87,15 @@ func AdminRerunAppealAI(b *core.Bot, appealID int64) error {
 	if ap.Status != "ai" && ap.Status != "web" && ap.Status != "noweb" {
 		return fmt.Errorf("该申诉单当前状态不能重跑复核")
 	}
-	updateAppeal(b.Shared, ap.ID, `status='ai'`)
+	res, err := b.Store.Write.Exec(`UPDATE appeals SET status='ai', updated_at=?
+		WHERE id=? AND status IN ('ai','web','noweb')`,
+		time.Now().Unix(), ap.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("该申诉单状态已变，请刷新后再试")
+	}
 	startAppealAI(b, ap.ID, ap.UserID)
 	return nil
 }

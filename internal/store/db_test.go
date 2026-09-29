@@ -85,6 +85,75 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 }
 
+// TestAppealOpenUniqueIndexDedupes：老库上同一 (bot,user) 可能有多张未结单
+// （重复投递的回调并发建出的孤儿单）。启动时要先收拢（每个组合保留最新一张）
+// 再建部分唯一索引——否则索引建不上、服务起不来；而孤儿单会永久占住
+// openAppeal 的入口。
+func TestAppealOpenUniqueIndexDedupes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE appeals (id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bot_id INTEGER NOT NULL, user_id INTEGER NOT NULL, status TEXT NOT NULL,
+			statement TEXT NOT NULL DEFAULT '', ai_result TEXT NOT NULL DEFAULT '',
+			ai_conf REAL NOT NULL DEFAULT 0, ai_reason TEXT NOT NULL DEFAULT '',
+			ai_model TEXT NOT NULL DEFAULT '', ai_cost INTEGER NOT NULL DEFAULT 0,
+			web_attempts INTEGER NOT NULL DEFAULT 0, web_since INTEGER NOT NULL DEFAULT 0,
+			code TEXT NOT NULL DEFAULT '', code_expires INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO appeals (bot_id,user_id,status,created_at,updated_at)
+			VALUES (1,555,'web',1,1)`,
+		`INSERT INTO appeals (bot_id,user_id,status,created_at,updated_at)
+			VALUES (1,555,'noweb',2,2)`,
+		`INSERT INTO appeals (bot_id,user_id,status,created_at,updated_at)
+			VALUES (1,555,'statement',3,3)`,
+		`INSERT INTO appeals (bot_id,user_id,status,created_at,updated_at)
+			VALUES (1,556,'web',4,4)`,
+	} {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatalf("造老库失败: %v", err)
+		}
+	}
+	old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("老库启动失败: %v", err)
+	}
+	defer s.Close()
+
+	var open int
+	if err := s.Read.QueryRow(`SELECT COUNT(*) FROM appeals
+		WHERE bot_id=1 AND user_id=555 AND status IN (` +
+		AppealOpenStatusesSQL + `)`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Errorf("重复的未结单应收拢到 1 张，得到 %d", open)
+	}
+	var newest int64
+	s.Read.QueryRow(`SELECT MAX(id) FROM appeals WHERE bot_id=1 AND user_id=555`).Scan(&newest)
+	var st string
+	s.Read.QueryRow(`SELECT status FROM appeals WHERE id=?`, newest).Scan(&st)
+	if st != "statement" {
+		t.Errorf("应保留最新一张未结单，得到 %q", st)
+	}
+
+	// 索引真的在：同一组合再建一张未结单会撞唯一约束。
+	if _, err := s.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (1,555,'web',0,0)`); err == nil {
+		t.Error("第二张未结单应撞未结唯一索引")
+	}
+	// 已结案的单不受限制。
+	if _, err := s.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (1,555,'lifted',0,0)`); err != nil {
+		t.Errorf("已结案的单不该被索引挡住: %v", err)
+	}
+}
+
 // hasIndex 报告表上是否存在某个索引。
 func hasIndex(db *sql.DB, table, name string) (bool, error) {
 	rows, err := db.Query("PRAGMA index_list(" + table + ")")

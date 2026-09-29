@@ -43,6 +43,9 @@ func newUnlockCode() (string, error) {
 }
 
 // issueUnlockCode 给申诉单签发解禁码（唯一索引兜底，撞码时重试）。
+//
+// 带状态条件：并发提交（同一张单的两个 POST）只该有一个签出码，否则先返回
+// 的那个码会被后一次 UPDATE 覆盖成无效码，用户拿着它去兑换只会得到「已失效」。
 func issueUnlockCode(sh *core.Shared, appealID int64) (string, bool) {
 	for attempt := 0; attempt < 5; attempt++ {
 		code, err := newUnlockCode()
@@ -50,13 +53,18 @@ func issueUnlockCode(sh *core.Shared, appealID int64) (string, bool) {
 			return "", false
 		}
 		expires := time.Now().Add(unlockCodeTTL).Unix()
-		_, err = sh.Store.Write.Exec(`UPDATE appeals SET code=?, code_expires=?,
-			status='code', updated_at=? WHERE id=?`,
+		res, err := sh.Store.Write.Exec(`UPDATE appeals SET code=?, code_expires=?,
+			status='code', updated_at=? WHERE id=? AND status IN ('web','noweb')`,
 			code, expires, time.Now().Unix(), appealID)
-		if err == nil {
+		if err != nil {
+			// 撞码（唯一索引）就重生成；其他错误也重试，最后统一失败。
+			continue
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
 			return code, true
 		}
-		// 撞码（唯一索引）就重生成；其他错误也重试，最后统一失败。
+		// 状态已变（并发的另一路先处理了）：不再重试。
+		return "", false
 	}
 	return "", false
 }
@@ -81,9 +89,8 @@ func looksLikeUnlockCode(text string) bool {
 
 // loadAppealByCode 按解禁码查申诉单。
 func loadAppealByCode(s *store.Store, code string) (appealRec, bool) {
-	return scanAppeal(s.Read.QueryRow(`SELECT id,bot_id,user_id,status,statement,
-		ai_result,ai_conf,ai_reason,ai_model,ai_cost,web_attempts,web_since,
-		code,code_expires,created_at,updated_at FROM appeals WHERE code=?`, code))
+	return scanAppeal(s.Read.QueryRow(`SELECT `+AppealColumns+`
+		FROM appeals WHERE code=?`, code))
 }
 
 // ---- 群内兑换 ----

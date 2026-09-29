@@ -226,3 +226,45 @@ func TestDirectRedeemScopes(t *testing.T) {
 		Chat: &tg.Chat{ID: 999, Type: "private"}}, codeOther)
 	_ = fmt.Sprint()
 }
+
+// TestIssueUnlockCodeRequiresOpenWebStatus：签发必须带状态条件。
+// 并发提交（同一张单的两个 POST）各签一个码的话，先返回的那个会被后一次
+// UPDATE 覆盖成无效码，用户拿去兑换只会得到「已失效」。
+func TestIssueUnlockCodeRequiresOpenWebStatus(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	now := time.Now().Unix()
+
+	// 已结案的单不签发，也不得被改写状态。
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'lifted',?,?)`,
+		b.BotID(), 555, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := issueUnlockCode(b.Shared, 1); ok || code != "" {
+		t.Fatalf("已结案的单不该签出码，得到 %q ok=%v", code, ok)
+	}
+	var st string
+	b.Store.Read.QueryRow(`SELECT status FROM appeals WHERE id=1`).Scan(&st)
+	if st != "lifted" {
+		t.Errorf("状态不该被改写，得到 %q", st)
+	}
+
+	// web 状态可以签发，且只签一次：第二次状态已是 code，不再签出第二个码。
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,web_since,created_at,updated_at)
+		VALUES (?,?,'web',?,?,?)`, b.BotID(), 556, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	code, ok := issueUnlockCode(b.Shared, 2)
+	if !ok || code == "" {
+		t.Fatalf("web 状态应能签出码，得到 %q ok=%v", code, ok)
+	}
+	if _, ok := issueUnlockCode(b.Shared, 2); ok {
+		t.Error("同一张单不该签出第二个码")
+	}
+	var stored string
+	b.Store.Read.QueryRow(`SELECT code FROM appeals WHERE id=2`).Scan(&stored)
+	if stored != code {
+		t.Errorf("已签出的码被覆盖了：库里 %q，返回过 %q", stored, code)
+	}
+}

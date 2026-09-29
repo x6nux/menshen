@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -400,6 +401,16 @@ func hasColumn(db *sql.DB, table, col string) (bool, error) {
 	return false, rows.Err()
 }
 
+// AppealOpenStatuses 是申诉单的「未结」状态集合。
+//
+// 它同时出现在读侧（openAppeal）、人工处理（AdminLift/Reject）、保留期清理
+// 与未结唯一索引里。分散成几份字面量迟早漂移——noweb 就漂过一次：用户能
+// 反复发起、管理员又结不了案。统一放在这里，读侧与 SQL 各取所需。
+var AppealOpenStatuses = []string{"statement", "ai", "web", "code", "noweb"}
+
+// AppealOpenStatusesSQL 是同一个集合的 SQL 字面量（IN 列表用）。
+const AppealOpenStatusesSQL = "'statement','ai','web','code','noweb'"
+
 // ensureIndexes 建运行期查询依赖的索引。
 //
 // 必须晚于 migrate：schemaSQL 先于它执行，而 bot_id 这类列是老库升级时
@@ -437,6 +448,20 @@ func ensureIndexes(db *sql.DB) error {
 		if _, err := db.Exec(q); err != nil {
 			return fmt.Errorf("建索引失败（%s）: %w", q, err)
 		}
+	}
+
+	// 同一 (bot,user) 只允许一张未结单：重复投递的回调并发建单会留下孤儿单，
+	// 而孤儿单会永久占住 openAppeal 的入口。老库上可能已有重复，直接建
+	// 唯一索引会让启动失败，所以先收拢（每个组合保留最新一张）。
+	if _, err := db.Exec(`UPDATE appeals SET status='expired', updated_at=?
+		WHERE status IN (`+AppealOpenStatusesSQL+`) AND id NOT IN (
+			SELECT MAX(id) FROM appeals WHERE status IN (`+AppealOpenStatusesSQL+`)
+			GROUP BY bot_id, user_id)`, time.Now().Unix()); err != nil {
+		return fmt.Errorf("收拢重复的未结申诉单失败: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_appeal_open
+		ON appeals(bot_id, user_id) WHERE status IN (` + AppealOpenStatusesSQL + `)`); err != nil {
+		return fmt.Errorf("建未结申诉唯一索引失败: %w", err)
 	}
 	return nil
 }
