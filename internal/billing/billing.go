@@ -5,7 +5,6 @@ import (
 
 	"fmt"
 	"math"
-	"strconv"
 )
 
 // ponytail: 与 newapi 的 QuotaPerUnit 一致，写死。
@@ -36,23 +35,4 @@ func ComputeCost(u Usage, m *upstream.Model) int64 {
 		return 0
 	}
 	return int64(math.Ceil(usd * QuotaPerUSD))
-}
-
-// formatTokenCount 把 token 数换算成 K/M/B 并保留一位小数，
-// 避免面板上出现 8 位长数字。千位以下原样输出——
-// "0.9K" 比 "900" 更难读，换算在这里没有收益。
-func formatTokenCount(n int64) string {
-	neg := ""
-	if n < 0 {
-		neg, n = "-", -n
-	}
-	switch {
-	case n >= 1_000_000_000:
-		return neg + fmt.Sprintf("%.1fB", float64(n)/1e9)
-	case n >= 1_000_000:
-		return neg + fmt.Sprintf("%.1fM", float64(n)/1e6)
-	case n >= 1_000:
-		return neg + fmt.Sprintf("%.1fK", float64(n)/1e3)
-	}
-	return neg + strconv.FormatInt(n, 10)
 }

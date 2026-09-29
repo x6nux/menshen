@@ -1,0 +1,22 @@
+# 构建上下文里不要带上这些：本地数据（含明文 bot_token / api_key）、
+# 版本库、配置与构建产物。它们不参与编译，只会拖慢构建、并把密钥送进
+# 远程 builder 的构建缓存。
+.git
+.github
+.beads
+.serena
+.spec-workflow
+dev
+docs
+data
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+menshen
+*.tar.gz
+*.zip
+CLAUDE.md
+AGENTS.md
+HANDOFF.md
