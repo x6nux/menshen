@@ -1728,26 +1728,16 @@ func adAlertRows(act adAction, note string, logID int64, dryrun bool,
 	return rows
 }
 
-// adAlertLinks 是「查看原文与理由 / 申诉」两个链接按钮行（§5.2）。
+// adAlertLinks 是记录卡片底部的链接按钮行：只留「📝 申诉」deep link。
 //
-// 有公开地址时查看页可用；bot 有用户名时申诉 deep link 才拼得出来。
+// 原文与理由已经直接印在卡片上（见 RenderAdRecord），不再给「去网页看」
+// 的链接——管理员的判断不该多一步跳转。bot 有用户名时 deep link 才拼得出来。
 func adAlertLinks(b *core.Bot, logID int64) [][2]string {
-	var row [][2]string
-	if u := LogViewURL(b.Shared, logID); u != "" {
-		row = append(row, [2]string{"📄 查看原文与理由", tg.URLBtn(u)})
+	if b.Username == "" {
+		return nil
 	}
-	if b.Username != "" {
-		row = append(row, [2]string{"📝 申诉", tg.URLBtn(botDeepLink(b, logID))})
-	}
-	return row
+	return [][2]string{{"📝 申诉", tg.URLBtn(botDeepLink(b, logID))}}
 }
-
-// webRedacted 报告私聊内容是否要按「有公开地址」的规则去敏。
-//
-// 有公开地址时，私聊告警、面板记录列表与申诉卡片都不带原文、理由与昵称，
-// 改由查看页展示：TG 聊天记录会永久留存、还可能被转发。没有公开地址
-// （轮询模式）时保持原样 —— 否则管理员完全看不到内容。
-func webRedacted(b *core.Bot) bool { return WebAvailable(b.Shared) }
 
 // ---- 判定账本的读写 ----
 //

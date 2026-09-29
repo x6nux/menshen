@@ -189,16 +189,13 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 		map[string]string{"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[r.Verdict],
 		html.EscapeString(adKindLabel(r.Kind)), r.Confidence*100, html.EscapeString(r.Decider))
 	fmt.Fprintf(&sb, "处置: %s\n", html.EscapeString(ActionLabel(r.Action)))
-	if webRedacted(b) {
-		// 有公开地址：原文与理由改由查看页展示，聊天记录里不留。
-		sb.WriteString("\n<i>原文与理由已去敏，点下方按钮查看。</i>")
-	} else {
-		if r.Reason != "" {
-			fmt.Fprintf(&sb, "理由: %s\n", html.EscapeString(r.Reason))
-		}
-		fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>",
-			html.EscapeString(core.TruncateRunes(r.Text, 500)))
+	// 原文与理由直接给管理员看：记录卡片的用途就是让他当场判断，
+	// 再让人去网页上翻一遍是把判断成本推给了他。
+	if r.Reason != "" {
+		fmt.Fprintf(&sb, "理由: %s\n", html.EscapeString(r.Reason))
 	}
+	fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>",
+		html.EscapeString(core.TruncateRunes(r.Text, 500)))
 	rows := adAlertRows(act, r.Reason, r.ID, dryrun,
 		"🔇 "+MuteLabel(b.Cache.Snap().BotSettingInt(r.BotID, "antiad_mute_minutes", 1440)))
 	if links := adAlertLinks(b, r.ID); len(links) > 0 {

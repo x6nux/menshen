@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +202,36 @@ func TestActionLabel(t *testing.T) {
 		if got := ActionLabel(in); got != want {
 			t.Errorf("ActionLabel(%q) = %q, 期望 %q", in, got, want)
 		}
+	}
+}
+
+// TestRecordCardShowsContentWithoutWebJump：管理员的记录卡片直接把原文与
+// 理由印在卡片上，不再要求去网页查看（配了 public_url 也一样）。
+func TestRecordCardShowsContentWithoutWebJump(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	b.Cfg.PublicURL = "https://ad.example.com"
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	id := logAd(b, testutil.GroupMsg(-100, 42, 7, "加微信买号 日入5000"),
+		adVerdict{IsAd: true, Confidence: 0.92, Kind: "scam", Decider: "llm",
+			Reason: "昵称与简介写着推广话术"}, "deleted_muted", "")
+	row, ok := LoadAdLog(b.Store, id)
+	if !ok {
+		t.Fatal("流水没落库")
+	}
+
+	text, kb := RenderAdRecord(b, row)
+	if !strings.Contains(text, "加微信买号") {
+		t.Errorf("卡片应直接展示原文:\n%s", text)
+	}
+	if !strings.Contains(text, "昵称与简介写着推广话术") {
+		t.Errorf("卡片应直接展示理由:\n%s", text)
+	}
+	if strings.Contains(text, "去敏") {
+		t.Errorf("不该再去敏:\n%s", text)
+	}
+	if strings.Contains(fmt.Sprint(kb), "查看原文") {
+		t.Errorf("不该再给「去网页看」的按钮: %v", kb)
 	}
 }
