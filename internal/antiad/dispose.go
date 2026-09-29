@@ -289,9 +289,12 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	// 演练是**每个群**各自的状态：新加的群先观察、老群已转正式。
 	dryrun := conf.Dryrun
 	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
-	if v.Decider == deciderHash {
-		// 只凭哈希、没有复判模型的结论：只删不罚。禁言交给复判模型决定，
-		// 不沿用当初那条的处罚——后来者的资料与资历都没判过。
+	// 当天的内容哈希命中原先一律「只删不罚」（后来者的资料与资历没判过，
+	// 见 hashHit）。按模型结论定档时不再豁免：哈希命中的内容本身就是模型
+	// 判过的广告，而这条豁免在复判上游超时（复判失败回退到 hash 结论）时
+	// 会让「同一条广告换个号再发」变成只删不禁——线上真实发生过。
+	if v.Decider == deciderHash &&
+		snap.BotSettingInt(b.BotID(), "antiad_bool_verdict", 1) != 1 {
 		act.Mute, act.Ban, act.Purge, act.Short = false, false, false, false
 		if act.Delete {
 			act.Name = "deleted"

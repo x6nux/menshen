@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -470,5 +471,33 @@ func TestBoolVerdictMode(t *testing.T) {
 	}
 	if _, action, _ := logRow(t, b); action != "deleted" {
 		t.Errorf("老人动作应为 deleted，得到 %q", action)
+	}
+}
+
+// TestHashHitPunishesInBoolMode：按模型结论定档时，哈希命中不再「只删不罚」。
+// 那条豁免在复判上游超时（复判失败回退到 hash 结论）时会让「同一条广告
+// 换个号再发」只删不禁——线上真实发生过（记录 #342）。
+func TestHashHitPunishesInBoolMode(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_hours", "0"); err != nil {
+		t.Fatal(err)
+	}
+	// 复判上游全部失败：判定链路要回退到别的路径，而不是整条瘫掉。
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	// 这条内容此前已判为消息级广告。
+	rememberAdHash(b, "招募探花 9000一单", adVerdict{Kind: "porn_bait", Confidence: 0.88}, 1)
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "招募探花 9000一单"))
+	waitIdle(t, b)
+
+	mutes := fake.Calls("restrictChatMember")
+	if len(mutes) == 0 {
+		t.Fatal("bool 模式下哈希命中应禁言，实际一次都没禁")
+	}
+	if _, action, _ := logRow(t, b); action == "deleted" {
+		t.Errorf("复判失败不该让哈希命中退回 deleted，得到 %q", action)
 	}
 }

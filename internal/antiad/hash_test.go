@@ -46,11 +46,16 @@ func TestMessageAdHashDeletesDirectly(t *testing.T) {
 	}
 }
 
-// TestHashHitWithoutLLMOnlyDeletes：没配复判模型时，命中哈希只删不禁——
-// 禁言只由复判模型决定，不沿用当初那条的禁言。
+// TestHashHitWithoutLLMOnlyDeletes：按置信度分档（bool 模式关）时，没配复判
+// 模型则命中哈希只删不禁——禁言只由复判模型决定，不沿用当初那条的禁言。
+// 按模型结论定档时不这样（哈希命中的内容本身就是模型判过的广告，见
+// TestHashHitPunishesInBoolMode）。
 func TestHashHitWithoutLLMOnlyDeletes(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "0"); err != nil {
+		t.Fatal(err)
+	}
 	fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"), llmReply(true, 0.95, "scam", "message"))
 	if err := b.PutSetting("antiad_llm_model", ""); err != nil {
 		t.Fatal(err)
