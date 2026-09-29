@@ -111,6 +111,12 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	// 一律忽略」处理会把整条申诉通道堵死。
 	if !b.IsStaff(m.From.ID) {
 		if !antiad.HandleNonStaffPrivate(b, m, text) && strings.HasPrefix(text, "/start") {
+			// 主 bot 不入群、不判定（被拉进群会自动退出），「拉进群并设为
+			// 管理员」这种引导对它就是错的：对它只如实说一句没有权限。
+			if b.IsMainBot() {
+				b.Send(m.Chat.ID, "你没有权限使用本 bot。", nil)
+				return
+			}
 			b.Send(m.Chat.ID,
 				"本 bot 是群组反广告助手，把它拉进群并设为管理员即可工作。", nil)
 		}

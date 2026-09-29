@@ -188,6 +188,38 @@ func TestStaffStartWithUnbanDeepLink(t *testing.T) {
 	}
 }
 
+// TestMainBotNonStaffStartSaysNoPermission：主 bot 对外只有一句「没有权限」。
+// 它只做配置管理与接入其它 bot，被拉进群会自动退出 —— 「拉进群并设为管理员」
+// 这种引导对它就是错的。工作 bot 的同类提示保持不变（它确实要在群里干活）。
+func TestMainBotNonStaffStartSaysNoPermission(t *testing.T) {
+	msg := func() *tg.Update {
+		return &tg.Update{Message: &tg.Message{
+			MessageID: 1, Date: 1700000000, Text: "/start",
+			From: &tg.TGUser{ID: 12345, Username: "random"},
+			Chat: &tg.Chat{ID: 12345, Type: "private"},
+		}}
+	}
+
+	mainBot, fake, _ := testutil.NewTestMainBotDispatch(t, 777, 777, nil)
+	dispatch(mainBot, msg())
+	p := fake.LastCall("sendMessage")
+	if p == nil {
+		t.Fatal("非管理员私聊 /start 应得到明确回复")
+	}
+	if text := p["text"].(string); strings.Contains(text, "拉进群") {
+		t.Errorf("主 bot 不该引导别人把它拉进群:\n%s", text)
+	} else if !strings.Contains(text, "没有权限") {
+		t.Errorf("无权限应如实说明:\n%s", text)
+	}
+
+	workBot, fake2, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	dispatch(workBot, msg())
+	if p := fake2.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "反广告助手") {
+		t.Errorf("工作 bot 的引导提示应保持不变: %v", p)
+	}
+}
+
 // TestMainBotStillServesPanel 确认限制只针对「群」，私聊面板不受影响：
 // 配置管理与接入其他 bot 正是主 bot 的本职。
 func TestMainBotStillServesPanel(t *testing.T) {
