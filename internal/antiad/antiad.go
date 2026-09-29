@@ -1432,8 +1432,26 @@ func sendAdAlert(b *core.Bot, conf store.BotChat, m *tg.Message, v adVerdict, ac
 	// 贴在群里：处置结果对全群可见，该群的 TG 管理员能直接点按钮判断
 	// （见 adDispositionAllowed）。精简版：昵称与原文一个字都不能贴回去。
 	brief, bkb := renderAdAlertBrief(b, m, v, act, note, logID, dryrun)
-	groupNotice(b, m.Chat.ID, brief, bkb,
-		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
+	groupNotice(b, m.Chat.ID, brief, bkb, alertTTL(b, snap, v))
+}
+
+// alertTTL 返回一条群内提醒的存活时间。
+//
+// 明显到不用人盯的（置信度到删除+禁言线、危害度也高）只弹一小会：
+// 处置已经落地，通知只是让在场的人知道发生了什么；拿不准的那些才值得
+// 让管理员多看一眼。短撤回秒数为 0 时关闭这一逻辑。
+func alertTTL(b *core.Bot, snap *store.Snapshot, v adVerdict) time.Duration {
+	normal := time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+	short := snap.BotSettingInt(b.BotID(), "antiad_alert_ttl_hard", 30)
+	if short <= 0 || normal == 0 || time.Duration(short)*time.Second >= normal {
+		return normal
+	}
+	hard := int64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
+	severe := snap.BotSettingInt(b.BotID(), "antiad_alert_severe", 2)
+	if int64(v.Confidence*100) >= hard && v.Severity >= float64(severe) {
+		return time.Duration(short) * time.Second
+	}
+	return normal
 }
 
 // renderAdAlertBrief 渲染群内版告警：一行「uid + 原因」，外加一个打开

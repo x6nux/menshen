@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
@@ -367,6 +368,63 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 0, "代表消息"), senderProfile{})
 	if n := len(st.RecentContext); n != 2 {
 		t.Errorf("没有当前消息可排除时给了 %d 条，期望 2 条", n)
+	}
+}
+
+// TestAlertTTLBySeverity：明显到不用人盯的群内提醒只弹一小会 —— 置信度
+// 到删除+禁言线且危害度 ≥ 阈值（默认 2）；其余维持普通 TTL；短撤回秒数
+// 为 0 时关闭。
+func TestAlertTTLBySeverity(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	snap := b.Cache.Snap()
+	obvious := adVerdict{IsAd: true, Confidence: 1, Severity: 2.2}
+
+	if got := alertTTL(b, snap, obvious); got != 30*time.Second {
+		t.Errorf("高置信高危害应短撤回 30s，得到 %v", got)
+	}
+	if got := alertTTL(b, snap, adVerdict{IsAd: true, Confidence: 1, Severity: 1}); got != 300*time.Second {
+		t.Errorf("危害度不到阈值应维持普通 TTL，得到 %v", got)
+	}
+	if got := alertTTL(b, snap, adVerdict{IsAd: true, Confidence: 0.5, Severity: 3}); got != 300*time.Second {
+		t.Errorf("置信度不到处置线应维持普通 TTL，得到 %v", got)
+	}
+
+	if err := b.PutBotSetting(b.BotID(), "antiad_alert_ttl_hard", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := alertTTL(b, b.Cache.Snap(), obvious); got != 300*time.Second {
+		t.Errorf("短撤回关闭后应维持普通 TTL，得到 %v", got)
+	}
+}
+
+// TestGroupAlertShortTTLForObviousAd：端到端确认短撤回真的落进待撤回表 ——
+// 明显广告（置信度 100%、危害度 2.2）的群内提醒约 30 秒后撤掉。
+func TestGroupAlertShortTTLForObviousAd(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=1 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	sendAdAlert(b, conf, testutil.GroupMsg(-100, 555, 7, "日入过万 加我"),
+		adVerdict{IsAd: true, Confidence: 1, Severity: 2.2, Decider: "systemone"},
+		adAction{Delete: true, Alert: true, Name: "deleted"}, "", 9, false)
+
+	if fake.CountCalls("sendMessage") == 0 {
+		t.Fatal("开了群内展示应发一条群内提醒")
+	}
+	var due int64
+	if err := b.Store.Read.QueryRow(
+		`SELECT due_at FROM alert_cleanup ORDER BY rowid DESC LIMIT 1`).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if d := due - time.Now().Unix(); d < 25 || d > 35 {
+		t.Errorf("明显广告的群内提醒应约 30 秒撤回，得到 %d 秒", d)
 	}
 }
 

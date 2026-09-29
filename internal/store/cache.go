@@ -83,13 +83,18 @@ var settingDefaults = map[string]string{
 	"antiad_mute_hours": "24",
 	// 滥用护栏：全量送检是明知成本的选择，这几项只堵滥用，不改设计。
 	// 窗口长度沿用 limiter.go 的 1 分钟。0 = 不限。
-	"antiad_rpm_chat":     "30", // 每群每分钟送检上限
-	"antiad_alert_rpm":    "3",  // 同一 (群,人) 每分钟告警上限
-	"antiad_cmd_rpm":      "3",  // 每人每分钟 /check、/ban 次数上限
-	"antiad_ctx_msgs":     "6",
-	"antiad_alert_ttl":    "300", // 群内告警自动撤回秒数，0 = 永不撤回
-	"antiad_dm_admins":    "1",   // 是否私聊 owner
-	"antiad_exempt_users": "[]",  // 该 bot 的豁免名单
+	"antiad_rpm_chat":  "30", // 每群每分钟送检上限
+	"antiad_alert_rpm": "3",  // 同一 (群,人) 每分钟告警上限
+	"antiad_cmd_rpm":   "3",  // 每人每分钟 /check、/ban 次数上限
+	"antiad_ctx_msgs":  "6",
+	"antiad_alert_ttl": "300", // 群内告警自动撤回秒数，0 = 永不撤回
+	// 明显到不用人盯的（置信度 ≥ antiad_act_hard 且危害度 ≥ antiad_alert_severe）
+	// 群内提醒只弹一小会：处置已经落地，通知只是让在场的人知道发生了什么。
+	// 0 = 关闭短撤回，一律用 antiad_alert_ttl。
+	"antiad_alert_ttl_hard": "30",
+	"antiad_alert_severe":   "2",  // 短撤回的危害度阈值（0-3 的整数）
+	"antiad_dm_admins":      "1",  // 是否私聊 owner
+	"antiad_exempt_users":   "[]", // 该 bot 的豁免名单
 	// 禁言档改为封禁出群（永久）。每群可单独覆盖（bot_chats.punish）。
 	"antiad_ban": "0",
 	// 判定普通成员 bot：默认开。豁免只给**有管理员权限**的 bot（由群
