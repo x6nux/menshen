@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,74 @@ func TestNewHTTPNilTransportKeepsDefault(t *testing.T) {
 	if h.client.Transport != nil {
 		t.Errorf("未配代理时 Transport 必须为 nil（否则环境变量代理失效），得到 %T",
 			h.client.Transport)
+	}
+}
+
+// TestCallRetriesAfterFloodWait：429 + 短的 retry_after 会等一轮再来，
+// 第二次成功。限流是瞬时状态，直接失败会让删除/禁言在广告洪峰里成批丢失。
+func TestCallRetriesAfterFloodWait(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"ok":false,"error_code":429,` +
+				`"description":"Too Many Requests: retry after 1",` +
+				`"parameters":{"retry_after":1}}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true,"result":{"id":42}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "tok", nil)
+	raw, err := c.Call("getMe", nil)
+	if err != nil {
+		t.Fatalf("429 后重试应成功: %v", err)
+	}
+	if !strings.Contains(string(raw), `"id":42`) {
+		t.Errorf("应返回第二次的响应，得到 %s", raw)
+	}
+	if n != 2 {
+		t.Errorf("应恰好请求两次，得到 %d", n)
+	}
+}
+
+// TestCallFloodWaitTooLongFailsFast：retry_after 超过上限时不等待，直接
+// 带状态码失败——否则串行的更新处理会被 flood wait 卡住几分钟。
+func TestCallFloodWaitTooLongFailsFast(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"ok":false,"error_code":429,` +
+			`"parameters":{"retry_after":600}}`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "tok", nil)
+	_, err := c.Call("sendMessage", nil)
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("长 flood wait 应带 429 直接失败，得到 %v", err)
+	}
+}
+
+// TestCallServerErrorIncludesStatus：5xx 不重试（不确定 TG 是否已处理），
+// 但错误里要能看见状态码——原实现把错误页当成功响应返回，调用方只能报
+// 「响应无法解析」，排障时看不出是网关挂了。
+func TestCallServerErrorIncludesStatus(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`<html>bad gateway</html>`))
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(srv.URL, "tok", nil)
+	_, err := c.Call("sendMessage", nil)
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("502 应带状态码失败，得到 %v", err)
+	}
+	if n != 1 {
+		t.Errorf("5xx 不该重试，得到 %d 次请求", n)
 	}
 }

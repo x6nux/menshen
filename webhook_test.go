@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -266,6 +267,42 @@ func TestEnqueueDropsWhenFull(t *testing.T) {
 	}
 	if b.Enqueue(&tg.Update{UpdateID: 9999}) {
 		t.Error("队列已满时应返回 false")
+	}
+}
+
+// TestEnqueueDedupsRedeliveredUpdates：TG 没收到 200 时会重推同一条更新，
+// 重复处理会让 msg_count 双计（把新人刷成老人）、让切换类按钮反转。
+func TestEnqueueDedupsRedeliveredUpdates(t *testing.T) {
+	var mu sync.Mutex
+	var n int
+	b, _, _ := testutil.NewTestBotDispatch(t, 1, 1, func(*core.Bot, *tg.Update) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	go b.RunQueueWorker(stop)
+
+	u := &tg.Update{UpdateID: 7, Message: testutil.GroupMsg(-100, 42, 1, "广告")}
+	b.Enqueue(u)
+	b.Enqueue(u) // 同一条重推
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := n
+		mu.Unlock()
+		if got >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	got := n
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("同一条更新重推应只分发一次，得到 %d 次", got)
 	}
 }
 

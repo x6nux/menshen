@@ -194,6 +194,47 @@ type Bot struct {
 
 	// SummaryAt 是上一次发出私聊汇总的时刻（unix 秒），节流用。
 	SummaryAt atomic.Int64
+
+	// MinuteBusy 是分钟任务的单飞标记（撤回群内告警 + 私聊汇总）。
+	// 这两件事要发 TG，TG 慢时不该让下一轮叠加，也不该拖住其他 bot。
+	MinuteBusy atomic.Bool
+
+	// seenUpdates 是最近处理过的 update_id，用来挡住 Telegram 的重推。
+	//
+	// webhook 模式下 TG 没收到 200（或网络中断）时会重推同一条更新；
+	// 重复处理会让 msg_count 双计（把新人刷成老人）、让「切换」类按钮
+	// 反转回原状态、再花一次 AI 的钱。长轮询靠 offset 天然去重，不走这里。
+	seenMu    sync.Mutex
+	seenOrder []int64
+	seenSet   map[int64]struct{}
+}
+
+// seenUpdatesCap 是重推去重的窗口大小。TG 的重推发生在秒级，1024 条
+// 足够覆盖；再早的重复即使漏掉，也早被护栏的 1 分钟窗口挡住了。
+const seenUpdatesCap = 1024
+
+// MarkUpdateSeen 报告这条 update 是否是第一次见到。update_id 为 0
+// （测试或异常投递）不参与去重，一律按首次处理。
+func (b *Bot) MarkUpdateSeen(updateID int64) bool {
+	if updateID == 0 {
+		return true
+	}
+	b.seenMu.Lock()
+	defer b.seenMu.Unlock()
+	if b.seenSet == nil {
+		b.seenSet = make(map[int64]struct{}, seenUpdatesCap)
+	}
+	if _, dup := b.seenSet[updateID]; dup {
+		return false
+	}
+	b.seenSet[updateID] = struct{}{}
+	b.seenOrder = append(b.seenOrder, updateID)
+	if len(b.seenOrder) > seenUpdatesCap {
+		old := b.seenOrder[0]
+		b.seenOrder = b.seenOrder[1:]
+		delete(b.seenSet, old)
+	}
+	return true
 }
 
 const (
@@ -598,7 +639,18 @@ func PollAllowedUpdates() []string {
 }
 
 // enqueue 把一条 update 投进串行队列，队列已满时返回 false。
+//
+// 重推的更新在这里被挡下：TG 没收到 200 时会重发同一条 update_id，
+// 重复处理等于把同一条消息再判一次（msg_count 双计、按钮反转、重复花钱）。
+// 重推返回 true（当作已接收），否则 TG 会继续重推同一条。
 func (b *Bot) Enqueue(u *tg.Update) bool {
+	if u == nil {
+		return true
+	}
+	if !b.MarkUpdateSeen(u.UpdateID) {
+		slog.Info("webhook：重复投递的更新已忽略", "update_id", u.UpdateID)
+		return true
+	}
 	select {
 	case b.updates <- u:
 		return true

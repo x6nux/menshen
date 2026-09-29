@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Transport 抽象对 Telegram Bot API 的调用，便于测试注入假实现。
@@ -45,18 +47,72 @@ func (h *httpTransport) endpoint(method string) string {
 	return strings.TrimRight(h.base, "/") + "/bot" + h.token + "/" + method
 }
 
+// callMaxBody 是单次响应体的读取上限。TG 的正常响应很小（update 最多几十 KB），
+// 给一个远大于它的界：反代/网关抽风返回巨大错误页时不会把内存吃光。
+const callMaxBody = 8 << 20
+
+// retryAfterMax 是 429 自动重试的最长等待。TG 的 flood wait 可能报几百秒，
+// 全等会把调用方（尤其串行的更新处理）一起卡死；超过这个值就直接失败，
+// 由上层按「这次没成」处理。
+const retryAfterMax = 5 * time.Second
+
 func (h *httpTransport) Call(method string, payload any) (json.RawMessage, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := h.client.Post(h.endpoint(method),
-		"application/json", bytes.NewReader(body))
-	if err != nil {
-		return nil, CallError(method, err)
+	// 429（flood control）是唯一自动重试的状态：请求被拒绝、没有副作用，
+	// 等 retry_after 再来一次往往就过了。5xx 不重试——不确定 TG 是否已经
+	// 处理（sendMessage 这类调用重试会产生重复消息）。
+	for attempt := 0; ; attempt++ {
+		resp, err := h.client.Post(h.endpoint(method),
+			"application/json", bytes.NewReader(body))
+		if err != nil {
+			return nil, CallError(method, err)
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, callMaxBody))
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < 1 {
+			if d, ok := retryAfter(raw); ok && d <= retryAfterMax {
+				slog.Warn("Telegram 限流，等待后重试", "method", method,
+					"retry_after", d.String())
+				time.Sleep(d)
+				continue
+			}
+		}
+		if readErr == nil && resp.StatusCode >= 400 {
+			// 把状态码与响应片段带进错误：调用方原本只看到「响应无法解析」，
+			// 而 429/5xx 与 400 的处置方式完全不同。
+			return raw, fmt.Errorf("%s: HTTP %d: %s", method, resp.StatusCode,
+				clip(string(raw), 200))
+		}
+		return raw, readErr
 	}
-	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+}
+
+// retryAfter 从 429 响应体里取 parameters.retry_after（秒）。
+func retryAfter(raw []byte) (time.Duration, bool) {
+	var r struct {
+		Parameters struct {
+			RetryAfter int64 `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if json.Unmarshal(raw, &r) != nil || r.Parameters.RetryAfter <= 0 {
+		return 0, false
+	}
+	return time.Duration(r.Parameters.RetryAfter) * time.Second, true
+}
+
+// clip 截断一段文本，保证不切碎 UTF-8。
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // CallError 去掉 Telegram 调用错误里的请求 URL。
