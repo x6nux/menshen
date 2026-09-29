@@ -72,7 +72,8 @@ var coldPrefilterHints = []struct {
 	}, "外部链接"},
 	{func(s string) bool {
 		for _, k := range []string{"微信", "薇信", "威信", "vx", "wx", "qq",
-			"telegram", "whatsapp", "飞机", "私聊", "私信", "加我"} {
+			"telegram", "whatsapp", "飞机", "电报", "私聊", "私信", "加我", "加v",
+			"联系", "咨询", "客服"} {
 			if strings.Contains(s, k) {
 				return true
 			}
@@ -82,13 +83,44 @@ var coldPrefilterHints = []struct {
 	{func(s string) bool {
 		for _, k := range []string{"日入", "曰入", "月入", "日结", "兼职", "接单",
 			"做单", "刷单", "代理", "招商", "推广", "优惠", "免费领", "赚钱",
-			"赚米", "上岸", "出售", "供应", "承接", "开户", "包网"} {
+			"赚米", "上岸", "出售", "供应", "承接", "开户", "包网",
+			// 资金盘 / 代收 / 博彩线：线上真实漏过「代收代付 5个点 USDT」。
+			"代收", "代付", "跑分", "承兑", "通道", "出款", "首存", "彩金",
+			"娱乐城", "博彩", "盘口", "担保", "信誉", "点位", "个点",
+			"usdt", "换汇", "汇率", "洗钱"} {
 			if strings.Contains(s, k) {
 				return true
 			}
 		}
 		return false
 	}, "招揽或推广用语"},
+	{atHandle, "资料里的 @ 联系方式"},
+}
+
+// atHandle 报告资料里有没有 @用户名 形态的联系方式。
+//
+// 「业务联系 @lilai」这种写法在代收、U 商账号里极常见，而关键词表里
+// 未必有对应的词，光靠词表会整条漏掉（线上真实漏过）。这里的代价只是
+// 多送一次 AI 检查，宁可放宽。
+func atHandle(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] != '@' {
+			continue
+		}
+		n := 0
+		for j := i + 1; j < len(s); j++ {
+			c := s[j]
+			if c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') {
+				n++
+				continue
+			}
+			break
+		}
+		if n >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 // coldSuspicious 是进群冷判定的本地预筛，返回是否可疑与命中的特征。

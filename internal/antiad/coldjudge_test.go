@@ -26,6 +26,11 @@ func TestColdSuspicious(t *testing.T) {
 			"做单进入公群有担保：https://t.me/+AOgLtfgl6sg2MDE5", true},
 		{"简介留联系方式", &tg.TGUser{FirstName: "李四"}, "薇信 abc123", true},
 		{"用户名带招揽用语", &tg.TGUser{Username: "riru5000_daili"}, "日入5000", true},
+		// 线上真实漏过的代收账号：没有外链也没有词表里的联系方式词，
+		// 光靠旧的三条会整条静默放过（连送检都没有）。
+		{"代收代付账号", &tg.TGUser{FirstName: "大成代收|小小"},
+			"代收代付，5个点，公示100万 USDT", true},
+		{"资料里挂 @联系方式", &tg.TGUser{FirstName: "小王"}, "业务联系 @lilai", true},
 
 		{"普通人", &tg.TGUser{FirstName: "张三", Username: "zhangsan"},
 			"喜欢摄影，住在杭州", false},
