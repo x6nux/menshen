@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 
 	_ "modernc.org/sqlite"
 )
@@ -314,6 +315,10 @@ func Open(path string) (*Store, error) {
 		write.Close()
 		return nil, err
 	}
+	if err := ensureIndexes(write); err != nil {
+		write.Close()
+		return nil, err
+	}
 
 	read, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -393,6 +398,47 @@ func hasColumn(db *sql.DB, table, col string) (bool, error) {
 		}
 	}
 	return false, rows.Err()
+}
+
+// ensureIndexes 建运行期查询依赖的索引。
+//
+// 必须晚于 migrate：schemaSQL 先于它执行，而 bot_id 这类列是老库升级时
+// 才补上的，把索引写进 schemaSQL 会让老库启动直接报「no such column」
+// ——group_messages.media_group 已经踩过一次同样的坑（见 migrate 注释）。
+//
+// 索引对应的高频查询：
+//   - antiad_log(bot_id,id)：汇总游标的 MAX(id)（每分钟每 bot 一次）、
+//     面板「拦截记录」按 bot 分页。缺它时两者都是全表扫。
+//   - antiad_log(bot_id,created_at)：面板与 Mini App 的「近 24 小时」统计。
+//   - antiad_log(user_id,id)：/user、Mini App 按人筛、申诉的有效处罚查询。
+//   - group_members(user_id,ad_hits,chat_id)：申诉卡片的关联账号（覆盖索引）。
+//   - group_members(last_msg_at)：保留期清理（谓词已按单列改写）。
+//   - web_checks(appeal_id,id)/(created_at)：申诉详情页与保留期清理。
+//   - alert_cleanup(bot_id,due_at)/(due_at)：每分钟的撤回扫描与清理。
+//   - ad_hashes(last_hit_at)、appeals(updated_at)、ad_whitelist(expires_at)、
+//     gban(created_at)：保留期清理与面板列表。
+func ensureIndexes(db *sql.DB) error {
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_antiad_bot_id ON antiad_log(bot_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_antiad_bot_time ON antiad_log(bot_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_antiad_uid ON antiad_log(user_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_gmember_user ON group_members(user_id, ad_hits, chat_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_gmember_last_msg ON group_members(last_msg_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_wc_appeal ON web_checks(appeal_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_wc_time ON web_checks(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_cleanup_due ON alert_cleanup(bot_id, due_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_cleanup_at ON alert_cleanup(due_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_adh_last_hit ON ad_hashes(last_hit_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_appeal_updated ON appeals(updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_aw_expires ON ad_whitelist(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_gban_created ON gban(created_at)`,
+	}
+	for _, q := range stmts {
+		if _, err := db.Exec(q); err != nil {
+			return fmt.Errorf("建索引失败（%s）: %w", q, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {

@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -35,6 +37,17 @@ func TestMigrateOldDB(t *testing.T) {
 			so_model TEXT NOT NULL DEFAULT '', llm_model TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)`,
 		`INSERT INTO bots (token,bot_id,owner_id,created_at) VALUES ('1:old',1,777,0)`,
+		// 老形状的 antiad_log：没有 bot_id（migrate 才补），因此 bot_id 上的
+		// 索引也只能在 migrate 之后建——这正是 ensureIndexes 存在的理由。
+		`CREATE TABLE antiad_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL, text TEXT NOT NULL, verdict TEXT NOT NULL,
+			confidence REAL NOT NULL, decider TEXT NOT NULL,
+			ad_kind TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
+			reason TEXT NOT NULL, prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			quota_cost INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+		`CREATE INDEX idx_antiad_time ON antiad_log(created_at)`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatalf("造老库失败: %v", err)
@@ -54,6 +67,11 @@ func TestMigrateOldDB(t *testing.T) {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
 	}
+	// 索引必须建在 migrate 补出来的 bot_id 上，且不能因为老库没有这一列
+	// 而让启动失败（Open 已经返回成功，这里再确认索引真的在）。
+	if has, err := hasIndex(s.Write, "antiad_log", "idx_antiad_bot_id"); err != nil || !has {
+		t.Errorf("antiad_log(bot_id,id) 索引没建上（err=%v）", err)
+	}
 	c, err := NewCache(s)
 	if err != nil {
 		t.Fatalf("老库加载快照失败: %v", err)
@@ -65,6 +83,68 @@ func TestMigrateOldDB(t *testing.T) {
 	if rec := c.Snap().Bots[1]; rec == nil || rec.IsMain {
 		t.Errorf("老库的 bot 不该被迁移直接标成主 bot，得到 %+v", rec)
 	}
+}
+
+// hasIndex 报告表上是否存在某个索引。
+func hasIndex(db *sql.DB, table, name string) (bool, error) {
+	rows, err := db.Query("PRAGMA index_list(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq, unique, partial int
+		var idx, origin string
+		if err := rows.Scan(&seq, &idx, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		if idx == name {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// TestReloadWithConcurrentWrites：写连接与 Reload 的读事务并发时不互锁。
+// WAL 下读者不阻塞写者、写者也不阻塞读者；Reload 现在整轮跑在一个读事务里，
+// 这里守的是「加事务之后仍然不会互相饿死」。
+func TestReloadWithConcurrentWrites(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "rw.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c, err := NewCache(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			key := "k" + strconv.Itoa(i%8)
+			if _, err := s.Write.Exec(`INSERT INTO settings (k,v) VALUES (?,?)
+				ON CONFLICT(k) DO UPDATE SET v=excluded.v`, key, "v"); err != nil {
+				t.Errorf("并发写失败: %v", err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 30; i++ {
+		if err := c.Reload(); err != nil {
+			t.Fatalf("并发 Reload 失败: %v", err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 // TestOpenPragmas 确认每条连接都带上了 WAL 与 synchronous=NORMAL。

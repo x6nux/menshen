@@ -47,23 +47,23 @@ func FlushAdSummary(b *core.Bot, now time.Time) {
 	if cursor >= maxID {
 		return
 	}
-	if err := b.PutBotSetting(id, "antiad_alert_last_id", strconv.FormatInt(maxID, 10)); err != nil {
-		slog.Error("反广告：保存汇总游标失败", "err", err)
-		return
-	}
 	// 游标为 -1 是升级后第一次运行：只记下位置，不把过去的命中翻出来发。
 	// 私聊关着时游标照走，再打开不补发。
-	if cursor < 0 || snap.BotSettingInt(id, "antiad_dm_admins", 1) != 1 {
-		return
+	notify := cursor >= 0 && snap.BotSettingInt(id, "antiad_dm_admins", 1) == 1
+	if notify {
+		text, kb, ok := renderAdSummary(b, cursor, maxID)
+		if ok {
+			for _, to := range b.AlertTargets() {
+				b.Send(to, text, kb)
+			}
+			b.SummaryAt.Store(now.Unix())
+		}
 	}
-	text, kb, ok := renderAdSummary(b, cursor, maxID)
-	if !ok {
-		return // 只有正常判定与未送检：不打扰
+	// 游标在渲染与发送之后再推进：先推进的话，渲染出错或发送失败的那批
+	// 命中会永久从汇总里消失，只剩面板里能查回来。
+	if err := b.PutBotSetting(id, "antiad_alert_last_id", strconv.FormatInt(maxID, 10)); err != nil {
+		slog.Error("反广告：保存汇总游标失败", "err", err)
 	}
-	for _, to := range b.AlertTargets() {
-		b.Send(to, text, kb)
-	}
-	b.SummaryAt.Store(now.Unix())
 }
 
 // summaryHit 是汇总里列出的一条命中。

@@ -133,9 +133,35 @@ func TestAlertCleanupSurvivesInDB(t *testing.T) {
 		t.Error("没到点不该撤")
 	}
 	SweepAlertCleanup(b, time.Now().Add(2*time.Minute))
-	p := fake.LastCall("deleteMessage")
-	if p == nil || int64(p["message_id"].(float64)) != 55 {
+	p := fake.LastCall("deleteMessages")
+	if p == nil {
+		t.Fatalf("到点应撤回 55: %v", fake.Calls("deleteMessages"))
+	}
+	ids, _ := p["message_ids"].([]any)
+	if len(ids) != 1 || int64(ids[0].(float64)) != 55 {
 		t.Fatalf("到点应撤回 55: %v", p)
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM alert_cleanup`); n != 0 {
+		t.Errorf("撤过的应从表里删掉，剩 %d", n)
+	}
+}
+
+// TestSweepAlertCleanupBatches：同群的多条告警合成一次 deleteMessages，
+// 逐条 deleteMessage 会在告警多时把分钟 tick 拖住几百个 TG 往返。
+func TestSweepAlertCleanupBatches(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	scheduleAlertCleanup(b, -100, 11, time.Minute)
+	scheduleAlertCleanup(b, -100, 12, time.Minute)
+	scheduleAlertCleanup(b, -200, 21, time.Minute)
+
+	SweepAlertCleanup(b, time.Now().Add(2*time.Minute))
+
+	if n := fake.CountCalls("deleteMessages"); n != 2 {
+		t.Errorf("两个群应各发一次 deleteMessages，得到 %d 次：%v",
+			n, fake.Calls("deleteMessages"))
+	}
+	if n := fake.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("不该退回逐条删除，得到 %d 次", n)
 	}
 	if n := countRows(t, b, `SELECT COUNT(*) FROM alert_cleanup`); n != 0 {
 		t.Errorf("撤过的应从表里删掉，剩 %d", n)

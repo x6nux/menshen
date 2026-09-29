@@ -1,9 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -403,6 +405,16 @@ func (s *Snapshot) BotsOwnedBy(uid int64, all bool) []*BotRec {
 type Cache struct {
 	store *Store
 	cfg   atomic.Pointer[Snapshot]
+
+	// reloadMu 串行化 Reload。并发重建会互相覆盖，把**旧**快照发布出去：
+	// 面板写入（每个 bot 的串行更新循环）、Mini App 的 HTTP handler、
+	// 定时任务都会触发，而重建要读十几张表。
+	reloadMu sync.Mutex
+}
+
+// rowQueryer 是 load* 系列需要的读接口：*sql.DB 与 *sql.Tx 都满足。
+type rowQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
 func NewCache(s *Store) (*Cache, error) {
@@ -420,7 +432,20 @@ func (c *Cache) Snap() *Snapshot { return c.cfg.Load() }
 // 任何一段扫描都要查 rows.Err()：rows.Next() 因中途出错（如 WAL 写锁竞争）
 // 提前返回 false 时不会自己报错，不查就会把「只扫到一半」悄悄当成「扫完了」，
 // 而这里扫的是权限与生效群——静默少一半等于静默改权限。
+//
+// 整轮读放在一个事务里：否则并发写入会让快照出现「一半新、一半旧」的
+// 拼接状态（如 bots 已更新而 bot_chats 还没跟上），而这种错位在面板上
+// 完全看不出来。WAL 下读事务不阻塞写连接。
 func (c *Cache) Reload() error {
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+
+	tx, err := c.store.Read.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	snap := &Snapshot{
 		Models:       map[string]*upstream.Model{},
 		Settings:     map[string]string{},
@@ -435,25 +460,25 @@ func (c *Cache) Reload() error {
 		GbanOwnBans:  map[int64]map[int64]GbanRec{},
 	}
 
-	if err := c.loadModels(snap); err != nil {
+	if err := c.loadModels(snap, tx); err != nil {
 		return err
 	}
-	if err := c.loadUpstreams(snap); err != nil {
+	if err := c.loadUpstreams(snap, tx); err != nil {
 		return err
 	}
-	if err := c.loadSettings(snap); err != nil {
+	if err := c.loadSettings(snap, tx); err != nil {
 		return err
 	}
-	if err := c.loadTenancy(snap); err != nil {
+	if err := c.loadTenancy(snap, tx); err != nil {
 		return err
 	}
 
 	c.cfg.Store(snap)
-	return nil
+	return tx.Commit()
 }
 
-func (c *Cache) loadModels(snap *Snapshot) error {
-	rows, err := c.store.Read.Query(`SELECT name,prompt_price,completion_price,
+func (c *Cache) loadModels(snap *Snapshot, q rowQueryer) error {
+	rows, err := q.Query(`SELECT name,prompt_price,completion_price,
 		cache_read_price,cache_write_price,enabled FROM models`)
 	if err != nil {
 		return err
@@ -472,8 +497,8 @@ func (c *Cache) loadModels(snap *Snapshot) error {
 	return rows.Err()
 }
 
-func (c *Cache) loadUpstreams(snap *Snapshot) error {
-	rows, err := c.store.Read.Query(`SELECT id,name,base_url,api_key,weight,status,
+func (c *Cache) loadUpstreams(snap *Snapshot, q rowQueryer) error {
+	rows, err := q.Query(`SELECT id,name,base_url,api_key,weight,status,
 		supports_chat,supports_systemone FROM upstreams ORDER BY id`)
 	if err != nil {
 		return err
@@ -492,12 +517,12 @@ func (c *Cache) loadUpstreams(snap *Snapshot) error {
 	return rows.Err()
 }
 
-func (c *Cache) loadSettings(snap *Snapshot) error {
+func (c *Cache) loadSettings(snap *Snapshot, q rowQueryer) error {
 	// 先铺默认值，再用 DB 覆盖
 	for k, v := range settingDefaults {
 		snap.Settings[k] = v
 	}
-	rows, err := c.store.Read.Query(`SELECT k,v FROM settings`)
+	rows, err := q.Query(`SELECT k,v FROM settings`)
 	if err != nil {
 		return err
 	}
@@ -514,8 +539,8 @@ func (c *Cache) loadSettings(snap *Snapshot) error {
 
 // loadTenancy 加载多租户那四张表：bots / bot_chats / bot_settings / admins，
 // 外加联合封禁名单。
-func (c *Cache) loadTenancy(snap *Snapshot) error {
-	rows, err := c.store.Read.Query(`SELECT token,bot_id,username,owner_id,
+func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
+	rows, err := q.Query(`SELECT token,bot_id,username,owner_id,
 		so_model,llm_model,enabled,created_at,is_main,so_models,llm_models
 		FROM bots ORDER BY bot_id`)
 	if err != nil {
@@ -543,7 +568,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		return err
 	}
 
-	rows, err = c.store.Read.Query(`SELECT bot_id,chat_id,title,enabled,dryrun,
+	rows, err = q.Query(`SELECT bot_id,chat_id,title,enabled,dryrun,
 		group_alert,punish,created_at FROM bot_chats`)
 	if err != nil {
 		return err
@@ -567,7 +592,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		return err
 	}
 
-	rows, err = c.store.Read.Query(`SELECT bot_id,k,v FROM bot_settings`)
+	rows, err = q.Query(`SELECT bot_id,k,v FROM bot_settings`)
 	if err != nil {
 		return err
 	}
@@ -588,7 +613,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		return err
 	}
 
-	rows, err = c.store.Read.Query(`SELECT user_id,note,added_by,created_at FROM admins`)
+	rows, err = q.Query(`SELECT user_id,note,added_by,created_at FROM admins`)
 	if err != nil {
 		return err
 	}
@@ -605,7 +630,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		return err
 	}
 
-	rows, err = c.store.Read.Query(
+	rows, err = q.Query(
 		`SELECT user_id,reason,src_chat,by_bot,created_at FROM gban`)
 	if err != nil {
 		return err
@@ -623,7 +648,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 		return err
 	}
 
-	rows, err = c.store.Read.Query(`SELECT bot_id,chat_id,user_id,expires_at,
+	rows, err = q.Query(`SELECT bot_id,chat_id,user_id,expires_at,
 		source,by_uid,created_at FROM ad_whitelist`)
 	if err != nil {
 		return err
@@ -643,7 +668,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 	rows.Close()
 
 	// 专属联合封禁组：开关、生效群、封禁条目，一次读完。
-	rows, err = c.store.Read.Query(`SELECT owner_id,enabled FROM gban_own`)
+	rows, err = q.Query(`SELECT owner_id,enabled FROM gban_own`)
 	if err != nil {
 		return err
 	}
@@ -660,7 +685,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 	}
 	rows.Close()
 
-	rows, err = c.store.Read.Query(`SELECT owner_id,chat_id FROM gban_own_chats`)
+	rows, err = q.Query(`SELECT owner_id,chat_id FROM gban_own_chats`)
 	if err != nil {
 		return err
 	}
@@ -680,7 +705,7 @@ func (c *Cache) loadTenancy(snap *Snapshot) error {
 	}
 	rows.Close()
 
-	rows, err = c.store.Read.Query(`SELECT owner_id,user_id,reason,src_chat,created_at
+	rows, err = q.Query(`SELECT owner_id,user_id,reason,src_chat,created_at
 		FROM gban_own_bans`)
 	if err != nil {
 		return err
