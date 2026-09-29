@@ -1454,7 +1454,29 @@ func alertTTL(b *core.Bot, snap *store.Snapshot, v adVerdict) time.Duration {
 	return normal
 }
 
-// renderAdAlertBrief 渲染群内版告警：一行「uid + 原因」，外加一个打开
+// verdictBrief 是群内提醒上那半行结论：只说「是什么 + 多少把握」。
+//
+// 复判模型的长篇理由留给记录卡片、查看页与私聊汇总这些看详情的地方 ——
+// 群里没人读散文，而且理由常引述广告原文，贴回群里等于替它再发一遍。
+func verdictBrief(v adVerdict) string {
+	if v.Decider == "manual" {
+		return "" // 人工标记的头部已经写明，不必重复
+	}
+	if v.Confidence <= 0 && v.Severity <= 0 {
+		return "" // 判定失败这类没有结论可给时不硬编
+	}
+	choice := "clean"
+	if v.IsAd {
+		choice = "ad"
+	}
+	s := fmt.Sprintf("%s 置信度:%.0f%%", soChoiceLabel(choice), v.Confidence*100)
+	if v.Severity > 0 {
+		s += fmt.Sprintf("，危害度:%.1f", v.Severity)
+	}
+	return s
+}
+
+// renderAdAlertBrief 渲染群内版告警：一行「uid + 结论」，外加一个打开
 // bot 的按钮（携带 start=appeal 参数，申诉入口在 bot 里接）。
 //
 // 群里在场的人只在意「谁、因为什么」，置信度、处置动作、记录编号这些
@@ -1473,8 +1495,8 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 	}
 	sb.WriteString("🚫 ")
 	sb.WriteString(userLink(m.From.ID))
-	if v.Reason != "" {
-		sb.WriteString(" · " + html.EscapeString(core.TruncateRunes(v.Reason, 80)))
+	if s := verdictBrief(v); s != "" {
+		sb.WriteString(" · " + html.EscapeString(s))
 	}
 	var rows [][][2]string
 	if b.Username != "" {

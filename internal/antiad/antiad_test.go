@@ -428,6 +428,40 @@ func TestGroupAlertShortTTLForObviousAd(t *testing.T) {
 	}
 }
 
+// TestGroupAlertShowsVerdictSummary：群内提醒只给半行短结论（广告 + 置信度 +
+// 危害度）；复判模型的长篇理由留给记录卡片与查看页 —— 群里没人读散文，
+// 而且理由常引述广告原文，贴回群里等于替它再发一遍。
+func TestGroupAlertShowsVerdictSummary(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=1 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	long := "新成员首条消息即发布「来做洗钱 日入八千」并@他人引流，属典型的非法资金类诈骗推广"
+	sendAdAlert(b, conf, testutil.GroupMsg(-100, 555, 7, "来做洗钱"),
+		adVerdict{IsAd: true, Confidence: 0.95, Severity: 2.2,
+			Decider: "llm", Reason: long},
+		adAction{Delete: true, Alert: true, Name: "deleted_muted"}, "", 9, false)
+
+	p := fake.LastCall("sendMessage")
+	if p == nil {
+		t.Fatal("开了群内展示应发一条群内提醒")
+	}
+	text := p["text"].(string)
+	if strings.Contains(text, "洗钱") || strings.Contains(text, "诈骗推广") {
+		t.Errorf("群内提醒不该带复判的长篇理由:\n%s", text)
+	}
+	if !strings.Contains(text, "广告 置信度:95%") || !strings.Contains(text, "危害度:2.2") {
+		t.Errorf("群内提醒应给短结论（广告 + 置信度 + 危害度）:\n%s", text)
+	}
+}
+
 // TestGroupAlertCarriesNoNameOrText：bot 发进群的告警不带昵称、原文片段与资历。
 // 广告号的昵称和正文本身就是广告，bot 把它们贴回群里等于替它再发一遍，
 // 还会让 bot 自己被 TG 当成广告号封掉。

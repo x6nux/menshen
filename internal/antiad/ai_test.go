@@ -114,6 +114,25 @@ func TestSystemOneReasonFormat(t *testing.T) {
 	}
 }
 
+// TestLLMVerdictCarriesSeverity：复判要同时给出理由与危害度。理由留给
+// 记录卡片、查看页这些看详情的地方；危害度供群内那半行短结论与短撤回用。
+func TestLLMVerdictCarriesSeverity(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"{\"is_ad\":true,\"confidence\":0.95,\"kind\":\"scam\",\"scope\":\"message\",\"severity\":2.2,\"reason\":\"洗钱引流\"}"}}]}`))
+	})
+	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Severity != 2.2 {
+		t.Errorf("复判的危害度应带回来，得到 %v", v.Severity)
+	}
+	if v.Reason != "洗钱引流" {
+		t.Errorf("理由要保留（详情页用），得到 %q", v.Reason)
+	}
+}
+
 // TestVerdictCarriesModel 确认模型名一路带到 verdict 上：换模型后校准阈值，
 // 第一件事就是知道眼前这条结论出自哪个模型。Decider 只说走了几级，说不出是谁。
 func TestVerdictCarriesModel(t *testing.T) {

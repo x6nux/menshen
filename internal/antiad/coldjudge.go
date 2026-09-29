@@ -283,7 +283,12 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 	// 自动撤回——通知的信息价值在本人看到之后就没有了，申诉入口在私聊里。
 	// 静默开关在 sendGroup 里已经生效。明显账号（高置信高危害）只弹一小会。
 	if conf.GroupAlert {
-		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, reason), joinMuteKB(b, logID))
+		// 群内只给半行短结论；完整理由留在 join_mutes 里（申诉入口与详情用）。
+		groupText := verdictBrief(v)
+		if groupText == "" {
+			groupText = reason
+		}
+		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, groupText), joinMuteKB(b, logID))
 		scheduleAlertCleanup(b, conf.ChatID, msgID, alertTTL(b, b.Cache.Snap(), v))
 	}
 	saveJoinMute(b, conf.ChatID, u.ID, reason, 0)

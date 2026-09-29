@@ -256,8 +256,20 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 		}
 	}
 	if !strings.Contains(text, "tg://user?id=555") ||
-		!strings.Contains(text, "简介写着推广内容引流") {
-		t.Errorf("通知应是一行 uid + 原因:\n%s", text)
+		!strings.Contains(text, "广告 置信度:95%") {
+		t.Errorf("通知应是一行 uid + 短结论:\n%s", text)
+	}
+	if strings.Contains(text, "简介写着推广内容引流") {
+		t.Errorf("群内通知不该带具体理由（详情在申诉入口与记录里）:\n%s", text)
+	}
+	// 完整理由要留在记录里：申诉入口与管理员详情都靠它。
+	var stored string
+	if err := b.Store.Read.QueryRow(
+		`SELECT reason FROM join_mutes WHERE chat_id=-100 AND user_id=555`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, "简介写着推广内容引流") {
+		t.Errorf("完整理由应留在冷判定记录里，得到 %q", stored)
 	}
 	// 按钮带冷判定记录号：管理员点进来落到记录卡片，被限制的人进申诉入口。
 	var logID int64
