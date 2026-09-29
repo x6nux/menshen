@@ -120,7 +120,9 @@ var settingDefaults = map[string]string{
 	"antiad_cold_conf": "85",
 	// 本地预筛：只有昵称/简介出现可疑特征的人才送检。关掉就是每个
 	// 进群的人都送检，大群里这是数量级的成本差别。
-	"antiad_cold_prefilter": "1",
+	// 默认关：判定模型很便宜，进群这道门口不漏人比省一次调用重要；
+	// 打开则只有资料可疑的才送检（见 coldSuspicious）。
+	"antiad_cold_prefilter": "0",
 	// 自助解除的重试间隔基数（秒）。不限次数，但第 n 次要等
 	// base × 2^(n-1)，封顶 1 小时——有耐心的人也磨不动多少 AI 开销。
 	"antiad_unban_base": "60",

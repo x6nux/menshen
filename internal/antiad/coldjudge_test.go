@@ -57,6 +57,30 @@ func TestColdSuspiciousNoUsernameIsNotASignal(t *testing.T) {
 	}
 }
 
+// TestColdPrefilterOffByDefault：默认人人送检。资料平平的新人也要过一次
+// 冷判定 —— 判定模型很便宜，进群这道门口不漏人比省那一次调用重要。
+// 想省开销的部署可以把 antiad_cold_prefilter 打开。
+func TestColdPrefilterOffByDefault(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_cold", "1"); err != nil {
+		t.Fatal(err)
+	}
+	soN, _ := fakeAIWith(t, b,
+		soReply("clean", 0.9, "none", "message"), llmReply(false, 0.9, "none", "message"))
+
+	HandleChatMemberUpdate(b, &tg.ChatMemberUpdated{
+		Chat: &tg.Chat{ID: -100, Type: "supergroup"}, Date: 5000,
+		OldChatMember: &tg.ChatMemberInfo{Status: "left"},
+		NewChatMember: &tg.ChatMemberInfo{Status: "member",
+			User: &tg.TGUser{ID: 555, FirstName: "张三", Username: "zhangsan"}},
+	})
+	waitIdle(t, b)
+	if soN.Load() == 0 {
+		t.Error("预筛默认关闭，资料平平的新人也应送检")
+	}
+}
+
 // TestUnbanPayloadRoundTrip 确认冷判定记录号能原样走一圈回来。
 func TestUnbanPayloadRoundTrip(t *testing.T) {
 	for _, logID := range []int64{1, 42, 1001976894016} {

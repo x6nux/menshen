@@ -201,7 +201,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	snap := b.Cache.Snap()
 	bio := userBio(b, u.ID)
 
-	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 1) == 1 {
+	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 0) == 1 {
 		ok, hits := coldSuspicious(u, bio)
 		if !ok {
 			return
