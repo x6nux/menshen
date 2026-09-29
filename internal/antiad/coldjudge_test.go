@@ -241,6 +241,8 @@ func TestJoinHandledOnce(t *testing.T) {
 	if err := b.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatal(err)
 	}
+	// 该群选「封禁出群」：联合封禁按本群配置执行，这里测的是封禁路径。
+	testutil.SetChatPunish(t, b, -100, 1)
 
 	HandleChatMemberUpdate(b, &tg.ChatMemberUpdated{
 		Chat: &tg.Chat{ID: -100, Type: "supergroup"}, Date: 5000,

@@ -302,3 +302,35 @@ func AddRegistryBot(t *testing.T, reg *core.Registry, sh *core.Shared,
 	}
 	return b, fake
 }
+
+// SetChatPunish 把某个群的处罚方式改成 punish（1 = 封禁出群，0 = 禁言，
+// -1 = 跟随 bot）。联合封禁按每群自己的配置执行，测试要覆盖封禁路径时
+// 得先把它设上。
+func SetChatPunish(t *testing.T, b *core.Bot, chatID, punish int64) {
+	t.Helper()
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET punish=? WHERE bot_id=? AND chat_id=?`,
+		punish, b.BotID(), chatID); err != nil {
+		t.Fatalf("设置处罚方式失败: %v", err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+}
+
+// SetChatDryrun 把某个群切到演练模式（判定照跑、不处置）。
+func SetChatDryrun(t *testing.T, b *core.Bot, chatID int64, on bool) {
+	t.Helper()
+	v := 0
+	if on {
+		v = 1
+	}
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET dryrun=? WHERE bot_id=? AND chat_id=?`,
+		v, b.BotID(), chatID); err != nil {
+		t.Fatalf("设置演练开关失败: %v", err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+}

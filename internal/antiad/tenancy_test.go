@@ -184,7 +184,7 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 	}
 
 	// 开关没开时不得动手：全平台封禁是要主管理员明确点头的。
-	if gbanGuard(b, -100, &tg.TGUser{ID: 777}) {
+	if gbanGuard(b, testutil.ChatConfOf(t, b, -100), &tg.TGUser{ID: 777}) {
 		t.Error("开关关闭时不该拦截")
 	}
 	if n := fake.CountCalls("banChatMember"); n != 0 {
@@ -194,7 +194,9 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 	if err := b.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatalf("putSetting: %v", err)
 	}
-	if !gbanGuard(b, -100, &tg.TGUser{ID: 777}) {
+	// 该群选「封禁出群」：联合封禁按每群自己的配置执行。
+	testutil.SetChatPunish(t, b, -100, 1)
+	if !gbanGuard(b, testutil.ChatConfOf(t, b, -100), &tg.TGUser{ID: 777}) {
 		t.Error("名单内的人进群应当被拦下")
 	}
 	p := fake.LastCall("banChatMember")
@@ -206,7 +208,7 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 	}
 
 	// 不在名单里的人照常放行
-	if gbanGuard(b, -100, &tg.TGUser{ID: 888}) {
+	if gbanGuard(b, testutil.ChatConfOf(t, b, -100), &tg.TGUser{ID: 888}) {
 		t.Error("名单外的人不该被拦")
 	}
 }
@@ -257,6 +259,8 @@ func TestGbanCrossesOwners(t *testing.T) {
 		t.Fatal("第二个 bot 没能拉起来")
 	}
 	testutil.EnableAntiad(t, b2, -200)
+	testutil.SetChatPunish(t, b, -100, 1)
+	testutil.SetChatPunish(t, b2, -200, 1)
 
 	var chats []int64
 	eachActiveChat(b.Shared, nil, func(_ []*core.Bot, chatID int64) { chats = append(chats, chatID) })

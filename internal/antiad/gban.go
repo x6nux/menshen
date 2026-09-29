@@ -202,10 +202,55 @@ func EnforceGban(sh *core.Shared, uid int64, reason string) {
 	slog.Info("联合封禁已执行", "uid", uid, "群数", n, "理由", reason)
 }
 
+// gbanApply 在一个群里执行联合封禁，方式服从该群自己的处置配置：
+//
+//	dryrun   → 什么都不做（演练群不该因为全平台名单真动手）
+//	封禁档   → banChatMember（请出群）
+//	禁言档   → restrictChatMember（按本 bot 的禁言时长，0 = 永久）
+//
+// 返回实际动作（ban / mute / dryrun）与是否成功。频道身份由 BanSender /
+// MuteSender 各自处理（封频道不支持限时，退回永久封）。
+func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string) {
+	snap := b.Cache.Snap()
+	if conf.Dryrun {
+		return "dryrun", true, ""
+	}
+	if snap.BanMode(conf) {
+		ok, desc := BanSender(b, conf.ChatID, uid)
+		return "ban", ok, desc
+	}
+	minutes := snap.BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
+	ok, desc := MuteSender(b, conf.ChatID, uid, time.Duration(minutes)*time.Minute)
+	return "mute", ok, desc
+}
+
+// gbanActInChat 在某个群里执行联合封禁。一个群可能挂着同归属人的多个 bot，
+// 配置各算各的（演练、处罚方式都是 per-bot 的）：取第一个**不是演练**的配置
+// 执行；它没权限（或不在群里）时再换下一个；全是演练群就什么都不做。
+func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
+	var lastDesc string
+	for _, b := range bots {
+		conf, ok := b.Cache.Snap().ChatConf(b.BotID(), chatID)
+		if !ok || conf.Dryrun {
+			continue
+		}
+		act, ok2, desc := gbanApply(b, conf, uid)
+		if ok2 {
+			slog.Info("联合封禁已执行", "chat", chatID, "uid", uid, "方式", act)
+			return
+		}
+		lastDesc = desc
+	}
+	if lastDesc != "" {
+		slog.Warn("联合封禁：执行失败", "chat", chatID, "uid", uid, "tg", lastDesc)
+	}
+}
+
 // gbanFanover 是封禁/解除的公共执行器：chats 为 nil 时遍历全局组覆盖的
 // 所有群，否则只动给定清单（专属组用）。返回实际派发的群数。
-// onlyIfBanned 给 unbanChatMember 用：不带它，对一个**没被封**的人解封
-// 的语义是「先踢出群再解封」，会把无辜的人踢出去。
+//
+// 封禁按各群自己的处置方式执行（见 gbanApply）；解除是无条件修复动作
+// （dryrun 群也会执行——那边可能曾经真封过），只带 only_if_banned。
 func gbanFanover(sh *core.Shared, uid int64, method string, chats []int64,
 	onlyIfBanned bool) int {
 	sem := gbanSem
@@ -217,6 +262,10 @@ func gbanFanover(sh *core.Shared, uid int64, method string, chats []int64,
 		go func() {
 			sem <- struct{}{}
 			defer func() { <-sem; done <- struct{}{} }()
+			if method == "banChatMember" && !onlyIfBanned {
+				gbanActInChat(sh, bots, chatID, uid)
+				return
+			}
 			payload := map[string]any{"chat_id": chatID, "user_id": uid}
 			if onlyIfBanned {
 				payload["only_if_banned"] = true
@@ -356,42 +405,50 @@ func AdminLiftGban(sh *core.Shared, adminUID, target int64) string {
 	return strings.Join(lifted, "、")
 }
 
-// gbanGuard 在有人进群时查适用的联合封禁组，命中即当场封禁。
+// gbanGuard 在有人进群时查适用的联合封禁组，命中即按**本群自己的处置方式**
+// 处置（演练群不动手、禁言档禁言、封禁档请出群，见 gbanApply）——联合封禁
+// 是「这个人已在别处被判为广告」的跨群结论，但怎么处置仍归各群的配置管。
 //
 // 这是联合封禁最值钱的部分：拦在门口，而不是等他发完广告再删。
 // 返回 true 表示这个人已被拦下，调用方不必再做后续处理。
-func gbanGuard(b *core.Bot, chatID int64, u *tg.TGUser) bool {
+func gbanGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser) bool {
 	if u == nil {
 		return false
 	}
-	rec, ok := gbanHit(b.Shared, b.BotID(), chatID, u.ID)
+	rec, ok := gbanHit(b.Shared, b.BotID(), conf.ChatID, u.ID)
 	if !ok {
 		return false
 	}
-	if ok, desc := b.CallOK("banChatMember", map[string]any{
-		"chat_id": chatID, "user_id": u.ID,
-	}); !ok {
-		slog.Warn("联合封禁：进群拦截失败", "chat", chatID, "uid", u.ID, "tg", desc)
+	act, ok2, desc := gbanApply(b, conf, u.ID)
+	if !ok2 {
+		slog.Warn("联合封禁：进群拦截失败", "chat", conf.ChatID, "uid", u.ID, "tg", desc)
 		return false
 	}
-	slog.Info("联合封禁：进群即拦下", "chat", chatID, "uid", u.ID)
+	if act == "dryrun" {
+		// 演练群：判定/名单照常走，但不动手，也不发群内消息。
+		slog.Info("联合封禁：演练群不动手", "chat", conf.ChatID, "uid", u.ID)
+		return false
+	}
+	slog.Info("联合封禁：进群即拦下", "chat", conf.ChatID, "uid", u.ID, "方式", act)
 
+	verdict := map[string]string{"ban": "被封禁出群", "mute": "被禁言"}[act]
 	for _, admin := range b.AlertTargets() {
 		b.Send(admin, fmt.Sprintf(
-			"🚫 <b>联合封禁拦截</b>\n\n用户 %s (<code>%d</code>) 进入群 <code>%d</code> 时被拦下。\n原因: %s",
-			html.EscapeString(senderName(u)), u.ID, chatID,
+			"🚫 <b>联合封禁拦截</b>\n\n用户 %s (<code>%d</code>) 进入群 <code>%d</code> 时%s。\n原因: %s",
+			html.EscapeString(senderName(u)), u.ID, conf.ChatID, verdict,
 			html.EscapeString(core.TruncateRunes(rec.Reason, 120))), nil)
 	}
 	return true
 }
 
 // GbanMessageGuard 在发言路径上执行联合封禁。白名单优先——/white 的
-// 「本群解封」就是白名单，管理员放行的人不该再被名单拦下。命中即禁言、
-// 删除本条并落一条流水，不再留底、不再送检。
+// 「本群解封」就是白名单，管理员放行的人不该再被名单拦下。命中即按本群
+// 自己的处置方式处置（演练群不动手、禁言档禁言、封禁档请出群），删除本条
+// 并落一条流水，不再留底、不再送检。
 // 返回 true 表示这条消息已按联合封禁处理完，调用方直接返回。
 //
 // whitelisted 是调用方从画像行带出来的 /white 标记（见 touchMember）。
-func GbanMessageGuard(b *core.Bot, chatID int64, u *tg.TGUser, msgID int64,
+func GbanMessageGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser, msgID int64,
 	whitelisted bool) bool {
 
 	if u == nil || u.ID < 0 {
@@ -403,28 +460,34 @@ func GbanMessageGuard(b *core.Bot, chatID int64, u *tg.TGUser, msgID int64,
 	}
 	// 与 adExempt 同源的两组白名单：/white 的本群名单与解禁码白名单。
 	if whitelisted ||
-		b.Cache.Snap().Whitelisted(b.BotID(), chatID, u.ID, time.Now().Unix()) {
+		b.Cache.Snap().Whitelisted(b.BotID(), conf.ChatID, u.ID, time.Now().Unix()) {
 		return false
 	}
-	rec, hit := gbanHit(b.Shared, b.BotID(), chatID, u.ID)
+	rec, hit := gbanHit(b.Shared, b.BotID(), conf.ChatID, u.ID)
 	if !hit {
 		return false
 	}
-	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
-		"chat_id": chatID, "user_id": u.ID,
-		"permissions": MutedPermissions(),
-	}); !ok {
-		slog.Warn("联合封禁：发言禁言失败", "chat", chatID, "uid", u.ID, "tg", desc)
+	act, ok, desc := gbanApply(b, conf, u.ID)
+	if act == "dryrun" {
+		// 演练群：不动手，照常走后面的判定链路（判定照跑、开销照花）。
+		return false
+	}
+	if !ok {
+		slog.Warn("联合封禁：发言处置失败", "chat", conf.ChatID, "uid", u.ID, "tg", desc)
 	}
 	if msgID != 0 {
 		b.CallOK("deleteMessage", map[string]any{
-			"chat_id": chatID, "message_id": msgID})
+			"chat_id": conf.ChatID, "message_id": msgID})
 	}
-	logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID}, From: u},
+	action := "gban_muted"
+	if act == "ban" {
+		action = "gban_banned"
+	}
+	logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID}, From: u},
 		adVerdict{Decider: adDeciderSkipped,
 			Reason: "联合封禁：" + GbanReasonLabel(rec.Reason)},
-		"gban_muted", "联合封禁（发言）")
-	slog.Info("联合封禁：发言即禁言", "chat", chatID, "uid", u.ID)
+		action, "联合封禁（发言）")
+	slog.Info("联合封禁：发言即处置", "chat", conf.ChatID, "uid", u.ID, "方式", act)
 	return true
 }
 

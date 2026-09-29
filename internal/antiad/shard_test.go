@@ -48,7 +48,10 @@ func TestSameChatBotsHandleSenderOnce(t *testing.T) {
 // TestGbanOncePerChat：同群挂着几个 bot 时联合封禁只封一次；
 // 头一个 bot 封不动（没有封禁权限）时换下一个，而不是放掉这个群。
 func TestGbanOncePerChat(t *testing.T) {
-	a, _, fa, fb := sameOwnerPair(t, -100)
+	a, b, fa, fb := sameOwnerPair(t, -100)
+	// 两个 bot 在这个群都选「封禁出群」：本测试覆盖的是封禁路径与「换下一个 bot」。
+	testutil.SetChatPunish(t, a, -100, 1)
+	testutil.SetChatPunish(t, b, -100, 1)
 	fa.Resp["banChatMember"] = `{"ok":false,"description":"not enough rights"}`
 
 	EnforceGban(a.Shared, 888, "测试")

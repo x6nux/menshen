@@ -39,7 +39,7 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	}
 
 	// 联合封禁拦在门口：命中就已经被请出去了，没有后续。
-	if gbanGuard(b, conf.ChatID, u) {
+	if gbanGuard(b, conf, u) {
 		return
 	}
 	if u.IsBot {

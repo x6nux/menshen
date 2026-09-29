@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"menshen/internal/testutil"
+	"menshen/internal/tg"
 )
 
 // TestGbanHitScopes：联合封禁的适用性判定。全局组要求总开关 + bot 加入
@@ -74,7 +75,7 @@ func TestGbanMessageGuard(t *testing.T) {
 	}
 
 	m := testutil.GroupMsg(-100, 999, 5, "hello")
-	if !GbanMessageGuard(b, -100, m.From, m.MessageID, false) {
+	if !GbanMessageGuard(b, testutil.ChatConfOf(t, b, -100), m.From, m.MessageID, false) {
 		t.Fatal("名单内的人发言应被拦下")
 	}
 	p := fake.LastCall("restrictChatMember")
@@ -100,7 +101,7 @@ func TestGbanMessageGuard(t *testing.T) {
 	if err := setGroupWhitelist(b, -100, 999, true); err != nil {
 		t.Fatal(err)
 	}
-	if GbanMessageGuard(b, -100, m.From, 6, true) {
+	if GbanMessageGuard(b, testutil.ChatConfOf(t, b, -100), m.From, 6, true) {
 		t.Error("白名单用户不应被联合封禁拦下")
 	}
 }
@@ -205,5 +206,68 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 	}
 	if n := fake.CountCalls("restrictChatMember"); n == 0 {
 		t.Error("单群禁言照常执行")
+	}
+}
+
+// TestGbanFollowsGroupConfig：联合封禁执行服从各群自己的配置——演练群不动手、
+// 禁言档只禁言、封禁档才请出群（用户要求「不要直接就封禁」）。
+func TestGbanFollowsGroupConfig(t *testing.T) {
+	// 用 registry 版环境：扇出执行（EnforceGban）要走「所有 bot 的所有群」。
+	a, b, fa, fb := sameOwnerPair(t, -100)
+	if err := a.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanAdd(a.Shared, 888, "测试", -100, a.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	user := &tg.TGUser{ID: 888}
+	bans := func() int { return fa.CountCalls("banChatMember") + fb.CountCalls("banChatMember") }
+	mutes := func() int {
+		return fa.CountCalls("restrictChatMember") + fb.CountCalls("restrictChatMember")
+	}
+
+	// 1) 禁言档（默认跟随 bot，antiad_ban=0）：只禁言，不踢人。
+	if !gbanGuard(a, testutil.ChatConfOf(t, a, -100), user) {
+		t.Fatal("名单内的人进群应被拦下")
+	}
+	if bans() != 0 {
+		t.Errorf("禁言档不该请出群，发了 %d 次 banChatMember", bans())
+	}
+	if mutes() == 0 {
+		t.Error("禁言档应发 restrictChatMember")
+	}
+
+	// 2) 扇出执行（EnforceGban）同样按配置。
+	ban0, mute0 := bans(), mutes()
+	EnforceGban(a.Shared, 889, "测试")
+	if bans() != ban0 {
+		t.Error("扇出在禁言档不该踢人")
+	}
+	if mutes() == mute0 {
+		t.Error("扇出在禁言档应禁言")
+	}
+
+	// 3) 演练群：判定照跑，但不处置。同群两个 bot 都切到演练。
+	testutil.SetChatDryrun(t, a, -100, true)
+	testutil.SetChatDryrun(t, b, -100, true)
+	ban1, mute1 := bans(), mutes()
+	if gbanGuard(a, testutil.ChatConfOf(t, a, -100), user) {
+		t.Error("演练群不该拦人（不处置）")
+	}
+	EnforceGban(a.Shared, 890, "测试")
+	if bans() != ban1 || mutes() != mute1 {
+		t.Error("演练群不该动手")
+	}
+
+	// 4) 封禁档：请出群。
+	testutil.SetChatDryrun(t, a, -100, false)
+	testutil.SetChatDryrun(t, b, -100, false)
+	testutil.SetChatPunish(t, a, -100, 1)
+	testutil.SetChatPunish(t, b, -100, 1)
+	if !gbanGuard(a, testutil.ChatConfOf(t, a, -100), user) {
+		t.Fatal("封禁档应拦下")
+	}
+	if bans() == ban1 {
+		t.Error("封禁档应发 banChatMember")
 	}
 }

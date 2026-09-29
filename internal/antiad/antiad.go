@@ -531,7 +531,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 
 	// 联合封禁在发言路径同样生效（进群路径是 gbanGuard）：白名单优先，
 	// 命中即禁言、删除本条，不再留底、不再送检。
-	if GbanMessageGuard(b, m.Chat.ID, m.From, m.MessageID, gm.Whitelisted) {
+	if GbanMessageGuard(b, conf, m.From, m.MessageID, gm.Whitelisted) {
 		return
 	}
 
