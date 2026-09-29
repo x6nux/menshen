@@ -27,6 +27,35 @@ type Registry struct {
 	mu      sync.Mutex
 	byToken map[string]*Bot
 	byID    map[int64]*Bot
+
+	// pendingDrops 记录尚未完成的 deleteWebhook（每个 token 至多一个）。
+	// 重新注册同一个 token 时必须等它结束：迟到的 deleteWebhook 会把新实例
+	// 刚设上的 webhook 悄悄删掉，而表现是「setWebhook 成功却收不到更新」。
+	pendingDrops sync.Map // token -> chan struct{}
+}
+
+// dropWebhookAsync 异步撤掉一个实例的 webhook，并登记在 pendingDrops。
+// 同一个 token 的多次撤销按顺序排队（前一次没完就先等它）。
+//
+// 异步是必要的：对方可能已经吊销了 token，这一步会一直等到传输层超时。
+func (r *Registry) dropWebhookAsync(b *Bot) {
+	ch := make(chan struct{})
+	prev, loaded := r.pendingDrops.Swap(b.Token, ch)
+	go func() {
+		defer close(ch)
+		if loaded {
+			<-prev.(chan struct{})
+		}
+		b.DropWebhook()
+		r.pendingDrops.CompareAndDelete(b.Token, ch)
+	}()
+}
+
+// waitPendingDrop 等该 token 上一次的 deleteWebhook 结束（没有则立即返回）。
+func (r *Registry) waitPendingDrop(token string) {
+	if v, ok := r.pendingDrops.Load(token); ok {
+		<-v.(chan struct{})
+	}
 }
 
 func NewRegistry(sh *Shared, stop <-chan struct{}, d Dispatcher) *Registry {
@@ -81,7 +110,14 @@ func (sh *Shared) newTransport(token string) tg.Transport {
 }
 
 // spawn 建实例、登记、启 worker。调用方须持有 r.mu。
+//
+// 幂等：同一个 bot 已有实例时先停掉旧的。否则会同时有两个实例在跑——旧实例
+// 的 64 个 worker 与队列永远泄漏，而且两个实例都会消费同一批更新。
 func (r *Registry) spawn(rec *store.BotRec) *Bot {
+	if old, ok := r.byID[rec.BotID]; ok {
+		old.Shutdown()
+		delete(r.byToken, old.Token)
+	}
 	b := NewBot(r.sh.newTransport(rec.Token), r.sh, rec.Token, r.dispatch)
 	b.SelfID.Store(rec.BotID)
 	b.OwnerID.Store(rec.OwnerID)
@@ -260,6 +296,11 @@ func (b *Bot) FinishSetup() error {
 	if !b.Cfg.UseWebhook() {
 		return nil
 	}
+	// 等上一次的 deleteWebhook 结束：迟到的 deleteWebhook 会把这里刚设上的
+	// webhook 悄悄删掉，而表现是「setWebhook 成功却一条更新都收不到」。
+	if b.Reg != nil {
+		b.Reg.waitPendingDrop(b.Token)
+	}
 	if err := b.SetWebhook(b.Cfg.WebhookURLFor(b.Token)); err != nil {
 		slog.Error("注册 webhook 失败", "bot", config.MaskToken(b.Token), "err", err)
 		return err
@@ -292,7 +333,8 @@ func (r *Registry) Unregister(botID int64) error {
 	if b != nil {
 		b.Shutdown()
 		// 撤 webhook 放异步：对方可能已经吊销了 token，这一步会一直等到超时。
-		go b.DropWebhook()
+		// 但要在 pendingDrops 里登记，重新接入同一个 token 时先等它结束。
+		r.dropWebhookAsync(b)
 	}
 
 	tx, err := r.sh.Store.Write.Begin()
@@ -370,6 +412,9 @@ func (r *Registry) SetBotEnabled(botID int64, on bool) error {
 		delete(r.byID, botID)
 		delete(r.byToken, rec.Token)
 		b.Shutdown()
+		// 停用即摘实例，但 TG 侧还留着 webhook：不撤的话它会持续投递并收到
+		// 401，然后按退避一直重推；重新启用时那些陈旧更新还可能被补投进来。
+		r.dropWebhookAsync(b)
 	}
 	return nil
 }

@@ -80,7 +80,16 @@ func (sh *Shared) AddAdmin(uid int64, note string, by int64) error {
 		slog.Error("添加次级管理员失败", "uid", uid, "err", err)
 		return err
 	}
-	return sh.Cache.Reload()
+	if err := sh.Cache.Reload(); err != nil {
+		return err
+	}
+	// 立刻给新管理员补挂 Mini App 菜单按钮：按钮是 per-chat 的，必须由
+	// bot 主动设置，等到下次重启才挂的话他点菜单也进不去配置台。
+	// 异步：调用方卡在一条 TG 回调的响应路径上，而每个 bot 一次往返。
+	if sh.Reg != nil {
+		go sh.Reg.Each(func(b *Bot) { b.RegisterMiniAppButtonFor(uid) })
+	}
+	return nil
 }
 
 // removeAdmin 移除次级管理员。
