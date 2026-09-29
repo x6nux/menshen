@@ -535,8 +535,8 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	}
 	// 文本链接带记录号：管理员点进记录卡片，普通用户进申诉入口。
 	// 群内提示已从内联按钮改为文本链接（按钮在部分客户端容易被忽略）。
-	if !strings.Contains(text, "① 点我申诉 (https://t.me/testbot?start=log12)") {
-		t.Errorf("告警应带申诉文本链接（含记录号）:\n%s", text)
+	if !strings.Contains(text, `① <a href="https://t.me/testbot?start=log12">点我申诉</a>`) {
+		t.Errorf("告警应把申诉链接嵌在文字上（含记录号）:\n%s", text)
 	}
 	if p["reply_markup"] != nil {
 		t.Errorf("群内告警不该再挂内联按钮，得到 %v", p["reply_markup"])
@@ -701,5 +701,25 @@ func TestContactCardIsJudged(t *testing.T) {
 	m.Caption = "加我"
 	if got := msgText(&m); !strings.Contains(got, "加我") || !strings.Contains(got, "8440") {
 		t.Fatalf("msgText = %q", got)
+	}
+}
+
+// TestGroupNoticeDisablesPreview：群内提示要关掉链接预览——deep link 会挂出
+// 一张预览卡片（bot 链接常带 START 按钮），把一行提示撑成好几行。
+func TestGroupNoticeDisablesPreview(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	sendGroup(b, -100, "文字", nil)
+
+	p := fake.LastCall("sendMessage")
+	opts, ok := p["link_preview_options"].(map[string]any)
+	if !ok || opts["is_disabled"] != true {
+		t.Fatalf("群内提示应关掉链接预览，得到 %v", p["link_preview_options"])
+	}
+	// 私聊消息不受影响（管理员卡片里的查看页链接允许预览）。
+	b.Send(777, "文字", nil)
+	if _, has := fake.LastCall("sendMessage")["link_preview_options"]; has {
+		t.Error("私聊消息不该被关掉预览")
 	}
 }

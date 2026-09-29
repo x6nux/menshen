@@ -387,15 +387,29 @@ func (b *Bot) DownloadFile(path string) ([]byte, error) {
 
 // ---- 发送与编辑 ----
 
-// kb 用 map 而不是 any：把 nil map 存进 any 之后接口值并不等于 nil，
-// 直接塞进 payload 会序列化成 null，TG 回「object expected as reply markup」。
-// 类型是 map 时 nil 判断才可靠。
-func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
+// messagePayload 组装 sendMessage 的公共字段。
+//
+// noPreview 为真时关掉链接预览：群内提示里有 deep link，客户端会挂一张
+// 预览卡片（bot 链接常带 START 按钮），把一行提示撑成好几行，而群里
+// 要的只是「谁、因为什么、点哪里申诉」。
+func (b *Bot) messagePayload(chatID int64, text string, kb map[string]any,
+	noPreview bool) map[string]any {
 	p := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
 	if kb != nil {
 		p["reply_markup"] = kb
 	}
-	if _, err := b.TG.Call("sendMessage", p); err != nil {
+	if noPreview {
+		p["link_preview_options"] = map[string]any{"is_disabled": true}
+	}
+	return p
+}
+
+// kb 用 map 而不是 any：把 nil map 存进 any 之后接口值并不等于 nil，
+// 直接塞进 payload 会序列化成 null，TG 回「object expected as reply markup」。
+// 类型是 map 时 nil 判断才可靠。
+func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
+	if _, err := b.TG.Call("sendMessage",
+		b.messagePayload(chatID, text, kb, false)); err != nil {
 		slog.Error("sendMessage 失败", "err", err)
 	}
 }
@@ -403,10 +417,15 @@ func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
 // sendGetID 与 send 相同，但返回新消息的 message_id（失败返回 0）。
 // 自动撤回要靠它：没有 message_id 就无从撤回。
 func (b *Bot) SendGetID(chatID int64, text string, kb map[string]any) int64 {
-	p := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
-	if kb != nil {
-		p["reply_markup"] = kb
-	}
+	return b.sendMessageID(b.messagePayload(chatID, text, kb, false))
+}
+
+// SendGetIDNoPreview 与 SendGetID 相同，但关掉链接预览（群内提示用）。
+func (b *Bot) SendGetIDNoPreview(chatID int64, text string, kb map[string]any) int64 {
+	return b.sendMessageID(b.messagePayload(chatID, text, kb, true))
+}
+
+func (b *Bot) sendMessageID(p map[string]any) int64 {
 	raw, err := b.TG.Call("sendMessage", p)
 	if err != nil {
 		slog.Error("sendMessage 失败", "err", err)

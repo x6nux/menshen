@@ -307,8 +307,8 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, fmt.Sprintf("① 点我申诉 (https://t.me/testbot?start=log%d)", logID)) {
-		t.Errorf("通知应带申诉文本链接（含记录号 %d）:\n%s", logID, text)
+	if !strings.Contains(text, fmt.Sprintf(`① <a href="https://t.me/testbot?start=log%d">点我申诉</a>`, logID)) {
+		t.Errorf("通知应把申诉链接嵌在文字上（含记录号 %d）:\n%s", logID, text)
 	}
 	if p["reply_markup"] != nil {
 		t.Errorf("群内通知不该再挂内联按钮，得到 %v", p["reply_markup"])

@@ -1448,11 +1448,12 @@ func groupSilent(b *core.Bot) bool {
 
 // sendGroup 在群里发一条消息；静默开关打开时什么也不发，返回 0。
 // 调用方拿到 0 就不要安排撤回（撤回一个不存在的消息号会删错东西）。
+// 关掉链接预览：提示里的 deep link 会挂出一张预览卡片，把一行撑成好几行。
 func sendGroup(b *core.Bot, chatID int64, text string, kb map[string]any) int64 {
 	if groupSilent(b) {
 		return 0
 	}
-	return b.SendGetID(chatID, text, kb)
+	return b.SendGetIDNoPreview(chatID, text, kb)
 }
 
 // groupNotice 在群里发一条自动撤回的提示；静默时不发也不安排撤回。
@@ -1562,19 +1563,22 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 
 // groupLinks 渲染群内提示尾部的文本链接块：
 //
-//	① 点我申诉 (https://t.me/<bot>?start=<记录号>)
+//	① <a href="https://t.me/<bot>?start=<记录号>">点我申诉</a>
 //	② <全局设置里的附加链接原文>
 //
-// 用文本链接而不是内联按钮：按钮在部分客户端里容易被忽略，纯文本里的
-// 裸链接人人都点得动、也复制得走。带记录号的 deep link 按身份分流——
-// 管理员点进记录卡片，被限制的人进申诉入口（与旧按钮一致）。
+// 链接嵌在文字上（HTML anchor），不是把网址原样跟在后面：网址暴露在群里
+// 既占地方又容易被误当成正文，点得动的文字才是「文本链接」该有的样子。
+// 带记录号的 deep link 按身份分流——管理员点进记录卡片，被限制的人进
+// 申诉入口（与旧按钮一致）。
 func groupLinks(b *core.Bot, logID int64) string {
 	var lines []string
 	if b.Username != "" {
-		lines = append(lines, "① 点我申诉 ("+botDeepLink(b, logID)+")")
+		lines = append(lines, `① <a href="`+html.EscapeString(botDeepLink(b, logID))+
+			`">点我申诉</a>`)
 	}
 	if extra := strings.TrimSpace(b.Cache.Snap().Setting("antiad_group_footer")); extra != "" {
 		// 附加文本由管理员填写，按纯文本转义：里面出现 HTML 时不该改排版。
+		// 其中写明的网址由 Telegram 客户端自动识别成链接。
 		lines = append(lines, html.EscapeString(extra))
 	}
 	return strings.Join(lines, "\n")
