@@ -84,43 +84,59 @@ var Paths = map[Endpoint]string{
 	EPSystemOne: "/v1/systemone",
 }
 
+// maxPickWeight 是参与加权选择时单条权重的上限。写入侧校验漏了或老库里
+// 有超大值（手改、脚本导入）时，物化权重的实现会按 weight 重复填充切片，
+// 1e9 就是一次 ~8GB 分配。选择算法本身不物化，这里再钳一道纯属兜底。
+const maxPickWeight = 1000
+
+func pickWeight(u *Upstream) int64 {
+	w := u.Weight
+	if w < 1 {
+		w = 1
+	}
+	if w > maxPickWeight {
+		w = maxPickWeight
+	}
+	return w
+}
+
 // Pick 返回候选上游列表，首个为 sticky 选中者，其余按顺序供失败重试。
-// 按 hash(key) 做 sticky，weight 通过重复填充体现。
+// 按 hash(key) 做 sticky，weight 通过区间宽度体现。
+//
+// 不物化加权切片：区间算术等价于「按 weight 重复填充后取模」，但不会因为
+// 一个超大 weight 就分配出天文数字的切片。
 func Pick(all []*Upstream, ep Endpoint, key string) []*Upstream {
 	var pool []*Upstream
+	var total int64
 	for _, u := range all {
 		if u.Status == 1 && u.Supports(ep) {
 			pool = append(pool, u)
+			total += pickWeight(u)
 		}
 	}
 	if len(pool) <= 1 {
 		return pool
 	}
 
-	var weighted []*Upstream
-	for _, u := range pool {
-		w := u.Weight
-		if w < 1 {
-			w = 1
-		}
-		for i := int64(0); i < w; i++ {
-			weighted = append(weighted, u)
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	pos := int64(h.Sum32()) % total
+
+	// 找到 sticky 点落在谁的区间里：它就是加权序列里第一个出现的上游。
+	start := 0
+	for i, u := range pool {
+		if w := pickWeight(u); pos < w {
+			start = i
+			break
+		} else {
+			pos -= w
 		}
 	}
 
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	start := int(h.Sum32()) % len(weighted)
-
-	// 从 sticky 起点展开去重，得到「首选 + 其余候选」
+	// 从 sticky 起点展开去重，得到「首选 + 其余候选」。
 	out := make([]*Upstream, 0, len(pool))
-	seen := map[int64]bool{}
-	for i := 0; i < len(weighted); i++ {
-		u := weighted[(start+i)%len(weighted)]
-		if !seen[u.ID] {
-			seen[u.ID] = true
-			out = append(out, u)
-		}
+	for i := 0; i < len(pool); i++ {
+		out = append(out, pool[(start+i)%len(pool)])
 	}
 	return out
 }
