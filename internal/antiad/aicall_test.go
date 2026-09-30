@@ -339,3 +339,38 @@ func TestLLMStreamIdleTimeout(t *testing.T) {
 		t.Errorf("应在空闲超时内失败，实际用了 %v", took)
 	}
 }
+
+// TestLLMStreamHeartbeatDoesNotHideStall：心跳注释（": ping"）不算进度 ——
+// 很多网关会一直发它，按字节计空闲的话上游一个字都不吐也能拖到 45 秒
+// 客户端超时（实测形态总结就是这么失败的：日志「最后卡在流中」）。
+func TestLLMStreamHeartbeatDoesNotHideStall(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	setGlobal(t, b, "antiad_llm_idle_ms", "300")
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		sseStart(w)
+		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true"}}]}`)
+		// 之后只发心跳，不再有内容。
+		for i := 0; i < 100; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				fmt.Fprint(w, ": ping\n\n")
+				w.(http.Flusher).Flush()
+			}
+		}
+	})
+
+	start := time.Now()
+	_, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	if err == nil {
+		t.Fatal("只有心跳的流应当失败")
+	}
+	if !strings.Contains(err.Error(), "流中断") {
+		t.Errorf("错误里应说明是流中断：%v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("心跳不该算进度，应在空闲超时内失败，实际用了 %v", took)
+	}
+}

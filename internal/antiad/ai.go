@@ -452,18 +452,21 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		// 烧光，日志里只剩一句 context deadline exceeded。
 		idle := msSetting(snap, "antiad_llm_idle_ms", 10000)
 		var idleTripped, firstSeen atomic.Bool
-		body := io.Reader(resp.Body)
-		if idle > 0 {
-			// 只在首字之后生效：首字之前的事由首字看门狗（antiad_llm_ttft_ms）
-			// 管，它比空闲超时宽松，那是给「慢但正常」的上游留的余量。
-			body = &idleReader{r: resp.Body, d: idle, trip: func() {
-				if firstSeen.Load() {
-					idleTripped.Store(true)
-					cancel()
-				}
-			}}
-		}
-		raw, err = readChatStream(body, func() { firstSeen.Store(true); watchdog.Stop() })
+		// 空闲计时由**有效内容**驱动，不看字节：很多网关会持续发心跳注释
+		// （": ping"），按字节计的话永远不空闲，上游一个字都不吐也能拖到
+		// 45 秒客户端超时 —— 实测形态总结就是这么失败的（日志「最后卡在
+		// 流中」）。首字之前归首字看门狗管，所以这里只在首字之后生效。
+		idleTimer := time.AfterFunc(idle, func() {
+			if !firstSeen.Load() {
+				return
+			}
+			idleTripped.Store(true)
+			cancel()
+		})
+		defer idleTimer.Stop()
+		raw, err = readChatStream(resp.Body,
+			func() { firstSeen.Store(true); watchdog.Stop(); idleTimer.Reset(idle) },
+			func() { idleTimer.Reset(idle) })
 		if idleTripped.Load() {
 			return aiResult{
 				err:   fmt.Errorf("上游 %s 流中断：%v 没有新数据", upName(up), idle),
@@ -498,7 +501,7 @@ func upName(u *upstream.Upstream) string {
 // onFirst 在收到首字时调用一次。首字指第一段非空的正文或思考内容：只带
 // role 的空块不算（有的网关会立刻回它，算进去首字检测就形同虚设）；思考
 // 内容要算（推理模型先吐思考，不算的话它们每次都会被当成卡住）。
-func readChatStream(r io.Reader, onFirst func()) (json.RawMessage, error) {
+func readChatStream(r io.Reader, onFirst, onData func()) (json.RawMessage, error) {
 	var content, thinking strings.Builder
 	var usage json.RawMessage
 	first := false
@@ -533,9 +536,16 @@ func readChatStream(r io.Reader, onFirst func()) (json.RawMessage, error) {
 		}
 		for _, c := range chunk.Choices {
 			d := c.Delta
-			if !first && (d.Content != "" || d.ReasoningContent != "" || d.Reasoning != "") {
-				first = true
-				onFirst()
+			if d.Content != "" || d.ReasoningContent != "" || d.Reasoning != "" {
+				if !first {
+					first = true
+					if onFirst != nil {
+						onFirst()
+					}
+				}
+				if onData != nil {
+					onData()
+				}
 			}
 			content.WriteString(d.Content)
 			// 思考内容单独攒着：识图那条路上，推理模型偶发把全部输出放进
@@ -1381,27 +1391,6 @@ func fenceSample(s string) string {
 	s = strings.ReplaceAll(s, digestFenceOpen, "〈")
 	s = strings.ReplaceAll(s, digestFenceClose, "〉")
 	return s
-}
-
-// idleReader 是流式读取的空闲看门狗：两次 Read 之间超过 d 没拿到任何
-// 字节就触发 trip。上游先吐两个字再挂住时，只有它能把这路掐掉。
-type idleReader struct {
-	r    io.Reader
-	d    time.Duration
-	trip func()
-	gen  atomic.Int64
-}
-
-func (ir *idleReader) Read(p []byte) (int, error) {
-	gen := ir.gen.Add(1)
-	timer := time.AfterFunc(ir.d, func() {
-		if ir.gen.Load() == gen {
-			ir.trip()
-		}
-	})
-	n, err := ir.r.Read(p)
-	timer.Stop()
-	return n, err
 }
 
 // demoteUnconfirmed 把「复判没跑成、初判又没把握」的结论降级成未定。
