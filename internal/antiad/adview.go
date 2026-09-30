@@ -150,49 +150,7 @@ func renderAppealView(sh *core.Shared, w http.ResponseWriter, id int64) {
 	if ap.CodeExpires != 0 {
 		data.CodeExpires = formatTS(sh, ap.CodeExpires)
 	}
-
-	rows, err := sh.Store.Read.Query(`SELECT type,chat_id,text,reason,at FROM (
-			SELECT 'join_profile' AS type, chat_id, '' AS text, reason, created_at AS at
-			FROM join_mutes WHERE bot_id=? AND user_id=?
-			UNION ALL
-			SELECT 'message', chat_id, text, reason, created_at
-			FROM antiad_log WHERE bot_id=? AND user_id=?
-			AND action IN ('deleted_muted','muted','deleted_banned','banned')
-		) ORDER BY at DESC LIMIT 20`, ap.BotID, ap.UserID, ap.BotID, ap.UserID)
-	if err == nil {
-		for rows.Next() {
-			var p appealViewPenalty
-			if rows.Scan(&p.Type, &p.ChatID, &p.Text, &p.Reason, &p.At) == nil {
-				p.Time = formatTS(sh, p.At)
-				data.Penalties = append(data.Penalties, p)
-			}
-		}
-		rows.Close()
-	}
-
-	var fp, ip string
-	rows, err = sh.Store.Read.Query(`SELECT result,flags,created_at FROM web_checks
-		WHERE appeal_id=? ORDER BY id DESC LIMIT 20`, ap.ID)
-	if err == nil {
-		for rows.Next() {
-			var c webCheckView
-			if rows.Scan(&c.Result, &c.Flags, &c.At) == nil {
-				c.Time = formatTS(sh, c.At)
-				data.Checks = append(data.Checks, c)
-			}
-		}
-		rows.Close()
-	}
-	// 关联账号取最近一次验证的指纹与 IP。
-	sh.Store.Read.QueryRow(`SELECT fp,ip FROM web_checks WHERE appeal_id=?
-		ORDER BY id DESC LIMIT 1`, ap.ID).Scan(&fp, &ip)
-	strong, weak := relatedAccounts(sh, fp, ip, ap.UserID)
-	for _, uid := range strong {
-		data.Strong = append(data.Strong, relatedView{UID: uid, Mark: relatedMark(sh, uid)})
-	}
-	for _, uid := range weak {
-		data.Weak = append(data.Weak, relatedView{UID: uid, Mark: relatedMark(sh, uid)})
-	}
+	loadAppealDossier(sh, ap, &data)
 
 	writeHTMLHeaders(w, "")
 	renderTemplate(w, appealViewTmpl, data)
@@ -259,6 +217,7 @@ type logBrief struct {
 }
 
 type appealViewData struct {
+	// 主栏：这一张申诉单本身。
 	ID          int64
 	UID         int64
 	Status      string
@@ -271,24 +230,67 @@ type appealViewData struct {
 	Code        string
 	CodeExpires string
 	Created     string
-	Penalties   []appealViewPenalty
-	Checks      []webCheckView
-	Strong      []relatedView
-	Weak        []relatedView
+
+	// 左栏：用户资料与各种留底。
+	UName     string // 判定时记下的昵称
+	Bot       string
+	FirstSeen string
+	Joined    string
+	LastMsg   string
+	Msgs      int64
+	Hits      int64
+	Chats     int64
+	GBan      string
+	Limits    []appealViewPenalty // 生效中
+	Penalties []appealViewPenalty // 最近处置（含历史）
+	History   []appealViewMsg     // 群内留底发言
+	Logs      []appealViewLog     // 判定流水
+	Checks    []webCheckView
+	Strong    []relatedView
+	Weak      []relatedView
 }
 
 type appealViewPenalty struct {
 	Type   string
+	Label  string // 中文类型名
 	ChatID int64
+	Chat   string
 	Text   string
 	Reason string
 	At     int64
 	Time   string
+	// Active 表示这条现在还生效（与 Limits 对齐）。
+	Active bool
+}
+
+type appealViewMsg struct {
+	Chat    string
+	Text    string
+	At      int64
+	Time    string
+	Mark    string // 被拦 / 演练命中
+	Blocked bool
+}
+
+type appealViewLog struct {
+	ID          int64
+	ChatID      int64
+	Chat        string
+	Verdict     string
+	Conf        float64
+	Action      string
+	ActionLabel string
+	Reason      string
+	At          int64
+	Time        string
 }
 
 type webCheckView struct {
 	Result string
 	Flags  string
+	IP     string
+	FP     string
+	UA     string
 	At     int64
 	Time   string
 }
@@ -372,15 +374,40 @@ var logViewTmpl = template.Must(template.New("v").Funcs(viewFuncs).Parse(
 {{end}}
 </body></html>`))
 
+// dossierStyle 是申诉详情页的额外样式：左栏资料 + 右栏申诉单两列。
+// 窄屏（<960px）退化成一列，申诉单在前、资料在后。
+const dossierStyle = `
+body{max-width:1200px}
+.wrap{display:flex;gap:16px;align-items:flex-start}
+.main{flex:1 1 auto;min-width:0}
+.side{flex:0 0 440px;order:-1;min-width:0}
+.side .card{padding:14px;margin-bottom:12px}
+.side h2{margin-top:0;font-size:15px}
+.kv{font-size:14px}.kv div{margin-bottom:4px}
+ul.plain{margin:0;padding-left:18px}
+ul.plain li{margin-bottom:9px;font-size:13.5px}
+ul.plain li.hit{background:#fff0f0;border-radius:4px}
+.txt{margin-top:2px;word-break:break-word}
+.sub{font-size:12.5px;color:#555;margin-top:3px;word-break:break-word}
+.ts{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#888}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:6px;
+ background:#eef1f5;color:#445;vertical-align:1px}
+.badge.on{background:#fdecec;color:#a22}
+.side code{font-size:12px}
+@media(max-width:960px){.wrap{display:block}.side{width:auto}}
+`
+
 var appealViewTmpl = template.Must(template.New("apv").Funcs(viewFuncs).Parse(
 	`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>申诉详情</title><style>` + viewStyle + `</style></head><body>
+<title>申诉详情</title><style>` + viewStyle + dossierStyle + `</style></head><body>
 <h1>申诉详情</h1>
-<div class="warn">敏感内容，请勿转发。</div>
+<div class="warn">敏感内容，请勿转发。左侧是账号资料与留底，右侧是本单的复核与解禁码。</div>
+<div class="wrap">
+<main class="main">
 <div class="card">
 <p>申诉单：<code>#{{.ID}}</code> ｜ 状态：{{.Status}}</p>
-<p>申诉人：<code>{{.UID}}</code> ｜ 提交时间：{{.Created}}</p>
+<p>申诉人：<code>{{.UID}}</code>{{if .UName}}（{{.UName}}）{{end}} ｜ 提交时间：{{.Created}}</p>
 <p>申诉理由：{{if .Statement}}{{.Statement}}{{else}}（未填写）{{end}}</p>
 </div>
 <div class="card">
@@ -391,19 +418,54 @@ var appealViewTmpl = template.Must(template.New("apv").Funcs(viewFuncs).Parse(
 <h2>网页验证</h2>
 <p>尝试次数：{{.WebAttempts}}</p>
 {{if .Code}}<p>解禁码：<code>{{.Code}}</code>{{if .CodeExpires}}（有效期至 {{.CodeExpires}}）{{end}}</p>{{end}}
-{{if .Checks}}<table><tr><th>时间</th><th>结果</th><th>信号</th></tr>
-{{range .Checks}}<tr><td class="muted">{{.Time}}</td><td>{{.Result}}</td><td>{{.Flags}}</td></tr>{{end}}
-</table>{{end}}
+<p class="muted">验证与发言记录见左侧资料栏。</p>
 </div>
-{{if .Penalties}}
-<div class="card"><h2>涉及的处罚</h2>
-<table><tr><th>类型</th><th>群</th><th>原文</th><th>理由</th></tr>
-{{range .Penalties}}<tr><td>{{.Type}}</td><td><code>{{.ChatID}}</code></td>
-<td>{{if .Text}}<code>{{.Text}}</code>{{end}}</td><td>{{.Reason}}</td></tr>
-{{end}}</table></div>
-{{end}}
-{{if .Strong}}<div class="card"><h2>强关联账号（同指纹）</h2>
-{{range .Strong}}<p><code>{{.UID}}</code> {{.Mark}}</p>{{end}}</div>{{end}}
-{{if .Weak}}<div class="card"><h2>弱关联账号（30 天内同 IP，仅供参考）</h2>
-{{range .Weak}}<p><code>{{.UID}}</code> {{.Mark}}</p>{{end}}</div>{{end}}
+</main>
+<aside class="side">
+<div class="card"><h2>账号信息</h2><div class="kv">
+<div>用户 ID：<code>{{.UID}}</code></div>
+{{if .UName}}<div>判定时昵称：{{.UName}}</div>{{end}}
+<div>所属 bot：{{.Bot}}</div>
+{{if .FirstSeen}}<div>首次见到：{{.FirstSeen}}</div>{{end}}
+{{if .Joined}}<div>最早入群：{{.Joined}}</div>{{end}}
+{{if .LastMsg}}<div>最近发言：{{.LastMsg}}</div>{{end}}
+<div>群内发言：{{.Msgs}} 条 ｜ 历史命中：{{.Hits}} 次</div>
+<div>涉及群组：{{.Chats}} 个</div>
+{{if .GBan}}<div>联合封禁：{{.GBan}}</div>{{end}}
+<div>生效中限制：{{len .Limits}} 条</div>
+</div></div>
+{{if .Limits}}<div class="card"><h2>当前生效限制</h2><ul class="plain">
+{{range .Limits}}<li><span class="badge on">生效中</span> {{.Label}} · {{.Chat}}
+{{if .Time}}<span class="ts">{{.Time}}</span>{{end}}
+{{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}
+{{if .Text}}<div class="sub">原消息：{{.Text}}</div>{{end}}</li>
+{{end}}</ul></div>{{end}}
+{{if .Penalties}}<div class="card"><h2>处罚记录（最近 {{len .Penalties}} 条）</h2><ul class="plain">
+{{range .Penalties}}<li>{{if .Active}}<span class="badge on">生效中</span>{{else}}<span class="badge">历史</span>{{end}} {{.Label}} · {{.Chat}}
+<span class="ts">{{.Time}}</span>
+{{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}
+{{if .Text}}<div class="sub">原消息：{{.Text}}</div>{{end}}</li>
+{{end}}</ul></div>{{end}}
+{{if .History}}<div class="card"><h2>群内留底发言（最近 {{len .History}} 条）</h2><ul class="plain">
+{{range .History}}<li{{if .Blocked}} class="hit"{{end}}><span class="ts">{{.Time}}</span> <span class="muted">{{.Chat}}</span>
+<div class="txt">{{.Text}}{{if .Mark}} <b>← {{.Mark}}</b>{{end}}</div></li>
+{{end}}</ul></div>{{end}}
+{{if .Logs}}<div class="card"><h2>判定流水（最近 {{len .Logs}} 条）</h2><ul class="plain">
+{{range .Logs}}<li><span class="ts">{{.Time}}</span> {{.Chat}} · {{.Verdict}} {{printf "%.0f" (pct .Conf)}}% → {{.ActionLabel}}
+{{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}</li>
+{{end}}</ul></div>{{end}}
+{{if .Checks}}<div class="card"><h2>网页验证记录（最近 {{len .Checks}} 条）</h2><ul class="plain">
+{{range .Checks}}<li><span class="ts">{{.Time}}</span> {{.Result}}
+{{if .IP}}<div class="sub">IP：<code>{{.IP}}</code>{{if .FP}} ｜ 指纹：<code>{{.FP}}</code>{{end}}</div>{{end}}
+{{if .Flags}}<div class="sub">信号：{{.Flags}}</div>{{end}}
+{{if .UA}}<div class="sub">UA：{{.UA}}</div>{{end}}</li>
+{{end}}</ul></div>{{end}}
+{{if or .Strong .Weak}}<div class="card"><h2>关联账号</h2>
+{{if .Strong}}<div class="sub">强关联（同指纹）</div><ul class="plain">
+{{range .Strong}}<li><code>{{.UID}}</code> {{.Mark}}</li>{{end}}</ul>{{end}}
+{{if .Weak}}<div class="sub">弱关联（30 天内同 IP，仅供参考）</div><ul class="plain">
+{{range .Weak}}<li><code>{{.UID}}</code> {{.Mark}}</li>{{end}}</ul>{{end}}
+</div>{{end}}
+</aside>
+</div>
 </body></html>`))
