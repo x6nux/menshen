@@ -1119,6 +1119,10 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 // 摘要与游标，还会把同一批样本总结出两个版本。
 var digestRunning atomic.Bool
 
+// DigestFixLimit 是「修正文本」的长度上限。主管理员写给总结模型的口径
+// 说明（设置 antiad_digest_fix），每轮总结注入一次系统提示词。
+const DigestFixLimit = 800
+
 // runAdDigest 把已确认的广告样本与误判样本总结成一段形态摘要，
 // 回注入后续判定。force 为真时无视样本数阈值（面板上的「立即重新总结」）。
 //
@@ -1153,6 +1157,15 @@ func RunAdDigest(sh *core.Shared, force bool) {
 
 	maxChars := snap.SettingInt("antiad_digest_max", 1200)
 	prompt := buildDigestPrompt(ads, fps, maxChars)
+	system := digestSystemPrompt
+	if fix := strings.TrimSpace(snap.Setting("antiad_digest_fix")); fix != "" {
+		// 管理员的修正文本：与样本不同，这是**指令**而不是待分析的
+		// 数据，所以放在系统提示词里、不进围栏 —— 它就是用来压过
+		// 样本里的噪声与模型自己的偏好的。长度与摘要同源（都是每次
+		// 总结注入一次），不必按每条消息的成本算。
+		system += "\n\n管理员对本次总结的修正要求（必须遵守，但不得改变上面的" +
+			"输出格式与小标题）：\n" + core.TruncateRunes(fix, DigestFixLimit)
+	}
 
 	// 定时任务没有「属于哪个 bot」的概念，没有可私聊的对象：上游告警
 	// 交给有 bot 上下文的判定路径发（那边才是常态入口）。
@@ -1163,7 +1176,7 @@ func RunAdDigest(sh *core.Shared, force bool) {
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 		"messages": []map[string]string{
-			{"role": "system", "content": digestSystemPrompt},
+			{"role": "system", "content": system},
 			{"role": "user", "content": prompt},
 		},
 	}, nil)

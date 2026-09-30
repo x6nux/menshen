@@ -473,10 +473,19 @@ function viewSettings(){
     'placeholder="② 使用指南 (https://t.me/your_link)" '+
     'onchange="act(\'set\',{scope:\'global\',key:\'antiad_group_footer\',value:this.value},\'已保存\')"></div>';
   h+='<div class="card"><h3>形态摘要</h3>'+
+    '<div class="row"><span class="k">随每条群消息发给判定模型；越长越准也越贵</span></div>'+
     '<textarea id="dg">'+esc(S.digest||'')+'</textarea>'+
     '<div class="grid" style="margin-top:8px">'+
-    '<button class="b" onclick="act(\'digest\',{action:\'save\',value:document.getElementById(\'dg\').value},\'已保存\')">保存</button>'+
+    '<button class="b" onclick="act(\'digest\',{action:\'save\',value:document.getElementById(\'dg\').value},\'已保存\')">保存摘要</button>'+
     '<button class="b g" onclick="act(\'digest\',{action:\'run\'},\'已触发重新总结\')">立即重新总结</button>'+
+    '</div></div>';
+  h+='<div class="card"><h3>修正文本</h3>'+
+    '<div class="row"><span class="k">写给总结模型的口径说明，每轮重新总结都会附上它；'+
+    '不改摘要正文，想让新口径立刻生效请点上面的「立即重新总结」</span></div>'+
+    '<textarea id="dgfix" placeholder="例：技术讨论里出现的 GitHub、npm 链接不算广告；兼职招募一律按诈骗归类。">'+
+    esc(S.digest_fix||'')+'</textarea>'+
+    '<div class="grid" style="margin-top:8px">'+
+    '<button class="b" onclick="act(\'digest\',{action:\'save_fix\',value:document.getElementById(\'dgfix\').value},\'已保存修正文本\')">保存修正文本</button>'+
     '</div></div>';
   return h;
 }

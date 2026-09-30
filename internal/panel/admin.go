@@ -207,7 +207,7 @@ func HandlePendingInput(b *core.Bot, m *tg.Message, p core.PendingInput) {
 	case "md_edit_pp", "md_edit_cp", "md_edit_crp", "md_edit_cwp":
 		mainOnlyInput(b, m, p, text, handleModelEditInput)
 
-	case "st_edit", "st_model", "ad_dg_e", "bot_add", "bot_chat_add",
+	case "st_edit", "st_model", "ad_dg_e", "ad_dg_f", "bot_add", "bot_chat_add",
 		"bot_ex_add", "bot_model_so", "bot_model_llm", "admin_add", "gban_add":
 		handleSettingsInput(b, m, p, text)
 

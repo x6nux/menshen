@@ -660,6 +660,24 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 		b.Send(chatID, "形态摘要已更新。", nil)
 		showSettings(b, chatID, 0)
 
+	case "ad_dg_f":
+		if !b.IsMain(uid) {
+			b.DropPending(uid)
+			return
+		}
+		b.DropPending(uid)
+		v := strings.TrimSpace(text)
+		if v == "-" {
+			v = ""
+		}
+		if err := b.PutSetting("antiad_digest_fix",
+			core.TruncateRunes(v, antiad.DigestFixLimit)); err != nil {
+			b.Send(chatID, "保存失败。", nil)
+			return
+		}
+		b.Send(chatID, "修正文本已保存。点「立即重新总结」让它生效。", nil)
+		showSettings(b, chatID, 0)
+
 	case "bot_add":
 		if b.Reg == nil {
 			b.DropPending(uid)

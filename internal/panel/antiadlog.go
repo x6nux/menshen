@@ -116,6 +116,7 @@ func modelListLabel(v []string) string {
 func showAntiAdDigest(b *core.Bot, chatID, msgID int64) {
 	snap := b.Cache.Snap()
 	digest := snap.Setting("antiad_digest")
+	fix := snap.Setting("antiad_digest_fix")
 
 	var sb strings.Builder
 	sb.WriteString("📝 <b>广告形态摘要</b>\n\n")
@@ -129,11 +130,20 @@ func showAntiAdDigest(b *core.Bot, chatID, msgID int64) {
 		sb.WriteString("\n这段文字会随每一条群消息发给判定模型，" +
 			"越长越准也越贵。管理员可直接编辑修正。\n")
 	}
+	// 修正文本是写给总结模型的口径说明：摘要每次重新生成都会附上它，
+	// 用来纠正「总结总把某类正常消息写成广告」「该抓的形态没抓到」这类
+	// 反复出现的问题，不必每轮手工改摘要。
+	if fix != "" {
+		fmt.Fprintf(&sb, "\n<b>修正文本</b>（每轮总结都附给总结模型）：\n<code>%s</code>\n",
+			html.EscapeString(fix))
+	} else {
+		sb.WriteString("\n<b>修正文本</b>：未设置。\n")
+	}
 
 	b.Edit(chatID, msgID, sb.String(), tg.InlineKB(
-		[][2]string{{"✏️ 手工编辑", "a:ad:dg:e"}, {"🔄 立即重新总结", "a:ad:dg:r"}},
-		[][2]string{{"🗑 清空", "a:ad:dg:c"}},
-		[][2]string{{"◀️ 返回", "a:ad"}},
+		[][2]string{{"✏️ 手工编辑摘要", "a:ad:dg:e"}, {"🩹 修正文本", "a:ad:dg:f"}},
+		[][2]string{{"🔄 立即重新总结", "a:ad:dg:r"}},
+		[][2]string{{"🗑 清空摘要", "a:ad:dg:c"}, {"◀️ 返回", "a:ad"}},
 	))
 }
 
@@ -300,6 +310,15 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 				"请输入新的<b>形态摘要</b>正文。填 <code>-</code> 可清空。\n\n"+
 					"建议保留两个小标题：\n<code>"+antiad.DigestAdHeader+"</code> 与 <code>"+
 					antiad.DigestFPHeader+"</code>，系统按它们切分正例与反例。")
+		case "f":
+			b.AnswerCallback(q.ID, "")
+			b.AskInput(chatID, q.From.ID, "ad_dg_f", "",
+				"请输入<b>修正文本</b>：写给总结模型的口径说明，每轮重新总结都会附上它。"+
+					"填 <code>-</code> 可清空。\n\n"+
+					"例：\n<code>技术讨论里出现的 GitHub、npm 链接不算广告；"+
+					"兼职招募一律按诈骗归类。</code>\n\n"+
+					"它不改摘要正文本身；想让新口径立刻生效，"+
+					"保存后点「立即重新总结」。")
 		case "r":
 			b.AnswerCallback(q.ID, "正在总结，稍候刷新查看")
 			go antiad.RunAdDigest(b.Shared, true) // 忽略样本数阈值，立刻跑一轮

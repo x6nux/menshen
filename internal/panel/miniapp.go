@@ -296,6 +296,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 	if main {
 		out["global"] = snap.Settings
 		out["digest"] = snap.Setting("antiad_digest")
+		out["digest_fix"] = snap.Setting("antiad_digest_fix")
 	}
 	out["whitelist"] = miniWhitelistRows(sh, uid, main)
 
@@ -1131,6 +1132,15 @@ func miniDigest(sh *core.Shared, w http.ResponseWriter, uid int64, body map[stri
 	switch miniStr(body, "action") {
 	case "save":
 		if err := sh.PutSetting("antiad_digest", miniStr(body, "value")); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+	case "save_fix":
+		// 修正文本是写给总结模型的口径说明，与摘要正文分开存：摘要是
+		// 模型写的、可以手工改，修正文本是人写的、每轮总结都会附上。
+		if err := sh.PutSetting("antiad_digest_fix",
+			core.TruncateRunes(strings.TrimSpace(miniStr(body, "value")),
+				antiad.DigestFixLimit)); err != nil {
 			miniErr(w, http.StatusInternalServerError, "保存失败")
 			return
 		}
