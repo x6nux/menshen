@@ -735,11 +735,24 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 复判前先按初判动手：删消息、临时禁言。连带删除、封禁、告警都等复判
 	// 定了再做——封禁踢出群，不适合当先行动作。频道身份不先封：TG 封频道身份
 	// 不支持限时，封了就得等人手工解。
-	pre := adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
-	preNote := ApplyAction(b, m, pre, conf.Dryrun)
-	if pre.Mute && !conf.Dryrun {
-		// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
-		NoteTempMute(m.Chat.ID, m.From.ID)
+	//
+	// 但先行动作要过「初判线」（antiad_pre_act_conf，默认 75）：初判置信度
+	// 低于它时只送复判，不先删也不禁。低置信初判本来就拿不准（jev 对「资料
+	// 挂频道/bot」这类会给 3%~32% 的广告），而按模型结论定档不看置信度，
+	// 先行动作会把「拿不准」直接变成删消息 + 临时禁言。
+	var pre adAction
+	var preNote string
+	if v.Confidence*100 >= float64(snap.BotSettingInt(
+		b.BotID(), "antiad_pre_act_conf", store.DefaultPreActConf)) {
+		pre = adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
+		preNote = ApplyAction(b, m, pre, conf.Dryrun)
+		if pre.Mute && !conf.Dryrun {
+			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
+			NoteTempMute(m.Chat.ID, m.From.ID)
+		}
+	} else {
+		slog.Info("反广告：初判置信度低于初判线，先不动手，等复判",
+			"chat", m.Chat.ID, "uid", m.From.ID, "置信度", v.Confidence)
 	}
 	if !b.AdReview(func() { finish(review(b, snap, state, v, llmSystemPrompt), pre, preNote) }) {
 		// 按初判定案，临时禁言照样转正式：让它到期自己解除，等于白白放走。

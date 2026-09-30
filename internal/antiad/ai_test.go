@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
 )
@@ -241,16 +242,13 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	if !strings.Contains(reason, "低于采信线") {
 		t.Errorf("流水里要写明原因：%q", reason)
 	}
-	// 临时禁言要解开：复判失败了，没人确认过那是广告。
-	sawUnmute := false
-	for _, p := range fake.Calls("restrictChatMember") {
-		if perms, ok := p["permissions"].(map[string]any); ok &&
-			perms["can_send_messages"] == true {
-			sawUnmute = true
-		}
+	// 13% 低于初判线（75%）：连先行动作都不该有 —— 消息没删、也没临时禁言，
+	// 自然没有「解开」这一说（复判失败后按未定放行）。
+	if n := fake.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("低于初判线不该先删消息，得到 %d 次", n)
 	}
-	if !sawUnmute {
-		t.Error("临时禁言应被解开")
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("低于初判线不该先禁言，得到 %d 次", n)
 	}
 
 	// 有把握的初判（95%）+ 复判失败：照旧采信初判（不能白判一次）。
@@ -293,5 +291,60 @@ func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
 	// 摘要生成器要求形态带上下文条件，不许写成单个关键词。
 	if !strings.Contains(digestSystemPrompt, "每条形态必须写清上下文条件") {
 		t.Error("摘要生成提示词应要求写清上下文条件")
+	}
+}
+
+// TestPreActLineSkipsLowConfidence：初判线（默认 75%）以下的初判不先动手，
+// 只送复判 —— 低置信初判本来就拿不准，而按模型结论定档不看置信度，先行动作
+// 会把「拿不准」直接变成删消息 + 临时禁言（实测 jev 对「资料挂频道/bot」
+// 这类会给 3%~32% 的广告）。高于线的照旧先删先禁。
+func TestPreActLineSkipsLowConfidence(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// 初判 70%（低于线），复判确认是广告：终判照常处置，但之前不动手。
+	fakeAIWith(t, b, soReply("ad", 0.70, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "加微信 日入5000"))
+	waitIdle(t, b)
+
+	mutes := fake.Calls("restrictChatMember")
+	if len(mutes) != 1 {
+		t.Fatalf("低于初判线只该有终判的正式禁言，得到 %d 次", len(mutes))
+	}
+	if d := untilOf(mutes[0]); d <= int64(tempMute/time.Second)+5 {
+		t.Errorf("那一次应是正式禁言（按本群时长），得到 %d 秒", d)
+	}
+	if n := fake.CountCalls("deleteMessage"); n != 1 {
+		t.Errorf("消息应在终判时删一次，得到 %d 次", n)
+	}
+	if _, _, reason := logRow(t, b); strings.Contains(reason, "初判先行") {
+		t.Errorf("低于初判线不该记「初判先行」：%q", reason)
+	}
+
+	// 高于初判线：照旧先删先禁（先删后判不变）。
+	b2, fake2 := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	fakeAIWith(t, b2, soReply("ad", 0.95, "scam", "message"),
+		llmReply(true, 0.95, "scam", "message"))
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
+	waitIdle(t, b2)
+	if n := len(fake2.Calls("restrictChatMember")); n != 2 {
+		t.Errorf("高于初判线应先临时禁言、再正式禁言，得到 %d 次", n)
+	}
+}
+
+// TestPreActLineConfigurable：初判线可配，设成 0 等于退回「初判一出结论就动手」。
+func TestPreActLineConfigurable(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_pre_act_conf", "0"); err != nil {
+		t.Fatal(err)
+	}
+	fakeAIWith(t, b, soReply("ad", 0.30, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 44, 9, "加微信 日入5000"))
+	waitIdle(t, b)
+	if n := len(fake.Calls("restrictChatMember")); n != 2 {
+		t.Errorf("线设成 0 时应先临时禁言、再正式禁言，得到 %d 次", n)
 	}
 }

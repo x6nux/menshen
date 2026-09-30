@@ -22,6 +22,15 @@ import (
 //   - 全局：只有主管理员能改，本表是唯一来源
 //   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
 //   - per-chat：不在本表，直接是 bot_chats 的列
+//
+// DefaultPreActConf 是「初判线」的默认值（百分数）：初判置信度低于它时
+// 只送复判，不先删消息、不临时禁言。
+//
+// 放在 store 里是因为它有两个消费者：settingDefaults（配置缺省）与 antiad
+// 的调用点（读不到设置时的回落）。两边各写一个 75 的话，改一处忘一处就会
+// 出现「面板显示 75、实际按 80 跑」这种对不上的情况。
+const DefaultPreActConf = 75
+
 var settingDefaults = map[string]string{
 	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是旧的小时
 	// 偏移键，仅在 tz_name 无效时作回落用，面板上已不再直接暴露。
@@ -77,11 +86,12 @@ var settingDefaults = map[string]string{
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
 	// 引入浮点要改动整套设置面板机制，不值当。
-	"antiad_so_trust":     "80", // systemone 置信度采信线
-	"antiad_act_hard":     "90", // 删除 + 禁言线
-	"antiad_act_soft":     "75", // 删除线
-	"antiad_new_hours":    "72", // 新人时长界
-	"antiad_new_msgs":     "10", // 新人消息数界
+	"antiad_so_trust":     "80",                            // systemone 置信度采信线
+	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
+	"antiad_act_hard":     "90",                            // 删除 + 禁言线
+	"antiad_act_soft":     "75",                            // 删除线
+	"antiad_new_hours":    "72",                            // 新人时长界
+	"antiad_new_msgs":     "10",                            // 新人消息数界
 	"antiad_mute_minutes": "1440",
 	// 滥用护栏：全量送检是明知成本的选择，这几项只堵滥用，不改设计。
 	// 窗口长度沿用 limiter.go 的 1 分钟。0 = 不限。

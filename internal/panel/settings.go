@@ -75,6 +75,7 @@ var settingSpecs = []settingSpec{
 
 	// ---- 每个 bot 可覆盖的参数 ----
 	{"antiad_so_trust", "采信线：systemone 置信度", "0-100 的整数，低于它才转大模型复判", 0, 100, "antiad"},
+	{"antiad_pre_act_conf", "初判线：先行动作置信度", "0-100 的整数；初判置信度低于它时只送复判，不先删消息、不临时禁言（拿不准的初判不再先把人罚一遍）", 0, 100, "antiad"},
 	{"antiad_act_hard", "处置线：删除+禁言", "0-100 的整数，新人达到它才禁言", 0, 100, "antiad"},
 	{"antiad_act_soft", "处置线：删除", "0-100 的整数，低于它不处置", 0, 100, "antiad"},
 	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销。默认跟随全局，单 bot 可覆盖", 0, 1, "both"},
@@ -128,7 +129,7 @@ var settingSections = []struct {
 		"antiad_short_mute", "antiad_bool_verdict",
 	}},
 	{"判定与模型", []string{
-		"antiad_so_trust", "antiad_ctx_msgs",
+		"antiad_so_trust", "antiad_pre_act_conf", "antiad_ctx_msgs",
 		"antiad_so_timeout_ms", "antiad_llm_ttft_ms", "antiad_llm_idle_ms",
 		"antiad_hedge_retries", "antiad_hedge_minutes", "antiad_hedge_fanout",
 	}},
