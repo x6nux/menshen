@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"menshen/internal/core"
@@ -30,8 +31,19 @@ func AdminLiftAppeal(b *core.Bot, appealID, byUID int64) error {
 	}
 	penalties := effectivePenalties(b.Shared, b.BotID(), ap.UserID)
 	if len(penalties) == 0 {
+		// 与自动结案同一条路：库里查不到限制时，顺手核对他在各群的
+		// 真实权限，把残留的封禁/禁言解掉（见 residualSweep）。
+		res := residualSweep(b, ap.UserID)
+		reason := "限制已不存在"
+		if len(res.Fixed) > 0 {
+			reason += "；跨群复查发现残留限制并已解除：" + strings.Join(res.Fixed, "、")
+		}
 		updateAppeal(b.Shared, ap.ID,
-			`status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
+			`status='lifted', ai_result='skipped', ai_reason=?`,
+			core.TruncateRunes(reason, 300))
+		if len(res.Fixed) > 0 {
+			b.Send(ap.UserID, "✅ 你的申诉已通过。\n\n"+residualSummary(res), nil)
+		}
 		return nil
 	}
 	liftAppealPenalties(b, ap.ID, ap.UserID, penalties)

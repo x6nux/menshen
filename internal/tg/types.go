@@ -224,6 +224,12 @@ type ChatMemberResp struct {
 	OK     bool `json:"ok"`
 	Result struct {
 		Status string `json:"status"`
+		// CanSendMessages 只在 restricted 状态里出现，所以用指针区分
+		// 「字段不存在」与「确实为 false」：普通成员的响应里没有它，
+		// 当成 false 会把所有正常成员都看成被禁言。
+		CanSendMessages *bool `json:"can_send_messages"`
+		// UntilDate 是限时限制的到期时间（0 = 永久）。
+		UntilDate int64 `json:"until_date"`
 	} `json:"result"`
 }
 

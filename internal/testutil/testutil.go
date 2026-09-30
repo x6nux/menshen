@@ -23,6 +23,9 @@ type FakeTG struct {
 	calls []fakeCall
 	// Resp 按方法名给定响应体，缺省返回 {"ok":true,"result":{}}。
 	Resp map[string]string
+	// RespFunc 优先于 Resp：需要按调用参数给不同响应时用它（比如按
+	// chat_id 返回不同的成员状态）。返回 false 表示交给 Resp。
+	RespFunc func(method string, payload map[string]any) (string, bool)
 }
 
 type fakeCall struct {
@@ -45,6 +48,11 @@ func (f *FakeTG) Call(method string, payload any) (json.RawMessage, error) {
 	}
 	f.calls = append(f.calls, fakeCall{method: method, payload: m})
 
+	if f.RespFunc != nil {
+		if r, ok := f.RespFunc(method, m); ok {
+			return json.RawMessage(r), nil
+		}
+	}
 	if r, ok := f.Resp[method]; ok {
 		return json.RawMessage(r), nil
 	}

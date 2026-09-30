@@ -228,7 +228,16 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 		if payload == "" {
 			return false // 交给通用介绍语
 		}
-		b.Send(dmChat, "你目前没有被本 bot 限制。", nil)
+		// 库里没有记录就结案会漏掉残留限制（库里的账本与 Telegram 的
+		// 权限是两回事，见 residualSweep）：顺手核对一遍他在各群的
+		// 真实状态，有残留就当场解掉。
+		if residualSweepAsync(b, dmChat, uid) {
+			b.Send(dmChat, "你目前没有被本 bot 限制。我再去你名下的群里核对一遍，"+
+				"马上回来…", nil)
+		} else {
+			b.Send(dmChat, "你目前没有被本 bot 限制。"+
+				"若某个群还是发不了言，把群名发给我。", nil)
+		}
 		return true
 	}
 
@@ -444,9 +453,18 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 	}
 	penalties := effectivePenalties(b.Shared, b.BotID(), uid)
 	if len(penalties) == 0 {
-		// 限制在排队期间自然到期/被解除：直接结案。
-		updateAppeal(b.Shared, appealID, `status='lifted', ai_result='skipped', ai_reason='限制已不存在'`)
-		b.Send(uid, "✅ 你名下的限制已经不存在了，无需申诉。", nil)
+		// 限制在排队期间自然到期/被解除：结案，但先把他在各群的真实状态
+		// 核对一遍——库里没有记录不等于 Telegram 侧已经解除（见
+		// residualSweep）。这一步跑在判定 worker 上，不占更新路径。
+		res := residualSweep(b, uid)
+		reason := "限制已不存在"
+		if len(res.Fixed) > 0 {
+			reason += "；跨群复查发现残留限制并已解除：" + strings.Join(res.Fixed, "、")
+		}
+		updateAppeal(b.Shared, appealID, `status='lifted', ai_result='skipped', ai_reason=?`,
+			core.TruncateRunes(reason, 300))
+		b.Send(uid, "✅ 你名下的限制已经不存在了，无需申诉。\n\n"+
+			residualSummary(res), nil)
 		return
 	}
 
