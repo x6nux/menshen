@@ -259,8 +259,6 @@ type appealViewPenalty struct {
 	Reason string
 	At     int64
 	Time   string
-	// Active 表示这条现在还生效（与 Limits 对齐）。
-	Active bool
 }
 
 type appealViewMsg struct {
@@ -440,8 +438,8 @@ var appealViewTmpl = template.Must(template.New("apv").Funcs(viewFuncs).Parse(
 {{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}
 {{if .Text}}<div class="sub">原消息：{{.Text}}</div>{{end}}</li>
 {{end}}</ul></div>{{end}}
-{{if .Penalties}}<div class="card"><h2>处罚记录（最近 {{len .Penalties}} 条）</h2><ul class="plain">
-{{range .Penalties}}<li>{{if .Active}}<span class="badge on">生效中</span>{{else}}<span class="badge">历史</span>{{end}} {{.Label}} · {{.Chat}}
+{{if .Penalties}}<div class="card"><h2>历史处罚（最近 {{len .Penalties}} 条）</h2><ul class="plain">
+{{range .Penalties}}<li><span class="badge">历史</span> {{.Label}} · {{.Chat}}
 <span class="ts">{{.Time}}</span>
 {{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}
 {{if .Text}}<div class="sub">原消息：{{.Text}}</div>{{end}}</li>

@@ -110,6 +110,15 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 		now, botID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,
+		 bot_id,user_name,lifted_at)
+		VALUES (-100,555,901,'上次那条','ad',0.9,'llm','scam',
+		 'deleted_muted','上一条已改判',0,0,0,?,?,'广告昵称',?)`,
+		now-3*86400, botID, now); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := b.Store.Write.Exec(`INSERT INTO join_mutes
 		(bot_id,chat_id,user_id,reason,created_at) VALUES (?,?,?,?,?)`,
 		botID, -100, 555, "资料里写着引流", now); err != nil {
@@ -148,7 +157,7 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 		`class="side"`, `class="main"`,
 		"账号信息", "判定时昵称", "广告昵称", "群内发言：3 条", "历史命中：1 次",
 		"当前生效限制", "进群资料审核", "资料里写着引流",
-		"处罚记录", "账号资料与消息都像广告",
+		"历史处罚", "上一条已改判",
 		"群内留底发言", "加微信 日入5000", "被拦", "测试群",
 		"判定流水",
 		"网页验证记录", "1.2.3.4", "fphash", "屏幕尺寸为 0",

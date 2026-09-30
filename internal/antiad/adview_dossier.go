@@ -148,7 +148,7 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	for _, p := range effectivePenalties(sh, ap.BotID, ap.UserID) {
 		v := appealViewPenalty{Type: p.Type, ChatID: p.ChatID, Label: penaltyLabel(p.Type),
 			Text: clip(p.Text, dossierTextLen), Reason: clip(p.Reason, dossierNoteLen),
-			At: p.At, Time: formatTS(sh, p.At), Active: true}
+			At: p.At, Time: formatTS(sh, p.At)}
 		switch p.Type {
 		case "gban":
 			v.Chat = "全平台"
@@ -161,7 +161,8 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		data.Limits = append(data.Limits, v)
 	}
 
-	// 处罚记录：进群资料审核 + 消息处置最近 20 条，标出还在生效的。
+	// 处罚记录：最近 20 条。生效中的已经单列一张卡（还含联合封禁），这里
+	// 只留不再生效的历史，免得同一条罚款在页面上出现两遍。
 	rows, err = sh.Store.Read.Query(`SELECT type,chat_id,text,reason,at FROM (
 			SELECT 'join_profile' AS type, chat_id, '' AS text, reason, created_at AS at
 			FROM join_mutes WHERE bot_id=? AND user_id=?
@@ -175,10 +176,12 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		for rows.Next() {
 			var p appealViewPenalty
 			if rows.Scan(&p.Type, &p.ChatID, &p.Text, &p.Reason, &p.At) == nil {
+				if active[penaKey(p.Type, p.ChatID, p.At)] {
+					continue
+				}
 				p.Label = penaltyLabel(p.Type)
 				p.Chat = label(p.ChatID)
 				p.Time = formatTS(sh, p.At)
-				p.Active = active[penaKey(p.Type, p.ChatID, p.At)]
 				p.Text = clip(p.Text, dossierTextLen)
 				p.Reason = clip(p.Reason, dossierNoteLen)
 				data.Penalties = append(data.Penalties, p)
