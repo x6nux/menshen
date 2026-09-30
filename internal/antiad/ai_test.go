@@ -217,3 +217,54 @@ func TestPromptsExplainPayloadLines(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewFailureDemotesWeakVerdict：复判失败时，低于采信线的初判不再
+// 照着处置 —— 「13% 的广告」删消息、临时禁言、连带删除就是这么来的。
+// 有把握的初判照旧采信（扔掉等于白判一次）。
+func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
+	// 弱初判（13%）：复判失败 → 按未定放行，不追加处置，且临时禁言要解开。
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.13, "none", "account"), ``) // 复判无响应=失败
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "我活了"))
+	waitIdle(t, b)
+
+	var verdict, action, reason string
+	if err := b.Store.Read.QueryRow(`SELECT verdict,action,reason FROM antiad_log
+		WHERE user_id=42 ORDER BY id DESC LIMIT 1`).Scan(&verdict, &action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "clean" || strings.Contains(action, "ban") ||
+		strings.Contains(action, "muted") {
+		t.Errorf("低于采信线的初判不该照处置：verdict=%q action=%q", verdict, action)
+	}
+	if !strings.Contains(reason, "低于采信线") {
+		t.Errorf("流水里要写明原因：%q", reason)
+	}
+	// 临时禁言要解开：复判失败了，没人确认过那是广告。
+	sawUnmute := false
+	for _, p := range fake.Calls("restrictChatMember") {
+		if perms, ok := p["permissions"].(map[string]any); ok &&
+			perms["can_send_messages"] == true {
+			sawUnmute = true
+		}
+	}
+	if !sawUnmute {
+		t.Error("临时禁言应被解开")
+	}
+
+	// 有把握的初判（95%）+ 复判失败：照旧采信初判（不能白判一次）。
+	b2, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	fakeAIWith(t, b2, soReply("ad", 0.95, "scam", "message"), ``)
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
+	waitIdle(t, b2)
+	var action2 string
+	if err := b2.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE user_id=43 ORDER BY id DESC LIMIT 1`).Scan(&action2); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(action2, "muted") && !strings.Contains(action2, "banned") {
+		t.Errorf("有把握的初判在复判失败时仍该处置，得到 action=%q", action2)
+	}
+}

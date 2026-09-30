@@ -312,3 +312,30 @@ func TestHedgeExpires(t *testing.T) {
 		t.Errorf("并发模式已到期，应当单发；实际请求 %d 次", n)
 	}
 }
+
+// TestLLMStreamIdleTimeout：上游「吐一个字就挂住」时要在空闲超时内失败，
+// 而不是把 45 秒的客户端超时耗光（那会把重试预算一起烧掉，日志里只剩
+// 一句 context deadline exceeded）。空闲计时从首字之后才开始。
+func TestLLMStreamIdleTimeout(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	setGlobal(t, b, "antiad_llm_idle_ms", "300")
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		sseStart(w)
+		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":"}}]}`)
+		// 之后什么都不发：等客户端断开。
+		<-r.Context().Done()
+	})
+
+	start := time.Now()
+	_, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	if err == nil {
+		t.Fatal("卡住的流应当失败")
+	}
+	if !strings.Contains(err.Error(), "流中断") {
+		t.Errorf("错误里应说明是流中断：%v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("应在空闲超时内失败，实际用了 %v", took)
+	}
+}

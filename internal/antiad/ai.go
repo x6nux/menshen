@@ -118,6 +118,8 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 	}
 
 	var lastErr error
+	lastStage := ""
+	var lastElapsed time.Duration
 	lastModel := models[0]
 	for attempt := 0; attempt < attempts; attempt++ {
 		model := models[attempt%len(models)]
@@ -134,7 +136,7 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 			}
 			return r.reply, nil
 		}
-		lastErr = r.err
+		lastErr, lastStage, lastElapsed = r.err, r.stage, r.elapsed
 		if !r.retryable {
 			// 4xx 是配置问题（模型名错、鉴权错、余额不足），同一个模型
 			// 再试多少次都一样。但列表里还有没试过的模型时，换一个也许
@@ -162,11 +164,16 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 		// 这条日志不能省：没有它，运维只看到最终的「判定失败」，
 		// 完全不知道底下其实已经试了四次。
 		slog.Warn("反广告：上游调用失败，重试",
-			"模型", model, "第几次", attempt+1, "并发", fan, "err", r.err)
+			"模型", model, "第几次", attempt+1, "并发", fan,
+			"阶段", r.stage, "耗时", r.elapsed.Round(time.Millisecond), "err", r.err)
 		time.Sleep(wait)
 	}
 	alertUpstreamTrouble(sh, snap, notify, ep, lastModel, lastErr)
-	return aiReply{}, fmt.Errorf("反广告：上游调用失败（已试 %d 次）: %v", attempts, lastErr)
+	slog.Warn("反广告：上游调用失败，放弃",
+		"模型", lastModel, "已试", attempts, "阶段", lastStage,
+		"耗时", lastElapsed.Round(time.Millisecond), "err", lastErr)
+	return aiReply{}, fmt.Errorf("反广告：上游调用失败（已试 %d 次，最后卡在%s）: %v",
+		attempts, lastStage, lastErr)
 }
 
 // cleanModels 去掉空白项与重复项，顺序保持不变。
@@ -272,8 +279,14 @@ func alertUpstreamTrouble(sh *core.Shared, snap *store.Snapshot, notify func(str
 
 // aiResult 是一次请求（或一轮并发请求）的结果。
 type aiResult struct {
-	reply     aiReply
-	err       error
+	reply aiReply
+	err   error
+	// stage 说明这次失败卡在哪一步：连接 / 首字超时 / 流中断 / HTTP 状态 /
+	// 解析。日志里带着它，运维一眼能看出是上游连不上、卡在首字，还是
+	// 吐了一半就不动了 —— 三种毛病的处置完全不同。
+	stage string
+	// elapsed 是这一次尝试实际花掉的时间。
+	elapsed   time.Duration
 	retryable bool
 	// noBackoff 表示这一路不该退避，立即换下一个：上游卡住（systemone
 	// 超出整次时限、复判超出首字时限），或这一路配置上就走不通
@@ -372,20 +385,24 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	if ep == upstream.EPSystemOne {
 		limit = msSetting(snap, "antiad_so_timeout_ms", 2000)
 	}
+	start := time.Now()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var stuck atomic.Bool
 	watchdog := time.AfterFunc(limit, func() { stuck.Store(true); cancel() })
 	defer watchdog.Stop()
 
-	// fail 给请求途中的错误归类：看门狗掐断的算卡住，其余算网络故障。
+	// 阶段：连接 → 首字 → 流中。失败时带着它，日志里能分清是连不上、
+	// 卡在首字，还是吐了一半就不动了。
+	stage := "连接"
 	fail := func(err error) aiResult {
 		if stuck.Load() {
 			return aiResult{err: fmt.Errorf("上游 %s 超过 %v 没有响应", upName(up), limit),
+				stage: "首字超时", elapsed: time.Since(start),
 				retryable: true, noBackoff: true}
 		}
 		// 连不上、连接被掐断——都是值得再试一次的瞬时故障。
-		return aiResult{err: err, retryable: true}
+		return aiResult{err: err, stage: stage, elapsed: time.Since(start), retryable: true}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -405,27 +422,57 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		st := fmt.Sprintf("HTTP %d", resp.StatusCode)
 		switch {
 		case resp.StatusCode >= 500:
 			return aiResult{err: fmt.Errorf("上游 %s 返回 %d", upName(up), resp.StatusCode),
-				retryable: true}
+				stage: st, elapsed: time.Since(start), retryable: true}
 		case resp.StatusCode == http.StatusTooManyRequests:
 			// 限流是典型的瞬时状态，退避后重来往往就过了。
-			return aiResult{err: fmt.Errorf("上游 %s 限流 (429)", upName(up)), retryable: true}
+			return aiResult{err: fmt.Errorf("上游 %s 限流 (429)", upName(up)),
+				stage: st, elapsed: time.Since(start), retryable: true}
 		}
 		return aiResult{err: fmt.Errorf("上游 %s 返回 %d: %s",
-			upName(up), resp.StatusCode, core.TruncateRunes(string(msg), 200))}
+			upName(up), resp.StatusCode, core.TruncateRunes(string(msg), 200)),
+			stage: st, elapsed: time.Since(start)}
 	}
 
 	var raw []byte
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		raw, err = readChatStream(resp.Body, func() { watchdog.Stop() })
-	} else {
+	stage = "流中"
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		// 上游不理 stream、直接回整包 JSON 的照样能用：此时看门狗限的是整次请求。
 		raw, err = io.ReadAll(resp.Body)
-	}
-	if err != nil {
-		return fail(err)
+		if err != nil {
+			return fail(err)
+		}
+	} else {
+		// 首字看门狗在首字到达时停掉，之后只剩两种兜底：客户端的整体超时
+		// （45 秒）与这里的**流空闲**超时。上游「吐两个字就挂住」时只有
+		// 空闲超时能把它掐掉 —— 否则一次判定白等几十秒，重试预算也一起
+		// 烧光，日志里只剩一句 context deadline exceeded。
+		idle := msSetting(snap, "antiad_llm_idle_ms", 10000)
+		var idleTripped, firstSeen atomic.Bool
+		body := io.Reader(resp.Body)
+		if idle > 0 {
+			// 只在首字之后生效：首字之前的事由首字看门狗（antiad_llm_ttft_ms）
+			// 管，它比空闲超时宽松，那是给「慢但正常」的上游留的余量。
+			body = &idleReader{r: resp.Body, d: idle, trip: func() {
+				if firstSeen.Load() {
+					idleTripped.Store(true)
+					cancel()
+				}
+			}}
+		}
+		raw, err = readChatStream(body, func() { firstSeen.Store(true); watchdog.Stop() })
+		if idleTripped.Load() {
+			return aiResult{
+				err:   fmt.Errorf("上游 %s 流中断：%v 没有新数据", upName(up), idle),
+				stage: "流中断", elapsed: time.Since(start),
+				retryable: true, noBackoff: true}
+		}
+		if err != nil {
+			return fail(err)
+		}
 	}
 
 	usage := billing.ExtractUsage(ep, raw)
@@ -977,6 +1024,12 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 	case soErr != nil && llmErr != nil:
 		return adVerdict{}, fmt.Errorf("systemone: %v; llm: %v", soErr, llmErr)
 	case llmErr != nil:
+		// 复查同理：低于采信线的初判不因为「大模型没跑成」就变成可处置的。
+		if demoteUnconfirmed(b, &so, "大模型复查失败："+llmErr.Error()) {
+			slog.Warn("反广告：大模型复查失败且初判低于采信线，按未定放行",
+				"置信度", so.Confidence, "err", llmErr)
+			return so, nil
+		}
 		so.Reason = "大模型复查失败（" + llmErr.Error() + "），仅 systemone 结论：" + so.Reason
 		return so, nil
 	case soErr != nil:
@@ -1058,9 +1111,20 @@ func needReview(b *core.Bot, snap *store.Snapshot, v adVerdict, act adAction) bo
 func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysPrompt string) adVerdict {
 	llm, err := judgeLLM(b, snap, st, prior, sysPrompt)
 	if err != nil {
-		// 复判失败时回退采信初判。直接放行更糟：systemone 说 55% 是广告，
-		// 扔掉这个信息等于白判一次。但必须看得见：否则面板上只有一条来源为
-		// systemone 的低置信结论，复判坏了多久都没人发现。
+		// 复判失败时回退采信初判 —— 但只在初判自己有把握时。低于采信线的
+		// 初判本来就是要靠复判定生死的（那是我们自己设的「这条不可靠」的
+		// 门槛），复判没跑成还照它删消息、禁言、连带删除，等于把最不可靠
+		// 的一路当成了最终结论。实测：一条「我活了」被 systemone 判 13%
+		// 广告、复判超时，结果删了消息、临时禁言，还连带删了此人近期全部消息。
+		if demoteUnconfirmed(b, &prior, "大模型复判失败："+err.Error()) {
+			slog.Warn("反广告：大模型复判失败且初判低于采信线，按未定放行",
+				"置信度", prior.Confidence, "err", err)
+			prior.Cost += llm.Cost
+			prior.Usage = billing.MergeUsage(prior.Usage, llm.Usage)
+			return prior
+		}
+		// 有把握的初判照旧采信：扔掉它等于白判一次。但必须看得见，否则
+		// 面板上只剩一条低置信结论，复判坏了多久都没人发现。
 		slog.Warn("反广告：大模型复判失败，仅采信初判", "err", err)
 		prior.Reason = "（大模型复判失败：" + core.TruncateRunes(err.Error(), 120) +
 			"；仅采信初判）" + prior.Reason
@@ -1296,4 +1360,43 @@ func fenceSample(s string) string {
 	s = strings.ReplaceAll(s, digestFenceOpen, "〈")
 	s = strings.ReplaceAll(s, digestFenceClose, "〉")
 	return s
+}
+
+// idleReader 是流式读取的空闲看门狗：两次 Read 之间超过 d 没拿到任何
+// 字节就触发 trip。上游先吐两个字再挂住时，只有它能把这路掐掉。
+type idleReader struct {
+	r    io.Reader
+	d    time.Duration
+	trip func()
+	gen  atomic.Int64
+}
+
+func (ir *idleReader) Read(p []byte) (int, error) {
+	gen := ir.gen.Add(1)
+	timer := time.AfterFunc(ir.d, func() {
+		if ir.gen.Load() == gen {
+			ir.trip()
+		}
+	})
+	n, err := ir.r.Read(p)
+	timer.Stop()
+	return n, err
+}
+
+// demoteUnconfirmed 把「复判没跑成、初判又没把握」的结论降级成未定。
+//
+// 采信线（antiad_so_trust）就是「这条初判不可靠、要再问一次」的门槛：
+// 低于它的广告结论本来要靠复判定生死。复判失败时照它处置，等于把最不
+// 可靠的一路当成最终结论 —— 而按模型结论定档（antiad_bool_verdict）
+// 又恰恰不看置信度，两件事叠在一起就会出现「13% 的广告删消息+禁言」。
+// 返回是否降级（降级后 IsAd=false，按未定走：留流水、不处置）。
+func demoteUnconfirmed(b *core.Bot, v *adVerdict, why string) bool {
+	trust := float64(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust", 80)) / 100
+	if !v.IsAd || v.Confidence >= trust {
+		return false
+	}
+	v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
+	v.Reason = "（" + why + "，且初判置信度 " +
+		fmt.Sprintf("%.0f%%", v.Confidence*100) + " 低于采信线，按未定放行）" + v.Reason
+	return true
 }
