@@ -44,6 +44,32 @@ func inClause(ids []int64) (string, []any) {
 	return "IN (" + strings.Join(ph, ",") + ")", args
 }
 
+// appealStatusLabel 把申诉单状态翻成管理员看得懂的中文，措辞与 Mini App
+// 的申诉列表保持一致。
+func appealStatusLabel(s string) string {
+	switch s {
+	case "statement":
+		return "待写理由"
+	case "ai":
+		return "AI 复核中"
+	case "web":
+		return "等网页验证"
+	case "noweb":
+		return "待人工处理"
+	case "code":
+		return "已发解禁码"
+	case "redeemed":
+		return "已兑换"
+	case "lifted":
+		return "已解除"
+	case "rejected":
+		return "已驳回"
+	case "expired":
+		return "已过期"
+	}
+	return s
+}
+
 // penaltyLabel 把处罚类型翻成管理员看得懂的词。
 func penaltyLabel(t string) string {
 	switch t {

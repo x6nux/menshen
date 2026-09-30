@@ -141,7 +141,7 @@ func renderAppealView(sh *core.Shared, w http.ResponseWriter, id int64) {
 		return
 	}
 	data := appealViewData{
-		ID: ap.ID, UID: ap.UserID, Status: ap.Status,
+		ID: ap.ID, UID: ap.UserID, Status: appealStatusLabel(ap.Status),
 		Statement: ap.Statement, AIResult: appealAIResultLabel(ap.AIResult),
 		AIConf: ap.AIConf * 100, AIReason: ap.AIReason, AIModel: ap.AIModel,
 		WebAttempts: ap.WebAttempts, Code: ap.Code,

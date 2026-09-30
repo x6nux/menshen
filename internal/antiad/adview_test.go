@@ -161,7 +161,7 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 		"群内留底发言", "加微信 日入5000", "被拦", "测试群",
 		"判定流水",
 		"网页验证记录", "1.2.3.4", "fphash", "屏幕尺寸为 0",
-		"我是清白的",
+		"我是清白的", "已发解禁码",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("申诉详情页应包含 %q\n%s", want, body)
