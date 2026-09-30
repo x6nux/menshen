@@ -227,7 +227,7 @@ func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string
 // gbanActInChat 在某个群里执行联合封禁。一个群可能挂着同归属人的多个 bot，
 // 配置各算各的（演练、处罚方式都是 per-bot 的）：取第一个**不是演练**的配置
 // 执行；它没权限（或不在群里）时再换下一个；全是演练群就什么都不做。
-func gbanActInChat(sh *core.Shared, bots []*core.Bot, chatID, uid int64) {
+func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 	var lastDesc string
 	for _, b := range bots {
 		conf, ok := b.Cache.Snap().ChatConf(b.BotID(), chatID)
