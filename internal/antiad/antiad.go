@@ -245,7 +245,7 @@ const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
 	"或直接发 <code>/check &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查。"
 
-// parseAdCommand 识别 /check、/ban、/white 并取出命令名与参数。
+// parseAdCommand 识别 /check、/ban、/white、/uad 并取出命令名与参数。
 //
 // 群里 TG 客户端会自动补成 /check@botname，必须一并认。
 // 几条命令合并识别，因为 /ban、/white 以 /check 为前缀 —— 分开写的话，
@@ -260,7 +260,7 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 		head = head[:i]
 	}
 	switch head {
-	case "/check", "/ban", "/white":
+	case "/check", "/ban", "/white", "/uad":
 		return head, strings.Join(f[1:], " "), true
 	}
 	return "", "", false
@@ -565,6 +565,8 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 				HandleAdbCommand(b, conf, m)
 			case "/white":
 				HandleAdwCommand(b, conf, m, arg)
+			case "/uad":
+				HandleUadCommand(b, conf, m, arg)
 			}
 		}
 		return

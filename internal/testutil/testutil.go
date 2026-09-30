@@ -59,6 +59,13 @@ func (f *FakeTG) Call(method string, payload any) (json.RawMessage, error) {
 	return json.RawMessage(`{"ok":true,"result":{"message_id":1,"id":42}}`), nil
 }
 
+// Reset 清空调用记录（需要重新计数的测试用）。
+func (f *FakeTG) Reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
+}
+
 // CountCalls 返回某方法被调用的次数。
 func (f *FakeTG) CountCalls(method string) int {
 	f.mu.Lock()

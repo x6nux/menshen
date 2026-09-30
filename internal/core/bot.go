@@ -544,6 +544,7 @@ type Dispatcher func(*Bot, *tg.Update)
 // /check 对所有人开放是有意的：它不直接封禁，走的是与自动判定同一套处置
 // 矩阵，而群成员往往比管理员更早发现广告。花钱入口由 antiad_cmd_rpm 把关。
 //
+// /white 与 /uad 也是群管理员及以上能用（前者永久放行、后者一次性解封）。
 // /ban 只有群管理员及以上能用，但命令菜单是全群可见的 —— TG 的
 // setMyCommands 没有「只给管理员看」的 scope。非授权者用了会被静默
 // 忽略，这比藏起来更好：藏不住，还不如让群管一眼看见自己有这个工具。
@@ -551,6 +552,7 @@ var adGroupCmds = []map[string]string{
 	{"command": "check", "description": "复查某人是否在发广告（回复对方的消息）"},
 	{"command": "ban", "description": "标记为广告并处置（群管理员，回复对方的消息）"},
 	{"command": "white", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
+	{"command": "uad", "description": "解除某人在本群的限制（群管理员，回复对方的消息）"},
 }
 
 func (b *Bot) RegisterCommands() {
@@ -561,8 +563,8 @@ func (b *Bot) RegisterCommands() {
 	}); !ok {
 		slog.Error("注册默认命令菜单失败", "tg_error", desc)
 	}
-	// 群聊 scope：/check。与默认 scope 分开设置，否则私聊里也会冒出
-	// 一个在私聊中毫无意义的复查命令。
+	// 群聊 scope：/check /ban /white /uad（见 adGroupCmds）。与默认 scope
+	// 分开设置，否则私聊里也会冒出一堆在私聊中毫无意义的群命令。
 	//
 	// 主 bot 不入群，这份菜单永远不会被看到；升级前注册过的还要清掉，
 	// 否则它短暂停留在某个群里时，群成员会看到一组点不动的命令。
