@@ -301,6 +301,17 @@ func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
 	if n == 0 {
 		t.Fatal("扇出应落 gban_muted 流水，否则解除时找不到该解的群")
 	}
+	// 再扇出一次（全局组与专属组各执行一遍，面板「重新执行」也会再来）
+	// 不该堆重复记录。
+	EnforceGban(a.Shared, 888, "测试用广告号")
+	gbanLogAction(a, -100, 888, "mute")
+	if err := a.Shared.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=888 AND action='gban_muted' AND lifted_at=0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("同一动作只该留一条未解除记录，得到 %d 条", n)
+	}
 
 	// 撤名单：除了 unban，还要补一次「权限全开」把禁言解掉。
 	before := mutes()

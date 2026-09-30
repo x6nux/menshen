@@ -254,13 +254,22 @@ func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 // 「名单已经撤了，人在群里还是发不了言」就是这么来的。发言路径上的
 // 联封（GbanMessageGuard）从一开始就有记录，名单扇出这一支漏了。
 func gbanLogAction(b *core.Bot, chatID, uid int64, act string) {
-	reason := "联合封禁"
-	if rec, ok := gbanHit(b.Shared, b.BotID(), chatID, uid); ok {
-		reason += "：" + GbanReasonLabel(rec.Reason)
-	}
 	action := "gban_muted"
 	if act == "ban" {
 		action = "gban_banned"
+	}
+	// 同群里同一种动作只留一条未解除的记录：一次入名单会扇出两遍
+	// （全局组与归属人的专属组各一遍），面板上的「重新执行」也会再来
+	// 一遍，逐次落库只是噪声。动作换了（禁言档改成封禁档）照旧记新的。
+	var n int
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE chat_id=? AND user_id=? AND action=? AND lifted_at=0`,
+		chatID, uid, action).Scan(&n); err == nil && n > 0 {
+		return
+	}
+	reason := "联合封禁"
+	if rec, ok := gbanHit(b.Shared, b.BotID(), chatID, uid); ok {
+		reason += "：" + GbanReasonLabel(rec.Reason)
 	}
 	logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID}, From: &tg.TGUser{ID: uid}},
 		adVerdict{Decider: adDeciderSkipped, Reason: reason}, action, "联合封禁（名单）")
