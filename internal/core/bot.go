@@ -132,9 +132,11 @@ func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 
 // aiClientTimeout 是判定调用 AI 上游的整体超时。
 //
-// 必须大于重试总预算（antiad 的 aiTotalBudget，90 秒）：复判是流式，出了
+// 必须大于 antiad 的单次尝试上限（aiAttemptCap，45 秒）：复判是流式，出了
 // 首字之后还要把话说完，客户端超时先到的话，一个还在预算内的正常复判会被
-// 当成失败重试。systemone 不受影响 —— 它有自己的看门狗（2 秒）先掐。
+// 当成失败重试 —— 那时日志里只剩一句 context deadline exceeded，看不出是
+// 哪一段出的问题（每次尝试自己带的 context 会先切）。systemone 不受影响 ——
+// 它有自己的看门狗（2 秒）先掐。
 const aiClientTimeout = 100 * time.Second
 
 // ---- Bot ----

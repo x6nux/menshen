@@ -57,7 +57,11 @@ const (
 	// 没有它，5 次 × 单次 20 秒超时 = 最坏 100 秒，而每个 bot 的判定
 	// worker 只有 32 路：上游整体变慢时，积压会迅速填满判定队列，
 	// 后面的消息全部走「队列已满，放行」。预算到了就不再重试。
-	aiTotalBudget = 90 * time.Second
+	// aiTotalBudget 是整轮重试的总预算。按 aiAttemptCap（45 秒）切段，
+	// 90 秒只够两路模型各试一次；列表里有三路时，前两路一起卡住的话第三路
+	// 连试都轮不上 —— 给到 150 秒，三路都能轮到一次。复判期间被临时禁言的
+	// 人是 5 分钟窗口（tempMute），150 秒仍在窗口内。
+	aiTotalBudget = 150 * time.Second
 	// aiRetryBase 是退避基数，按 2 的幂增长，封顶 2 秒。
 	aiRetryBase = 200 * time.Millisecond
 )
@@ -129,6 +133,7 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 	lastStage := ""
 	var lastElapsed time.Duration
 	lastModel := models[0]
+	actual := 0
 	for attempt := 0; attempt < attempts; attempt++ {
 		model := models[attempt%len(models)]
 		lastModel = model
@@ -143,6 +148,7 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 			cap = aiAttemptCap
 		}
 		attemptStart := time.Now()
+		actual = attempt + 1
 		r := aiRound(sh, snap, ep, models, attempt, fan, payload, cap)
 		if r.err == nil {
 			sh.AIFailStreak.Store(0) // 成功一次就清零
@@ -186,10 +192,10 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 	}
 	alertUpstreamTrouble(sh, snap, notify, ep, lastModel, lastErr)
 	slog.Warn("反广告：上游调用失败，放弃",
-		"模型", lastModel, "已试", attempts, "阶段", lastStage,
+		"模型", lastModel, "已试", actual, "计划", attempts, "阶段", lastStage,
 		"耗时", lastElapsed.Round(time.Millisecond), "err", lastErr)
 	return aiReply{}, fmt.Errorf("反广告：上游调用失败（已试 %d 次，最后卡在%s）: %v",
-		attempts, lastStage, lastErr)
+		actual, lastStage, lastErr)
 }
 
 // cleanModels 去掉空白项与重复项，顺序保持不变。

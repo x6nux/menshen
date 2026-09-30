@@ -118,13 +118,20 @@ func TestLLMFirstTokenDefaultIs15s(t *testing.T) {
 	}
 }
 
-// TestAIClientTimeoutCoversRetryBudget：客户端总超时不能小于一次判定的
-// 重试总预算。复判是流式，出了首字之后还要把话说完；客户端超时先到的话，
-// 一个还在预算内的正常复判会被当成失败重试，白花一次上游开销。
-func TestAIClientTimeoutCoversRetryBudget(t *testing.T) {
+// TestAIClientTimeoutCoversAttemptCap：客户端总超时（单次 HTTP 请求的上界）
+// 必须大于单次尝试的上限。复判是流式，出了首字之后还要把话说完；客户端
+// 超时先到的话，一个还在尝试窗口内的正常复判会被当成失败重试，白花一次
+// 上游开销，日志里也只剩一句 context deadline exceeded。
+//
+// 总预算那一层不用它兜：每次尝试自带 context（剩余预算与 aiAttemptCap
+// 取小），单次请求最长就是 aiAttemptCap。
+func TestAIClientTimeoutCoversAttemptCap(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
-	if b.AIClient.Timeout < aiTotalBudget {
-		t.Errorf("AIClient 总超时 %v 小于重试总预算 %v", b.AIClient.Timeout, aiTotalBudget)
+	if b.AIClient.Timeout <= aiAttemptCap {
+		t.Errorf("AIClient 总超时 %v 不大于单次尝试上限 %v", b.AIClient.Timeout, aiAttemptCap)
+	}
+	if aiTotalBudget < aiAttemptCap {
+		t.Errorf("总预算 %v 小于单次上限 %v，第一路就会被预算切掉", aiTotalBudget, aiAttemptCap)
 	}
 }
 
