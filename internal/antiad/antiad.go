@@ -439,9 +439,17 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		}
 	}
 
-	// 与自动告警的群内版用同一份渲染：同一个渠道不该有两种长度，
-	// 也同样不把广告原文整段贴回群里。
-	text, kb := renderAdAlertBrief(b, tgt, v, act, note, logID, dryrun)
+	// 结论正常时不能用告警那套渲染：🚫 与「点我申诉」是给被判成广告的人
+	// 准备的，配在正常结论上只会让被复查的人以为自己又被罚了（实测群里
+	// 看到「🚫 … 正常 92% + 点我申诉」都在问是不是误判）。广告结论照旧
+	// 走告警渲染，同一个渠道不该有两种长度。
+	var text string
+	var kb map[string]any
+	if v.IsAd {
+		text, kb = renderAdAlertBrief(b, tgt, v, act, note, logID, dryrun)
+	} else {
+		text = renderReviewClean(b, tgt, v)
+	}
 	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
@@ -1576,6 +1584,25 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 	return sb.String(), nil
 }
 
+// renderReviewClean 渲染「复查结论：正常」的群内提示。
+//
+// 与广告告警分开：正常结论不带 🚫，也不附「点我申诉」——那个人没有被
+// 处置，申诉入口对他没有意义，出现在群里反而像一张罚单。管理员在全局
+// 设置里挂的附加链接照旧附上（那是使用说明一类的东西）。
+func renderReviewClean(b *core.Bot, m *tg.Message, v adVerdict) string {
+	var sb strings.Builder
+	sb.WriteString("✅ ")
+	sb.WriteString(userLink(m.From.ID))
+	if s := verdictBrief(v); s != "" {
+		sb.WriteString(" · " + html.EscapeString(s))
+	}
+	sb.WriteString("，未处置。")
+	if extra := groupFooter(b); extra != "" {
+		sb.WriteString("\n" + extra)
+	}
+	return sb.String()
+}
+
 // groupLinks 渲染群内提示尾部的文本链接块：
 //
 //	① <a href="https://t.me/<bot>?start=<记录号>">点我申诉</a>
@@ -1591,12 +1618,18 @@ func groupLinks(b *core.Bot, logID int64) string {
 		lines = append(lines, `① <a href="`+html.EscapeString(botDeepLink(b, logID))+
 			`">点我申诉</a>`)
 	}
-	if extra := strings.TrimSpace(b.Cache.Snap().Setting("antiad_group_footer")); extra != "" {
-		// 附加文本由管理员填写，按纯文本转义：里面出现 HTML 时不该改排版。
-		// 其中写明的网址由 Telegram 客户端自动识别成链接。
-		lines = append(lines, html.EscapeString(extra))
+	if extra := groupFooter(b); extra != "" {
+		lines = append(lines, extra)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// groupFooter 是全局设置里的附加链接（使用说明、规则地址等），群内提示
+// 尾部原样附上。按纯文本转义：里面出现 HTML 时不该改排版；其中写明的
+// 网址由 Telegram 客户端自动识别成链接。
+func groupFooter(b *core.Bot) string {
+	return html.EscapeString(strings.TrimSpace(
+		b.Cache.Snap().Setting("antiad_group_footer")))
 }
 
 // botDeepLink 拼「打开 bot」的深链。带上记录号：管理员点进去直接落到

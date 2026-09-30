@@ -3,6 +3,7 @@ package antiad
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -755,5 +756,61 @@ func TestCheckResultDisablesPreview(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("没有发出复查结果消息")
+	}
+}
+
+// TestReviewCleanNoticeHasNoAppealLink：/check 结论是「正常」时，群内提示
+// 不能带 🚫、也不能附「点我申诉」——那个人没被处置，申诉入口对他没有
+// 意义，挂在群里像一张罚单（实测管理员看到「🚫 … 正常 92% + 点我申诉」
+// 以为是自己误判了）。判成广告时仍要给出申诉入口。
+func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
+	groupNotice := func(fake *testutil.FakeTG) string {
+		var out []string
+		for _, p := range fake.Calls("sendMessage") {
+			if s := fmt.Sprint(p["text"]); strings.Contains(s, "复查结果") {
+				out = append(out, s)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// 正常结论。
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			w.Write([]byte(`{"answers":{"is_ad":{"choice":"clean","confidence":0.92}}}`))
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"{\"is_ad\":false,\"confidence\":0.92,\"reason\":\"日常技术交流\"}"}}]}`))
+	})
+	recordMessage(b, -100, 231234, 555, "这广告高明啊", 1700000000, "")
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 555"))
+	waitIdle(t, b)
+
+	notice := groupNotice(fake)
+	if notice == "" {
+		t.Fatal("没有发出复查结果")
+	}
+	for _, bad := range []string{"🚫", "点我申诉"} {
+		if strings.Contains(notice, bad) {
+			t.Errorf("正常结论里不该出现 %q：\n%s", bad, notice)
+		}
+	}
+	if !strings.Contains(notice, "未处置") || !strings.Contains(notice, "正常") {
+		t.Errorf("正常结论要写清「正常、未处置」：\n%s", notice)
+	}
+
+	// 判成广告时照旧给出申诉入口。
+	b2, fake2 := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	fakeAI(t, b2, nil) // 默认两级都判广告
+	recordMessage(b2, -100, 231235, 556, "加微信 日入5000", 1700000000, "")
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 777, 9, "/check 556"))
+	waitIdle(t, b2)
+	notice2 := groupNotice(fake2)
+	if !strings.Contains(notice2, "🚫") || !strings.Contains(notice2, "点我申诉") {
+		t.Errorf("广告结论仍要给申诉入口：\n%s", notice2)
 	}
 }
