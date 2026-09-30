@@ -592,6 +592,14 @@ function whiteRow(w){
     '<button class="d" onclick="act(\'whitelist\',{action:\'remove\',bot_id:'+w.bot_id+',chat_id:'+w.chat_id+
     ',user_id:'+w.user_id+'},\'已移除\')">移除</button></div>';
 }
+function botLabel(id){ var b=botById(id); return b?b.label:('bot '+id); }
+function profileOKKey(p){ return p.user_id+' '+botLabel(p.bot_id)+' '+(p.reason||''); }
+function profileOKRow(p){
+  return '<div class="row"><span class="mono">'+p.user_id+' · '+esc(botLabel(p.bot_id))+
+    ' · '+p.hours+' 小时 · 到 '+fmtTS(p.expires_at)+'</span>'+
+    '<button class="d" onclick="act(\'whitelist\',{action:\'unprofile\',bot_id:'+p.bot_id+
+    ',user_id:'+p.user_id+'},\'已撤销\')">撤销</button></div>';
+}
 function viewWhite(){
   var items=S.whitelist||[];
   var h='<div class="card"><h3>白名单</h3>'+
@@ -607,6 +615,18 @@ function viewWhite(){
     '<button class="b" style="margin-top:8px" onclick="act(\'whitelist\',{action:\'add\',bot_id:document.getElementById(\'wl_bot\').value,'+
     'chat_id:document.getElementById(\'wl_chat\').value||0,user_id:document.getElementById(\'wl_uid\').value,'+
     'hours:document.getElementById(\'wl_hours\').value||0},\'已加入\')">加入白名单</button></div>';
+  // 资料放行：复判确认「资料本身没问题」后给的临时通行证。它只免掉资料
+  // 这一路的嫌疑，正文照常判定；改过资料或到期自动失效。
+  var pok=S.profile_ok||[];
+  h+='<div class="card"><h3>资料放行（复判确认）</h3>'+
+    '<div class="hint">这些人的账号资料被复判判定「不构成广告」，到期前不再因资料被删；'+
+    '改过资料或到期后自动失效。正文与链接内容照常判定。</div>'+
+    '<div class="row" style="border:0;padding:0 0 8px">'+
+    '<input id="pf_q" placeholder="搜 user_id / 原因" '+
+    'oninput="filterRows(S.profile_ok,\'pf_q\',\'pf_list\',\'pf_count\',profileOKKey,profileOKRow,\'没有资料放行\')">'+
+    '<span class="k" id="pf_count">共 '+pok.length+' 人</span></div>'+
+    '<div id="pf_list">'+(pok.length?pok.map(profileOKRow).join(''):
+      '<div class="hint">（没有放行中的资料）</div>')+'</div></div>';
   // 默认豁免可视化：这些人不在白名单表里，但判定链路（adExempt）本来就放行。
   // 列在这里只为让管理员能核对「谁不用判」，不要往这里加配置入口。
   h+='<div class="card"><h3>默认豁免（内置，无需配置）</h3>'+

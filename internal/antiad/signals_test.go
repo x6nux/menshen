@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,4 +159,15 @@ func TestBuildStateCarriesNewFields(t *testing.T) {
 			t.Errorf("state 缺 %s:\n%s", want, raw)
 		}
 	}
+}
+
+// TestMain 把「bot 简介」的抓取地址指到一个关着的端口：单元测试不该访问
+// 外网，漏配的测试会立刻失败而不是挂 5 秒；需要真实预览页的测试自己覆盖
+// 成 httptest 地址（见 TestResolveLinkBotAbout）。
+func TestMain(m *testing.M) {
+	old := botAboutURL
+	botAboutURL = "http://127.0.0.1:1/"
+	code := m.Run()
+	botAboutURL = old
+	os.Exit(code)
 }

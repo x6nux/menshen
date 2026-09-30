@@ -220,6 +220,18 @@ type WhiteRec struct {
 	CreatedAt int64
 }
 
+// ProfileOKRec 是 profile_ok 的一行：某人的资料被复判放行到什么时候。
+// PHash 绑定当时那份资料，改了资料这条就自动失效。
+type ProfileOKRec struct {
+	BotID     int64
+	UserID    int64
+	PHash     string
+	Hours     int64
+	Reason    string
+	CreatedAt int64
+	ExpiresAt int64
+}
+
 type Snapshot struct {
 	Models    map[string]*upstream.Model
 	Upstreams []*upstream.Upstream
@@ -241,6 +253,9 @@ type Snapshot struct {
 	GbanOwnBans  map[int64]map[int64]GbanRec
 	// Whitelist 是申诉解禁 / /white 产生的白名单，量小，线性扫即可。
 	Whitelist []WhiteRec
+
+	// ProfileOK 是资料被复判临时放行的账号（见 antiad.GrantProfileOK）。
+	ProfileOK []ProfileOKRec
 
 	// loc 是展示与调度用的时区，构建快照时解析一次（见 Location）。
 	loc *time.Location
@@ -695,6 +710,28 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 	}
 	rows.Close()
 
+	// 资料放行：过期的行不进快照（快照每轮重建，过期即失效），
+	// 查询时再按到期时间复核一次。
+	rows, err = q.Query(`SELECT bot_id,user_id,phash,hours,reason,created_at,
+		expires_at FROM profile_ok WHERE expires_at = 0 OR expires_at > ?`,
+		time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p ProfileOKRec
+		if err := rows.Scan(&p.BotID, &p.UserID, &p.PHash, &p.Hours, &p.Reason,
+			&p.CreatedAt, &p.ExpiresAt); err != nil {
+			return err
+		}
+		snap.ProfileOK = append(snap.ProfileOK, p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
 	// 专属联合封禁组：开关、生效群、封禁条目，一次读完。
 	rows, err = q.Query(`SELECT owner_id,enabled FROM gban_own`)
 	if err != nil {
@@ -759,6 +796,27 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 func (s *Snapshot) GbanOwnOn(ownerID int64) bool {
 	v, ok := s.GbanOwn[ownerID]
 	return !ok || v
+}
+
+// ProfileAllowed 返回该账号资料放行的到期时间（0 = 没有放行或已失效）。
+//
+// 要求资料指纹一致：放行的是「当时那份资料」，他改了简介就得重新判。
+// 快照里只装未过期的行，这里仍复核一次到期时间——快照不重建时，
+// 过期行会留在内存里。
+func (s *Snapshot) ProfileAllowed(botID, uid int64, phash string, now int64) int64 {
+	if phash == "" {
+		return 0
+	}
+	for _, p := range s.ProfileOK {
+		if p.BotID != botID || p.UserID != uid || p.PHash != phash {
+			continue
+		}
+		if p.ExpiresAt != 0 && p.ExpiresAt <= now {
+			return 0
+		}
+		return p.ExpiresAt
+	}
+	return 0
 }
 
 // Whitelisted 报告此人在这个范围内是否处于白名单中。

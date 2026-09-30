@@ -692,6 +692,11 @@ func CleanupData(sh *core.Shared) {
 		"expires_at != 0 AND expires_at < ?", time.Now().Unix()); err != nil {
 		slog.Error("清理过期白名单失败", "err", err)
 	}
+	// 过期的资料放行：到点即失效（查询时也会复核一次）。
+	if _, err := deleteBatched(sh, "profile_ok",
+		"expires_at != 0 AND expires_at < ?", time.Now().Unix()); err != nil {
+		slog.Error("清理过期资料放行失败", "err", err)
+	}
 }
 
 // cleanupBatch 是每批删除的行数。取几千：一批的锁持有时间是毫秒级，

@@ -293,6 +293,21 @@ CREATE TABLE IF NOT EXISTS ad_whitelist (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (bot_id, chat_id, user_id)
 );
+
+-- profile_ok：复判确认「资料本身没问题」的账号，到期前不再因资料被判广告。
+-- 与白名单不同：它只免掉「账号资料」这一路的嫌疑，正文、引用、历史照常判断。
+-- phash 绑定当时那份资料（用户名/昵称/简介），改过就重新判；时长由复判模型
+-- 在 1~72 小时之间给（见 antiad.GrantProfileOK）。
+CREATE TABLE IF NOT EXISTS profile_ok (
+  bot_id     INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  phash      TEXT    NOT NULL,
+  hours      INTEGER NOT NULL DEFAULT 0,
+  reason     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (bot_id, user_id)
+);
 `
 
 func Open(path string) (*Store, error) {

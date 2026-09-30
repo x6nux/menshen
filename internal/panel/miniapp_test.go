@@ -511,3 +511,53 @@ func TestMiniAppListSearch(t *testing.T) {
 		}
 	}
 }
+
+// TestMiniAppProfileOKListAndRevoke：复判给的「资料放行」要能在 App 里
+// 看到并撤销（它只免资料这一路，不是整号放行，所以单列一张卡）。
+func TestMiniAppProfileOKListAndRevoke(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	botID := b.BotID()
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO profile_ok
+		(bot_id,user_id,phash,hours,reason,created_at,expires_at)
+		VALUES (?,?,?,?,?,?,?)`, botID, 555, "abc", 24, "复判放行：只有资料可疑", now, now+24*3600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("state 应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var st struct {
+		ProfileOK []struct {
+			UserID int64 `json:"user_id"`
+			Hours  int64 `json:"hours"`
+		} `json:"profile_ok"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.ProfileOK) != 1 || st.ProfileOK[0].UserID != 555 ||
+		st.ProfileOK[0].Hours != 24 {
+		t.Fatalf("状态里应带上资料放行清单，得到 %+v", st.ProfileOK)
+	}
+
+	// 撤销。
+	w = miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "whitelist",
+		map[string]any{"action": "unprofile", "bot_id": botID, "user_id": 555})
+	if w.Code != http.StatusOK {
+		t.Fatalf("撤销应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM profile_ok`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("撤销后不该还有行，剩 %d", n)
+	}
+}

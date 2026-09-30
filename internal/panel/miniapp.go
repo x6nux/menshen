@@ -299,6 +299,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 		out["digest_fix"] = snap.Setting("antiad_digest_fix")
 	}
 	out["whitelist"] = miniWhitelistRows(sh, uid, main)
+	out["profile_ok"] = miniProfileOKRows(sh, uid, main)
 
 	// 全局联合封禁组对所有管理员开放（共同维护的名单），专属组按人给。
 	gbans := []map[string]any{}
@@ -422,6 +423,26 @@ func miniWhitelistRows(sh *core.Shared, uid int64, main bool) []map[string]any {
 		out = append(out, map[string]any{
 			"bot_id": w.BotID, "chat_id": w.ChatID, "user_id": w.UserID,
 			"expires_at": w.ExpiresAt, "source": w.Source, "by_uid": w.ByUID,
+		})
+	}
+	return out
+}
+
+// miniProfileOKRows 是资料临时放行清单（见 antiad.GrantProfileOK）。
+// 与白名单同一套可见性：谁能管那台 bot 就看得到它的行。
+func miniProfileOKRows(sh *core.Shared, uid int64, main bool) []map[string]any {
+	now := time.Now().Unix()
+	out := []map[string]any{}
+	for _, p := range sh.Cache.Snap().ProfileOK {
+		if !main && !miniCanManageBot(sh, uid, p.BotID) {
+			continue
+		}
+		if p.ExpiresAt != 0 && p.ExpiresAt <= now {
+			continue
+		}
+		out = append(out, map[string]any{
+			"bot_id": p.BotID, "user_id": p.UserID, "hours": p.Hours,
+			"reason": p.Reason, "created_at": p.CreatedAt, "expires_at": p.ExpiresAt,
 		})
 	}
 	return out
@@ -1116,6 +1137,21 @@ func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 		}
 		if err := sh.Cache.Reload(); err != nil {
 			slog.Error("miniapp：刷新缓存失败", "err", err)
+		}
+	case "unprofile":
+		// 撤销资料放行（复判给的临时放行，见 antiad.GrantProfileOK）。
+		// 与白名单分开：它只免掉资料这一路，不是整号放行。
+		if botID == 0 || target == 0 {
+			miniErr(w, http.StatusBadRequest, "缺少 bot_id 或 user_id")
+			return
+		}
+		if _, err := sh.Store.Write.Exec(`DELETE FROM profile_ok
+			WHERE bot_id=? AND user_id=?`, botID, target); err != nil {
+			miniErr(w, http.StatusInternalServerError, "撤销失败")
+			return
+		}
+		if err := sh.Cache.Reload(); err != nil {
+			slog.Error("miniapp：撤销资料放行后刷新缓存失败", "err", err)
 		}
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")

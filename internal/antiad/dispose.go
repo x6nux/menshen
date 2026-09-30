@@ -385,6 +385,18 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 			note = joinNotes(note, "复判正常，已解除临时禁言")
 		}
 	}
+	// 复判确认「只有资料可疑、正文没问题」时给资料一个临时放行：资料是长期
+	// 存在的东西，不给的话他之后每发一条消息都会被同一份资料拖进删除。
+	if !dryrun && !v.IsAd && v.ProfileOKHours > 0 {
+		if GrantProfileOK(b, profile, v.ProfileOKHours, "复判放行："+v.Reason) > 0 {
+			note = joinNotes(note, profileOKNote(clampProfileHours(v.ProfileOKHours)))
+		}
+	}
+	// 反过来：这条判成「账号本身就是广告号」时，之前的资料放行作废 ——
+	// 那份资料重新成了广告证据，不该再挡着后续判定。
+	if !dryrun && v.IsAd && v.Scope == "account" {
+		DropProfileOK(b, m.From.ID, "资料又判为广告号")
+	}
 	if act.Short {
 		p := fmt.Sprintf("附短时禁言 %d 分钟", int(tempMute/time.Minute))
 		if dryrun {

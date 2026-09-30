@@ -73,6 +73,8 @@ func profileHandles(p senderProfile) []string {
 func enrichSender(b *core.Bot, p *senderProfile) {
 	p.Bio = userBio(b, p.UserID)
 	p.BioLinks = resolveProfileLinks(b, *p)
+	// 简介与链接解析完才有完整资料，指纹也在这之后算。
+	markProfileOK(b, p)
 }
 
 // resolveProfileLinks 逐个查清资料里挂的频道/群组/bot 是什么。

@@ -440,6 +440,16 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		lifted = true
 		note = joinNotes(note, "已解除临时禁言")
 	}
+	// 人工复查同样能给资料放行：管理员发起复查、复判确认资料没问题时，
+	// 别让他之后又被同一份资料缠上。
+	if !v.IsAd && !dryrun && v.ProfileOKHours > 0 {
+		if GrantProfileOK(b, profile, v.ProfileOKHours, "复查放行："+v.Reason) > 0 {
+			note = joinNotes(note, profileOKNote(clampProfileHours(v.ProfileOKHours)))
+		}
+	}
+	if !dryrun && v.IsAd && v.Scope == "account" {
+		DropProfileOK(b, tgt.From.ID, "复查判为账号广告号")
+	}
 	logID := logAd(b, tgt, v, logAction(act, dryrun), logNote(act, note, dryrun))
 	if act.Name != "none" && !dryrun {
 		BumpAdHits(b, chatID, tgt.From.ID, 1)
@@ -1116,6 +1126,10 @@ type senderProfile struct {
 	AgeKnown    bool  `json:"age_known"`
 	MsgsInGroup int64 `json:"msgs_in_group"`
 	PriorAdHits int64 `json:"prior_ad_hits"`
+	// ProfileOK 表示这份资料已被复判确认不构成广告（见 profile_ok.go），
+	// 到 ProfileOKUntil 之前不得再凭资料判为广告；正文照常判断。
+	ProfileOK      bool   `json:"profile_ok,omitempty"`
+	ProfileOKUntil string `json:"profile_ok_until,omitempty"`
 }
 
 type adMessageInfo struct {
