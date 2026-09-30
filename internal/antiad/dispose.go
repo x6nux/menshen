@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -36,6 +37,65 @@ type adAction struct {
 // 否则正式禁言还没落地它就到期了；TG 把不足 30 秒的当成永久。
 // 给到 5 分钟：复判最坏 45 秒，但上游抖动时会重试，余量要留足。
 const tempMute = 5 * time.Minute
+
+// ---- 复判期的临时禁言：谁上的、什么时候上的 ----
+//
+// 终判不罚时要主动解掉它（见 actOnVerdict）：它只是复判期间的占位，
+// 让一个已经被判为正常的人白等 5 分钟发不了言，代价比漏判一条同类
+// 消息大。存内存即可 —— 复判一结束就在同一条路径上处理，进程重启后
+// 最多再挂几分钟自己到期。
+
+// tempMutes 记下我们刚上的临时禁言：键 chat:uid → 施加时刻。
+var tempMutes sync.Map
+
+func tempMuteKey(chatID, uid int64) string {
+	return fmt.Sprintf("%d:%d", chatID, uid)
+}
+
+// NoteTempMute 记下这次临时禁言（dryrun 下不曾真的禁言，不要记）。
+func NoteTempMute(chatID, uid int64) {
+	if uid > 0 {
+		tempMutes.Store(tempMuteKey(chatID, uid), time.Now())
+	}
+}
+
+// LiftTempMute 解除复判期的临时禁言，返回是否真的解了。
+//
+// 同一人在本群另有未解除的处罚时不动手：那种禁言是他另一条消息挣来的，
+// 主动解禁会把它一起踩掉。
+func LiftTempMute(b *core.Bot, chatID, uid int64) bool {
+	if uid <= 0 {
+		return false
+	}
+	if penaltyRowsActive(b.Shared, b.BotID(), chatID, uid) {
+		slog.Info("反广告：临时禁言保留（本群另有生效处罚）", "chat", chatID, "uid", uid)
+		return false
+	}
+	ok, desc := Unmute(b, chatID, uid)
+	if !ok {
+		slog.Warn("反广告：解除临时禁言失败", "chat", chatID, "uid", uid, "tg_error", desc)
+		return false
+	}
+	tempMutes.Delete(tempMuteKey(chatID, uid))
+	slog.Info("反广告：复判正常，已解除临时禁言", "chat", chatID, "uid", uid)
+	return true
+}
+
+// LiftTempMuteIfFresh 只在确实是复判期的临时禁言时才解：进程里有标记、
+// 且没超过临时禁言时长。人工复查（/check）走这一支 —— 复查时那个人可能
+// 正被另一条消息的正式处罚禁着，那种不该动。
+func LiftTempMuteIfFresh(b *core.Bot, chatID, uid int64) bool {
+	v, ok := tempMutes.Load(tempMuteKey(chatID, uid))
+	if !ok {
+		return false
+	}
+	t, ok := v.(time.Time)
+	if !ok || time.Since(t) > tempMute {
+		tempMutes.Delete(tempMuteKey(chatID, uid))
+		return false
+	}
+	return LiftTempMute(b, chatID, uid)
+}
 
 // purgeWindow 是连带删除的时间窗：TG 只允许删 48 小时内的消息，留一小时余量。
 const purgeWindow = 47 * time.Hour
@@ -312,11 +372,19 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 			act.Name = "deleted"
 		}
 	}
-	// 初判删过的不再删；临时禁言由这里的正式处罚接替，终判不罚就让它到期
-	// ——主动解禁会踩掉同一人另一条消息刚上的禁言。
+	// 初判删过的不再删；临时禁言由这里的正式处罚接替。终判不罚时把那条
+	// 临时禁言主动解掉：它只是复判期间的占位，让人白等 5 分钟发不了言
+	// 比漏判一条同类消息更糟（同一人另有生效处罚时 LiftTempMute 会跳过，
+	// 那种禁言是他另一条消息挣来的）。
 	todo := act
 	todo.Delete = act.Delete && !pre.Delete
 	note := joinNotes(preNote, ApplyAction(b, m, todo, dryrun))
+	if pre.Mute && pre.Temp && !v.IsAd && !dryrun &&
+		!todo.Mute && !todo.Ban && !act.Short {
+		if LiftTempMute(b, m.Chat.ID, m.From.ID) {
+			note = joinNotes(note, "复判正常，已解除临时禁言")
+		}
+	}
 	if act.Short {
 		p := fmt.Sprintf("附短时禁言 %d 分钟", int(tempMute/time.Minute))
 		if dryrun {

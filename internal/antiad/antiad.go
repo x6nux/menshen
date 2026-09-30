@@ -431,6 +431,15 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		act.Delete = false
 	}
 	note := ApplyAction(b, tgt, act, dryrun)
+	// 复查结论正常时，顺手把复判期那条还没来得及解的临时禁言解掉：
+	// 管理员多半就是看到「判定正常却还禁着言」才来复查的。只有确实是
+	// 我们刚上的临时禁言才会动（见 LiftTempMuteIfFresh），别人的正式
+	// 处罚不会被踩掉。
+	lifted := false
+	if !v.IsAd && !dryrun && LiftTempMuteIfFresh(b, chatID, tgt.From.ID) {
+		lifted = true
+		note = joinNotes(note, "已解除临时禁言")
+	}
 	logID := logAd(b, tgt, v, logAction(act, dryrun), logNote(act, note, dryrun))
 	if act.Name != "none" && !dryrun {
 		BumpAdHits(b, chatID, tgt.From.ID, 1)
@@ -448,7 +457,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	if v.IsAd {
 		text, kb = renderAdAlertBrief(b, tgt, v, act, note, logID, dryrun)
 	} else {
-		text = renderReviewClean(b, tgt, v)
+		text = renderReviewClean(b, tgt, v, lifted)
 	}
 	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
@@ -672,6 +681,10 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 不支持限时，封了就得等人手工解。
 	pre := adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
 	preNote := ApplyAction(b, m, pre, conf.Dryrun)
+	if pre.Mute && !conf.Dryrun {
+		// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
+		NoteTempMute(m.Chat.ID, m.From.ID)
+	}
 	if !b.AdReview(func() { finish(review(b, snap, state, v, llmSystemPrompt), pre, preNote) }) {
 		// 按初判定案，临时禁言照样转正式：让它到期自己解除，等于白白放走。
 		slog.Warn("反广告：复判队列已满，按初判定案", "chat", m.Chat.ID, "uid", m.From.ID)
@@ -1589,14 +1602,19 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 // 与广告告警分开：正常结论不带 🚫，也不附「点我申诉」——那个人没有被
 // 处置，申诉入口对他没有意义，出现在群里反而像一张罚单。管理员在全局
 // 设置里挂的附加链接照旧附上（那是使用说明一类的东西）。
-func renderReviewClean(b *core.Bot, m *tg.Message, v adVerdict) string {
+// lifted 表示这次复查顺手解掉了复判期留下的临时禁言。
+func renderReviewClean(b *core.Bot, m *tg.Message, v adVerdict, lifted bool) string {
 	var sb strings.Builder
 	sb.WriteString("✅ ")
 	sb.WriteString(userLink(m.From.ID))
 	if s := verdictBrief(v); s != "" {
 		sb.WriteString(" · " + html.EscapeString(s))
 	}
-	sb.WriteString("，未处置。")
+	if lifted {
+		sb.WriteString("，已解除临时禁言。")
+	} else {
+		sb.WriteString("，未处置。")
+	}
 	if extra := groupFooter(b); extra != "" {
 		sb.WriteString("\n" + extra)
 	}

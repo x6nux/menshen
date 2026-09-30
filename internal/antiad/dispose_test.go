@@ -75,9 +75,10 @@ func TestDeleteFirstThenReview(t *testing.T) {
 	}
 }
 
-// TestReviewCleanKeepsDeletionOnRecord：复判判为正常时不追加处置、不主动解禁，
-// 流水照实记成删过（删掉的回不来）。
-func TestReviewCleanKeepsDeletionOnRecord(t *testing.T) {
+// TestReviewCleanLiftsTempMute：复判判为正常时要主动解掉临时禁言 ——
+// 它只是复判期间的占位，让一个已经被判为正常的人白等 5 分钟发不了言，
+// 比漏判一条同类消息更糟。流水照实记成删过（删掉的回不来）。
+func TestReviewCleanLiftsTempMute(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"), llmReply(false, 0.8, "none", "message"))
@@ -85,14 +86,47 @@ func TestReviewCleanKeepsDeletionOnRecord(t *testing.T) {
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "日入过万"))
 	waitIdle(t, b)
 
-	if n := fake.CountCalls("restrictChatMember"); n != 1 {
-		t.Errorf("只应有那次临时禁言，实际 %d 次（主动解禁会踩掉别的禁言）", n)
+	mutes := fake.Calls("restrictChatMember")
+	if len(mutes) != 2 {
+		t.Fatalf("应先临时禁言、复判正常后再解除，实际 %d 次", len(mutes))
 	}
-	if verdict, action, _ := logRow(t, b); verdict != "clean" || action != "deleted" {
-		t.Errorf("verdict=%q action=%q，期望 clean/deleted", verdict, action)
+	if d := untilOf(mutes[0]); d <= 0 {
+		t.Errorf("第一次应是限时禁言，时长 %d 秒", d)
+	}
+	// 第二次必须是「权限全开」：再发一次全 false 等于又禁言一次。
+	perms, _ := mutes[1]["permissions"].(map[string]any)
+	if perms == nil || perms["can_send_messages"] != true {
+		t.Errorf("复判正常后应解除临时禁言，得到 %v", mutes[1])
+	}
+	if verdict, action, reason := logRow(t, b); verdict != "clean" || action != "deleted" ||
+		!strings.Contains(reason, "已解除临时禁言") {
+		t.Errorf("verdict=%q action=%q reason=%q", verdict, action, reason)
 	}
 	if gm, _ := loadMember(b.Store, -100, 42); gm.AdHits != 0 {
 		t.Error("复判为正常的不该计命中")
+	}
+}
+
+// TestReviewCleanKeepsOtherMute：同一人在本群另有未解除的正式处罚时，
+// 复判正常也不主动解禁 —— 那种禁言是他另一条消息挣来的，解掉会把那条
+// 判定一起踩掉。
+func TestReviewCleanKeepsOtherMute(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"), llmReply(false, 0.8, "none", "message"))
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,42,1,'加微信','ad',0.99,'llm','scam','deleted_muted','自己的广告',?,?)`,
+		time.Now().Unix(), b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "日入过万"))
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("restrictChatMember"); n != 1 {
+		t.Errorf("另有生效处罚时不该主动解禁，实际 %d 次", n)
 	}
 }
 
