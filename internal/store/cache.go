@@ -23,6 +23,10 @@ import (
 //   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
 //   - per-chat：不在本表，直接是 bot_chats 的列
 //
+// DefaultSoTrust 是「采信线」的默认值（百分数）：初判置信度低于它才转
+// 大模型复判；达到它就直接采信初判，不再花钱复判。
+const DefaultSoTrust = 95
+
 // DefaultSoFloor 是「初判下限」的默认值（百分数）：初判置信度低于它的
 // 「广告」是噪声，直接放行、连复判都不跑。
 const DefaultSoFloor = 30
@@ -90,7 +94,7 @@ var settingDefaults = map[string]string{
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
 	// 引入浮点要改动整套设置面板机制，不值当。
-	"antiad_so_trust":     "80",                            // systemone 置信度采信线
+	"antiad_so_trust":     strconv.Itoa(DefaultSoTrust),    // systemone 置信度采信线
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
 	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不复判
 	"antiad_act_hard":     "90",                            // 删除 + 禁言线

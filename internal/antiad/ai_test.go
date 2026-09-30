@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"menshen/internal/store"
 	"menshen/internal/testutil"
 )
 
@@ -400,5 +401,45 @@ func TestSoFloorSkipsReview(t *testing.T) {
 	waitIdle(t, b3)
 	if llmN3.Load() != 1 {
 		t.Errorf("下限为 0 时应照常复判，跑了 %d 次", llmN3.Load())
+	}
+}
+
+// TestTrustLineDefault95：采信线默认 95 —— 只有很有把握的初判才免复判。
+// 老成员只删不禁（不会强制复判），所以这一档能干净地看出采信线。
+func TestTrustLineDefault95(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if got := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust",
+		store.DefaultSoTrust); got != 95 {
+		t.Fatalf("采信线默认应为 95，得到 %d", got)
+	}
+
+	// 90% 的广告：低于采信线 → 转复判。
+	b2, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	if _, err := b2.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count) VALUES (-100,42,1,1,500)`); err != nil {
+		t.Fatal(err)
+	}
+	_, llmN := fakeAIWith(t, b2, soReply("ad", 0.90, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 42, 7, "加微信 日入5000"))
+	waitIdle(t, b2)
+	if llmN.Load() != 1 {
+		t.Errorf("90%% 的初判应转复判（采信线 95），复判跑了 %d 次", llmN.Load())
+	}
+
+	// 96% 的广告：达到采信线 → 直接采信初判，不花复判的钱。
+	b3, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b3, -100)
+	if _, err := b3.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count) VALUES (-100,43,1,1,500)`); err != nil {
+		t.Fatal(err)
+	}
+	_, llmN3 := fakeAIWith(t, b3, soReply("ad", 0.96, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b3, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
+	waitIdle(t, b3)
+	if llmN3.Load() != 0 {
+		t.Errorf("96%% 的初判应直接采信，复判跑了 %d 次", llmN3.Load())
 	}
 }

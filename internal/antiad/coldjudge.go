@@ -294,7 +294,7 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 		return v, nil
 	}
 
-	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", 80)) / 100
+	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100
 	if so.Confidence >= trust {
 		return so, nil
 	}

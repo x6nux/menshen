@@ -1173,7 +1173,7 @@ func needReview(b *core.Bot, snap *store.Snapshot, v adVerdict, act adAction) bo
 	if v.Decider != "systemone" || !hasLLM(b, snap) {
 		return false // 大模型已经判过（systemone 不可用时它顶上），或没配复判模型
 	}
-	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", 80)) / 100
+	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100
 	return v.Confidence < trust || act.Mute || act.Ban
 }
 
@@ -1187,7 +1187,10 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 		// 门槛），复判没跑成还照它删消息、禁言、连带删除，等于把最不可靠
 		// 的一路当成了最终结论。实测：一条「我活了」被 systemone 判 13%
 		// 广告、复判超时，结果删了消息、临时禁言，还连带删了此人近期全部消息。
-		if demoteUnconfirmed(b, &prior, "大模型复判失败："+err.Error()) {
+		// 哈希命中不是「模型拿不准」：它是同一条内容此前已被判定为广告的
+		// 硬证据，不该被采信线降级（复判失败时照旧采信它）。
+		if prior.Decider != deciderHash &&
+			demoteUnconfirmed(b, &prior, "大模型复判失败："+err.Error()) {
 			slog.Warn("反广告：大模型复判失败且初判低于采信线，按未定放行",
 				"置信度", prior.Confidence, "err", err)
 			prior.Cost += llm.Cost
@@ -1445,7 +1448,7 @@ func fenceSample(s string) string {
 // 又恰恰不看置信度，两件事叠在一起就会出现「13% 的广告删消息+禁言」。
 // 返回是否降级（降级后 IsAd=false，按未定走：留流水、不处置）。
 func demoteUnconfirmed(b *core.Bot, v *adVerdict, why string) bool {
-	trust := float64(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust", 80)) / 100
+	trust := float64(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100
 	if !v.IsAd || v.Confidence >= trust {
 		return false
 	}
