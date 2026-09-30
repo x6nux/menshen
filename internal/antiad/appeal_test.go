@@ -29,9 +29,19 @@ func appealDM(uid int64) *tg.Message {
 		Chat: &tg.Chat{ID: uid, Type: "private"}}
 }
 
+// appealGo 模拟「发起申诉」：理由现在必填，所以走的是写理由入口
+// （a:ap:st）再提交一条理由，而不是老的 a:ap:go（那个动作已不再放行）。
 func appealGo(uid int64) *tg.CallbackQuery {
-	return &tg.CallbackQuery{ID: "cb", Data: "a:ap:go", From: &tg.TGUser{ID: uid},
+	return &tg.CallbackQuery{ID: "cb", Data: "a:ap:st", From: &tg.TGUser{ID: uid},
 		Message: &tg.Message{MessageID: 5, Chat: &tg.Chat{ID: uid, Type: "private"}}}
+}
+
+// submitAppeal 走完整入口：点「写申诉理由」→ 发一条理由。
+func submitAppeal(b *core.Bot, uid int64, reason string) {
+	HandleAppealCallback(b, appealGo(uid))
+	m := appealDM(uid)
+	m.Text = reason
+	HandleNonStaffPrivate(b, m, reason)
 }
 
 func appealStatus(t *testing.T, b *core.Bot, uid int64) string {
@@ -87,7 +97,7 @@ func TestAppealLiftsOwnGban(t *testing.T) {
 	if !HandleNonStaffPrivate(b, appealDM(555), "/start") {
 		t.Fatal("专属联合封禁的人 /start 应进申诉入口")
 	}
-	HandleAppealCallback(b, appealGo(555))
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
 
 	if _, still := b.Cache.Snap().GbanOwnBans[1][555]; still {
@@ -108,7 +118,7 @@ func TestAppealAIOverturnsAndLifts(t *testing.T) {
 	if !HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1)) {
 		t.Fatal("申诉入口应被接管")
 	}
-	HandleAppealCallback(b, appealGo(555))
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
 
 	if _, still := loadJoinMute(b.Store, -100, 555); still {
@@ -146,7 +156,7 @@ func TestAppealUpholdFallsBackToNoWeb(t *testing.T) {
 	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
-	HandleAppealCallback(b, appealGo(555))
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
 
 	if st := appealStatus(t, b, 555); st != "noweb" {
@@ -180,7 +190,7 @@ func TestAppealUpholdGoesToWeb(t *testing.T) {
 	}
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
-	HandleAppealCallback(b, appealGo(555))
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
 
 	if st := appealStatus(t, b, 555); st != "web" {
@@ -248,13 +258,15 @@ func TestAppealSingleOpen(t *testing.T) {
 	}
 }
 
-// TestAppealStatementDirectGo：提示里写着「不想写理由就直接交给 AI」，
-// 出口必须真的存在——按「直接申诉」应把这张单推进 AI，而不是只重复提示。
+// TestAppealStatementDirectGo：申诉理由现在必填。「直接申诉」这个按钮已从
+// 入口去掉，但老消息里还留着 —— 点它不该再把单子推进 AI，而是把话说明白、
+// 留在 statement 等理由；写了理由才照常推进。
 func TestAppealStatementDirectGo(t *testing.T) {
-	b, _ := testutil.NewTestBot(t, 1)
+	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, false, "资料已改正")
 	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
 
+	// 点「写申诉理由」进入 statement。
 	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
 		From: &tg.TGUser{ID: 555},
 		Message: &tg.Message{MessageID: 5,
@@ -263,11 +275,25 @@ func TestAppealStatementDirectGo(t *testing.T) {
 		t.Fatalf("应先进入 statement，得到 %q", st)
 	}
 
-	HandleAppealCallback(b, appealGo(555))
+	// 老消息里的「直接申诉」（a:ap:go）：理由必填，不该推进 AI。
+	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:go",
+		From: &tg.TGUser{ID: 555},
+		Message: &tg.Message{MessageID: 5,
+			Chat: &tg.Chat{ID: 555, Type: "private"}}})
 	waitIdle(t, b)
+	if st := appealStatus(t, b, 555); st != "statement" {
+		t.Errorf("跳过动作不该推进 AI，仍应停在 statement，得到 %q", st)
+	}
+	if last := fake.LastCall("sendMessage"); last == nil ||
+		!strings.Contains(fmt.Sprint(last["text"]), "必须填写") {
+		t.Errorf("应告诉用户理由必填，得到 %v", last)
+	}
 
+	// 写了理由才推进（复用同一张单）。
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
+	waitIdle(t, b)
 	if st := appealStatus(t, b, 555); st != "lifted" {
-		t.Errorf("「直接申诉」应推进 AI 并结案，得到 %q", st)
+		t.Errorf("写了理由后应推进 AI 并结案，得到 %q", st)
 	}
 	var n int
 	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)
@@ -295,7 +321,7 @@ func TestAppealStatementCancel(t *testing.T) {
 	}
 	// 作废的单不再占位：再点「直接申诉」可以建新单。
 	appealAI(t, b, false, "资料已改正")
-	HandleAppealCallback(b, appealGo(555))
+	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
 	var n int
 	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals WHERE user_id=555`).Scan(&n)

@@ -195,9 +195,10 @@ func TestAppealEntryListsPenalties(t *testing.T) {
 	if !strings.Contains(text, "申诉") || !strings.Contains(text, "进群资料审核") {
 		t.Errorf("应列出有效限制:\n%s", text)
 	}
-	if kb := fmt.Sprint(last["reply_markup"]); !strings.Contains(kb, "a:ap:st") ||
-		!strings.Contains(kb, "a:ap:go") {
-		t.Errorf("应给出「写理由 / 直接申诉」两个按钮，得到 %s", kb)
+	if kb := fmt.Sprint(last["reply_markup"]); !strings.Contains(kb, "a:ap:st") {
+		t.Errorf("应给出「写申诉理由」按钮，得到 %s", kb)
+	} else if strings.Contains(kb, "a:ap:go") {
+		t.Errorf("申诉理由必填，不该再有「直接申诉」按钮，得到 %s", kb)
 	}
 }
 

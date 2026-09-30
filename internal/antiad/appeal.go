@@ -250,12 +250,12 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 	sb.WriteString("📝 <b>申诉</b>\n\n本 bot 记录到你还在以下限制中：\n\n")
 	sb.WriteString(penaltyLines(penalties))
 	sb.WriteString("\n如果认为这是误判，可以发起申诉：\n" +
-		"• 写申诉理由：说明为什么应当撤销\n" +
-		"• 直接申诉：跳过理由，直接交给 AI 复核\n\n" +
-		"<i>申诉会先由 AI 复核一次；复核维持原判时还需要完成网页人机验证。</i>")
+		"• <b>必须先写清申诉理由</b>（不超过 200 字）：说明为什么应当撤销、" +
+		"哪条判定不成立、资料或发言哪里是正常的\n\n" +
+		"<i>申诉会先由 AI 复核一次，你的理由会一起交给它；" +
+		"复核维持原判时还需要完成网页人机验证。</i>")
 	b.Send(dmChat, sb.String(), tg.InlineKB(
 		[][2]string{{"📝 写申诉理由", "a:ap:st"}},
-		[][2]string{{"⏩ 直接申诉", "a:ap:go"}},
 	))
 	return true
 }
@@ -293,9 +293,10 @@ func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec) {
 	switch ap.Status {
 	case "statement":
 		b.Send(dmChat, "📝 你有一张进行中的申诉单，正在等你的<b>申诉理由</b>。\n\n"+
-			"请直接发送理由（不超过 200 字）；不想写理由就直接交给 AI，也可以取消这张单。",
+			"请直接发送理由（不超过 200 字）—— 申诉必须写明理由，"+
+			"复核模型要靠它判断你的说法是否与原文、资料、留底相符。\n\n"+
+			"10 分钟内没收到理由，这张单会自动作废；也可以现在取消。",
 			tg.InlineKB(
-				[][2]string{{"⏩ 直接申诉", "a:ap:go"}},
 				[][2]string{{"🗑 取消申诉", "a:ap:cancel"}},
 			))
 	case "ai":
@@ -375,12 +376,15 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		// 已有未结单就不再建：同一人同一 bot 只能有一张。
 		if ap, ok := openAppeal(b.Store, b.BotID(), uid); ok {
-			// statement 状态下「直接申诉」就地推进：提示里写着可以不写
-			// 理由，出口必须真的存在，否则用户被卡在死路上。
 			if parts[2] == "go" && ap.Status == "statement" {
-				updateAppeal(b.Shared, ap.ID, `status='ai'`)
-				b.Send(dmChat, "✅ 已跳过理由，正在交给 AI 复核……", nil)
-				startAppealAI(b, ap.ID, uid)
+				// 老消息里的「直接申诉」按钮还会被点到：申诉理由现在必填，
+				// 不再放行，把话说明白并留在这张单上等理由。
+				b.AnswerCallback(q.ID, "申诉理由必填")
+				b.Send(dmChat, "⚠️ 申诉理由必须填写，不能跳过。\n\n"+
+					"请直接发送理由（不超过 200 字），说明为什么应当撤销；"+
+					"不想申诉就点下面的按钮取消。", tg.InlineKB(
+					[][2]string{{"🗑 取消申诉", "a:ap:cancel"}},
+				))
 				return
 			}
 			showAppealProgress(b, dmChat, ap)
@@ -392,21 +396,15 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 				humanDuration(wait)), nil)
 			return
 		}
-		status := "ai"
-		if parts[2] == "st" {
-			status = "statement"
-		}
-		ap, err := createAppeal(b, uid, status)
-		if err != nil {
+		// 理由必填：两条入口（st / 老消息里的 go）都建在「等理由」状态。
+		if _, err := createAppeal(b, uid, "statement"); err != nil {
 			slog.Error("创建申诉单失败", "uid", uid, "err", err)
 			b.Send(dmChat, "系统繁忙，请稍后再试。", nil)
 			return
 		}
-		if status == "statement" {
-			b.Send(dmChat, "请直接发送你的<b>申诉理由</b>（不超过 200 字）：", nil)
-			return
-		}
-		startAppealAI(b, ap.ID, uid)
+		b.Send(dmChat, "请直接发送你的<b>申诉理由</b>（不超过 200 字）：\n\n"+
+			"<i>写明为什么认为这是误判：哪条判定不成立、当时的语境是什么、"+
+			"资料里哪部分是正常的。复核模型会拿它和原文、资料、留底对照。</i>", nil)
 
 	case "cancel":
 		b.AnswerCallback(q.ID, "")
