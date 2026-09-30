@@ -492,3 +492,22 @@ func TestMiniStateSections(t *testing.T) {
 		}
 	}
 }
+
+// TestMiniAppListSearch：名单类列表要能搜。名单长起来之后只能靠肉眼翻，
+// 想确认「某个人在不在名单里」得从头滑到尾。搜索只重绘列表容器，
+// 不动输入框本身（整体 render() 会丢焦点与输入法组合）。
+func TestMiniAppListSearch(t *testing.T) {
+	for _, want := range []string{
+		"function filterRows(",
+		// 全局组、专属组、白名单三处都要有搜索框与列表容器。
+		`id="gb_q"`, `id="gb_list"`, `id="gb_count"`,
+		`id="ow_q"`, `id="ow_list"`, `id="ow_count"`,
+		`id="wl_q"`, `id="wl_list"`, `id="wl_count"`,
+		// 搜索走 oninput（即时过滤），且不整页重绘。
+		`oninput="filterRows(`,
+	} {
+		if !strings.Contains(miniAppHTML, want) {
+			t.Errorf("Mini App 缺少 %q", want)
+		}
+	}
+}

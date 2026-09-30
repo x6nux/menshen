@@ -521,11 +521,13 @@ function viewGbanOwn(){
       esc(c.title||c.chat_id)+'</label><span class="mono">'+c.chat_id+'</span></div>';
   });
   h+='<div class="hint" style="margin-top:10px">封禁名单</div>';
-  (o.bans||[]).forEach(function(g){
-    h+='<div class="row"><span class="mono">'+g.user_id+' · '+esc(g.reason)+'</span>'+
-      '<button class="d" onclick="act(\'gbanown\',{action:\'remove\',user_id:'+g.user_id+'},\'已移除\')">移除</button></div>';
-  });
-  if(!(o.bans||[]).length) h+='<div class="hint">（名单为空）</div>';
+  var bans=o.bans||[];
+  h+='<div class="row" style="border:0;padding:0 0 8px">'+
+    '<input id="ow_q" placeholder="搜 user_id / 原因" '+
+    'oninput="filterRows(S.gban_own.bans,\'ow_q\',\'ow_list\',\'ow_count\',gbanKey,gbanOwnRow,\'没有匹配的名单条目\')">'+
+    '<span class="k" id="ow_count">共 '+bans.length+' 人</span></div>'+
+    '<div id="ow_list">'+(bans.length?bans.map(gbanOwnRow).join(''):
+      '<div class="hint">（名单为空）</div>')+'</div>';
   h+='<div class="grid" style="margin-top:8px"><input id="ow_uid" placeholder="user_id">'+
     '<input id="ow_reason" placeholder="原因"></div>'+
     '<button class="b" style="margin-top:8px" onclick="act(\'gbanown\',{action:\'add\',user_id:document.getElementById(\'ow_uid\').value,'+
@@ -544,26 +546,60 @@ function viewAdmins(){
     'note:document.getElementById(\'ad_note\').value},\'已添加\')">添加</button></div>';
 }
 function viewGban(){
+  var items=S.gban||[];
   return '<div class="card"><h3>全局联合封禁组</h3>'+
     '<div class="hint" style="margin-bottom:8px">所有管理员共同维护；只有加入全局组的 bot 会执行'+
     '（机器人详情页里选），命中自动入组的规则见专属组说明。</div>'+
-    (S.gban||[]).map(function(g){
-      return '<div class="row"><span class="mono">'+g.user_id+' '+esc(g.reason)+'</span>'+
-      '<button class="d" onclick="if(confirm(\'解除封禁？\'))act(\'gban\',{action:\'remove\',user_id:'+g.user_id+'},\'已解除\')">解除</button></div>';
-    }).join('')+
+    '<div class="row" style="border:0;padding:0 0 8px">'+
+    '<input id="gb_q" placeholder="搜 user_id / 原因" '+
+    'oninput="filterRows(S.gban,\'gb_q\',\'gb_list\',\'gb_count\',gbanKey,gbanRow,\'没有匹配的名单条目\')">'+
+    '<span class="k" id="gb_count">共 '+items.length+' 人</span></div>'+
+    '<div id="gb_list">'+(items.length?items.map(gbanRow).join(''):
+      '<div class="hint">（名单为空）</div>')+'</div>'+
     '<div class="grid" style="margin-top:8px"><input id="gb_uid" placeholder="user_id">'+
     '<input id="gb_reason" placeholder="原因"></div>'+
     '<button class="b" style="margin-top:8px" onclick="act(\'gban\',{action:\'add\',user_id:document.getElementById(\'gb_uid\').value,'+
     'reason:document.getElementById(\'gb_reason\').value},\'已加入\')">加入名单</button></div>';
 }
+/* 名单类列表的搜索：只重绘列表容器。
+   整体 render() 会把输入框重建、光标与输入法组合都丢掉，所以搜索时
+   只动列表与计数，不碰输入框本身。key 里同时带上 user_id、原因与来源，
+   搜 uid、中文原因、群号都能命中。 */
+function filterRows(items, inputId, boxId, countId, keyOf, rowOf, emptyText){
+  items=items||[];
+  var box=document.getElementById(boxId); if(!box) return;
+  var input=document.getElementById(inputId);
+  var q=(input&&input.value?input.value:'').trim().toLowerCase();
+  var hit=q?items.filter(function(it){
+    return String(keyOf(it)||'').toLowerCase().indexOf(q)>=0; }):items;
+  box.innerHTML=hit.length?hit.map(rowOf).join(''):'<div class="hint">'+emptyText+'</div>';
+  var c=document.getElementById(countId);
+  if(c) c.textContent=q?('匹配 '+hit.length+' / 共 '+items.length+' 人'):('共 '+items.length+' 人');
+}
+function gbanKey(g){ return g.user_id+' '+(g.reason||''); }
+function gbanRow(g){
+  return '<div class="row"><span class="mono">'+g.user_id+' '+esc(g.reason)+'</span>'+
+    '<button class="d" onclick="if(confirm(\'解除封禁？\'))act(\'gban\',{action:\'remove\',user_id:'+g.user_id+'},\'已解除\')">解除</button></div>';
+}
+function gbanOwnRow(g){
+  return '<div class="row"><span class="mono">'+g.user_id+' · '+esc(g.reason)+'</span>'+
+    '<button class="d" onclick="act(\'gbanown\',{action:\'remove\',user_id:'+g.user_id+'},\'已移除\')">移除</button></div>';
+}
+function whiteKey(w){ return w.user_id+' '+(w.source||'')+' '+w.bot_id+' '+w.chat_id; }
+function whiteRow(w){
+  var scope = w.bot_id==0?'全平台':(w.chat_id==0?'bot 所有群':'群 '+w.chat_id);
+  return '<div class="row"><span class="mono">'+w.user_id+' · '+scope+' · '+esc(w.source)+'</span>'+
+    '<button class="d" onclick="act(\'whitelist\',{action:\'remove\',bot_id:'+w.bot_id+',chat_id:'+w.chat_id+
+    ',user_id:'+w.user_id+'},\'已移除\')">移除</button></div>';
+}
 function viewWhite(){
+  var items=S.whitelist||[];
   var h='<div class="card"><h3>白名单</h3>'+
-    (S.whitelist||[]).map(function(w){
-      var scope = w.bot_id==0?'全平台':(w.chat_id==0?'bot 所有群':'群 '+w.chat_id);
-      return '<div class="row"><span class="mono">'+w.user_id+' · '+scope+' · '+esc(w.source)+'</span>'+
-      '<button class="d" onclick="act(\'whitelist\',{action:\'remove\',bot_id:'+w.bot_id+',chat_id:'+w.chat_id+
-      ',user_id:'+w.user_id+'},\'已移除\')">移除</button></div>';
-    }).join('')+
+    '<div class="row" style="border:0;padding:0 0 8px">'+
+    '<input id="wl_q" placeholder="搜 user_id / 来源 / 群号" '+
+    'oninput="filterRows(S.whitelist,\'wl_q\',\'wl_list\',\'wl_count\',whiteKey,whiteRow,\'没有匹配的白名单\')">'+
+    '<span class="k" id="wl_count">共 '+items.length+' 人</span></div>'+
+    '<div id="wl_list">'+items.map(whiteRow).join('')+'</div>'+
     '<div class="grid" style="margin-top:8px"><select id="wl_bot">'+botOpts()+'</select>'+
     '<input id="wl_uid" placeholder="user_id"></div>'+
     '<div class="grid" style="margin-top:6px"><input id="wl_chat" placeholder="chat_id（0 = 该 bot 所有群）">'+
