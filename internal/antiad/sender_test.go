@@ -1,6 +1,10 @@
 package antiad
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -189,5 +193,105 @@ func TestAdCommandAcceptsChannelID(t *testing.T) {
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 1, "/check -1009"))
 	if p := fake.LastCall("sendMessage"); p != nil && strings.Contains(p["text"].(string), "用法") {
 		t.Error("负数的频道 ID 不该被当成用法错误")
+	}
+}
+
+// TestResolveLinkBotAbout：bot 的简介只有公开预览页给得到（getChat 对别的
+// bot 只返回名字与用户名），没设置简介时预览页给的默认文案不能当成简介；
+// 本服务判过它广告、或它还在联合封禁名单里时 ad_known=true。
+//
+// 这是「资料里写『有问题请联系我的管家 @xxx_bot』被判成广告」那个误判的
+// 直接修复：光看名字（「Child killer」）分不出正常 bot 与广告 bot。
+func TestResolveLinkBotAbout(t *testing.T) {
+	pages := map[string]string{
+		"/CleanBot": `<html><head><meta property="og:title" content="管家 Bot">` +
+			`<meta property="og:description" content="只做私聊答疑，随手记点笔记。"></head></html>`,
+		"/PlainBot": `<meta property="og:title" content="Plain">` +
+			`<meta property="og:description" content="You can contact @PlainBot right away.">`,
+		"/AdBot": `<meta property="og:description" content="日入5000 &amp; 私聊领福利，加群上号">`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := pages[r.URL.Path]; ok {
+			io.WriteString(w, body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	oldURL := botAboutURL
+	botAboutURL = srv.URL + "/"
+	defer func() { botAboutURL = oldURL }()
+
+	b, fake := testutil.NewTestBot(t, 1)
+	ids := map[string]int64{"CleanBot": 9001, "PlainBot": 9002, "AdBot": 9003}
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method != "getChat" {
+			return "", false
+		}
+		handle := strings.TrimPrefix(fmt.Sprint(p["chat_id"]), "@")
+		id, ok := ids[handle]
+		if !ok {
+			return `{"ok":false}`, true
+		}
+		return fmt.Sprintf(`{"ok":true,"result":{"id":%d,"type":"private",
+			"first_name":"Child","last_name":"killer"}}`, id), true
+	}
+	// AdBot 在本服务有广告案底：它自己发过的消息被判过广告。
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,bot_id)
+		VALUES (-100,9003,1,'加群上号','ad',0.99,'llm','scam','deleted','测试用案底',
+		 0,0,0,1700000000,?)`,
+		b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+
+	clean := resolveLink(b, "CleanBot")
+	if clean.Kind != "bot" || clean.Title != "Child killer" {
+		t.Errorf("bot 应认出来并带标题，得到 %+v", clean)
+	}
+	if clean.About != "只做私聊答疑，随手记点笔记。" {
+		t.Errorf("简介要取自预览页，得到 %q", clean.About)
+	}
+	if clean.AdKnown {
+		t.Error("没有案底的 bot 不该标成广告账号")
+	}
+
+	plain := resolveLink(b, "PlainBot")
+	if plain.About != "" {
+		t.Errorf("没设置简介时预览页的默认文案不该当简介，得到 %q", plain.About)
+	}
+
+	ad := resolveLink(b, "AdBot")
+	if !ad.AdKnown {
+		t.Error("判过广告的 bot 该标 ad_known")
+	}
+	if ad.About != "日入5000 & 私聊领福利，加群上号" {
+		t.Errorf("简介要解 HTML 实体，得到 %q", ad.About)
+	}
+
+	// 名单里的账号也算案底（不只看流水）。
+	if err := GbanAdd(b.Shared, 9004, "测试", -100, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	ids["ListedBot"] = 9004
+	pages["/ListedBot"] = `<meta property="og:description" content="私人助理">`
+	if !resolveLink(b, "ListedBot").AdKnown {
+		t.Error("还在联合封禁名单里的账号该标 ad_known")
+	}
+}
+
+// TestBioLinksClauseKeepsContactNormal：提示词里那几条口径不能被改回去：
+// 名字不算证据、引导到自己 bot 的联系方式算正常、案底看 ad_known。
+func TestBioLinksClauseKeepsContactNormal(t *testing.T) {
+	for _, want := range []string{
+		"名字本身不构成证据", "有问题联系我的管家", "ad_known", "Chat killer",
+	} {
+		if want == "Chat killer" {
+			want = "Child killer"
+		}
+		if !strings.Contains(bioLinksClause, want) {
+			t.Errorf("bioLinksClause 应保留口径 %q：\n%s", want, bioLinksClause)
+		}
 	}
 }

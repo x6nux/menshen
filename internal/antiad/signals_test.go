@@ -29,6 +29,12 @@ func TestProfileHandles(t *testing.T) {
 // TestResolveLinkKindsAndCache：频道、bot 各自识别；同一个用户名只查一次；
 // 查不到的记成 unknown 并同样缓存——私有群每条消息都重查只是白撞速率限制。
 func TestResolveLinkKindsAndCache(t *testing.T) {
+	// bot 的简介要去公开预览页取，测试里指到一个关着的端口：立刻失败，
+	// 既不访问外网也不拖慢测试。
+	oldAbout := botAboutURL
+	botAboutURL = "http://127.0.0.1:1/"
+	t.Cleanup(func() { botAboutURL = oldAbout })
+
 	b, fake := testutil.NewTestBot(t, 1)
 	fake.Resp["getChat"] = `{"ok":true,"result":{"type":"channel","title":"Go 技术",` +
 		`"description":"分享 Go 文章"}}`

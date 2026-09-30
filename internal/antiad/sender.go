@@ -2,6 +2,10 @@ package antiad
 
 import (
 	"encoding/json"
+	"html"
+	"io"
+	"log/slog"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +23,9 @@ type linkInfo struct {
 	Kind   string `json:"kind"`
 	Title  string `json:"title,omitempty"`
 	About  string `json:"about,omitempty"`
+	// AdKnown 表示这个账号在本服务里有广告案底：仍在联合封禁名单里，
+	// 或被判过广告。名字分不出正常 bot 与广告 bot，这个字段能。
+	AdKnown bool `json:"ad_known,omitempty"`
 }
 
 type linkEntry struct {
@@ -90,6 +97,7 @@ func resolveLink(b *core.Bot, handle string) linkInfo {
 	var resp struct {
 		OK     bool `json:"ok"`
 		Result struct {
+			ID          int64  `json:"id"`
 			Type        string `json:"type"`
 			Title       string `json:"title"`
 			FirstName   string `json:"first_name"`
@@ -110,6 +118,14 @@ func resolveLink(b *core.Bot, handle string) linkInfo {
 			info.Title = strings.TrimSpace(r.FirstName + " " + r.LastName)
 			info.About = r.Bio
 		}
+		// bot 的简介只有公开预览页给得到（getChat 对别的 bot 只返回名字与
+		// 用户名），而且「这个 bot 有没有广告案底」只有本服务自己的账本
+		// 知道。两者一起补上，模型才能分清「挂自己的正常 bot」和「引流到
+		// 广告 bot」——只给一个吓人的名字时，实测被判成广告号。
+		if info.Kind == "bot" {
+			info.About = fetchBotAbout(handle)
+			info.AdKnown = accountAdKnown(b.Shared, r.ID)
+		}
 		// 频道简介同样是攻击者可控的文字，与正文同一套上限思路。
 		info.Title = core.TruncateRunes(info.Title, 100)
 		info.About = core.TruncateRunes(info.About, 300)
@@ -117,6 +133,80 @@ func resolveLink(b *core.Bot, handle string) linkInfo {
 	// 查不到也缓存：私有群、已删号每条消息都重查一遍只是白白撞速率限制。
 	b.LinkCache.Store(key, linkEntry{info: info, expire: time.Now().Add(linkTTL)})
 	return info
+}
+
+// accountAdKnown 报告这个账号在本服务里有没有广告案底：仍在联合封禁名单
+// 里，或被判过广告。判断「把人引导到这个 bot」算不算引流广告靠它，光看
+// 名字不行（「Child killer」这种只是取名风格）。
+func accountAdKnown(sh *core.Shared, uid int64) bool {
+	if uid == 0 {
+		return false
+	}
+	snap := sh.Cache.Snap()
+	if _, ok := snap.Gban[uid]; ok {
+		return true
+	}
+	for _, bans := range snap.GbanOwnBans {
+		if _, ok := bans[uid]; ok {
+			return true
+		}
+	}
+	var n int
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=? AND verdict='ad'`, uid).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// botAboutURL 是 bot 公开预览页的前缀。测试时替换成 httptest 地址。
+var botAboutURL = "https://t.me/"
+
+// ogDescriptionRe 从预览页里取简介。
+var ogDescriptionRe = regexp.MustCompile(`<meta property="og:description" content="([^"]*)"`)
+
+// botAboutClient 取 bot 简介用的 HTTP 客户端。Transport 为 nil：读
+// HTTP_PROXY / HTTPS_PROXY 环境变量，与 Turnstile 校验同一个思路。
+var botAboutClient = &http.Client{Timeout: 5 * time.Second}
+
+// fetchBotAbout 取一个 bot 的公开简介（它的 /setdescription 文本）。
+//
+// 只有公开预览页给得到这个字段：getChat 对别的 bot 只返回名字与用户名；
+// bot 的「简介」与用户的 bio 不同，是设置给自己聊天页面的说明。取不到
+// （网络不可用、没设置、页面结构变了）返回空串 —— 提示词里「没设置简介」
+// 与「正常简介」同样是「不加重怀疑」。
+func fetchBotAbout(handle string) string {
+	req, err := http.NewRequest(http.MethodGet, botAboutURL+handle, nil)
+	if err != nil {
+		return ""
+	}
+	// 不带浏览器 UA 时预览页会返回无 meta 的精简版。
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; menshen-antiad/1.0)")
+	resp, err := botAboutClient.Do(req)
+	if err != nil {
+		slog.Debug("反广告：读取 bot 简介失败", "handle", handle, "err", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return ""
+	}
+	m := ogDescriptionRe.FindSubmatch(raw)
+	if m == nil {
+		return ""
+	}
+	desc := strings.TrimSpace(html.UnescapeString(string(m[1])))
+	// 没设置简介时预览页给的是默认文案（"You can contact @xxx right away."），
+	// 那不是简介，别当成「这个 bot 说自己只提供联系方式」。
+	if strings.HasPrefix(desc, "You can contact @") &&
+		strings.HasSuffix(desc, " right away.") {
+		return ""
+	}
+	return core.TruncateRunes(desc, 300)
 }
 
 // GCLinkCache 清理过期条目，防止 map 无限增长。
