@@ -233,3 +233,39 @@ func TestProfileOKStoreLayer(t *testing.T) {
 		t.Errorf("表里应有两行，得到 %d", n)
 	}
 }
+
+// TestProfileOKGrantUsesEnrichedProfile：资料放行必须用**带简介的**画像立案。
+//
+// 实测：同步段那份画像还没取简介，拿它算指纹的话，指纹与后续判定时算出来的
+// 对不上，放行永远命中不了 —— 同一个人一天里被反复放行 12/24/48 小时，
+// 却每次都被初判按同一份资料判成广告，再靠复判放回来。
+func TestProfileOKGrantUsesEnrichedProfile(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.9, "scam", "account"),
+		llmReplyWithOK(false, 0.9, "none", "account", 24))
+	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":7001,"type":"private","first_name":"火",` +
+				`"username":"ym94203","bio":"为了双方账号安全，请通过下方的双向bot来私聊我"}}`, true
+		}
+		return "", false
+	}
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 7001, 7, "我回来了"))
+	waitIdle(t, b)
+
+	info := userInfo(b, 7001)
+	enriched := senderProfile{UserID: 7001, Username: "someone",
+		FirstName: info.firstName, LastName: info.lastName, Bio: info.bio}
+	if until := b.Cache.Snap().ProfileAllowed(b.BotID(), 7001,
+		profileHash(enriched), time.Now().Unix()); until == 0 {
+		t.Error("放行的指纹必须与判定时算的一致（含简介），否则放行命中不了")
+	}
+	// 反向：用「还没取简介」的那份画像算，命中不了 —— 那正是之前的 bug。
+	if until := b.Cache.Snap().ProfileAllowed(b.BotID(), 7001,
+		profileHash(senderProfile{UserID: 7001, Username: "someone"}),
+		time.Now().Unix()); until != 0 {
+		t.Error("不带简介的指纹不该命中")
+	}
+}

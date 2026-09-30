@@ -435,6 +435,8 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 
 	chatID := conf.ChatID
 	enrichSender(b, &state.Sender)
+	// 同上：定案与资料放行都用补全过的画像。
+	profile = state.Sender
 
 	// 硬规则：人工复查同样先过一遍（模型对冒用角色扮演会判正常，管理员
 	// 复查这种人时不该被模型带偏）。
@@ -691,6 +693,11 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 简介与简介里的链接要发 getChat，所以放在异步段取：同步段每多一次 TG
 	// 往返，更新处理就多停一次。
 	enrichSender(b, &state.Sender)
+	// 定案用的是同一份补全过的画像：planAction 的资历判断、以及资料放行的
+	// **指纹**都在后面按它算。指纹必须与下次判定时算出来的完全一致，否则
+	// 放行永远命中不了 —— 实测同一个人一天里被反复放行 12/24/48 小时，却
+	// 每次都被初判按同一份资料判成广告，再靠复判放回来。
+	profile = state.Sender
 
 	// 第二次前置判断：这里刚好拿到简介（判定本来就要取，零额外开销）。
 	if leaderGateWorker(b, snap, conf, m, state.Sender) {
