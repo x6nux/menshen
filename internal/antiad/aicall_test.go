@@ -374,3 +374,44 @@ func TestLLMStreamHeartbeatDoesNotHideStall(t *testing.T) {
 		t.Errorf("心跳不该算进度，应在空闲超时内失败，实际用了 %v", took)
 	}
 }
+
+// TestSlowModelGetsCutForTheFastRetry：单次尝试必须有上界。实测的失败形态是
+// 「一路慢模型把整个预算吃光」—— 列表里 mimo-v2.5 拖满客户超时，而
+// big-pickle 3 秒就能出结果，却连试都轮不上，复判整条失败。
+func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
+	oldCap := aiAttemptCap
+	aiAttemptCap = 300 * time.Millisecond
+	defer func() { aiAttemptCap = oldCap }()
+
+	b, _ := testutil.NewTestBot(t, 1)
+	var n atomic.Int32
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		if n.Add(1) == 1 {
+			// 第一路：吐一个字就挂住（慢模型），等客户端把它切掉。
+			sseStart(w)
+			sseChunk(w, `{"choices":[{"delta":{"content":"{"}}]}`)
+			<-r.Context().Done()
+			return
+		}
+		// 第二路：立刻给出结论。
+		sseStart(w)
+		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true,\"confidence\":0.9,\"kind\":\"scam\",\"reason\":\"快模型\"}"}}]}`)
+		sseChunk(w, `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		sseChunk(w, `[DONE]`)
+	})
+	// 重试顺序：慢的在前、快的在后（与线上 [mimo-v2.5, big-pickle] 同形）。
+	setGlobal(t, b, "antiad_llm_models", `["fake/slow","fake/fast"]`)
+
+	start := time.Now()
+	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	if err != nil {
+		t.Fatalf("慢模型被切掉后应换到快模型并成功：%v", err)
+	}
+	if v.Reason != "快模型" || !v.IsAd {
+		t.Errorf("应采信快模型的结论，得到 %+v", v)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("整个重试应在秒级完成，实际用了 %v", took)
+	}
+}

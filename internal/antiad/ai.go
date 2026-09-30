@@ -57,10 +57,18 @@ const (
 	// 没有它，5 次 × 单次 20 秒超时 = 最坏 100 秒，而每个 bot 的判定
 	// worker 只有 32 路：上游整体变慢时，积压会迅速填满判定队列，
 	// 后面的消息全部走「队列已满，放行」。预算到了就不再重试。
-	aiTotalBudget = 45 * time.Second
+	aiTotalBudget = 90 * time.Second
 	// aiRetryBase 是退避基数，按 2 的幂增长，封顶 2 秒。
 	aiRetryBase = 200 * time.Millisecond
 )
+
+// aiAttemptCap 是单次尝试的时间上限（测试可调）。
+//
+// 光有总预算不够：预算是「两次尝试之间」才检查的，一路慢模型（实测
+// lfree/mimo-v2.5 配大提示词时能拖到 45 秒客户超时）就能把整个预算吃光，
+// 列表里那个快模型（lfree/big-pickle，3 秒出结果）连试都轮不上，于是复判
+// 整条失败。按上限切成两段，慢的一路被切掉之后还有机会换人。
+var aiAttemptCap = 45 * time.Second
 
 // retryDelay 返回第 n 次失败后的等待时长（n 从 0 开始）。
 func retryDelay(n int) time.Duration {
@@ -128,11 +136,19 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 		if hedging(sh, key) {
 			fan = int(snap.SettingInt("antiad_hedge_fanout", 2))
 		}
-		r := aiRound(sh, snap, ep, models, attempt, fan, payload)
+		// 单次尝试也要有上界：剩余预算与单次上限取小，切出来的这一段
+		// 用完就换下一路，而不是一路把预算拖到见底。
+		cap := time.Until(deadline)
+		if cap > aiAttemptCap {
+			cap = aiAttemptCap
+		}
+		attemptStart := time.Now()
+		r := aiRound(sh, snap, ep, models, attempt, fan, payload, cap)
 		if r.err == nil {
 			sh.AIFailStreak.Store(0) // 成功一次就清零
 			if attempt > 0 {
-				slog.Info("反广告：重试后成功", "模型", r.reply.Model, "第几次", attempt+1)
+				slog.Info("反广告：重试后成功", "模型", r.reply.Model,
+					"第几次", attempt+1, "耗时", time.Since(attemptStart).Round(time.Millisecond))
 			}
 			return r.reply, nil
 		}
@@ -301,18 +317,23 @@ type aiResult struct {
 // 全部失败时：只要有一路可重试，这一轮就可重试（某个上游不认这个模型，
 // 换一个也许就认）；只有每一路都不可退避，才按「立即换」处理。
 func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint,
-	models []string, attempt, fan int, payload map[string]any) aiResult {
+	models []string, attempt, fan int, payload map[string]any, cap time.Duration) aiResult {
 
+	if cap <= 0 {
+		cap = aiAttemptCap
+	}
 	if fan <= 1 {
 		model := models[attempt%len(models)]
 		ups := upstreamFor(snap, ep, model)
 		if len(ups) == 0 {
 			return aiResult{err: modelUnavailable(model), retryable: true, noBackoff: true}
 		}
-		return aiAttempt(context.Background(), sh, snap, ep, model, ups[attempt%len(ups)], payload)
+		ctx, cancel := context.WithTimeout(context.Background(), cap)
+		defer cancel()
+		return aiAttempt(ctx, sh, snap, ep, model, ups[attempt%len(ups)], payload)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), cap)
 	defer cancel() // 先成功的一路返回后，其余各路随之取消
 	// 带缓冲：提前返回之后，其余各路写结果时不会阻塞，goroutine 不会泄漏。
 	results := make(chan aiResult, fan)
