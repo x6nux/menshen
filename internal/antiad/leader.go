@@ -15,16 +15,15 @@ import (
 //
 // 实测：昵称改成「习近平」、用户名 xijinping3616 的号在群里演「朕刚和美国
 // 总统谈完回来，我的子民们」，判定模型给的是「正常 97%」—— 角色扮演在模型
-// 眼里不是广告，而群里出现国家领导人的名义本身就是风险。所以这一条不走模型：
-// 用户名、昵称、发言（以及判定本来就会取的简介）里出现领导人姓名，直接封禁
-// 出群。
+// 眼里不是广告，而拿国家领导人的名义当门面本身就是风险。所以这一条不走模型：
+// **只看账号资料**（昵称、用户名、简介）里有没有领导人姓名，命中直接封禁出群。
 //
-// **只吃手上已有的数据**：这些字段全都随消息一起来，或判定本来就要取，
-// 不为它多发一次 TG 请求、也不调识图模型 —— 这条规则零额外开销。
+// 正文里「提到」姓名不算：群里讨论新闻、引用讲话是正常行为，管理员明确
+// 要求不管这类（「提到不管，只查资料」）。要看正文就改 leaderGate /
+// leaderGateWorker。
 //
-// 误伤方向要说清楚：群里正常讨论新闻、提到姓名也会被踢。这是管理员的明确
-// 选择（「使用中国领导人名称的全部直接封禁出群」）；要收窄就改
-// leaderNames（裸名命中）与 leaderTitled（须带职务才命中）。
+// **零额外开销**：昵称与用户名随消息一起来；简介是判定本来就要取的
+// （getChat，带一小时缓存）。不查头像、不调识图、不多发一次 TG 请求。
 
 // leaderNames 是「裸名即命中」的一批：姓名本身罕见，出现就直指领导人。
 // 表里一律写成归一化形态（无空白、小写）。
@@ -146,11 +145,11 @@ func leaderBan(b *core.Bot, conf store.BotChat, m *tg.Message, hit, where string
 		"chat", m.Chat.ID, "uid", m.From.ID, "命中", hit, "位置", where)
 }
 
-// leaderGate 是消息路径上的前置判断：资料（昵称/用户名/简介）或正文里出现
-// 领导人姓名就直接封禁，不送检、不花钱。返回 true 表示已处理完毕。
+// leaderGate 是消息路径上的前置判断：资料（昵称/用户名）里出现领导人姓名
+// 就直接封禁，不送检、不花钱。返回 true 表示已处理完毕。
 //
-// bio 为空时只查昵称与用户名（简介在判定 worker 里才取，那条路上还有一次
-// leaderGateWorker 的复查）。
+// 只看资料，不看正文（管理员口径：「提到不管」）。bio 为空时也只查昵称与
+// 用户名 —— 简介在判定 worker 里才取，那条路上还有一次 leaderGateWorker 的复查。
 func leaderGate(b *core.Bot, conf store.BotChat, m *tg.Message, bio string) bool {
 	if m == nil || m.From == nil || m.From.ID == 0 {
 		return false
@@ -159,15 +158,11 @@ func leaderGate(b *core.Bot, conf store.BotChat, m *tg.Message, bio string) bool
 		leaderBan(b, conf, m, hit, where)
 		return true
 	}
-	if h := leaderHit(displayText(m)); h != "" {
-		leaderBan(b, conf, m, h, "发言")
-		return true
-	}
 	return false
 }
 
 // leaderGateWorker 是判定 worker 里的第二次前置判断：这里刚好拿到简介
-// （判定本来就要取，没有额外开销），顺手把简介也过一遍规则。
+// （判定本来就要取，没有额外开销），顺手把简介也过一遍规则。正文不看。
 func leaderGateWorker(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	m *tg.Message, p senderProfile) bool {
 
@@ -175,12 +170,6 @@ func leaderGateWorker(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	// getChat 补进画像的（见 enrichSender）。
 	if hit, where := leaderProfileFields(p.FirstName, p.LastName, p.Username, p.Bio); hit != "" {
 		leaderBan(b, conf, m, hit, where)
-		return true
-	}
-	// 正文再看一遍：这一支服务的是 /check 复查（消息路径的正文在同步段
-	// 就已经判过，命中的人根本走不到这里）。
-	if h := leaderHit(displayText(m)); h != "" {
-		leaderBan(b, conf, m, h, "发言")
 		return true
 	}
 	return false

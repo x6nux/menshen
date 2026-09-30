@@ -36,8 +36,9 @@ func TestLeaderHit(t *testing.T) {
 	}
 }
 
-// TestLeaderGateBansImpersonator：昵称/用户名/正文里出现领导人姓名时直接
-// 封禁出群（删消息 + banChatMember + 落流水），不送检、不花 AI 的钱。
+// TestLeaderGateBansImpersonator：昵称/用户名里出现领导人姓名时直接封禁
+// 出群（删消息 + banChatMember + 落流水），不送检、不花 AI 的钱；
+// 正文里只是提到不算（管理员口径「提到不管，只查资料」）。
 func TestLeaderGateBansImpersonator(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -81,14 +82,18 @@ func TestLeaderGateBansImpersonator(t *testing.T) {
 		t.Errorf("用户名冒用也该封禁，得到 %d 次", n)
 	}
 
-	// 正文只是「提到」：按管理员的规则同样封禁（零开销的字面规则）。
+	// 正文里只是「提到」姓名：不封禁（管理员口径「提到不管，只查资料」），
+	// 照常走判定链路。
 	b3, fake3 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b3, -100)
 	fakeAIWith(t, b3, soReply("clean", 0.9, "none", "message"), llmReply(false, 0.9, "none", "message"))
 	HandleGroupMessage(b3, testutil.GroupMsg(-100, 7003, 9, "给你们看看习近平的讲话"))
 	waitIdle(t, b3)
-	if n := fake3.CountCalls("banChatMember"); n != 1 {
-		t.Errorf("正文出现姓名也该封禁，得到 %d 次", n)
+	if n := fake3.CountCalls("banChatMember"); n != 0 {
+		t.Errorf("正文提到姓名不该封禁，得到 %d 次", n)
+	}
+	if n := fake3.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("正文提到姓名不该删消息，得到 %d 次", n)
 	}
 
 	// 普通人不受影响：照常走判定。
