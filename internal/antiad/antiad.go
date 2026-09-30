@@ -78,6 +78,10 @@ func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	if !ok {
 		return
 	}
+	// 我们的禁言被外部解除时重新施加（入群验证机器人验证通过后会把权限
+	// 全量开回来，那一下会盖掉我们给的进群限制）。
+	reassertMute(b, conf, cu)
+
 	old := ""
 	if cu.OldChatMember != nil {
 		old = cu.OldChatMember.Status

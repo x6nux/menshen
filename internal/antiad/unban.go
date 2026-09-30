@@ -101,6 +101,9 @@ func dropJoinMute(b *core.Bot, chatID, uid int64) {
 		chatID, uid); err != nil {
 		slog.Error("冷判定：清除限制记录失败", "chat", chatID, "uid", uid, "err", err)
 	}
+	// 这是我们主动解除的：外部解除复查别把它当成「被别的 bot 抹掉了」
+	// 又给施加回去（解除要发 TG 调用，chat_member 更新回流有几秒延迟）。
+	NoteLifted(chatID, uid)
 }
 
 func bumpJoinAttempts(b *core.Bot, chatID, uid int64) {
@@ -188,6 +191,7 @@ func GCUnbanGate(sh *core.Shared) {
 func liftJoinMute(b *core.Bot, dmChat, groupID int64, u *tg.TGUser,
 	rec joinMuteRec, note string) {
 
+	NoteLifted(groupID, u.ID)
 	ok, desc := Unmute(b, groupID, u.ID)
 	if !ok {
 		// 如实告诉对方没做成，别让他以为已经能说话了。

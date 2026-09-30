@@ -105,5 +105,6 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 
 func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
-	antiad.RunAdDigest(sh, false) // 形态摘要，样本不够时内部直接返回
+	antiad.ReassertActiveMutes(sh) // 进群限制被外部解除时补一次（见 reassert.go）
+	antiad.RunAdDigest(sh, false)  // 形态摘要，样本不够时内部直接返回
 }

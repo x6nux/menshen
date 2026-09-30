@@ -218,6 +218,10 @@ type ChatMemberInfo struct {
 	// 判断「bot 还在不在群里」时，restricted 必须看它 —— 只看 status
 	// 会把「已被踢走但留下一条受限记录」当成还在群里。
 	IsMember bool `json:"is_member"`
+	// CanSendMessages 也只在 restricted 里出现，用指针区分「没有这个
+	// 字段」与「确实为 false」（见 antiad.canSpeak）：把受限状态当成
+	// 被禁言，会让我们对着能发言的人反复禁言。
+	CanSendMessages *bool `json:"can_send_messages"`
 }
 
 type ChatMemberResp struct {

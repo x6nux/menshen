@@ -162,6 +162,7 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 // redeemInChat 在一个群里执行兑换动作（范围只限本群）。
 func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 	// 1) 恢复权限：全部权限置 true，对没被禁言的人没有任何影响。
+	NoteLifted(chatID, ap.UserID)
 	if ok, desc := Unmute(b, chatID, ap.UserID); !ok {
 		slog.Warn("申诉：兑换时解除禁言失败", "chat", chatID,
 			"uid", ap.UserID, "err", desc)

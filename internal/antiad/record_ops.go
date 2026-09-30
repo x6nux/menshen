@@ -69,6 +69,9 @@ func ManualMarkByRecord(b *core.Bot, conf store.BotChat,
 // TG 解除失败时提前返回、**不**清 join_mutes：禁言实际还在，
 // 清了记录会让申诉流程以为限制已经不存在。
 func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
+	// 先落标记再解除：解除要发 TG 调用，chat_member 更新回流有几秒延迟，
+	// 落在这里才能保证「外部解除复查」不会把这次主动解除当成被抹掉。
+	NoteLifted(chatID, uid)
 	ok, desc := Unmute(b, chatID, uid)
 	if !ok {
 		return false, desc
