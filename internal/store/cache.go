@@ -23,6 +23,10 @@ import (
 //   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
 //   - per-chat：不在本表，直接是 bot_chats 的列
 //
+// DefaultSoFloor 是「初判下限」的默认值（百分数）：初判置信度低于它的
+// 「广告」是噪声，直接放行、连复判都不跑。
+const DefaultSoFloor = 30
+
 // DefaultPreActConf 是「初判线」的默认值（百分数）：初判置信度低于它时
 // 只送复判，不先删消息、不临时禁言。
 //
@@ -88,6 +92,7 @@ var settingDefaults = map[string]string{
 	// 引入浮点要改动整套设置面板机制，不值当。
 	"antiad_so_trust":     "80",                            // systemone 置信度采信线
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
+	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不复判
 	"antiad_act_hard":     "90",                            // 删除 + 禁言线
 	"antiad_act_soft":     "75",                            // 删除线
 	"antiad_new_hours":    "72",                            // 新人时长界

@@ -732,6 +732,19 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		finish(v, adAction{}, "")
 		return
 	}
+	// 初判下限：置信度低于它的「广告」是噪声（jev 对资料类特征会给 3%~32%），
+	// 直接放行、连复判都不跑 —— 那种结论跑复判只是花钱买一个必然被推翻的
+	// 结果。按未定记流水，管理员在记录里能看到为什么放行。
+	if v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
+		b.BotID(), "antiad_so_floor", store.DefaultSoFloor)) {
+		floor := snap.BotSettingInt(b.BotID(), "antiad_so_floor", store.DefaultSoFloor)
+		v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
+		v.Reason = fmt.Sprintf("（初判置信度 %.0f%% 低于下限线 %d%%，直接放行，未复判）",
+			v.Confidence*100, floor) + v.Reason
+		finish(v, adAction{}, "")
+		return
+	}
+
 	// 复判前先按初判动手：删消息、临时禁言。连带删除、封禁、告警都等复判
 	// 定了再做——封禁踢出群，不适合当先行动作。频道身份不先封：TG 封频道身份
 	// 不支持限时，封了就得等人手工解。

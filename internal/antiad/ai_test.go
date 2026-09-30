@@ -222,11 +222,14 @@ func TestPromptsExplainPayloadLines(t *testing.T) {
 // TestReviewFailureDemotesWeakVerdict：复判失败时，低于采信线的初判不再
 // 照着处置 —— 「13% 的广告」删消息、临时禁言、连带删除就是这么来的。
 // 有把握的初判照旧采信（扔掉等于白判一次）。
+//
+// 用 50% 这个区间：低于下限线（30%）的那一档现在连复判都不跑，由
+// TestSoFloorSkipsReview 覆盖。
 func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
-	// 弱初判（13%）：复判失败 → 按未定放行，不追加处置，且临时禁言要解开。
+	// 弱初判（50%）：复判失败 → 按未定放行，不追加处置。
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	fakeAIWith(t, b, soReply("ad", 0.13, "none", "account"), ``) // 复判无响应=失败
+	fakeAIWith(t, b, soReply("ad", 0.50, "none", "account"), ``) // 复判无响应=失败
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "我活了"))
 	waitIdle(t, b)
 
@@ -242,7 +245,7 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	if !strings.Contains(reason, "低于采信线") {
 		t.Errorf("流水里要写明原因：%q", reason)
 	}
-	// 13% 低于初判线（75%）：连先行动作都不该有 —— 消息没删、也没临时禁言，
+	// 50% 低于初判线（75%）：连先行动作都不该有 —— 消息没删、也没临时禁言，
 	// 自然没有「解开」这一说（复判失败后按未定放行）。
 	if n := fake.CountCalls("deleteMessage"); n != 0 {
 		t.Errorf("低于初判线不该先删消息，得到 %d 次", n)
@@ -346,5 +349,56 @@ func TestPreActLineConfigurable(t *testing.T) {
 	waitIdle(t, b)
 	if n := len(fake.Calls("restrictChatMember")); n != 2 {
 		t.Errorf("线设成 0 时应先临时禁言、再正式禁言，得到 %d 次", n)
+	}
+}
+
+// TestSoFloorSkipsReview：初判下限（默认 30%）以下的「广告」直接放行，
+// 连复判都不跑 —— 那种结论是噪声，跑复判只是花钱买一个必然被推翻的结果。
+func TestSoFloorSkipsReview(t *testing.T) {
+	// 初判 20%（低于下限）：不复判、不处置、不删消息。
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.20, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "我回来了"))
+	waitIdle(t, b)
+
+	if llmN.Load() != 0 {
+		t.Errorf("低于下限不该跑复判，跑了 %d 次", llmN.Load())
+	}
+	if soN.Load() != 1 {
+		t.Errorf("初判应照常跑一次，得到 %d 次", soN.Load())
+	}
+	if n := fake.CountCalls("deleteMessage") + fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("低于下限不该有任何处置，得到 %d 次调用", n)
+	}
+	if verdict, action, reason := logRow(t, b); verdict != "clean" || action != "none" ||
+		!strings.Contains(reason, "低于下限线") {
+		t.Errorf("应记成未定放行并写明原因：verdict=%q action=%q reason=%q", verdict, action, reason)
+	}
+
+	// 初判 40%（高于下限、低于初判线）：照常复判，只是不先动手。
+	b2, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	_, llmN2 := fakeAIWith(t, b2, soReply("ad", 0.40, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
+	waitIdle(t, b2)
+	if llmN2.Load() != 1 {
+		t.Errorf("高于下限应照常复判，跑了 %d 次", llmN2.Load())
+	}
+
+	// 下限设成 0：关闭这条，20% 也照常复判。
+	b3, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b3, -100)
+	if err := b3.PutBotSetting(b3.BotID(), "antiad_so_floor", "0"); err != nil {
+		t.Fatal(err)
+	}
+	_, llmN3 := fakeAIWith(t, b3, soReply("ad", 0.20, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	HandleGroupMessage(b3, testutil.GroupMsg(-100, 44, 9, "加微信 日入5000"))
+	waitIdle(t, b3)
+	if llmN3.Load() != 1 {
+		t.Errorf("下限为 0 时应照常复判，跑了 %d 次", llmN3.Load())
 	}
 }
