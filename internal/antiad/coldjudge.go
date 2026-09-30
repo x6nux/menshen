@@ -224,6 +224,14 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	// 链接解析放在预筛之后：每个链接一次 getChat，不该花在资料干净的人身上。
 	p.BioLinks = resolveProfileLinks(b, p)
 
+	// 硬规则：资料里出现国家领导人姓名（昵称/用户名/简介，全都已经在手上，
+	// 零额外开销）就直接封禁出群，不送检 —— 模型对这类角色扮演判的是正常。
+	if hit, where := leaderProfileHit(u, bio); hit != "" {
+		leaderBan(b, conf, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
+			From: u, Text: leaderNoticeText(u, bio, hit, where)}, hit, where)
+		return
+	}
+
 	// 这份资料刚被复判放过、而且没改过：不再冷判定。同一个结论反复判只是
 	// 把同一份误判重演一遍，冷判定的意义就在于不重复吃同一个结论。
 	if b.Cache.Snap().ProfileAllowed(b.BotID(), u.ID,

@@ -654,6 +654,9 @@ function verdictLabel(v){ return {ad:'广告',none:'正常',clean:'正常',error
 function actionLabel(a){ return {none:'无处置',muted:'禁言',banned:'封禁出群',
   deleted:'删除',deleted_muted:'删除+禁言',deleted_banned:'删除+封禁',undone:'已撤销'}[a]||
   (a.indexOf('dryrun:')==0?'演练:'+a.slice(7):a); }
+function kindLabel(k){ return {crypto:'加密货币',porn:'色情招揽',porn_bait:'色情内容',
+  gambling:'博彩',scam:'诈骗',promo:'推广引流',spam_flood:'刷屏',manual:'人工标记',
+  impersonate:'冒用领导人',none:'未分类'}[k]||k; }
 function apStatus(s){ return {statement:'待写理由',ai:'AI 复核中',web:'等网页验证',
   noweb:'待人工处理',code:'已发解禁码',redeemed:'已兑换',lifted:'已解除',
   rejected:'已驳回',expired:'已过期'}[s]||s; }
@@ -751,7 +754,7 @@ function viewLogDetail(l){
     (chatTitleOf(l.chat_id)?' · '+esc(chatTitleOf(l.chat_id)):'')+' / uid '+l.user_id+'</span></div>'+
     '<div class="row"><span class="k">判定</span><span>'+verdictLabel(l.verdict)+' · '+
     Math.round(l.confidence*100)+'%'+(l.decider?' · '+esc(l.decider):'')+
-    (l.kind?' · '+esc(l.kind):'')+'</span></div>'+
+    (l.kind?' · '+esc(kindLabel(l.kind)):'')+'</span></div>'+
     '<div class="row"><span class="k">处置</span><span>'+esc(actionLabel(l.action))+'</span></div>'+
     '<div class="row"><span class="k">开销</span><span>'+esc(l.cost_text)+'</span></div>'+
     (l.reason?'<div class="row"><span class="k">理由</span><span>'+esc(l.reason)+'</span></div>':'')+

@@ -242,5 +242,11 @@ type ChatFullResp struct {
 		Bio          string `json:"bio"`
 		Description  string `json:"description"`
 		LinkedChatID int64  `json:"linked_chat_id"`
+		// 昵称与用户名：/check <uid> 这种没有消息可依托的场景要按资料判人，
+		// 只能从 getChat 补（见 antiad.userInfo）。
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Username  string `json:"username"`
+		Title     string `json:"title"`
 	} `json:"result"`
 }

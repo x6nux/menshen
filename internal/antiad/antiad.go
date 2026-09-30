@@ -416,6 +416,12 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	chatID := conf.ChatID
 	enrichSender(b, &state.Sender)
 
+	// 硬规则：人工复查同样先过一遍（模型对冒用角色扮演会判正常，管理员
+	// 复查这种人时不该被模型带偏）。
+	if leaderGateWorker(b, snap, conf, tgt, state.Sender) {
+		return
+	}
+
 	v, err := judgeBoth(b, snap, state)
 	if err != nil {
 		slog.Warn("反广告：复查失败", "chat", chatID, "uid", tgt.From.ID, "err", err)
@@ -599,6 +605,12 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	}
 
 	profile := buildProfile(b, m, gm, at)
+	// 硬规则前置：资料（昵称/用户名）或正文里出现国家领导人姓名就直接封禁
+	// 出群，不送检 —— 模型对「朕刚和美国总统谈完」这类角色扮演判的是正常。
+	// 排在豁免之后：管理员与白名单里的人不在这条规则的射程内。
+	if leaderGate(b, conf, m, "") {
+		return
+	}
 	// buildState 必须留在同步段：recent_context 读的是本人此前的留底，
 	// 更新按到达顺序串行处理，此刻库里恰好是「这条之前」的全部发言。
 	// 挪进判定 worker 的话，此人随后几条也可能已经落库，模型会把
@@ -657,6 +669,11 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 简介与简介里的链接要发 getChat，所以放在异步段取：同步段每多一次 TG
 	// 往返，更新处理就多停一次。
 	enrichSender(b, &state.Sender)
+
+	// 第二次前置判断：这里刚好拿到简介（判定本来就要取，零额外开销）。
+	if leaderGateWorker(b, snap, conf, m, state.Sender) {
+		return
+	}
 
 	// 内容哈希按识图之前的文字记，与 HandleGroupMessage 查的是同一个键。
 	// 纯图没有文字：空串当键的话，之后所有纯图都会互相命中。
@@ -839,44 +856,62 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 const bioTTL = time.Hour
 
 type bioEntry struct {
-	bio    string
-	expire time.Time
+	bio       string
+	firstName string
+	lastName  string
+	username  string
+	expire    time.Time
 }
 
-// userBio 取此人的 Telegram 个人简介，带缓存。
+// userInfo 取此人的 getChat 资料（昵称、用户名、简介），带缓存。
 //
 // 广告号的强特征常常不在消息里而在账号本身：简介写着联系方式、价目、
 // 引流话术。这个字段只有 getChat 给得到，而全量送检下不缓存就等于
 // 每条群消息多一次 TG 往返，必然撞上速率限制。
 //
-// 查询失败返回空串：与群管理员查询同向，TG 故障不得让判定链路停摆。
-func userBio(b *core.Bot, uid int64) string {
+// 昵称与用户名一并缓存：/check <uid> 这类路径没有消息带这些字段，
+// 而「冒用国家领导人」的硬规则要按资料判人（见 leader.go）。
+//
+// 查询失败返回空：与群管理员查询同向，TG 故障不得让判定链路停摆。
+func userInfo(b *core.Bot, uid int64) bioEntry {
 	if v, ok := b.BioCache.Load(uid); ok {
 		e := v.(bioEntry)
 		if time.Now().Before(e.expire) {
-			return e.bio
+			return e
 		}
 	}
 
+	empty := bioEntry{expire: time.Now().Add(bioTTL)}
 	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": uid})
 	if err != nil {
-		slog.Warn("反广告：查询个人简介失败", "uid", uid, "err", err)
-		return ""
+		slog.Warn("反广告：查询账号资料失败", "uid", uid, "err", err)
+		return empty
 	}
 	var resp tg.ChatFullResp
 	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
 		// 对方从未与 bot 私聊过时 TG 也会拒答，这是常态而非故障，
-		// 所以按空简介缓存下来，避免每条消息都重试一次。
-		b.BioCache.Store(uid, bioEntry{expire: time.Now().Add(bioTTL)})
-		return ""
+		// 所以按空资料缓存下来，避免每条消息都重试一次。
+		b.BioCache.Store(uid, empty)
+		return empty
 	}
-	bio := resp.Result.Bio
+	e := bioEntry{
+		bio: resp.Result.Bio, firstName: resp.Result.FirstName,
+		lastName: resp.Result.LastName, username: resp.Result.Username,
+		expire: time.Now().Add(bioTTL),
+	}
 	if uid < 0 {
-		bio = resp.Result.Description // 频道身份：频道简介
+		// 频道身份：资料是频道名与频道简介。
+		e.bio = resp.Result.Description
+		if e.firstName == "" {
+			e.firstName = resp.Result.Title
+		}
 	}
-	b.BioCache.Store(uid, bioEntry{bio: bio, expire: time.Now().Add(bioTTL)})
-	return bio
+	b.BioCache.Store(uid, e)
+	return e
 }
+
+// userBio 取此人的 Telegram 个人简介（见 userInfo）。
+func userBio(b *core.Bot, uid int64) string { return userInfo(b, uid).bio }
 
 // gcBioCache 清理过期条目，防止 map 无限增长。
 func GCBioCache(sh *core.Shared) {

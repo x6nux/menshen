@@ -71,7 +71,19 @@ func profileHandles(p senderProfile) []string {
 // 简介里挂自己的频道/群组/bot 是正常的（UP 主、开发者都这样做），只给
 // 用户名的话模型分不清「挂自己的技术频道」和「挂刷单群」，实测误判过。
 func enrichSender(b *core.Bot, p *senderProfile) {
-	p.Bio = userBio(b, p.UserID)
+	info := userInfo(b, p.UserID)
+	p.Bio = info.bio
+	// /check <uid> 没有消息可依托，昵称与用户名是空的：用 getChat 的结果补上。
+	// 硬规则按资料判人、模型看资料也更准（补的是空位，不覆盖消息里已有的）。
+	if p.FirstName == "" {
+		p.FirstName = info.firstName
+	}
+	if p.LastName == "" {
+		p.LastName = info.lastName
+	}
+	if p.Username == "" {
+		p.Username = info.username
+	}
 	p.BioLinks = resolveProfileLinks(b, *p)
 	// 简介与链接解析完才有完整资料，指纹也在这之后算。
 	markProfileOK(b, p)
@@ -247,6 +259,8 @@ var adKindLabels = map[string]string{
 	"promo":      "推广引流",
 	"spam_flood": "刷屏",
 	"manual":     "人工标记",
+	// 硬规则命中（冒用国家领导人，见 leader.go）
+	"impersonate": leaderKindLabel,
 }
 
 // adKindLabel 返回分类的中文名；模型给了表外的值就原样显示，不吞掉信息。
