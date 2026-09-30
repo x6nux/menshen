@@ -422,3 +422,39 @@ func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 		t.Errorf("整个重试应在秒级完成，实际用了 %v", took)
 	}
 }
+
+// TestLLMRequestCarriesStableSession：大模型请求要带固定的会话标识（user +
+// session_id），让上游把同一路判定的前缀留在同一个会话/副本上；systemone
+// 是 TypeSafe 原生形态，多带字段会 400，绝不能加。
+func TestLLMRequestCarriesStableSession(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	var chatBody, soBody atomic.Value
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			soBody.Store(string(raw))
+			w.Write([]byte(`{"answers":{"is_ad":{"choice":"clean","confidence":0.9}}}`))
+			return
+		}
+		chatBody.Store(string(raw))
+		w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"{\"is_ad\":false,\"confidence\":0.9,\"reason\":\"正常\"}"}}]}`))
+	})
+
+	if _, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt); err != nil {
+		t.Fatalf("judgeLLM: %v", err)
+	}
+	body, _ := chatBody.Load().(string)
+	if !strings.Contains(body, `"user":"`+aiSessionID+`"`) ||
+		!strings.Contains(body, `"session_id":"`+aiSessionID+`"`) {
+		t.Errorf("chat 请求应带固定会话标识：%s", body)
+	}
+
+	if _, err := judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions); err != nil {
+		t.Fatalf("judgeSystemOne: %v", err)
+	}
+	so, _ := soBody.Load().(string)
+	if strings.Contains(so, "session_id") || strings.Contains(so, `"user"`) {
+		t.Errorf("systemone 请求不该带这些字段（实测会 400）：%s", so)
+	}
+}

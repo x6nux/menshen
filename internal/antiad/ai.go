@@ -66,6 +66,18 @@ const (
 	aiRetryBase = 200 * time.Millisecond
 )
 
+// aiSessionID 是所有大模型请求共用的会话标识（OpenAI 的 user 字段与兼容
+// 网关的 session_id 都填它）。
+//
+// 固定一个值是为了让上游把同一路判定的 KV 前缀留在同一个会话/副本上：判定
+// 用的 system 提示词对所有消息都一样（几 KB 的稳定前缀），固定会话才谈得上
+// 命中前缀缓存，也省掉跨副本的冷启动。实测 oc 网关按前缀自动缓存（894 个
+// prompt token 里 768 命中），aiwave 不报缓存字段但接受该参数。
+//
+// 只加在 chat 端点上：systemone 是 TypeSafe 原生形态，实测多带字段直接
+// 400 Invalid request —— 加了等于把初判整条打挂。
+const aiSessionID = "menshen-antiad"
+
 // aiAttemptCap 是单次尝试的时间上限（测试可调）。
 //
 // 光有总预算不够：预算是「两次尝试之间」才检查的，一路慢模型（实测
@@ -403,6 +415,11 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		p[k] = v
 	}
 	p["model"] = modelID
+	// 稳定会话标识（见 aiSessionID）。systemone 不加：实测会 400。
+	if ep == upstream.EPChat {
+		p["user"] = aiSessionID
+		p["session_id"] = aiSessionID
+	}
 	body, err := json.Marshal(p)
 	if err != nil {
 		return aiResult{err: err} // 序列化都失败，重试多少次都一样
