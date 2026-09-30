@@ -268,3 +268,30 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 		t.Errorf("有把握的初判在复判失败时仍该处置，得到 action=%q", action2)
 	}
 }
+
+// TestPatternClauseGuardsKeywordMisjudgment：摘要里的关键词形态必须按上下文
+// 复核 —— 实测误杀：摘要从真实色情招揽样本里归纳出「简介出现双向机器人＝
+// 色情推广」，而中文群里大量正常账号写「为了双方账号安全，请通过双向 bot
+// 私聊我」（隐私保护），判定模型照摘要执行，把人判成色情广告号。
+func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
+	for _, want := range []string{"归纳提示", "不是判决", "双向机器人", "隐私保护", "按上下文复核"} {
+		if !strings.Contains(patternClause, want) {
+			t.Errorf("patternClause 应保留口径 %q：\n%s", want, patternClause)
+		}
+	}
+	// 四级提示词（两级消息判定 + 两级冷判定）都要带上这条口径。
+	for name, prompt := range map[string]string{
+		"soInstructions":   soInstructions,
+		"llmSystemPrompt":  llmSystemPrompt,
+		"coldInstructions": coldInstructions,
+		"coldLLMPrompt":    coldLLMPrompt,
+	} {
+		if !strings.Contains(prompt, "归纳提示") {
+			t.Errorf("%s 缺少形态口径", name)
+		}
+	}
+	// 摘要生成器要求形态带上下文条件，不许写成单个关键词。
+	if !strings.Contains(digestSystemPrompt, "每条形态必须写清上下文条件") {
+		t.Error("摘要生成提示词应要求写清上下文条件")
+	}
+}

@@ -296,7 +296,18 @@ func deleteMessages(b *core.Bot, chatID int64, ids []int64) (bool, string) {
 func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	hard := float64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
 	severe := float64(snap.BotSettingInt(b.BotID(), "antiad_alert_severe", 2))
-	return v.Confidence*100 >= hard || v.Severity >= severe
+	if v.Confidence*100 < hard && v.Severity < severe {
+		return false
+	}
+	// 账号级结论（「资料本身就是广告位」）再抬一道：它的证据全在昵称、
+	// 用户名、简介上，靠的是关键词与形态归纳 —— 最容易误杀（实测：简介里
+	// 写「双向机器人」被判成色情推广，人直接进了全平台名单）。名单是全平台
+	// 的封禁，误伤一个正常用户的代价远大于漏掉一个广告号；这一档只认真有
+	// 把握的。
+	if v.Scope == "account" {
+		return v.Confidence*100 >= hard && v.Severity >= severe
+	}
+	return true
 }
 
 // logAction 是记进流水的动作名。演练期加 dryrun: 前缀：那些动作从未真实

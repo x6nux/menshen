@@ -382,3 +382,32 @@ func TestGbanLiftKeepsOtherPenalty(t *testing.T) {
 		t.Error("别的处罚解除后，撤联合封禁应解掉当初的禁言")
 	}
 }
+
+// TestGbanWorthyAccountScopeNeedsBoth：账号级结论（资料本身就是广告位）
+// 要进全平台名单必须**同时**过处置线与危害度阈值 —— 它的证据全在关键词与
+// 形态归纳上，最容易误杀（实测：简介写「双向机器人」被判色情推广，
+// 82% + 危害度 2.x 就把人送进了全平台名单）。
+func TestGbanWorthyAccountScopeNeedsBoth(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	testtest := func(scope string, conf, sev float64) bool {
+		return gbanWorthy(b, b.Cache.Snap(), adVerdict{IsAd: true, Scope: scope,
+			Confidence: conf, Severity: sev})
+	}
+	// 消息级：过一条即可（与原先一致）。
+	if !testtest("message", 0.95, 0) {
+		t.Error("消息级高置信应够格")
+	}
+	if !testtest("message", 0, 2.5) {
+		t.Error("消息级高危害应够格")
+	}
+	// 账号级：只过高置信、危害度不够 → 不进名单。
+	if testtest("account", 0.95, 1.1) {
+		t.Error("账号级只够置信度不该进全平台名单")
+	}
+	if testtest("account", 0.82, 2.2) {
+		t.Error("账号级只够危害度不该进全平台名单")
+	}
+	if !testtest("account", 0.95, 2.2) {
+		t.Error("账号级两项都过才够格")
+	}
+}
