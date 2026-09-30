@@ -814,3 +814,54 @@ func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 		t.Errorf("广告结论仍要给申诉入口：\n%s", notice2)
 	}
 }
+
+// TestCheckByUsernameAndProfile：/check 支持 @用户名；对方在本群没有留底
+// 时按进群资料复查（而不是回一句「无法复查」）—— 管理员查一个刚进群、
+// 还没发过言的人时正是这种情形。
+func TestCheckByUsernameAndProfile(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// getChat 用来把 @用户名 换成 ID，同时给识图/资料命中用。
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":8899,"type":"private",` +
+				`"first_name":"资料可疑的人","bio":"日入5000 私聊我"}}`, true
+		}
+		return "", false
+	}
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "account"),
+		llmReply(true, 0.9, "scam", "account"))
+
+	// @用户名 形式；此人没有任何留底。
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 1, 30, "/check @somebody"))
+	waitIdle(t, b)
+
+	if soN.Load()+llmN.Load() == 0 {
+		t.Fatal("没有留底时应按资料复查（两个模型都要跑）")
+	}
+	// 按进群限制处理：无限期禁言 + 台账 + 群内通知。
+	if fake.CountCalls("restrictChatMember") == 0 {
+		t.Error("资料判定命中后应限制发言")
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM join_mutes WHERE user_id=8899`); n != 1 {
+		t.Errorf("应落一条进群限制记录，得到 %d", n)
+	}
+}
+
+// TestCheckByUsernameNotFound：查不到的用户名要给出明确说明，而不是静默。
+func TestCheckByUsernameNotFound(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["getChat"] = `{"ok":false,"description":"chat not found"}`
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 1, 31, "/check @nobody_here"))
+	waitIdle(t, b)
+	found := false
+	for _, p := range fake.Calls("sendMessage") {
+		if s, ok := p["text"].(string); ok && strings.Contains(s, "查不到这个用户名") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("查不到的用户名该回一句说明")
+	}
+}

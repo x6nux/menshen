@@ -242,8 +242,10 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
 const adReviewLimit = 60
 
 const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
-	"或直接发 <code>/check &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
-	"会把该用户在本群的全部留底一次性交给两个模型复查。"
+	"或直接发 <code>/check &lt;user_id&gt;</code> / <code>/check @用户名</code>" +
+	"（频道填 -100 开头的频道 ID）。\n" +
+	"会把该用户在本群的全部留底一次性交给两个模型复查；" +
+	"他还没在本群发过言时按进群资料复查。"
 
 // parseAdCommand 识别 /check、/ban、/white、/uad 并取出命令名与参数。
 //
@@ -284,8 +286,18 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 		// 负数是频道 ID（以频道身份发言的记录就记在频道名下）。
 		uid, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
 		if err != nil || uid == 0 {
-			sendGroup(b, m.Chat.ID, adCmdUsage, nil)
-			return
+			// @username：群成员记住的往往是用户名而不是数字 ID。
+			if name, ok := strings.CutPrefix(strings.TrimSpace(arg), "@"); ok {
+				var found bool
+				if uid, found = resolveUsernameID(b, name); !found {
+					sendGroup(b, m.Chat.ID, "查不到这个用户名，请改用 user_id。"+
+						"（私有用户名查不到）", nil)
+					return
+				}
+			} else {
+				sendGroup(b, m.Chat.ID, adCmdUsage, nil)
+				return
+			}
 		}
 		target = &tg.TGUser{ID: uid}
 	default:
@@ -301,7 +313,11 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 
 	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit)
 	if len(hist) == 0 {
-		sendGroup(b, m.Chat.ID, "该用户在本群没有留底消息，无法复查。", nil)
+		// 没有留底也能查：进群资料这一类判定本来就只看资料（冷判定的口径）。
+		// 管理员查一个刚进群、还没发过言的人时正是这种情形。
+		if !b.AdSubmit(func() { reviewProfileOnly(b, snap, conf, target) }) {
+			sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
+		}
 		return
 	}
 
@@ -1912,4 +1928,72 @@ func UpdateAdLog(b *core.Bot, id int64, action, reason string) {
 		action, reason, id); err != nil {
 		slog.Error("反广告：更新流水失败", "id", id, "err", err)
 	}
+}
+
+// resolveUsernameID 把 @username 换成 user_id。群成员记住的往往是用户名
+// 而不是数字 ID；查不到（私有、打错、已注销）返回 false。
+//
+// getChat 要走一次 TG，所以只在 /check 这类人工命令上用，判定链路里
+// 不做这种事。
+func resolveUsernameID(b *core.Bot, name string) (int64, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, false
+	}
+	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": "@" + name})
+	if err != nil {
+		return 0, false
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			ID int64 `json:"id"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || !resp.OK || resp.Result.ID == 0 {
+		return 0, false
+	}
+	return resp.Result.ID, true
+}
+
+// reviewProfileOnly 只看资料复查一个人（/check 没有留底时的分支）。
+//
+// 用的是进群冷判定那一套提示词与采信线：他还没在本群发过言，能看的只有
+// 资料，而冷判定本来就是干这个的。命中且过了采信线就按进群限制处理，
+// 与自动链路完全一致（含群内通知与申诉入口）。
+func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u *tg.TGUser) {
+	chatID := conf.ChatID
+	msg := &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title}, From: u}
+	gm, _ := loadMember(b.Store, chatID, u.ID)
+	p := buildProfile(b, msg, gm, time.Now().Unix())
+	enrichSender(b, &p)
+
+	// 硬规则（冒用国家领导人）同样先过一遍：资料命中直接封禁。
+	if leaderGateWorker(b, snap, conf, msg, p) {
+		return
+	}
+
+	st := adState{Chat: adChatInfo{ID: chatID, Title: conf.Title},
+		Sender: p, JoinCheck: true}
+	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
+
+	v, err := judgeJoin(b, snap, st)
+	if err != nil {
+		slog.Warn("反广告：资料复查失败", "chat", chatID, "uid", u.ID, "err", err)
+		sendGroup(b, chatID, "复查失败："+
+			html.EscapeString(core.TruncateRunes(err.Error(), 200)), nil)
+		return
+	}
+	// 采信线与进群冷判定同一根：资料证据比一条消息少得多。
+	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
+	if !v.IsAd || v.Confidence*100 < line {
+		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {
+			GrantProfileOK(b, p, v.ProfileOKHours, "资料复查放行："+v.Reason)
+		}
+		// 与消息路径的正常结论同一份渲染：不带 🚫、不附申诉入口。
+		sendGroup(b, chatID, "🔎 <b>资料复查结果</b>\n"+
+			renderReviewClean(b, msg, v, false), nil)
+		return
+	}
+	applyJoinMute(b, conf, u, v, p.Bio)
 }
