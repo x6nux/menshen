@@ -92,7 +92,8 @@ func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
 func MarkPenaltiesLifted(b *core.Bot, chatID, uid int64) {
 	if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET lifted_at=?
 		WHERE bot_id=? AND chat_id=? AND user_id=? AND lifted_at=0
-		AND action IN ('deleted_muted','muted','deleted_banned','banned')`,
+		AND action IN ('deleted_muted','muted','deleted_banned','banned',
+			'gban_muted','gban_banned')`,
 		time.Now().Unix(), b.BotID(), chatID, uid); err != nil {
 		slog.Error("反广告：标记处罚已解除失败", "chat", chatID, "uid", uid, "err", err)
 	}

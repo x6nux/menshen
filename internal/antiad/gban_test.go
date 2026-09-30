@@ -271,3 +271,103 @@ func TestGbanFollowsGroupConfig(t *testing.T) {
 		t.Error("封禁档应发 banChatMember")
 	}
 }
+
+// TestGbanFanoutLogsMuteAndLiftUnmutes：名单扇出在禁言档的群要留一条
+// gban_muted 流水，撤名单时才知道该去哪解禁言 —— unbanChatMember 只解
+// 封禁，禁言档当初走的是 restrictChatMember。少了这一步就是「名单撤了，
+// 人在群里还是发不了言」。
+func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
+	a, _, fa, fb := sameOwnerPair(t, -100)
+	if err := a.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanAdd(a.Shared, 888, "测试用广告号", -100, a.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	mutes := func() int {
+		return fa.CountCalls("restrictChatMember") + fb.CountCalls("restrictChatMember")
+	}
+
+	// 扇出：默认禁言档（antiad_ban=0）→ restrictChatMember 且落流水。
+	EnforceGban(a.Shared, 888, "测试用广告号")
+	if mutes() == 0 {
+		t.Fatal("禁言档的扇出应发 restrictChatMember")
+	}
+	var n int
+	if err := a.Shared.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=888 AND action='gban_muted' AND lifted_at=0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("扇出应落 gban_muted 流水，否则解除时找不到该解的群")
+	}
+
+	// 撤名单：除了 unban，还要补一次「权限全开」把禁言解掉。
+	before := mutes()
+	LiftGban(a.Shared, 888)
+	if mutes() == before {
+		t.Error("撤联合封禁应补发一次解除禁言")
+	}
+	sawUnmute := false
+	for _, p := range append(fa.Calls("restrictChatMember"), fb.Calls("restrictChatMember")...) {
+		if perms, ok := p["permissions"].(map[string]any); ok && perms["can_send_messages"] == true {
+			sawUnmute = true
+		}
+	}
+	if !sawUnmute {
+		t.Error("解除禁言要发全开权限（再发全 false 等于又禁言一次）")
+	}
+	if err := a.Shared.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=888 AND action='gban_muted' AND lifted_at=0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("解除后应标记 lifted_at，还剩 %d 条", n)
+	}
+}
+
+// TestGbanLiftKeepsOtherPenalty：群里还有别的生效处罚（比如这个人自己也
+// 发过广告被禁言）时，撤联合封禁不该顺手把那条禁言也解掉。
+func TestGbanLiftKeepsOtherPenalty(t *testing.T) {
+	a, _, fa, fb := sameOwnerPair(t, -100)
+	if err := a.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanAdd(a.Shared, 889, "测试用广告号", -100, a.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	EnforceGban(a.Shared, 889, "测试用广告号")
+
+	// 此人另有一条生效中的禁言（他自己的广告判定）。
+	if _, err := a.Shared.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,prompt_tokens,completion_tokens,quota_cost,created_at,bot_id)
+		VALUES (-100,889,7,'加微信','ad',0.99,'llm','scam','deleted_muted','自己的广告',
+		 0,0,0,1700000000,?)`, a.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	mutes := func() int {
+		return fa.CountCalls("restrictChatMember") + fb.CountCalls("restrictChatMember")
+	}
+	before := mutes()
+	gbanLiftRecorded(a.Shared, 889)
+	if mutes() != before {
+		t.Error("还有别的生效处罚时不该解禁言")
+	}
+	var n int
+	a.Shared.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=889 AND action='gban_muted' AND lifted_at=0`).Scan(&n)
+	if n == 0 {
+		t.Error("没解成的禁言不该标记 lifted_at，否则以后不会再补解")
+	}
+
+	// 那条处罚解除后再撤一次，就该解掉了。
+	if _, err := a.Shared.Store.Write.Exec(`UPDATE antiad_log SET lifted_at=1
+		WHERE user_id=889 AND action='deleted_muted'`); err != nil {
+		t.Fatal(err)
+	}
+	gbanLiftRecorded(a.Shared, 889)
+	if mutes() == before {
+		t.Error("别的处罚解除后，撤联合封禁应解掉当初的禁言")
+	}
+}

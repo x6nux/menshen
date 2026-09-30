@@ -227,7 +227,7 @@ func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string
 // gbanActInChat 在某个群里执行联合封禁。一个群可能挂着同归属人的多个 bot，
 // 配置各算各的（演练、处罚方式都是 per-bot 的）：取第一个**不是演练**的配置
 // 执行；它没权限（或不在群里）时再换下一个；全是演练群就什么都不做。
-func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
+func gbanActInChat(sh *core.Shared, bots []*core.Bot, chatID, uid int64) {
 	var lastDesc string
 	for _, b := range bots {
 		conf, ok := b.Cache.Snap().ChatConf(b.BotID(), chatID)
@@ -237,12 +237,106 @@ func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 		act, ok2, desc := gbanApply(b, conf, uid)
 		if ok2 {
 			slog.Info("联合封禁已执行", "chat", chatID, "uid", uid, "方式", act)
+			gbanLogAction(b, chatID, uid, act)
 			return
 		}
 		lastDesc = desc
 	}
 	if lastDesc != "" {
 		slog.Warn("联合封禁：执行失败", "chat", chatID, "uid", uid, "tg", lastDesc)
+	}
+}
+
+// gbanLogAction 把名单在某群里的实际动作落一条流水。
+//
+// 没有这条记录，日后撤销联合封禁时就不知道该在哪些群解禁：unbanChatMember
+// 只解封禁、解不了禁言，而禁言档的群当初走的是 restrictChatMember ——
+// 「名单已经撤了，人在群里还是发不了言」就是这么来的。发言路径上的
+// 联封（GbanMessageGuard）从一开始就有记录，名单扇出这一支漏了。
+func gbanLogAction(b *core.Bot, chatID, uid int64, act string) {
+	reason := "联合封禁"
+	if rec, ok := gbanHit(b.Shared, b.BotID(), chatID, uid); ok {
+		reason += "：" + GbanReasonLabel(rec.Reason)
+	}
+	action := "gban_muted"
+	if act == "ban" {
+		action = "gban_banned"
+	}
+	logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID}, From: &tg.TGUser{ID: uid}},
+		adVerdict{Decider: adDeciderSkipped, Reason: reason}, action, "联合封禁（名单）")
+}
+
+// penaltyRowsActive 报告某人在某群里还有没有本 bot 生效中的处罚（不含
+// 联合封禁行）。撤联合封禁时用它避免顺手解掉别的判定留下的禁言。
+func penaltyRowsActive(sh *core.Shared, botID, chatID, uid int64) bool {
+	var n int
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE bot_id=? AND chat_id=? AND user_id=? AND lifted_at=0
+		AND action IN ('deleted_muted','muted','deleted_banned','banned')`,
+		botID, chatID, uid).Scan(&n); err == nil && n > 0 {
+		return true
+	}
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM join_mutes
+		WHERE chat_id=? AND user_id=?`, chatID, uid).Scan(&n); err == nil && n > 0 {
+		return true
+	}
+	return false
+}
+
+// gbanLiftRecorded 撤销联合封禁时，把当初在各群真禁过言的也解掉。
+//
+// unbanChatMember 只解封禁、不碰禁言；禁言档的群（punish=0，或跟随 bot
+// 的 antiad_ban=0）当初走的是 restrictChatMember，只能再发一次「权限全开」
+// 去解。少了这一步，误判撤了名单、人在那些群里却永远发不了言。
+//
+// 只动有 gban_muted 流水、且群里没有别的生效处罚的那些群：没记录就不敢
+// 动（可能是人类管理员施加的禁言，解禁还会把人提到群默认权限之上）。
+func gbanLiftRecorded(sh *core.Shared, uid int64) {
+	rows, err := sh.Store.Read.Query(`SELECT DISTINCT chat_id FROM antiad_log
+		WHERE user_id=? AND action='gban_muted' AND lifted_at=0 LIMIT 100`, uid)
+	if err != nil {
+		slog.Error("联合封禁：读取待解除的禁言失败", "uid", uid, "err", err)
+		return
+	}
+	var chats []int64
+	for rows.Next() {
+		var chatID int64
+		if rows.Scan(&chatID) == nil {
+			chats = append(chats, chatID)
+		}
+	}
+	rows.Close()
+
+	for _, chatID := range chats {
+		bots := botsOfChat(sh, chatID)
+		if len(bots) == 0 {
+			continue
+		}
+		skip := false
+		for _, b := range bots {
+			if penaltyRowsActive(sh, b.BotID(), chatID, uid) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			slog.Info("联合封禁：群里还有别的生效处罚，保留禁言",
+				"chat", chatID, "uid", uid)
+			continue
+		}
+		for _, b := range bots {
+			if ok, _ := Unmute(b, chatID, uid); !ok {
+				continue
+			}
+			slog.Info("联合封禁：已解除禁言", "chat", chatID, "uid", uid)
+			if _, err := sh.Store.Write.Exec(`UPDATE antiad_log SET lifted_at=?
+				WHERE user_id=? AND action='gban_muted' AND lifted_at=0
+				AND chat_id=?`, time.Now().Unix(), uid, chatID); err != nil {
+				slog.Error("联合封禁：标记禁言已解除失败",
+					"chat", chatID, "uid", uid, "err", err)
+			}
+			break
+		}
 	}
 }
 
@@ -301,6 +395,7 @@ func LiftGban(sh *core.Shared, uid int64) {
 		slog.Error("联合封禁：移出名单失败", "uid", uid, "err", err)
 	}
 	n := gbanFanover(sh, uid, "unbanChatMember", nil, true)
+	gbanLiftRecorded(sh, uid)
 	slog.Info("联合封禁已解除", "uid", uid, "群数", n)
 }
 
@@ -363,6 +458,7 @@ func GbanOwnRemoveBan(sh *core.Shared, ownerID, uid int64) error {
 	if snap := sh.Cache.Snap(); snap.GbanOwnOn(ownerID) {
 		gbanFanover(sh, uid, "unbanChatMember", ownChats(snap, ownerID), true)
 	}
+	gbanLiftRecorded(sh, uid)
 	return nil
 }
 

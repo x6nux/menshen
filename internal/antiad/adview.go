@@ -243,11 +243,15 @@ type appealViewData struct {
 	GBan      string
 	Limits    []appealViewPenalty // 生效中
 	Penalties []appealViewPenalty // 最近处置（含历史）
-	History   []appealViewMsg     // 群内留底发言
-	Logs      []appealViewLog     // 判定流水
-	Checks    []webCheckView
-	Strong    []relatedView
-	Weak      []relatedView
+	// History 是留底发言，最多 dossierMsgLimit 条；太长时后面那截放
+	// HistoryMore 折起来，HistoryCount 是总条数。
+	History      []appealViewMsg
+	HistoryMore  []appealViewMsg
+	HistoryCount int
+	Logs         []appealViewLog // 判定流水
+	Checks       []webCheckView
+	Strong       []relatedView
+	Weak         []relatedView
 }
 
 type appealViewPenalty struct {
@@ -444,10 +448,14 @@ var appealViewTmpl = template.Must(template.New("apv").Funcs(viewFuncs).Parse(
 {{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}
 {{if .Text}}<div class="sub">原消息：{{.Text}}</div>{{end}}</li>
 {{end}}</ul></div>{{end}}
-{{if .History}}<div class="card"><h2>群内留底发言（最近 {{len .History}} 条）</h2><ul class="plain">
-{{range .History}}<li{{if .Blocked}} class="hit"{{end}}><span class="ts">{{.Time}}</span> <span class="muted">{{.Chat}}</span>
+{{if .History}}<div class="card"><h2>群内留底发言（最近 {{.HistoryCount}} 条）</h2><ul class="plain">
+{{range .History}}<li{{if .Blocked}} class="hit"{{end}}><span class="ts">{{.Time}}</span>{{if .Chat}} <span class="muted">{{.Chat}}</span>{{end}}
 <div class="txt">{{.Text}}{{if .Mark}} <b>← {{.Mark}}</b>{{end}}</div></li>
-{{end}}</ul></div>{{end}}
+{{end}}</ul>
+{{if .HistoryMore}}<details><summary>展开其余 {{len .HistoryMore}} 条</summary><ul class="plain">
+{{range .HistoryMore}}<li{{if .Blocked}} class="hit"{{end}}><span class="ts">{{.Time}}</span>{{if .Chat}} <span class="muted">{{.Chat}}</span>{{end}}
+<div class="txt">{{.Text}}{{if .Mark}} <b>← {{.Mark}}</b>{{end}}</div></li>
+{{end}}</ul></details>{{end}}</div>{{end}}
 {{if .Logs}}<div class="card"><h2>判定流水（最近 {{len .Logs}} 条）</h2><ul class="plain">
 {{range .Logs}}<li><span class="ts">{{.Time}}</span> {{.Chat}} · {{.Verdict}} {{printf "%.0f" (pct .Conf)}}% → {{.ActionLabel}}
 {{if .Reason}}<div class="sub">理由：{{.Reason}}</div>{{end}}</li>

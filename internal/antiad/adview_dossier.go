@@ -18,6 +18,7 @@ import (
 // 各种上限：资料栏不能被一个刷了几千条的号撑爆。
 const (
 	dossierMsgLimit   = 100 // 留底发言
+	dossierMsgShow    = 30  // 留底先展开几条，其余折叠
 	dossierLogLimit   = 30  // 判定流水
 	dossierPenaLimit  = 20  // 处罚记录
 	dossierCheckLimit = 20  // 网页验证
@@ -243,20 +244,24 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	}
 
 	// 留底发言：本 bot 各群里最近的 100 条。这是「他到底发了什么」最
-	// 直接的证据，也是判断申诉是否可信的主要依据。
+	// 直接的证据，也是判断申诉是否可信的主要依据。同一个群的连续发言
+	// 只在第一条上标群名，否则一列全是一样的群名。
 	args = append([]any{ap.UserID}, inArgs...)
 	args = append(args, dossierMsgLimit)
 	rows, err = sh.Store.Read.Query(`SELECT chat_id,message_id,text,at FROM group_messages
 		WHERE user_id=? AND text!='' AND chat_id `+in+`
 		ORDER BY at DESC LIMIT ?`, args...)
 	if err == nil {
+		last := "\x00"
 		for rows.Next() {
 			var m appealViewMsg
 			var chatID, msgID int64
 			if rows.Scan(&chatID, &msgID, &m.Text, &m.At) != nil {
 				continue
 			}
-			m.Chat = label(chatID)
+			if c := label(chatID); c != last {
+				m.Chat, last = c, c
+			}
 			m.Time = formatTS(sh, m.At)
 			m.Text = clip(m.Text, dossierTextLen)
 			m.Mark = marks[[2]int64{chatID, msgID}]
@@ -264,6 +269,11 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 			data.History = append(data.History, m)
 		}
 		rows.Close()
+	}
+	// 太长的留底折起来：资料栏不能被一个刷了一百条的号顶到底。
+	data.HistoryCount = len(data.History)
+	if len(data.History) > dossierMsgShow {
+		data.History, data.HistoryMore = data.History[:dossierMsgShow], data.History[dossierMsgShow:]
 	}
 
 	// 判定流水：最近 30 条（含未处置的 none），能看出惯犯还是一次失误。
