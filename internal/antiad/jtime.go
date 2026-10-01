@@ -37,6 +37,7 @@ func joinAgeLabel(sec int64) string {
 //
 // 只读命令：不花钱、不动手，对所有人开放（与 /check 同），但仍按发起人
 // 限频 —— 结果是一条发到群里的卡片，刷起来会刷屏。
+// 命令消息与结果卡片都按 antiad_alert_ttl 延迟撤回，不留痕。
 //
 // 数据来源就是 group_members.joined_at：新入群靠 chat_member 事件实时记，
 // bot 拿到管理员权限之前就在群里的人靠 MTProto 补全（Mini App 的
@@ -53,8 +54,9 @@ func HandleJtimeCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 		reply("操作太频繁，请稍后再试。")
 		return
 	}
-	// 命令本身不留群里（与 /ban、/uad 一致）。
-	b.TG.Call("deleteMessage", map[string]any{"chat_id": chatID, "message_id": m.MessageID})
+	// 命令与结果一起延迟撤回：立刻删命令看着像消息被吃掉，也和卡片对不上。
+	// 两样按同一个 ttl 挂进 alert_cleanup，扫到点一起收走；ttl=0 则都不撤。
+	scheduleAlertCleanup(b, chatID, m.MessageID, ttl)
 
 	var uid int64
 	var who *tg.TGUser

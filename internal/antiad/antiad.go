@@ -1894,7 +1894,8 @@ func userLink(uid int64) string {
 	return fmt.Sprintf(`<a href="tg://user?id=%d">%d</a>`, uid, uid)
 }
 
-// scheduleAlertCleanup 安排到点撤回 bot 自己发的群内告警。
+// scheduleAlertCleanup 安排到点撤回 bot 发在群里的消息（告警卡片，以及
+// 处理完的群命令——命令与结果同 ttl 一起收走）。
 //
 // 群里连着几条告警会把正常对话顶走，而告警的信息价值在处置完成后就没了。
 // 撤回的只是 bot 自己那条，判定流水与处置结果都留在库里，面板的

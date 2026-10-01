@@ -47,8 +47,27 @@ func TestJtimeShowsJoinTime(t *testing.T) {
 			t.Errorf("入群时间卡片应含 %q，得到：%s", want, notice)
 		}
 	}
-	if c := fake.LastCall("deleteMessage"); c == nil || c["message_id"] != float64(20) {
-		t.Errorf("命令本身应从群里删掉，得到 %v", c)
+	// 命令与结果都延迟撤回：立刻不删，按同一个 ttl 挂进待撤回表。
+	if c := fake.LastCall("deleteMessage"); c != nil {
+		t.Errorf("命令不该立刻删除，得到 %v", c)
+	}
+	var due int64
+	if err := b.Store.Read.QueryRow(`SELECT due_at FROM alert_cleanup
+		WHERE bot_id=? AND chat_id=-100 AND message_id=20`,
+		b.BotID()).Scan(&due); err != nil {
+		t.Fatalf("命令消息应挂进待撤回表: %v", err)
+	}
+	if left := due - time.Now().Unix(); left < 60 || left > 3600 {
+		t.Errorf("撤回时间应在合理延迟后（默认 5 分钟），得到 %d 秒后", left)
+	}
+	// 结果卡片同样挂撤回：命令 + 结果两条。
+	var pend int64
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM alert_cleanup
+		WHERE bot_id=? AND chat_id=-100`, b.BotID()).Scan(&pend); err != nil {
+		t.Fatal(err)
+	}
+	if pend < 2 {
+		t.Errorf("命令与结果都该挂撤回，得到 %d 条", pend)
 	}
 
 	// 参数形态（客户端补的 @botname 后缀也要认）：查资料补上昵称。
