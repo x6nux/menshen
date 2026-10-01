@@ -3,6 +3,7 @@ package antiad
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
@@ -409,5 +410,43 @@ func TestGbanWorthyAccountScopeNeedsBoth(t *testing.T) {
 	}
 	if !testtest("account", 0.95, 2.2) {
 		t.Error("账号级两项都过才够格")
+	}
+}
+
+// TestAdminLiftGbanScope：解除联合封禁的范围语义 ——
+// 主管理员能撤任何账本的专属组条目，并把「个人简介限制」一并解开；
+// 次级管理员只动自己的账本，别人的条目撤不掉。
+func TestAdminLiftGbanScope(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+
+	// 某个次管 300 的专属组条目 + 一条进群限制记录（按个人简介判的）。
+	if err := GbanOwnAddBan(sh, 300, 555, "简介推广接码服务", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO join_mutes
+		(chat_id,user_id,bot_id,reason,notice_msg,attempts,created_at)
+		VALUES (-100,555,?, '简介写着加微信',0,0,?)`,
+		b.BotID(), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	// 反向先试：次管 777 之外的账本，200 撤不动。
+	if s := AdminLiftGban(sh, 200, 555); s != "" {
+		t.Fatalf("次管不该动别人的账本，得到 %q", s)
+	}
+	// 主管理员 777 来撤：专属组条目与进群限制都要清掉。
+	scope := AdminLiftGban(sh, 777, 555)
+	if !strings.Contains(scope, "专属联合封禁组") ||
+		!strings.Contains(scope, "个人简介限制") {
+		t.Fatalf("主管理员应撤掉专属组条目与个人简介限制，得到 %q", scope)
+	}
+	if _, ok := sh.Cache.Snap().GbanOwnBans[300][555]; ok {
+		t.Error("专属组条目应被撤掉")
+	}
+	var n int64
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM join_mutes
+		WHERE chat_id=-100 AND user_id=555`).Scan(&n)
+	if n != 0 {
+		t.Error("个人简介限制记录应被清掉")
 	}
 }

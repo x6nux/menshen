@@ -188,6 +188,38 @@ func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 	return out
 }
 
+// PenaltyInfo 是一条仍在生效的限制（面板 /user 卡片展示与解除用）。
+type PenaltyInfo struct {
+	Type   string // join_profile / message / gban / gban_own
+	ChatID int64
+	Reason string
+	At     int64
+	Action string // message 类的处置动作（muted / deleted_banned / …）
+	Owner  int64  // gban_own 的账本归属人
+}
+
+// ActivePenalties 列出某人仍在生效的限制，供面板展示与逐条解除。
+//
+// 与申诉入口同一口径（effectivePenalties），额外带出 gban_own 的归属人
+// 与处置动作：面板要按动作决定「解封」还是「解禁言」，也要把账本归属
+// 写清楚（是全局组还是某个管理员的专属组）。
+func ActivePenalties(sh *core.Shared, botID, uid int64) []PenaltyInfo {
+	ps := effectivePenalties(sh, botID, uid)
+	out := make([]PenaltyInfo, 0, len(ps))
+	snap := sh.Cache.Snap()
+	for _, p := range ps {
+		info := PenaltyInfo{Type: p.Type, ChatID: p.ChatID,
+			Reason: p.Reason, At: p.At, Action: p.Action}
+		if p.Type == "gban_own" {
+			if rec := snap.Bots[botID]; rec != nil {
+				info.Owner = rec.OwnerID
+			}
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 // ---- 入口 ----
 
 // HandleNonStaffPrivate 处理非管理员的私聊。返回 true 表示已接管这条消息。

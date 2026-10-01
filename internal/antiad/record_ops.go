@@ -130,6 +130,25 @@ func ReleaseUser(b *core.Bot, r AdLogRow) string {
 	return strings.Join(did, "、")
 }
 
+// ReleaseUserInChat 面板「生效中的限制」解除按钮的实现：封禁与禁言都试
+// 一遍，并把「个人简介限制」记录一并清掉。
+//
+// 记录卡片上的 ReleaseUser 有具体流水行可依托（按动作选解封/解禁言）；
+// 这里只有 (群, 人)，所以两个动作都做：unban 带 only_if_banned，不会把
+// 没被封的人踢出去；LiftMute 成功时本来就清资料限制，只有它失败（人已
+// 不在群）时补一次，免得记录留着把复查任务引回来。
+func ReleaseUserInChat(b *core.Bot, chatID, uid int64) (bool, string) {
+	ok1, _ := LiftMute(b, chatID, uid)
+	ok2, _ := Unban(b, chatID, uid)
+	if !ok1 && !ok2 {
+		return false, "解除失败（可能已不在群里）"
+	}
+	if _, found := loadJoinMute(b.Store, chatID, uid); found {
+		dropJoinMute(b, chatID, uid)
+	}
+	return true, "已解除"
+}
+
 // MarkPenaltiesLifted 把某人在某群尚未标记解除的处罚流水标成已解除。
 //
 // 申诉入口按「仍在生效的处罚」决定要不要给入口。限时禁言靠时间窗自然过期，

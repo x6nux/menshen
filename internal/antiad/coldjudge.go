@@ -208,6 +208,9 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 // coldJudge 对一个刚进群的账号做画像判定，命中即限制发言。
 func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	snap := b.Cache.Snap()
+	// 进群是低频事件，简介必须拿最新的：对方可能刚改过资料（上一次被判、
+	// 改完简介再进来），用 1 小时缓存会把旧简介的结论原样重演一遍。
+	b.BioCache.Delete(u.ID)
 	bio := userBio(b, u.ID)
 
 	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 0) == 1 {

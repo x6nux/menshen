@@ -377,6 +377,53 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		showUserLogs(b, chatID, msgID, q.From.ID, uid, int(page), all)
 
+	case "gbl": // a:ad:gbl:<target>:<page>[:all] —— 解除联合封禁
+		if len(parts) < 5 {
+			b.AnswerCallback(q.ID, "参数缺失")
+			return
+		}
+		target, err := strconv.ParseInt(parts[3], 10, 64)
+		page, _ := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil || target == 0 {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		if !b.CanManageBot(q.From.ID, b.BotID()) {
+			b.AnswerCallback(q.ID, "无权操作")
+			return
+		}
+		all := len(parts) > 5 && parts[5] == "all"
+		note := "该用户不在你能解除的名单里"
+		if scope := antiad.AdminLiftGban(b.Shared, q.From.ID, target); scope != "" {
+			note = "已解除：" + scope
+		}
+		b.AnswerCallback(q.ID, note)
+		showUserLogs(b, chatID, msgID, q.From.ID, target, int(page), all)
+
+	case "lift": // a:ad:lift:<chat>:<target>:<page>[:all] —— 解除某群的限制
+		if len(parts) < 6 {
+			b.AnswerCallback(q.ID, "参数缺失")
+			return
+		}
+		chat, err1 := strconv.ParseInt(parts[3], 10, 64)
+		target, err2 := strconv.ParseInt(parts[4], 10, 64)
+		page, _ := strconv.ParseInt(parts[5], 10, 64)
+		if err1 != nil || err2 != nil || target == 0 {
+			b.AnswerCallback(q.ID, "参数无效")
+			return
+		}
+		if !b.CanManageBot(q.From.ID, b.BotID()) {
+			b.AnswerCallback(q.ID, "无权操作")
+			return
+		}
+		all := len(parts) > 6 && parts[6] == "all"
+		note := "已解除"
+		if ok, desc := antiad.ReleaseUserInChat(b, chat, target); !ok {
+			note = desc
+		}
+		b.AnswerCallback(q.ID, note)
+		showUserLogs(b, chatID, msgID, q.From.ID, target, int(page), all)
+
 	case "ok", "fp", "del", "mute", "ban", "rel":
 		if len(parts) < 4 {
 			b.AnswerCallback(q.ID, "参数缺失")
@@ -741,6 +788,67 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 	var sb strings.Builder
 	sb.WriteString(antiad.UserDossierText(b, d, loc))
 	sb.WriteString("\n")
+
+	// 生效中的限制与联合封禁：管理员查人时最该一眼看到的「他现在还被什么
+	// 拦着」，并且要能当场解除 —— 只展示不给按钮，还得去别处找入口。
+	var actionRows [][][2]string
+	if pens := antiad.ActivePenalties(b.Shared, b.BotID(), target); len(pens) > 0 {
+		suffix := ""
+		if all {
+			suffix = ":all"
+		}
+		sb.WriteString("⚠️ <b>生效中的限制</b>\n")
+		sb.WriteString("<i>「进群限制」是按个人简介判出来的；解封时把限制记录一并清掉，" +
+			"否则复查任务会按记录再禁回去。</i>\n")
+		var chatOrder []int64
+		seen := map[int64]bool{}
+		for _, p := range pens {
+			if p.Type != "gban" && p.Type != "gban_own" && !seen[p.ChatID] {
+				seen[p.ChatID] = true
+				chatOrder = append(chatOrder, p.ChatID)
+			}
+		}
+		for _, p := range pens {
+			when := time.Unix(p.At, 0).In(loc).Format("01-02 15:04")
+			switch p.Type {
+			case "join_profile":
+				fmt.Fprintf(&sb, "• 群 %s ｜ 进群限制（个人简介）｜ %s\n<i>%s</i>\n",
+					chatTag(b, p.ChatID), when,
+					html.EscapeString(core.TruncateRunes(p.Reason, 120)))
+			case "message":
+				fmt.Fprintf(&sb, "• 群 %s ｜ %s ｜ %s\n<i>%s</i>\n",
+					chatTag(b, p.ChatID), html.EscapeString(actionLabel(p.Action)), when,
+					html.EscapeString(core.TruncateRunes(p.Reason, 120)))
+			}
+		}
+		var gbans []antiad.PenaltyInfo
+		for _, p := range pens {
+			if p.Type == "gban" || p.Type == "gban_own" {
+				gbans = append(gbans, p)
+			}
+		}
+		if len(gbans) > 0 {
+			sb.WriteString("🚫 <b>联合封禁</b>\n")
+			for _, p := range gbans {
+				scope := "全局组"
+				if p.Type == "gban_own" {
+					scope = "专属组（管理员 " + strconv.FormatInt(p.Owner, 10) + " 的账本）"
+				}
+				fmt.Fprintf(&sb, "• %s ｜ %s\n<i>%s</i>\n", scope,
+					time.Unix(p.At, 0).In(loc).Format("01-02 15:04"),
+					html.EscapeString(core.TruncateRunes(p.Reason, 120)))
+			}
+			actionRows = append(actionRows, [][2]string{{"🚫 解除联合封禁",
+				fmt.Sprintf("a:ad:gbl:%d:%d%s", target, page, suffix)}})
+		}
+		for _, chatID := range chatOrder {
+			actionRows = append(actionRows, [][2]string{{"🔓 解除群 " +
+				strconv.FormatInt(chatID, 10) + " 的限制",
+				fmt.Sprintf("a:ad:lift:%d:%d:%d%s", chatID, target, page, suffix)}})
+		}
+		sb.WriteString("\n")
+	}
+
 	if all {
 		fmt.Fprintf(&sb, "📋 <b>判定记录（全部 %d 条）</b>\n\n", total)
 	} else {
@@ -748,7 +856,7 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 			"<i>默认只列被处置过的；点下方按钮可看全部 %d 条。</i>\n\n",
 			total, d.Total)
 	}
-	var kb [][][2]string
+	kb := actionRows
 	for _, it := range list {
 		fmt.Fprintf(&sb, "• <code>#%d</code> %s · %s · %s\n",
 			it.id, time.Unix(it.at, 0).In(loc).Format("01-02 15:04"),
@@ -781,6 +889,15 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 			userLogsCB(target, 1, true)}})
 	}
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(kb...))
+}
+
+// chatTag 渲染群标签：本 bot 有群配置就带上标题，否则只有 id。
+// 主管理员看的是全平台记录，群里可能属于别的 bot，所以查不到时给 id 就够。
+func chatTag(b *core.Bot, chatID int64) string {
+	if c, ok := b.Cache.Snap().ChatConf(b.BotID(), chatID); ok && c.Title != "" {
+		return fmt.Sprintf("<code>%d</code>（%s）", chatID, html.EscapeString(c.Title))
+	}
+	return fmt.Sprintf("<code>%d</code>", chatID)
 }
 
 // managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数。

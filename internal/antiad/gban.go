@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -491,8 +492,16 @@ func ownChats(snap *store.Snapshot, ownerID int64) []int64 {
 }
 
 // AdminLiftGban 管理员解除某人的联合封禁：全局组对所有管理员开放
-// （共同维护的名单），专属组只动自己的账本。返回解除到的范围说明，
-// 空串表示此人不在任何名单里。
+// （共同维护的名单），专属组按账本归属处理 —— 次管只动自己的；主管理员
+// 是平台级角色，各次管的专属组条目也能撤（条目在别人的账本里时，主管
+// 点「解除联合封禁」在旧实现里只撤了全局组，群里当场解了、名单还在，
+// 人一发言又按名单禁回去）。
+//
+// 同时把「个人简介类限制」（进群限制 join_mutes）一并解开：这类限制是
+// 按资料判出来的，只撤名单不解它的话人还是说不出话，而且复查任务
+// （ReassertActiveMutes）会把禁言按 join_mutes 记录再施加回去。
+//
+// 返回解除到的范围说明，空串表示此人不在任何名单/限制里。
 func AdminLiftGban(sh *core.Shared, adminUID, target int64) string {
 	var lifted []string
 	snap := sh.Cache.Snap()
@@ -500,14 +509,100 @@ func AdminLiftGban(sh *core.Shared, adminUID, target int64) string {
 		LiftGban(sh, target)
 		lifted = append(lifted, "全局联合封禁组")
 	}
-	if _, ok := snap.GbanOwnBans[adminUID][target]; ok {
-		if err := GbanOwnRemoveBan(sh, adminUID, target); err != nil {
-			slog.Error("联合封禁：专属组移除失败", "uid", target, "err", err)
-		} else {
-			lifted = append(lifted, "你的专属联合封禁组")
+	owners := []int64{adminUID}
+	if sh.IsMain(adminUID) {
+		for ownerID := range snap.GbanOwnBans {
+			if ownerID != adminUID {
+				owners = append(owners, ownerID)
+			}
 		}
 	}
+	for _, ownerID := range owners {
+		if _, ok := snap.GbanOwnBans[ownerID][target]; !ok {
+			continue
+		}
+		if err := GbanOwnRemoveBan(sh, ownerID, target); err != nil {
+			slog.Error("联合封禁：专属组移除失败", "owner", ownerID,
+				"uid", target, "err", err)
+			continue
+		}
+		if ownerID == adminUID {
+			lifted = append(lifted, "专属联合封禁组")
+		} else {
+			lifted = append(lifted, "专属联合封禁组（管理员 "+
+				strconv.FormatInt(ownerID, 10)+" 的账本）")
+		}
+	}
+	if n := dropJoinMutesFor(sh, target, adminUID); n > 0 {
+		lifted = append(lifted, "个人简介限制（"+strconv.Itoa(n)+" 个群）")
+	}
 	return strings.Join(lifted, "、")
+}
+
+// dropJoinMutesFor 把某人的「进群限制」（按个人简介判出的限制发言）解除：
+// 删记录 + 解禁言 + 撤群内通知 + 落「主动解除」标记（避免复查任务再施加，
+// 也避免外部解除复查把它当成被别的 bot 抹掉）。
+//
+// 主管理员清全部群；次级管理员只清自己名下 bot 覆盖的群。群里没有在跑的
+// bot 时至少清掉记录与标记 —— 那条限制已经没有执行者了。返回清掉的群数。
+func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
+	rows, err := sh.Store.Read.Query(
+		`SELECT DISTINCT chat_id FROM join_mutes WHERE user_id=? LIMIT 200`, uid)
+	if err != nil {
+		slog.Error("进群限制：读取失败", "uid", uid, "err", err)
+		return 0
+	}
+	var chats []int64
+	for rows.Next() {
+		var chatID int64
+		if rows.Scan(&chatID) == nil {
+			chats = append(chats, chatID)
+		}
+	}
+	rows.Close()
+	if len(chats) == 0 {
+		return 0
+	}
+
+	snap := sh.Cache.Snap()
+	main := sh.IsMain(adminUID)
+	allowed := func(chatID int64) bool {
+		if main {
+			return true
+		}
+		for _, rec := range snap.BotsOwnedBy(adminUID, false) {
+			for _, c := range snap.ChatsOf(rec.BotID) {
+				if c.ChatID == chatID {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	n := 0
+	for _, chatID := range chats {
+		if !allowed(chatID) {
+			continue
+		}
+		done := false
+		for _, b := range botsOfChat(sh, chatID) {
+			// 有在跑的 bot：走既有解除路径（删记录、撤通知、解禁言、标记）。
+			LiftMute(b, chatID, uid)
+			done = true
+			break
+		}
+		if !done {
+			if _, err := sh.Store.Write.Exec(`DELETE FROM join_mutes
+				WHERE chat_id=? AND user_id=?`, chatID, uid); err != nil {
+				slog.Error("进群限制：清除失败", "chat", chatID, "uid", uid, "err", err)
+				continue
+			}
+			NoteLifted(chatID, uid)
+		}
+		n++
+	}
+	return n
 }
 
 // gbanGuard 在有人进群时查适用的联合封禁组，命中即按**本群自己的处置方式**

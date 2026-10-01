@@ -133,7 +133,7 @@ function api(op, body){
     if(!r.ok) throw new Error(d.error || ('HTTP '+r.status)); return d; }); });
 }
 function act(op, body, okMsg){
-  return api(op, body).then(function(){ toast(okMsg||'已保存'); return load(); })
+  return api(op, body).then(function(r){ toast((r&&r.note)||okMsg||'已保存'); return load(); })
     .catch(function(e){ toast('❌ '+e.message); });
 }
 function load(){ return api('state').then(function(d){
@@ -698,8 +698,8 @@ function muteOptLabel(botID){
   return muteText(settingOf(botID,'antiad_mute_minutes')||'1440');
 }
 function logact(a,id){
-  api('logact',{id:id,action:a}).then(function(){
-    toast('已执行');
+  api('logact',{id:id,action:a}).then(function(r){
+    toast((r&&r.note)||'已执行');
     // 详情缓存作废：操作后旧卡片会继续显示旧状态并重复给已执行的按钮。
     if(S.LD) delete S.LD[id];
     return load();

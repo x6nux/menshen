@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/antiad"
 	"menshen/internal/core"
@@ -315,5 +316,57 @@ func TestConfirmBypassesVeteranExemption(t *testing.T) {
 	HandleAdminCallback(b, cb(1, "a:ad:fp:"+itoa(id)))
 	if fake.CountCalls("restrictChatMember") <= before {
 		t.Error("确认后再点误判应解禁（沿用原有解禁路径）")
+	}
+}
+
+// TestUserCardShowsAndLiftsPenalties：/user 卡片要列出「生效中的限制」与
+// 「联合封禁」，并给出解除按钮；点解除后限制记录与名单条目都要清掉。
+func TestUserCardShowsAndLiftsPenalties(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, dispatch)
+	fake := b.TG.(*testutil.FakeTG)
+	sh := b.Shared
+	if err := antiad.GbanOwnSetChat(sh, b.Owner(), -100, true); err != nil {
+		t.Fatal(err)
+	}
+	// 555 在自己（归属人）的专属组名单里；556 有一条进群限制（个人简介）。
+	if err := antiad.GbanOwnAddBan(sh, b.Owner(), 555, "简介推广接码服务", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO join_mutes
+		(chat_id,user_id,bot_id,reason,notice_msg,attempts,created_at)
+		VALUES (-100,556,?, '简介写着加微信',0,0,?)`, b.BotID(), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	ShowUserLogs(b, 777, 777, 555)
+	last := fake.LastCall("sendMessage")
+	text := fmt.Sprint(last["text"])
+	kb := fmt.Sprint(last["reply_markup"])
+	for _, want := range []string{"生效中的限制", "联合封禁"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("资料卡应含 %q：\n%s", want, text)
+		}
+	}
+	if !strings.Contains(kb, "a:ad:gbl:555:1") {
+		t.Fatalf("应给出「解除联合封禁」按钮：%s", kb)
+	}
+	// 点「解除联合封禁」：专属组条目清掉。
+	HandleAdminCallback(b, cb(777, "a:ad:gbl:555:1"))
+	if _, ok := sh.Cache.Snap().GbanOwnBans[b.Owner()][555]; ok {
+		t.Error("点解除后专属组条目该没了")
+	}
+
+	// 556 的资料卡要有逐群解除按钮；点了进群限制记录要清掉。
+	ShowUserLogs(b, 777, 777, 556)
+	kb = fmt.Sprint(fake.LastCall("sendMessage")["reply_markup"])
+	if !strings.Contains(kb, "a:ad:lift:-100:556:1") {
+		t.Fatalf("应给出逐群解除按钮：%s", kb)
+	}
+	HandleAdminCallback(b, cb(777, "a:ad:lift:-100:556:1"))
+	var n int64
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM join_mutes
+		WHERE chat_id=-100 AND user_id=556`).Scan(&n)
+	if n != 0 {
+		t.Error("点解除后进群限制记录该被清掉")
 	}
 }

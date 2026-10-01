@@ -520,6 +520,9 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	profile senderProfile, state adState) {
 
 	chatID := conf.ChatID
+	// 管理员复查：对方很可能刚按结论改过资料，简介要拿最新的（申诉路径
+	// 同样先清缓存），否则 1 小时缓存会把旧简介的结论再判一遍。
+	b.BioCache.Delete(state.Sender.UserID)
 	enrichSender(b, &state.Sender)
 	// 同上：定案与资料放行都用补全过的画像。
 	profile = state.Sender
@@ -2140,6 +2143,8 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	msg := &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title}, From: u}
 	gm, _ := loadMember(b.Store, chatID, u.ID)
 	p := buildProfile(b, msg, gm, time.Now().Unix())
+	// 复查的是「人」，简介必须拿最新的：对方可能刚改过资料。
+	b.BioCache.Delete(u.ID)
 	enrichSender(b, &p)
 	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
 	ensureJoinAge(b, chatID, &p)

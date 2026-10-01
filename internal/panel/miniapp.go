@@ -1061,7 +1061,12 @@ func miniGban(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 		// 手工加入与判定命中同待遇：落名单即在全局组覆盖范围内执行。
 		go antiad.EnforceGban(sh, target, reason)
 	case "remove":
-		antiad.LiftGban(sh, target)
+		note := "该用户不在你能解除的名单里"
+		if s := antiad.AdminLiftGban(sh, uid, target); s != "" {
+			note = "已解除：" + s
+		}
+		miniOK(w, map[string]any{"ok": true, "note": note})
+		return
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return
@@ -1476,7 +1481,12 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			return
 		}
 	case "ungban":
-		antiad.LiftGban(sh, userID)
+		note := "该用户不在你能解除的名单里"
+		if s := antiad.AdminLiftGban(sh, uid, userID); s != "" {
+			note = "已解除：" + s
+		}
+		miniOK(w, map[string]any{"ok": true, "note": note})
+		return
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return
