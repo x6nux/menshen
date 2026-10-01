@@ -84,6 +84,21 @@ func TestJtimeShowsJoinTime(t *testing.T) {
 	if n := lastNoticeContaining(t, fake, "入群时间"); !strings.Contains(n, "3 天前") {
 		t.Errorf("@用户名 形态也应显示入群时间，得到：%s", n)
 	}
+
+	// 光发 /jtime（不回复、不带参数）：查发送者自己。
+	tenDays := time.Now().Add(-10 * 24 * time.Hour).Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
+		VALUES (-100,7007,?,?,2,?,0)`, tenDays, tenDays, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 7007, 23, "/jtime"))
+	n4 := lastNoticeContaining(t, fake, "入群时间")
+	for _, want := range []string{"someone", "7007", "10 天前"} {
+		if !strings.Contains(n4, want) {
+			t.Errorf("光发 /jtime 应查发送者自己，缺 %q：%s", want, n4)
+		}
+	}
 }
 
 // TestJtimeUnknownSaysWhy：没有入群记录时如实说未知并给出补救入口，

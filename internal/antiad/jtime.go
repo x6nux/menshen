@@ -11,9 +11,9 @@ import (
 	"menshen/internal/tg"
 )
 
-const jtimeUsage = "用法：回复某人的消息发 <code>/jtime</code>，" +
-	"或直接发 <code>/jtime &lt;user_id&gt;</code> / <code>/jtime @用户名</code>。\n" +
-	"显示该用户在本群的入群时间。"
+const jtimeUsage = "用法：直接发 <code>/jtime</code> 查你自己，" +
+	"回复某人的消息查对方，或发 <code>/jtime &lt;user_id&gt;</code> / " +
+	"<code>/jtime @用户名</code>。\n显示该用户在本群的入群时间。"
 
 // joinAgeLabel 把「入群多久了」渲染成人话。
 func joinAgeLabel(sec int64) string {
@@ -34,6 +34,9 @@ func joinAgeLabel(sec int64) string {
 }
 
 // HandleJtimeCommand 显示某人在本群的入群时间。
+//
+// 查询对象：回复某人的消息 = 对方；带 user_id/@用户名 = 那人；什么都不带 =
+// 发送者自己。
 //
 // 只读命令：不花钱、不动手，对所有人开放（与 /check 同），但仍按发起人
 // 限频 —— 结果是一条发到群里的卡片，刷起来会刷屏。
@@ -74,8 +77,9 @@ func HandleJtimeCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 		}
 		uid = id
 	default:
-		reply(jtimeUsage)
-		return
+		// 没回复、也没指定人：查发送者自己。
+		who = senderOf(m)
+		uid = who.ID
 	}
 	if uid < 0 {
 		reply("频道身份没有入群时间（频道不是群成员）。")
