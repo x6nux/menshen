@@ -1,6 +1,9 @@
 package antiad
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -103,6 +106,48 @@ func TestJoinBackfillRefusesWhenBusy(t *testing.T) {
 		t.Fatal("第二个任务没跑完")
 	}
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestJoinBackfillUnknownsFile：补全前把 joined_at=0 的 uid 写成名单，交给
+// 脚本逐个补查 —— 批量列表在一万条左右截断，大群里漏掉的人就靠这条路径。
+func TestJoinBackfillUnknownsFile(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	now := time.Now().Unix()
+	seed := func(uid, joined int64) {
+		if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+			(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
+			VALUES (-100,?,?,?,1,?,0)`, uid, joined, now-100, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(10, 0)
+	seed(11, now-3600) // 已知：不该进名单
+	seed(12, 0)
+	seed(13, 0)
+
+	p := filepath.Join(t.TempDir(), "unknowns.txt")
+	n, err := writeJoinBackfillUnknowns(b, -100, p, 2) // 上限 2：只带升序的前两个
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("名单该受上限约束为 2 人，得到 %d", n)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(raw)); len(got) != 2 || got[0] != "10" || got[1] != "12" {
+		t.Errorf("名单应只含 joined_at=0 的 uid（升序、受上限约束），得到 %v", got)
+	}
+	// 没有未知成员时不建文件、也不算错。
+	empty := filepath.Join(t.TempDir(), "none.txt")
+	if n, err := writeJoinBackfillUnknowns(b, -999, empty, 100); err != nil || n != 0 {
+		t.Fatalf("没有未知成员时应返回 0：n=%d err=%v", n, err)
+	}
+	if _, err := os.Stat(empty); !os.IsNotExist(err) {
+		t.Error("空名单不该建文件")
+	}
 }
 
 // TestJoinBackfillTriggeredOnAdminGrant：bot 从非管理员变成管理员时触发一次；

@@ -176,6 +176,39 @@ func applyJoinBackfill(b *core.Bot, chatID int64, rows []backfillRow) int {
 	return filled
 }
 
+// joinBackfillLookupCap 是逐个补查名单的人数上限。名单只是一条兜底路径，
+// 太大的群不该把它拖成几十分钟的逐人请求（脚本另有时间预算兜底）。
+const joinBackfillLookupCap = 2000
+
+// writeJoinBackfillUnknowns 把该群里入群时间未知的 uid 写成一列（每行一个），
+// 交给补全脚本逐个补查。返回写入的人数。
+func writeJoinBackfillUnknowns(b *core.Bot, chatID int64, path string, limit int) (int, error) {
+	rows, err := b.Store.Read.Query(`SELECT user_id FROM group_members
+		WHERE chat_id=? AND joined_at=0 ORDER BY user_id LIMIT ?`, chatID, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	n := 0
+	for rows.Next() {
+		var uid int64
+		if rows.Scan(&uid) != nil {
+			continue
+		}
+		sb.WriteString(strconv.FormatInt(uid, 10))
+		sb.WriteByte('\n')
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return n, err
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n, os.WriteFile(path, []byte(sb.String()), 0o600)
+}
+
 // runJoinBackfillScript 把嵌入的脚本落到数据目录下再执行，读回 TSV。
 func runJoinBackfillScript(b *core.Bot, chatID int64, username string) ([]backfillRow, error) {
 	script, err := ensureJoinBackfillScript(b)
@@ -188,6 +221,17 @@ func runJoinBackfillScript(b *core.Bot, chatID int64, username string) ([]backfi
 	args := []string{script, "--chat", strconv.FormatInt(chatID, 10)}
 	if username != "" {
 		args = append(args, "--username", username)
+	}
+	// 批量列表会漏人：服务端给 channels.getParticipants 的翻页上限在一万
+	// 条左右，大群只能扫到一部分；小群也会漏受限账号。把入群时间未知的
+	// uid 写出来，让脚本逐个补查（单查，或按名字搜索越过截断）。写不出
+	// 名单也不影响批量那条路。
+	unknownFile := filepath.Join(filepath.Dir(script),
+		"unknowns_"+strconv.FormatInt(chatID, 10)+".txt")
+	if n, err := writeJoinBackfillUnknowns(b, chatID, unknownFile, joinBackfillLookupCap); err != nil {
+		slog.Warn("入群时间补全：写未知成员名单失败", "chat", chatID, "err", err)
+	} else if n > 0 {
+		args = append(args, "--unknowns", unknownFile)
 	}
 	cmd := exec.CommandContext(ctx, "python3", args...)
 	cmd.Env = append(os.Environ(),
