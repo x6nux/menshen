@@ -2,9 +2,11 @@
 // 补全入群时间（服务端 note）、移除确认（含对象名与后果）。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
+import { useEffect, useRef } from 'react'
 import { describe, expect, it } from 'vitest'
 import type { State } from '../api/types'
 import { mockState } from '../mocks/fixtures'
+import { useNav } from '../nav'
 import { NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { ChatDetailPage } from './ChatDetailPage'
@@ -13,6 +15,16 @@ startTestServer()
 
 const BOT_ID = 2
 const CHAT_ID = -1009876543210
+
+/** ChatStackHarness 先把 chat 页压进真实导航栈，用于验证移除后 pop 回上一层。 */
+function ChatStackHarness() {
+  const nav = useNav()
+  const pushRef = useRef(nav.push)
+  useEffect(() => {
+    pushRef.current({ k: 'chat', botId: BOT_ID, chatId: CHAT_ID })
+  }, [])
+  return <ChatDetailPage botId={BOT_ID} chatId={CHAT_ID} />
+}
 
 /** 迁移自旧 Go 测试：bot 禁言时长为 0（永久）时，群详情必须说清实际执行。 */
 function punishState(): State {
@@ -91,7 +103,7 @@ describe('ChatDetailPage', () => {
     expect(await screen.findByText(note)).toBeInTheDocument()
   })
 
-  it('移除该群：确认面板含对象名与后果，确认后提交并返回', async () => {
+  it('移除该群：确认面板含对象名与后果，确认后提交并从真实栈 pop 返回', async () => {
     const bodies: Record<string, unknown>[] = []
     server.use(
       http.post('*/miniapp/api/chat', async ({ request }) => {
@@ -101,11 +113,12 @@ describe('ChatDetailPage', () => {
     )
     renderPage(
       <>
-        <ChatDetailPage botId={BOT_ID} chatId={CHAT_ID} />
+        <ChatStackHarness />
         <NavProbe />
       </>,
     )
 
+    await waitFor(() => expect(screen.getByTestId('nav-top').textContent).toBe('chat'))
     fireEvent.click(await screen.findByText('移除该群'))
     expect(await screen.findByText('移除该群？')).toBeInTheDocument()
     expect(screen.getByText(/将从「演练群」停止判定与处置/)).toBeInTheDocument()
@@ -113,8 +126,8 @@ describe('ChatDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除' }))
     await waitFor(() => expect(bodies).toHaveLength(1))
     expect(bodies[0]).toEqual({ action: 'remove', bot_id: BOT_ID, chat_id: CHAT_ID })
-    // 成功后 pop 回列表（此处栈本来就是空的，pop 不越界即可）
-    expect(screen.getByTestId('nav-top').textContent).toBe('')
+    // 成功后从真实导航栈 pop（栈从 [chat] 变空）
+    await waitFor(() => expect(screen.getByTestId('nav-top').textContent).toBe(''))
   })
 
   it('启用判定开关乐观翻转，失败回滚并 toast', async () => {

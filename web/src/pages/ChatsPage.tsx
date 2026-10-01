@@ -12,13 +12,14 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { useChatMutation } from '../api/mutations'
-import type { Chat } from '../api/types'
+import type { Bot, Chat } from '../api/types'
 import { filterRows } from '../lib/filters'
 import { muteOptLabel } from '../lib/format'
+import { BULK_CHAT_LIMIT, toggleChatSelection } from '../lib/selection'
 import { useNav } from '../nav'
 import {
   EmptyState,
@@ -36,7 +37,27 @@ function chatKey(c: Pick<Chat, 'bot_id' | 'chat_id'>): string {
   return `${c.bot_id}:${c.chat_id}`
 }
 
-export function ChatsPage() {
+/** applyIntent 把 nav.intent 翻译成群组过滤：dryrun=演练中的群，bot:<id>=该 bot 的群。 */
+function applyIntent(chats: Chat[], intent: string | null): Chat[] {
+  if (intent === 'dryrun') return chats.filter((c) => c.dryrun)
+  if (intent?.startsWith('bot:')) {
+    const botID = Number(intent.slice(4))
+    return chats.filter((c) => c.bot_id === botID)
+  }
+  return chats
+}
+
+/** botLabelOf 按 bot_id 找展示名，找不到回退 bot <id>。 */
+function botLabelOf(bots: Bot[], botID: number): string {
+  return bots.find((b) => b.bot_id === botID)?.label ?? `bot ${botID}`
+}
+
+/** 批量操作条未测到高度前的兜底预留（窄屏换行时约 135px，取 140 更稳）。 */
+const BATCH_BAR_MIN_RESERVE = 140
+
+const BULK_BUTTON_SX = { minWidth: 0, minHeight: 32, px: 1.25, fontSize: 13 }
+
+export function ChatsPage({ bulkLimit = BULK_CHAT_LIMIT }: { bulkLimit?: number } = {}) {
   const nav = useNav()
   const toast = useToast()
   const state = useMiniState(true)
@@ -51,26 +72,56 @@ export function ChatsPage() {
   const [addChatID, setAddChatID] = useState('')
   const [punishOpen, setPunishOpen] = useState(false)
 
+  // 批量操作条实测高度：窄屏按钮换行时动态给列表留出底部空间，避免压住最后一行。
+  // ResizeObserver 首次 observe 会立即回调一次；没有 RO 的环境用兜底预留值。
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const [barHeight, setBarHeight] = useState(0)
+  useEffect(() => {
+    if (!batch) return
+    const el = barRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height ?? 0
+      if (h > 0) setBarHeight(h)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [batch])
+
+  const intent = nav.intent
+  const filterSignature = `${intent ?? ''}|${q.trim().toLowerCase()}`
+  const data = state.data
+  const [prunedFor, setPrunedFor] = useState<string | null>(null)
+
+  // 过滤条件（搜索词/意图）变化时清理不可见的选中项，避免误改被藏起来的群。
+  // 用「渲染期调整状态」的官方模式：不引入 effect 的额外一轮渲染。
+  if (data && prunedFor !== filterSignature) {
+    setPrunedFor(filterSignature)
+    const keys = new Set(
+      filterRows(applyIntent(data.chats, intent), q, (c) =>
+        `${c.title} ${c.chat_id} ${botLabelOf(data.bots, c.bot_id)}`,
+      ).map(chatKey),
+    )
+    setSelected((prev) => {
+      const kept = prev.filter((c) => keys.has(chatKey(c)))
+      return kept.length === prev.length ? prev : kept
+    })
+  }
+
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {
     return <ErrorState status={errorStatus(state.error)} onRetry={() => void state.refetch()} />
   }
 
   const { chats, bots } = state.data
-  const botLabel = (botID: number) => bots.find((b) => b.bot_id === botID)?.label ?? `bot ${botID}`
+  const botLabel = (botID: number) => botLabelOf(bots, botID)
 
-  const intent = nav.intent
   let intentLabel = ''
-  let intentChats = chats
-  if (intent === 'dryrun') {
-    intentLabel = '演练中的群'
-    intentChats = chats.filter((c) => c.dryrun)
-  } else if (intent?.startsWith('bot:')) {
-    const botID = Number(intent.slice(4))
-    intentLabel = `${botLabel(botID)} 的群`
-    intentChats = chats.filter((c) => c.bot_id === botID)
-  }
+  if (intent === 'dryrun') intentLabel = '演练中的群'
+  else if (intent?.startsWith('bot:')) intentLabel = `${botLabel(Number(intent.slice(4)))} 的群`
+  const intentChats = applyIntent(chats, intent)
   const visible = filterRows(intentChats, q, (c) => `${c.title} ${c.chat_id} ${botLabel(c.bot_id)}`)
+  const reserved = batch ? Math.max(barHeight, BATCH_BAR_MIN_RESERVE) : 0
 
   function openAdd() {
     setAddBotID(bots[0]?.bot_id ?? 0)
@@ -93,16 +144,22 @@ export function ChatsPage() {
   }
 
   function toggleSelect(chat: Chat) {
-    const exists = selected.some((c) => chatKey(c) === chatKey(chat))
-    if (exists) {
-      setSelected(selected.filter((c) => chatKey(c) !== chatKey(chat)))
-      return
-    }
-    if (selected.length > 0 && selected[0].bot_id !== chat.bot_id) {
+    const outcome = toggleChatSelection(
+      selected,
+      chat,
+      (a, b) => chatKey(a) === chatKey(b),
+      (c) => c.bot_id,
+      bulkLimit,
+    )
+    if (outcome.rejected === 'bot') {
       toast('一次只能批量管理同一个机器人的群，请先取消已选中的群')
       return
     }
-    setSelected([...selected, chat])
+    if (outcome.rejected === 'limit') {
+      toast(`一次最多批量管理 ${bulkLimit} 个群`)
+      return
+    }
+    setSelected(outcome.selected)
   }
 
   function exitBatch() {
@@ -139,7 +196,14 @@ export function ChatsPage() {
   ]
 
   return (
-    <Box data-testid="chats-page" sx={{ pb: batch ? '72px' : 0 }}>
+    <Box
+      data-testid="chats-page"
+      data-reserved={reserved}
+      sx={{
+        // Shell 已为 TabBar 留了 72px；这里补批量操作条实测高度（未测到时用兜底值）。
+        pb: batch ? `calc(${reserved}px + env(safe-area-inset-bottom))` : 0,
+      }}
+    >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
         <SearchField
           value={q}
@@ -216,6 +280,8 @@ export function ChatsPage() {
 
       {batch && (
         <Box
+          ref={barRef}
+          data-testid="batch-bar"
           sx={{
             position: 'fixed',
             left: 0,
@@ -233,10 +299,11 @@ export function ChatsPage() {
             已选 {selected.length} 个群
             {selected.length > 0 ? ` · ${botLabel(selected[0].bot_id)}` : ''}
           </Typography>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'center' }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, justifyContent: 'center' }}>
             <Button
               size="small"
               variant="outlined"
+              sx={BULK_BUTTON_SX}
               disabled={selected.length === 0 || bulkMut.isPending}
               onClick={() => bulkUpdate({ enabled: true })}
             >
@@ -245,6 +312,7 @@ export function ChatsPage() {
             <Button
               size="small"
               variant="outlined"
+              sx={BULK_BUTTON_SX}
               disabled={selected.length === 0 || bulkMut.isPending}
               onClick={() => bulkUpdate({ enabled: false })}
             >
@@ -253,6 +321,7 @@ export function ChatsPage() {
             <Button
               size="small"
               variant="outlined"
+              sx={BULK_BUTTON_SX}
               disabled={selected.length === 0 || bulkMut.isPending}
               onClick={() => bulkUpdate({ dryrun: true })}
             >
@@ -261,6 +330,7 @@ export function ChatsPage() {
             <Button
               size="small"
               variant="outlined"
+              sx={BULK_BUTTON_SX}
               disabled={selected.length === 0 || bulkMut.isPending}
               onClick={() => bulkUpdate({ dryrun: false })}
             >
@@ -269,6 +339,7 @@ export function ChatsPage() {
             <Button
               size="small"
               variant="outlined"
+              sx={BULK_BUTTON_SX}
               disabled={selected.length === 0 || bulkMut.isPending}
               onClick={() => setPunishOpen(true)}
             >

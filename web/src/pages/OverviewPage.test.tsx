@@ -1,5 +1,5 @@
 // 概览页行为测试：待办跳转（带意图）、近 24h 指标、最近命中取前 3 条并可进详情。
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import type { LogRow } from '../api/types'
@@ -66,6 +66,20 @@ describe('OverviewPage', () => {
     fireEvent.click(screen.getByText('停用的机器人'))
     expect(screen.getByTestId('nav-tab').textContent).toBe('bots')
     expect(screen.getByTestId('nav-intent').textContent).toBe('')
+  })
+
+  it('最近命中请求体带 verdict=ad（第一页）', async () => {
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post('*/miniapp/api/logs', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ logs: [], page: 1, total: 0 })
+      }),
+    )
+    renderPage(<OverviewPage />)
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ verdict: 'ad', q: '', page: 1 })
   })
 
   it('最近命中加载失败显示错误卡，重试后恢复', async () => {

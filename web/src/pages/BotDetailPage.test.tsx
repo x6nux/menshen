@@ -160,4 +160,54 @@ describe('BotDetailPage', () => {
     await waitFor(() => expect(bodies).toHaveLength(2))
     expect(bodies[1]).toEqual({ bot_id: 2, action: 'remove' })
   })
+
+  it('模型抽屉：勾选已启用模型并提交 bot action=models(which=so)', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('bot', bodies)
+    renderPage(<BotDetailPage botId={1} />)
+
+    expect(await screen.findByText('判定模型')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0])
+    // fixtures：bot 1 无模型覆盖（卡片显示「跟随全局」），快选 chip 唯一
+    fireEvent.click(await screen.findByText('demo/gpt-5-mini'))
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({
+      bot_id: 1,
+      action: 'models',
+      which: 'so',
+      value: 'demo/gpt-5-mini',
+    })
+  })
+
+  it('次级管理员：模型卡只读，没有编辑入口', async () => {
+    useState(
+      stateWith({
+        me: { uid: 200, main: false },
+        bots: mockState.bots.map((b) => ({ ...b, owner_id: 200 })),
+      }),
+    )
+    renderPage(<BotDetailPage botId={2} />)
+
+    expect(await screen.findByText('判定模型')).toBeInTheDocument()
+    expect(screen.getAllByText('由主管理员配置')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: '编辑' })).not.toBeInTheDocument()
+  })
+
+  it('恢复全局（空输入）时 0 档不高亮，输入 0 才高亮', async () => {
+    useState(stateWith({ bot_settings: { '2': { antiad_mute_minutes: '30' } } }))
+    renderPage(<BotDetailPage botId={2} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '30' }))
+    expect(await screen.findByText('设置：禁言时长（分钟）')).toBeInTheDocument()
+    expect(screen.getByTestId('preset-0')).not.toHaveAttribute('data-selected', 'true')
+
+    const input = screen.getByLabelText('禁言时长（分钟）')
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.getByTestId('preset-0')).not.toHaveAttribute('data-selected', 'true')
+
+    fireEvent.change(input, { target: { value: '0' } })
+    expect(screen.getByTestId('preset-0')).toHaveAttribute('data-selected', 'true')
+  })
 })

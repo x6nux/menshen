@@ -3,6 +3,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
+import { useNav } from '../nav'
 import { IntentSetter, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { ChatsPage } from './ChatsPage'
@@ -15,6 +16,16 @@ function captureChat(bodies: Record<string, unknown>[], note?: string) {
       bodies.push((await request.json()) as Record<string, unknown>)
       return HttpResponse.json({ ok: true, ...(note ? { note } : {}) })
     }),
+  )
+}
+
+/** IntentChanger 点击后切换带意图的 tab，用于验证意图变化时的选中清理。 */
+function IntentChanger() {
+  const nav = useNav()
+  return (
+    <button type="button" onClick={() => nav.switchTab('chats', 'dryrun')}>
+      intent-dryrun
+    </button>
   )
 }
 
@@ -132,5 +143,77 @@ describe('ChatsPage', () => {
       chat_ids: [-1001234567890],
       fields: { punish: 1 },
     })
+  })
+
+  it('intent=dryrun 预置演练过滤，只显示演练中的群', async () => {
+    renderPage(
+      <>
+        <ChatsPage />
+        <IntentSetter tab="chats" intent="dryrun" />
+      </>,
+    )
+
+    expect(await screen.findByText('只看：演练中的群')).toBeInTheDocument()
+    expect(screen.getByText('演练群')).toBeInTheDocument()
+    expect(screen.getByText('第二个群')).toBeInTheDocument()
+    expect(screen.queryByText('测试群')).not.toBeInTheDocument()
+  })
+
+  it('搜索变化时清理不可见的批量选中项', async () => {
+    renderPage(<ChatsPage />)
+
+    await screen.findByText('测试群')
+    fireEvent.click(screen.getByRole('button', { name: '管理' }))
+    fireEvent.click(screen.getByText('测试群'))
+    expect(screen.getByText(/已选 1 个群/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('搜索群组'), { target: { value: '演练' } })
+    await waitFor(() => expect(screen.getByText(/已选 0 个群/)).toBeInTheDocument())
+    // 被过滤掉的群不应保持勾选状态
+    expect(screen.getByRole('checkbox', { name: '选择 演练群' })).not.toBeChecked()
+  })
+
+  it('意图变化时清理不可见的批量选中项', async () => {
+    renderPage(
+      <>
+        <ChatsPage />
+        <IntentChanger />
+      </>,
+    )
+
+    await screen.findByText('测试群')
+    fireEvent.click(screen.getByRole('button', { name: '管理' }))
+    fireEvent.click(screen.getByText('测试群'))
+    expect(screen.getByText(/已选 1 个群/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('intent-dryrun'))
+    await waitFor(() => expect(screen.getByText(/已选 0 个群/)).toBeInTheDocument())
+    expect(screen.getByText('只看：演练中的群')).toBeInTheDocument()
+    expect(screen.queryByText('测试群')).not.toBeInTheDocument()
+  })
+
+  it('批量选满上限后拒绝继续选择并 toast', async () => {
+    renderPage(<ChatsPage bulkLimit={2} />)
+
+    await screen.findByText('测试群')
+    fireEvent.click(screen.getByRole('button', { name: '管理' }))
+    fireEvent.click(screen.getByText('测试群'))
+    fireEvent.click(screen.getByText('第二个群'))
+    expect(screen.getByText(/已选 2 个群/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('演练群'))
+    expect(await screen.findByText('一次最多批量管理 2 个群')).toBeInTheDocument()
+    expect(screen.getByText(/已选 2 个群/)).toBeInTheDocument()
+  })
+
+  it('批量模式为操作条预留底部高度（data-reserved）', async () => {
+    renderPage(<ChatsPage />)
+    await screen.findByText('测试群')
+    expect(screen.getByTestId('chats-page')).toHaveAttribute('data-reserved', '0')
+
+    fireEvent.click(screen.getByRole('button', { name: '管理' }))
+    expect(screen.getByTestId('batch-bar')).toBeInTheDocument()
+    const reserved = Number(screen.getByTestId('chats-page').getAttribute('data-reserved'))
+    expect(reserved).toBeGreaterThanOrEqual(140)
   })
 })

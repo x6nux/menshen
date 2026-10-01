@@ -280,6 +280,12 @@ export function BotDetailPage({ botId }: { botId: number }) {
   const editingIsToggle = editing !== null && controlKind(editing) === 'toggle'
   const editingIsMinutes = editing !== null && editing.key.endsWith('_minutes')
   const stepSize = editing !== null && editing.key.endsWith('_ms') ? 100 : 1
+  // 空输入表示「恢复全局」，不能把 0（永久）误高亮成已选档位。
+  const presetSelected = (value: number) => {
+    if (draft.trim() === '') return false
+    const n = Number(draft)
+    return Number.isFinite(n) && n === value
+  }
 
   return (
     <Box data-testid="bot-detail-page">
@@ -563,16 +569,21 @@ export function BotDetailPage({ botId }: { botId: number }) {
                 </Box>
                 {editingIsMinutes && minutePresets(editing).length > 0 && (
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
-                    {minutePresets(editing).map((preset) => (
-                      <Chip
-                        key={preset.value}
-                        size="small"
-                        label={preset.label}
-                        color={Number(draft) === preset.value ? 'primary' : 'default'}
-                        variant={Number(draft) === preset.value ? 'filled' : 'outlined'}
-                        onClick={() => setDraft(String(preset.value))}
-                      />
-                    ))}
+                    {minutePresets(editing).map((preset) => {
+                      const picked = presetSelected(preset.value)
+                      return (
+                        <Chip
+                          key={preset.value}
+                          size="small"
+                          label={preset.label}
+                          color={picked ? 'primary' : 'default'}
+                          variant={picked ? 'filled' : 'outlined'}
+                          data-testid={`preset-${preset.value}`}
+                          data-selected={picked ? 'true' : undefined}
+                          onClick={() => setDraft(String(preset.value))}
+                        />
+                      )
+                    })}
                   </Box>
                 )}
                 <Typography sx={{ mt: 1, fontSize: 13, color: 'text.secondary' }}>
