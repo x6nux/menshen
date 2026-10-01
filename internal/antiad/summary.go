@@ -196,7 +196,7 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 	}
 	fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>",
 		html.EscapeString(core.TruncateRunes(r.Text, 500)))
-	rows := adAlertRows(act, r.Reason, r.ID, dryrun,
+	rows := adAlertRows(act, r.Action, r.Reason, r.ID, dryrun,
 		"🔇 "+MuteLabel(b.Cache.Snap().BotSettingInt(r.BotID, "antiad_mute_minutes", 1440)))
 	if links := adAlertLinks(b, r.ID); len(links) > 0 {
 		rows = append(rows, links)

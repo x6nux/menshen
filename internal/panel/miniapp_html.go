@@ -832,7 +832,7 @@ function viewLogDetail(l){
   h+='<div class="card"><h3>操作</h3>'+
     '<div class="grid">'+
     '<button class="b g" onclick="logact(\'review\','+l.id+')">🔎 AI 复查</button>'+
-    '<button class="b g" onclick="logact(\'unmute\','+l.id+')">🔓 解除限制</button>'+
+    '<button class="b g" onclick="logact(\'unmute\','+l.id+')">🔓 解封（判定维持）</button>'+
     '<button class="b g" onclick="logact(\'white\','+l.id+')">🤍 加白名单 24h</button>'+
     '<button class="b" onclick="if(confirm(\'不经 AI 直接按最高档处置？\'))logact(\'ban\','+l.id+')">🖐 人工标记广告</button>'+
     '</div>'+

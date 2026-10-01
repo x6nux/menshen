@@ -377,7 +377,7 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		showUserLogs(b, chatID, msgID, q.From.ID, uid, int(page), all)
 
-	case "ok", "fp", "del", "mute", "ban":
+	case "ok", "fp", "del", "mute", "ban", "rel":
 		if len(parts) < 4 {
 			b.AnswerCallback(q.ID, "参数缺失")
 			return
@@ -556,6 +556,12 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		}
 		antiad.UpdateAdLog(b, row.ID, action, reason)
 		b.AnswerCallback(q.ID, "已禁言")
+
+	case "rel":
+		// 解封（判定维持）：撤掉还在生效的限制、清掉记录，但不动判定本身
+		// —— 与「↩️ 误判」的区别就在这里（样本池、命中数、内容哈希都不动）。
+		did := antiad.ReleaseUser(b, row)
+		b.AnswerCallback(q.ID, "已"+did+"（判定维持不变）")
 
 	case "ban":
 		// banChatMember 是把人请出群，与禁言是两回事。频道身份走 banChatSenderChat。

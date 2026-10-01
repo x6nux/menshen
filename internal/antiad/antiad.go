@@ -1862,7 +1862,7 @@ func SweepAlertCleanup(b *core.Bot, now time.Time) {
 // 按钮按「当前还能做什么」动态生成：已经删过的不再给删除按钮。
 // callback_data 形如 a:ad:fp:12345，远在 64 字节以内。
 // muteLabel 由调用方按本 bot 的禁言时长渲染（永久禁言要看得出来）。
-func adAlertRows(act adAction, note string, logID int64, dryrun bool,
+func adAlertRows(act adAction, action string, note string, logID int64, dryrun bool,
 	muteLabel string) [][][2]string {
 
 	rows := [][][2]string{{
@@ -1881,9 +1881,17 @@ func adAlertRows(act adAction, note string, logID int64, dryrun bool,
 	if len(manual) > 0 {
 		rows = append(rows, manual)
 	}
-	rows = append(rows, [][2]string{
-		{"🚫 封禁出群", fmt.Sprintf("a:ad:ban:%d", logID)},
-	})
+	bottom := [][2]string{{"🚫 封禁出群", fmt.Sprintf("a:ad:ban:%d", logID)}}
+	// 解封：把还在生效的限制撤掉，但**判定维持正确** —— 与「↩️ 误判」不同，
+	// 它不动样本池、命中数与内容哈希。只有记录里确实带着限制（禁言/封禁/
+	// 进群限制/联封）时才给这个按钮，没限制的记录点了也没事可说。
+	name := strings.TrimPrefix(action, "dryrun:")
+	if act.Mute || act.Ban || name == "join_muted" || name == "gban_muted" ||
+		name == "gban_banned" {
+		bottom = append(bottom, [2]string{"🔓 解封（判定维持）",
+			fmt.Sprintf("a:ad:rel:%d", logID)})
+	}
+	rows = append(rows, bottom)
 	return rows
 }
 

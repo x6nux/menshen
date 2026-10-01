@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"menshen/internal/core"
@@ -85,6 +86,48 @@ func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
 	}
 	MarkPenaltiesLifted(b, chatID, uid)
 	return true, ""
+}
+
+// appendNote 在理由后面追加一句，保持原有理由在前。
+func appendNote(old, add string) string {
+	old = strings.TrimSpace(old)
+	if old == "" {
+		return add
+	}
+	return old + "；" + add
+}
+
+// ReleaseUser 解封/解禁言一个人并清掉本群的限制记录 —— 与「误判」不同，
+// **判定维持不变**：动作标签、样本池、历史命中与内容哈希都不动，只把还在
+// 生效的限制撤掉（管理员确认过这个人现在可以放回来，但当初判得没错）。
+//
+// 记录上若是封禁就走解封，否则解禁言；两步都试，被封禁的人不在群里、解禁言
+// 那一步本来就会失败，失败只记日志。返回给管理员看的一句结果。
+func ReleaseUser(b *core.Bot, r AdLogRow) string {
+	name := strings.TrimPrefix(r.Action, "dryrun:")
+	ban := name == "banned" || name == "deleted_banned" || name == "gban_banned"
+
+	// 无论记录上写的是什么，两步都试一遍：记录可能只是「消息级禁言」，而
+	// 人同时被别处封禁过；反过来也一样。only_if_banned 保证不会把没被封的
+	// 人踢出去。
+	var did []string
+	if ok, _ := Unban(b, r.ChatID, r.UserID); ok && ban {
+		did = append(did, "解封")
+	}
+	if ok, _ := LiftMute(b, r.ChatID, r.UserID); ok {
+		did = append(did, "解除禁言")
+	}
+	if len(did) == 0 {
+		// 两步都没生效：多半本来就没有生效中的 TG 限制。记录照样清掉，
+		// 免得申诉页一直显示「你还在限制中」。
+		MarkPenaltiesLifted(b, r.ChatID, r.UserID)
+		did = append(did, "清除记录")
+	}
+	UpdateAdLog(b, r.ID, r.Action,
+		appendNote(r.Reason, "管理员解封（判定维持）："+strings.Join(did, "、")))
+	slog.Info("反广告：管理员解封（判定维持）", "log", r.ID,
+		"chat", r.ChatID, "uid", r.UserID, "动作", strings.Join(did, "、"))
+	return strings.Join(did, "、")
 }
 
 // MarkPenaltiesLifted 把某人在某群尚未标记解除的处罚流水标成已解除。

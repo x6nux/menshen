@@ -1425,18 +1425,15 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			return
 		}
 	case "unmute":
-		// 记录上是封禁的就解封（unbanChatMember），否则解禁言。二者不可
-		// 互换：对已被封禁的人发「权限全开」不会把他放回群里。
-		if rowAction == "banned" || rowAction == "deleted_banned" {
-			if ok2, desc := antiad.Unban(inst, chatID, userID); !ok2 {
-				miniErr(w, http.StatusBadRequest, "解除失败："+desc)
-				return
-			}
-			antiad.MarkPenaltiesLifted(inst, chatID, userID)
-		} else if ok2, desc := antiad.LiftMute(inst, chatID, userID); !ok2 {
-			miniErr(w, http.StatusBadRequest, "解除失败："+desc)
+		// 解封（判定维持）：与 TG 记录卡片的「🔓 解封」同一条路径 ——
+		// 撤掉生效中的限制并清记录，但不动判定本身。记录行要完整取出来
+		// （ReleaseUser 要按动作决定解封还是解禁言，并在理由里留痕）。
+		full, ok2 := antiad.LoadAdLog(sh.Store, id)
+		if !ok2 {
+			miniErr(w, http.StatusNotFound, "记录不存在")
 			return
 		}
+		antiad.ReleaseUser(inst, full)
 	case "white":
 		hours := miniInt(body, "hours")
 		if hours <= 0 {
