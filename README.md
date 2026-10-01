@@ -170,6 +170,7 @@ CGO_ENABLED=0 go build -o menshen .
 | 文档 | 内容 |
 |---|---|
 | [判定链路](docs/how-it-works.md) | 两级判定、处置矩阵、内容哈希、冷判定、闭环学习、成本护栏 |
+| [入群时间](docs/join-time.md) | 为什么必须走 MTProto、用到的接口与调用方式、记录语义、按需查询与缓存 |
 | [部署与接入](docs/deployment.md) | 长轮询 / Webhook、反代、多 bot、配置项与环境变量 |
 | [面板与租户](docs/panel.md) | 管理面板、多租户权限、群内命令与通知细节 |
 | [开发与发布](docs/development.md) | 构建测试、镜像发布流程、数据库表 |
