@@ -22,12 +22,17 @@ export type Page =
 export interface NavValue {
   tab: TabKey
   stack: Page[]
+  /**
+   * 跨页传参：switchTab 时可带一个意图串（如 'appeals'、'dryrun'、'bot:12'），
+   * 目标页启动时读取一次做预置筛选/定位；push 二级页或再次 switchTab 时清空。
+   */
+  intent: string | null
   /** push 进入一个二级页（列表 → 详情）；与栈顶同页时忽略，避免双击叠栈。 */
   push(page: Page): void
   /** pop 返回上一层；已在顶层时不动作。 */
   pop(): void
-  /** switchTab 切一级 Tab，并清空页面栈。 */
-  switchTab(tab: TabKey): void
+  /** switchTab 切一级 Tab，并清空页面栈；intent 缺省即清空。 */
+  switchTab(tab: TabKey, intent?: string): void
 }
 
 /**
@@ -73,16 +78,18 @@ export interface NavProviderProps {
 export function NavProvider({ children, backButton }: NavProviderProps) {
   const [tab, setTab] = useState<TabKey>('overview')
   const [stack, setStack] = useState<Page[]>([])
+  const [intent, setIntent] = useState<string | null>(null)
 
-  const push = useCallback(
-    (page: Page) =>
-      setStack((s) => (s.length > 0 && samePage(s[s.length - 1], page) ? s : [...s, page])),
-    [],
-  )
+  const push = useCallback((page: Page) => {
+    setStack((s) => (s.length > 0 && samePage(s[s.length - 1], page) ? s : [...s, page]))
+    // 进入二级页后面向列表的意图（过滤/定位）不再适用，清掉避免返回后残留。
+    setIntent(null)
+  }, [])
   const pop = useCallback(() => setStack((s) => (s.length ? s.slice(0, -1) : s)), [])
-  const switchTab = useCallback((next: TabKey) => {
+  const switchTab = useCallback((next: TabKey, nextIntent?: string) => {
     setTab(next)
     setStack([])
+    setIntent(nextIntent ?? null)
   }, [])
 
   // BackButton 的点击回调只注册一次，通过 ref 读最新的 pop。
@@ -103,8 +110,8 @@ export function NavProvider({ children, backButton }: NavProviderProps) {
   }, [backButton])
 
   const value = useMemo<NavValue>(
-    () => ({ tab, stack, push, pop, switchTab }),
-    [tab, stack, push, pop, switchTab],
+    () => ({ tab, stack, intent, push, pop, switchTab }),
+    [tab, stack, intent, push, pop, switchTab],
   )
   return <NavContext.Provider value={value}>{children}</NavContext.Provider>
 }

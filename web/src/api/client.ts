@@ -47,6 +47,11 @@ function errorMessage(data: unknown): string | null {
   return null
 }
 
+/** errorStatus 把查询错误归一成 ErrorState 需要的 HTTP 状态（非 ApiError → 0）。 */
+export function errorStatus(err: unknown): number {
+  return err instanceof ApiError ? err.status : 0
+}
+
 /** isAbortError 判断失败是否来自请求取消（signal 已中止或异常名是 AbortError）。 */
 function isAbortError(err: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) return true

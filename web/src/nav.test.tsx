@@ -24,11 +24,14 @@ function Probe() {
   return (
     <>
       <div data-testid="tab">{nav.tab}</div>
+      <div data-testid="intent">{nav.intent ?? ''}</div>
       <div data-testid="stack">{nav.stack.map((p) => p.k).join(',')}</div>
       <button onClick={() => nav.push({ k: 'bot', id: 1 })}>push-bot</button>
       <button onClick={() => nav.push({ k: 'log', id: 9 })}>push-log</button>
       <button onClick={() => nav.pop()}>pop</button>
       <button onClick={() => nav.switchTab('chats')}>tab-chats</button>
+      <button onClick={() => nav.switchTab('chats', 'bot:1')}>tab-chats-bot</button>
+      <button onClick={() => nav.switchTab('records', 'appeals')}>tab-records-appeals</button>
     </>
   )
 }
@@ -126,5 +129,24 @@ describe('NavProvider', () => {
     expect(back.handlers).toHaveLength(1)
     back.unmount()
     expect(back.handlers).toHaveLength(0)
+  })
+
+  it('switchTab 带 intent：可读、再次切 tab 清空、push 也清空', () => {
+    renderNav()
+    expect(screen.getByTestId('intent').textContent).toBe('')
+
+    fireEvent.click(screen.getByText('tab-chats-bot'))
+    expect(screen.getByTestId('tab').textContent).toBe('chats')
+    expect(screen.getByTestId('intent').textContent).toBe('bot:1')
+
+    // push 进入二级页时清空意图（返回列表不再残留过滤）
+    fireEvent.click(screen.getByText('push-bot'))
+    expect(screen.getByTestId('intent').textContent).toBe('')
+
+    // 再次带意图切换，随后不带意图切 tab 也要清空
+    fireEvent.click(screen.getByText('tab-records-appeals'))
+    expect(screen.getByTestId('intent').textContent).toBe('appeals')
+    fireEvent.click(screen.getByText('tab-chats'))
+    expect(screen.getByTestId('intent').textContent).toBe('')
   })
 })

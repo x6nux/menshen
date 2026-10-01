@@ -9,7 +9,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { api } from './client'
 import type { ApiError } from './client'
-import type { OkResp } from './types'
+import type { OkResp, State } from './types'
 
 export type MiniMutationOp =
   | 'set'
@@ -87,4 +87,40 @@ export function useLogactMutation() {
 /** 申诉操作：详情与列表都要刷新。 */
 export function useAppealactMutation() {
   return useMiniMutation('appealact', { invalidate: [['appeal'], ['appeals']] })
+}
+
+export interface OptimisticVars<TBody> {
+  body: TBody
+  /** apply 基于当前 ['state'] 缓存放回乐观结果；必须返回新对象，不要原地改。 */
+  apply: (state: State) => State
+}
+
+/**
+ * useOptimisticMiniMutation 是「开关类」写操作的乐观更新：立即把预期结果写进
+ * ['state']，失败回滚到调用前的快照并冒泡错误（页面 toast），无论成败最后都
+ * 失效 ['state'] 用服务端真值校正。
+ *
+ * 只适用于结果可从前端本地数据推断的简单翻转（启用开关等）；表单类写操作
+ * 必须等服务端确认后再刷新。
+ */
+export function useOptimisticMiniMutation<TBody = Record<string, unknown>, TResp = OkResp>(
+  op: MiniMutationOp,
+) {
+  const queryClient = useQueryClient()
+  return useMutation<TResp, ApiError, OptimisticVars<TBody>, { prev: State | undefined }>({
+    mutationFn: ({ body }) => api<TResp>(op, body),
+    onMutate: async ({ apply }) => {
+      // 有在途的 state 请求时先取消：否则它的旧响应可能盖掉乐观更新。
+      await queryClient.cancelQueries({ queryKey: ['state'] })
+      const prev = queryClient.getQueryData<State>(['state'])
+      queryClient.setQueryData<State>(['state'], (s) => (s ? apply(s) : s))
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined) queryClient.setQueryData(['state'], ctx.prev)
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['state'] })
+    },
+  })
 }

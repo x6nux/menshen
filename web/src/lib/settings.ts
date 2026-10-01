@@ -90,3 +90,18 @@ export function specValueText(value: number | string, spec: Spec): string {
   const pretty = durationText(n)
   return pretty === `${n} 分钟` ? raw : `${n} 分钟（= ${pretty}）`
 }
+
+/**
+ * validateSpecValue 校验参数覆盖抽屉里的输入；返回错误文案，合法返回 null。
+ * 空串表示「跟随全局/恢复全局」，是合法提交；范围与后端 miniSet 一致：
+ * n < min 或（max != 0 且 n > max）都会被服务端 400，这里提前拦住。
+ */
+export function validateSpecValue(spec: Spec, raw: string): string | null {
+  const val = raw.trim()
+  if (val === '') return null
+  if (!/^\d+$/.test(val)) return '请输入非负整数'
+  const n = parseInt(val, 10)
+  if (n < spec.min) return `不能小于 ${spec.min}`
+  if (spec.max !== 0 && n > spec.max) return `不能大于 ${spec.max}`
+  return null
+}

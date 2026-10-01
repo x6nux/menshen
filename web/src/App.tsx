@@ -12,10 +12,17 @@ import { ThemeProvider } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { ApiError, setApiBridge } from './api/client'
 import { useMiniState } from './api/hooks'
+import type { State } from './api/types'
 import { NavProvider, useNav } from './nav'
 import type { Page, TabKey } from './nav'
+import { BotDetailPage } from './pages/BotDetailPage'
+import { BotsPage } from './pages/BotsPage'
+import { ChatDetailPage } from './pages/ChatDetailPage'
+import { ChatsPage } from './pages/ChatsPage'
+import { OverviewPage } from './pages/OverviewPage'
 import { Placeholder } from './pages/Placeholder'
 import { buildMiniTheme } from './theme'
 import { initTelegram } from './telegram'
@@ -149,7 +156,7 @@ function Shell() {
 
   const me = state.data.me
   const role = me.main ? '主管理员' : '次级管理员'
-  const currentName = top ? PAGE_NAMES[top.k] : TAB_NAMES[nav.tab]
+  const currentName = top ? detailTitle(top, state.data) : TAB_NAMES[nav.tab]
 
   return (
     <>
@@ -166,11 +173,55 @@ function Shell() {
           pb: top ? 4 : 'calc(72px + env(safe-area-inset-bottom))',
         }}
       >
-        <Placeholder name={currentName} />
+        {/* Tab 根页常驻：push 二级页时只隐藏不卸载，返回后搜索词/批量选择等内存状态不丢。 */}
+        <Box sx={{ display: top ? 'none' : 'block' }}>{renderTabPage(nav.tab)}</Box>
+        {top && renderStackPage(top)}
       </Box>
       <TabBar />
     </>
   )
+}
+
+/** renderTabPage 是一级 Tab 的页面映射；记录/我的暂由 T3/T4 实现。 */
+function renderTabPage(tab: TabKey): ReactNode {
+  switch (tab) {
+    case 'overview':
+      return <OverviewPage />
+    case 'bots':
+      return <BotsPage />
+    case 'chats':
+      return <ChatsPage />
+    default:
+      return <Placeholder name={TAB_NAMES[tab]} />
+  }
+}
+
+/** renderStackPage 渲染导航栈顶的二级页；未实现的页仍走占位。 */
+function renderStackPage(page: Page): ReactNode {
+  switch (page.k) {
+    case 'bot':
+      return <BotDetailPage botId={page.id} />
+    case 'chat':
+      return <ChatDetailPage botId={page.botId} chatId={page.chatId} />
+    default:
+      return <Placeholder name={PAGE_NAMES[page.k]} />
+  }
+}
+
+/** detailTitle 用列表数据给二级页一个具体标题（bot 名 / 群名），找不到再回退通用名。 */
+function detailTitle(page: Page, state: State): string {
+  switch (page.k) {
+    case 'bot':
+      return state.bots.find((b) => b.bot_id === page.id)?.label ?? PAGE_NAMES.bot
+    case 'chat': {
+      const chat = state.chats.find(
+        (c) => c.bot_id === page.botId && c.chat_id === page.chatId,
+      )
+      return chat?.title || (chat ? String(chat.chat_id) : PAGE_NAMES.chat)
+    }
+    default:
+      return PAGE_NAMES[page.k]
+  }
 }
 
 /** BootSkeleton 初始化阶段的整页骨架（此时还没有主题与导航）。 */

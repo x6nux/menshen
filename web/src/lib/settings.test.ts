@@ -7,6 +7,7 @@ import {
   specHint,
   specUnit,
   specValueText,
+  validateSpecValue,
 } from './settings'
 
 function spec(partial: Partial<Spec> & Pick<Spec, 'key'>): Spec {
@@ -105,5 +106,21 @@ describe('specUnit / specHint / specValueText', () => {
     expect(specValueText(90, mute)).toBe('90')
     expect(specValueText(0, mute)).toBe('0 分钟（永久）')
     expect(specValueText('12', spec({ key: 'antiad_so_trust' }))).toBe('12')
+  })
+})
+
+describe('validateSpecValue', () => {
+  it('空串合法（恢复全局），非整数与越界拦在本地', () => {
+    const mute = spec({ key: 'antiad_mute_minutes', min: 0, max: 0 })
+    expect(validateSpecValue(mute, '')).toBeNull()
+    expect(validateSpecValue(mute, '  ')).toBeNull()
+    expect(validateSpecValue(mute, '0')).toBeNull()
+    expect(validateSpecValue(mute, 'abc')).toBe('请输入非负整数')
+    expect(validateSpecValue(mute, '-1')).toBe('请输入非负整数')
+
+    const hedge = spec({ key: 'antiad_hedge_minutes', min: 1, max: 1440 })
+    expect(validateSpecValue(hedge, '0')).toBe('不能小于 1')
+    expect(validateSpecValue(hedge, '1441')).toBe('不能大于 1440')
+    expect(validateSpecValue(hedge, '1440')).toBeNull()
   })
 })
