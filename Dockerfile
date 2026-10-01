@@ -1,3 +1,14 @@
+# 前端构建阶段：Vite 产物输出到 ../internal/panel/webdist（相对 web/），
+# 也就是镜像里的 /internal/panel/webdist，供下面的 Go 阶段 go:embed。
+# 前端产物与目标架构无关，固定跑构建机的原生架构，不浪费 QEMU。
+# 依赖一律在容器里 npm ci（宿主机的 web/node_modules 已由 .dockerignore 排除）。
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+WORKDIR /src
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
 # 构建阶段固定跑在构建机的原生架构上，靠 GOOS/GOARCH 交叉编译出目标架构：
 # 纯 Go 交叉编译只要几秒，而让 arm64 走 QEMU 模拟整个 go build 要慢十几倍。
 # CI 里 amd64 / arm64 各有原生 runner（见 .github/workflows/docker.yml），这段主要
@@ -10,7 +21,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+# 用 web 阶段的新鲜产物覆盖构建上下文里的（宿主机 webdist 已被 .dockerignore
+# 排除）。-tags miniapp 才会嵌入前端；不带 tag 的本地构建只编译出占位 stub。
+COPY --from=web /internal/panel/webdist ./internal/panel/webdist
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags miniapp \
     -ldflags="-s -w -X 'main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
     -o /out/menshen .
 

@@ -17,6 +17,28 @@ go vet ./...
 
 这三项在 CI 上是打包前的门槛（`.github/workflows/docker.yml`）。
 
+## 前端（Mini App，web/）
+
+Mini App 是独立的 React + Vite 工程（`web/`），构建产物由 Go 在 `/miniapp` 托管。
+需要 Node ≥ 22：
+
+```bash
+npm --prefix web install          # 安装依赖
+npm --prefix web run dev          # 开发服务器；/miniapp/api 代理到 127.0.0.1:8081
+npm --prefix web run typecheck    # tsc -b
+npm --prefix web run test         # vitest run
+npm --prefix web run lint         # oxlint
+npm --prefix web run build        # 产物输出到 internal/panel/webdist/
+```
+
+- **构建产物不入库**（`internal/panel/webdist/` 已 gitignore），仓库里不存在构建结果。
+- Go 侧是 build tag 双实现：`go build -tags miniapp` 用 `go:embed all:webdist`
+  嵌入产物；不带 tag 时编译占位 stub，`/miniapp` 返回「前端未构建」提示（503）。
+  因此没有 Node、没有产物的机器上 `go build` / `go test` 照常工作。
+- 本地要看真实页面：先 `npm --prefix web run build`，再 `go build -tags miniapp`。
+- `docker build` 会自动构建前端并带 tag 编译（Dockerfile 的 web 阶段），部署无需手工构建前端。
+- 旧页面在重构期间保留在 `/miniapp/classic` 供对照，验收后删除。
+
 ## 发布镜像
 
 1. 递增 `main.go` 里的 `version`，提交

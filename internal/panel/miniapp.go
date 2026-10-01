@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
@@ -33,10 +34,24 @@ const miniInitDataHeader = "X-Tg-Init-Data"
 const miniBotIDHeader = "X-Bot-Id"
 
 // MiniAppHandler 返回 /miniapp 的处理器；由 main 组合进 HTTP 服务。
+//
+// 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
+//   - GET  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
+//   - GET  /miniapp/classic   → 旧版内联页面（验收对照期保留，之后删除）
+//   - GET  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
+//   - GET  /miniapp/<其他>     → SPA 回退到入口页（无产物则 404）
+//   - POST /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
 func MiniAppHandler(sh *core.Shared) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimRight(r.URL.Path, "/")
-		if p == "/miniapp" {
+		switch {
+		case p == "/miniapp":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			miniAppIndex(w)
+		case p == "/miniapp/classic":
 			if r.Method != http.MethodGet {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -44,18 +59,93 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			fmt.Fprint(w, miniAppHTML)
-			return
-		}
-		if !strings.HasPrefix(p, "/miniapp/api/") {
+		case p == "/miniapp/api" || strings.HasPrefix(p, "/miniapp/api/"):
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			op := ""
+			if strings.HasPrefix(p, "/miniapp/api/") {
+				op = strings.TrimPrefix(p, "/miniapp/api/")
+			}
+			miniAPI(sh, w, r, op)
+		case p == "/miniapp/assets" || strings.HasPrefix(p, "/miniapp/assets/"):
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			miniAppAsset(w, r)
+		case strings.HasPrefix(p, "/miniapp/"):
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// 自研导航栈不写 URL，回退只为兜住刷新与外链；没有产物就没有页面可回退。
+			if _, ok := miniAppDistFS(); !ok {
+				http.NotFound(w, r)
+				return
+			}
+			miniAppIndex(w)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		miniAPI(sh, w, r, strings.TrimPrefix(p, "/miniapp/api/"))
 	})
+}
+
+// miniAppMissingHTML 是产物缺失时的占位页：文案直接给出构建方式，
+// 避免「忘了带 -tags miniapp」时只看到一片空白。
+const miniAppMissingHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>门神配置</title>
+</head>
+<body style="font:15px/1.7 -apple-system,BlinkMacSystemFont,sans-serif;max-width:34em;margin:12vh auto;padding:0 1.5em;color:#1a1a1a">
+<h1 style="font-size:20px">前端未构建</h1>
+<p>当前二进制没有内嵌 Mini App 前端产物。</p>
+<p>本地开发：<code>npm --prefix web run build</code> 后带 <code>-tags miniapp</code> 重新构建；<br>
+部署构建：<code>docker build</code>（Dockerfile 会先构建前端再嵌入）。</p>
+</body>
+</html>`
+
+// miniAppIndex 输出前端入口页；产物缺失时返回 503 与构建提示。
+func miniAppIndex(w http.ResponseWriter) {
+	dist, ok := miniAppDistFS()
+	if !ok {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, miniAppMissingHTML)
+		return
+	}
+	index, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		http.Error(w, "index.html 读取失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(index)
+}
+
+// miniAppAsset 输出 /miniapp/assets/* 下的静态资源。只服务 fs.Stat 命中
+// 且为普通文件的路径：目录（含 /miniapp/assets/）与缺失一律 404，
+// 不允许把产物目录列举出去。文件名带内容哈希，可以长期强缓存。
+func miniAppAsset(w http.ResponseWriter, r *http.Request) {
+	dist, ok := miniAppDistFS()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	name := strings.TrimPrefix(strings.TrimRight(r.URL.Path, "/"), "/miniapp/")
+	info, err := fs.Stat(dist, name)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.StripPrefix("/miniapp/", http.FileServerFS(dist)).ServeHTTP(w, r)
 }
 
 // validateMiniInitData 校验 Telegram WebApp 的 initData。

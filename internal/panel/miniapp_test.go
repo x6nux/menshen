@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1034,5 +1035,85 @@ func TestMiniAppChatBulkUpdate(t *testing.T) {
 	}
 	if c := conf(43, -100); !c.GroupAlert {
 		t.Errorf("group_alert 应落库，得到 %+v", c)
+	}
+}
+
+// TestMiniAppServesEmbeddedApp：/miniapp 由嵌入的前端产物托管。
+// 带 -tags miniapp 且已 npm --prefix web run build 时验证真实产物；
+// 无产物或 untagged 时验证 503 占位页与 /miniapp/classic 旧页仍可用
+// （不跳过整个测试，两条路径都要有回归）。
+func TestMiniAppServesEmbeddedApp(t *testing.T) {
+	env := newMiniEnv(t)
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		env.h.ServeHTTP(w, req)
+		return w
+	}
+
+	// API 只收 POST：GET 必须 405，不能落入 SPA 回退。
+	if w := get("/miniapp/api"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /miniapp/api 应 405，得到 %d", w.Code)
+	}
+
+	// 旧页面在验收前保留在 /miniapp/classic，且不缓存。
+	if w := get("/miniapp/classic"); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), "telegram-web-app.js") {
+		t.Fatalf("/miniapp/classic 应 200 且是旧页面，得到 %d", w.Code)
+	}
+	if w := get("/miniapp/classic"); w.Header().Get("Cache-Control") != "no-store" {
+		t.Error("/miniapp/classic 应 no-store")
+	}
+
+	dist, ok := miniAppDistFS()
+	if !ok {
+		// 无产物（untagged 构建，或带 tag 但没跑 npm run build）：
+		// 入口页给 503 构建提示，其余前端路由没有页面可回退。
+		w := get("/miniapp")
+		if w.Code != http.StatusServiceUnavailable ||
+			!strings.Contains(w.Body.String(), "前端未构建") {
+			t.Fatalf("无产物时 /miniapp 应 503 占位页，得到 %d：%s", w.Code, w.Body.String())
+		}
+		if w := get("/miniapp/xxx"); w.Code != http.StatusNotFound {
+			t.Errorf("无产物时 SPA 回退应 404，得到 %d", w.Code)
+		}
+		return
+	}
+
+	w := get("/miniapp")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="root"`) {
+		t.Fatalf("/miniapp 应 200 且含 id=\"root\"，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("入口页应 no-store，得到 %q", got)
+	}
+
+	// 真实存在的 assets 文件 200 且长期强缓存；Content-Type 由扩展名给出。
+	assets, err := fs.Glob(dist, "assets/*")
+	if err != nil || len(assets) == 0 {
+		t.Fatalf("产物里应有 assets/* 文件：%v %v", assets, err)
+	}
+	w = get("/miniapp/" + assets[0])
+	if w.Code != http.StatusOK || w.Body.Len() == 0 {
+		t.Fatalf("GET /miniapp/%s 应 200 且有内容，得到 %d", assets[0], w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("assets 应 immutable 缓存，得到 %q", got)
+	}
+	if got := w.Header().Get("Content-Type"); got == "" {
+		t.Error("assets 应带 Content-Type")
+	}
+	// 目录与缺失一律 404，禁止目录列举。
+	if w := get("/miniapp/assets/"); w.Code != http.StatusNotFound {
+		t.Errorf("目录 /miniapp/assets/ 应 404，得到 %d", w.Code)
+	}
+	if w := get("/miniapp/assets/nope.js"); w.Code != http.StatusNotFound {
+		t.Errorf("缺失资源应 404，得到 %d", w.Code)
+	}
+
+	// 未匹配的前端路由回退 index（刷新/外链不白屏）。
+	w = get("/miniapp/xxx")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="root"`) {
+		t.Errorf("SPA 回退应 200 且含 id=\"root\"，得到 %d", w.Code)
 	}
 }
