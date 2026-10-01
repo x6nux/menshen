@@ -555,6 +555,7 @@ var adGroupCmds = []map[string]string{
 	{"command": "ban", "description": "标记为广告并处置（群管理员：回复消息或 /ban user_id）"},
 	{"command": "white", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
 	{"command": "uad", "description": "解除某人在本群的限制（群管理员，回复对方的消息）"},
+	{"command": "jtime", "description": "查看某人的入群时间（回复消息或 /jtime user_id）"},
 }
 
 func (b *Bot) RegisterCommands() {
