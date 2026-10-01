@@ -1088,6 +1088,17 @@ func HandleMyChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 		return
 	}
 	if status == "administrator" || status == "creator" {
+		// 刚拿到管理员权限：顺手补全这个群的历史成员入群时间（Bot API 没有
+		// 这个字段，只能起一个 bot 会话走 MTProto，见 joinbackfill.go）。
+		// 只在「从非管理员变成管理员」时触发：改权限、置顶也会推这条更新，
+		// 每次都跑一遍没有意义（另有 24 小时冷却兜底）。
+		old := ""
+		if cu.OldChatMember != nil {
+			old = cu.OldChatMember.Status
+		}
+		if old != "administrator" && old != "creator" {
+			maybeJoinBackfill(b, cu.Chat.ID, cu.Chat.Username)
+		}
 		return
 	}
 	// 只看总开关，不要求该群已在白名单里。部署顺序是「先把 bot 加进群

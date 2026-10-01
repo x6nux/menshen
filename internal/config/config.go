@@ -62,6 +62,13 @@ type Config struct {
 	// 注意：Turnstile 后台的域名白名单必须包含 public_url 的主机名。
 	TurnstileSiteKey string
 	TurnstileSecret  string
+	// TGAPIID / TGAPIHash 是「客户端应用」标识（my.telegram.org 申请），
+	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，补全历史成员的
+	// 入群时间（Bot API 没有这个字段）。留空则该能力自动跳过，其余功能不受
+	// 影响 —— 与 bot token 不同，它不代表任何账号的控制权。
+	TGAPIID   int
+	TGAPIHash string
+
 	// ClientIPHeader 是取客户端真实 IP 的请求头，如 CF-Connecting-IP、
 	// X-Real-IP。为空则取对端地址。
 	//
@@ -193,6 +200,8 @@ var envKeys = []struct{ env, key string }{
 	{"MENSHEN_TURNSTILE_SITE_KEY", "turnstile_site_key"},
 	{"MENSHEN_TURNSTILE_SECRET", "turnstile_secret"},
 	{"MENSHEN_CLIENT_IP_HEADER", "client_ip_header"},
+	{"MENSHEN_TG_API_ID", "tg_api_id"},
+	{"MENSHEN_TG_API_HASH", "tg_api_hash"},
 }
 
 // applyEnv 把环境变量盖到已有配置上。
@@ -254,6 +263,20 @@ func assign(c *Config, key, val string) error {
 		c.TurnstileSecret = strings.TrimSpace(val)
 	case "client_ip_header":
 		c.ClientIPHeader = strings.TrimSpace(val)
+	case "tg_api_id":
+		// 客户端应用标识（见 Config.TGAPIID）。只用于可选的历史成员补全，
+		// 非法值按「没配」处理，不让它挡住启动。
+		if val == "" {
+			c.TGAPIID = 0
+			break
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(val))
+		if err != nil || n <= 0 {
+			return fmt.Errorf("tg_api_id 应为正整数，得到 %q", val)
+		}
+		c.TGAPIID = n
+	case "tg_api_hash":
+		c.TGAPIHash = strings.TrimSpace(val)
 	case "admin_ids":
 		// 吃三种形态：环境变量的 "1,2,3"、行内数组 "[1, 2]"、空格分隔。
 		// 整体替换而不是追加：环境变量的语义是覆盖，追加会让镜像里烤的
