@@ -1,9 +1,6 @@
 package antiad
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,61 +105,70 @@ func TestJoinBackfillRefusesWhenBusy(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
-// TestJoinBackfillUnknownsFile：补全前把 joined_at=0 的 uid 写成名单，交给
-// 脚本逐个补查 —— 批量列表在一万条左右截断，大群里漏掉的人就靠这条路径。
-func TestJoinBackfillUnknownsFile(t *testing.T) {
+// TestResolveJoinTime：按需实时查询 —— 查到写库、之后不再起脚本；查不到
+// 进负缓存，短时间内不重试。
+func TestResolveJoinTime(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
-	now := time.Now().Unix()
-	seed := func(uid, joined int64) {
-		if _, err := b.Store.Write.Exec(`INSERT INTO group_members
-			(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
-			VALUES (-100,?,?,?,1,?,0)`, uid, joined, now-100, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	seed(10, 0)
-	seed(11, now-3600) // 已知：不该进名单
-	seed(12, 0)
-	seed(13, 0)
-	// uid 10 有一条留底：名单要带上它，供最后一条兜底路径抠 access_hash。
-	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
-		(chat_id,message_id,user_id,text,at) VALUES (-100,77,10,'广告',?)`,
-		now-50); err != nil {
+	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
+	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
+		VALUES (-100,5001,0,0,1,0,0)`); err != nil {
 		t.Fatal(err)
+	}
+	joinLookupMiss = sync.Map{}
+
+	ts := time.Now().Add(-40 * 24 * time.Hour).Unix()
+	calls := 0
+	old := joinLookupRunner
+	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) {
+		calls++
+		return ts, nil
+	}
+	defer func() { joinLookupRunner = old }()
+
+	got, ok := ResolveJoinTime(b, -100, 5001)
+	if !ok || got != ts {
+		t.Fatalf("第一次应查到 %d，得到 %d/%v", ts, got, ok)
+	}
+	// 已入库：第二次直接秒回，不再起脚本。
+	if got2, ok2 := ResolveJoinTime(b, -100, 5001); !ok2 || got2 != ts || calls != 1 {
+		t.Fatalf("第二次该走库缓存：got=%d ok=%v calls=%d", got2, ok2, calls)
+	}
+	var inDB int64
+	if err := b.Store.Read.QueryRow(`SELECT joined_at FROM group_members
+		WHERE chat_id=-100 AND user_id=5001`).Scan(&inDB); err != nil {
+		t.Fatal(err)
+	}
+	if inDB != ts {
+		t.Errorf("查到的时间应写回库里，得到 %d", inDB)
+	}
+	// ensureJoinAge 把查到的时间补进画像（判定用的就是画像）。
+	p := senderProfile{UserID: 5001}
+	ensureJoinAge(b, -100, &p)
+	if !p.AgeKnown || p.AgeHours <= 0 {
+		t.Errorf("画像应补上年龄：known=%v hours=%d", p.AgeKnown, p.AgeHours)
 	}
 
-	p := filepath.Join(t.TempDir(), "unknowns.txt")
-	n, err := writeJoinBackfillUnknowns(b, -100, p, 2) // 上限 2：只带升序的前两个
-	if err != nil {
-		t.Fatal(err)
+	// 查不到（已退群/被踢）：负缓存，第二次不再起脚本。
+	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) {
+		calls++
+		return 0, nil
 	}
-	if n != 2 {
-		t.Fatalf("名单该受上限约束为 2 人，得到 %d", n)
+	if _, ok := ResolveJoinTime(b, -100, 5002); ok {
+		t.Fatal("查不到时不该报 ok")
 	}
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	if len(lines) != 2 || lines[0] != "10\t77" || lines[1] != "12\t0" {
-		t.Errorf("名单应为 `uid\\t最新留底消息id`（升序、受上限约束），得到 %v", lines)
-	}
-	// 没有未知成员时不建文件、也不算错。
-	empty := filepath.Join(t.TempDir(), "none.txt")
-	if n, err := writeJoinBackfillUnknowns(b, -999, empty, 100); err != nil || n != 0 {
-		t.Fatalf("没有未知成员时应返回 0：n=%d err=%v", n, err)
-	}
-	if _, err := os.Stat(empty); !os.IsNotExist(err) {
-		t.Error("空名单不该建文件")
+	if _, ok := ResolveJoinTime(b, -100, 5002); ok || calls != 2 {
+		t.Fatalf("负缓存应拦住第二次查询：calls=%d", calls)
 	}
 }
 
-// TestJoinBackfillTriggeredOnAdminGrant：bot 从非管理员变成管理员时触发一次；
-// 同在管理员状态的更新（改权限、置顶）不再触发；冷却期内不重复触发。
-func TestJoinBackfillTriggeredOnAdminGrant(t *testing.T) {
+// TestJoinBackfillNotTriggeredOnAdminGrant：拿到管理员权限不再自动全量
+// 补全 —— 改成按需实时查询（ResolveJoinTime），要预热整群走 Mini App 的
+// 「补全历史入群时间」按钮。守门测试：别让全量扫描悄悄回来。
+func TestJoinBackfillNotTriggeredOnAdminGrant(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
-	// 替换脚本执行器：只记录被调用，不真跑 python。
 	calls := make(chan int64, 8)
 	oldRunner := backfillRunner
 	backfillRunner = func(_ *core.Bot, chatID int64, _ string) ([]backfillRow, error) {
@@ -171,7 +177,6 @@ func TestJoinBackfillTriggeredOnAdminGrant(t *testing.T) {
 	}
 	defer func() { backfillRunner = oldRunner }()
 	joinBackfillDone = sync.Map{}
-	// 群要处于启用状态，getChat 也要能返回（拿公开用户名）。
 	testutil.EnableAntiad(t, b, -100)
 	fake := b.TG.(*testutil.FakeTG)
 	fake.Resp["getChat"] = `{"ok":true,"result":{"id":-100,"type":"supergroup","username":"testgroup"}}`
@@ -183,21 +188,10 @@ func TestJoinBackfillTriggeredOnAdminGrant(t *testing.T) {
 			NewChatMember: &tg.ChatMemberInfo{Status: now},
 		}
 	}
-	// member → administrator：触发。
 	HandleMyChatMemberUpdate(b, mk("member", "administrator"))
 	select {
 	case c := <-calls:
-		if c != -100 {
-			t.Errorf("触发时应带上群 id，得到 %d", c)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("拿到管理员权限应触发历史成员补全")
-	}
-	// administrator → administrator（改权限）：不触发。
-	HandleMyChatMemberUpdate(b, mk("administrator", "administrator"))
-	select {
-	case <-calls:
-		t.Error("同在管理员状态不该重复触发")
+		t.Fatalf("拿到管理员权限不该再自动全量补全（收到 %d）", c)
 	case <-time.After(300 * time.Millisecond):
 	}
 }

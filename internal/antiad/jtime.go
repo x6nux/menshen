@@ -109,6 +109,16 @@ func HandleJtimeCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	}
 
 	gm, ok := loadMember(b.Store, chatID, uid)
+	// 库里没有就按需实时查一次（几秒），查到即入库，之后都是秒回。
+	if !ok || gm.JoinedAt == 0 {
+		if ts, found := ResolveJoinTime(b, chatID, uid); found {
+			if !ok {
+				gm = groupMember{ChatID: chatID, UserID: uid, Known: true}
+			}
+			gm.JoinedAt = ts
+			ok = true
+		}
+	}
 	var sb strings.Builder
 	sb.WriteString("🗂 <b>入群时间</b>\n")
 	sb.WriteString(label + "\n")

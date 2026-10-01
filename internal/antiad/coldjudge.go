@@ -222,6 +222,9 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	gm, _ := loadMember(b.Store, conf.ChatID, u.ID)
 	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
 	p.Bio = bio
+	// 年龄轴要用的入群时间缺了时按需补一次（新入群时 chat_member 已记，
+	// 未知的都是 bot 拿到管理员权限之前就在群的人）。
+	ensureJoinAge(b, conf.ChatID, &p)
 	// 链接解析放在预筛之后：每个链接一次 getChat，不该花在资料干净的人身上。
 	p.BioLinks = resolveProfileLinks(b, p)
 

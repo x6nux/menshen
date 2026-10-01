@@ -111,17 +111,7 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 	// 群名取一下：私有群（没有公开用户名）要靠会话缓存里出现过才能解析，
 	// 有用户名时最稳。
 	if username == "" {
-		if raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID}); err == nil {
-			var resp struct {
-				OK     bool `json:"ok"`
-				Result struct {
-					Username string `json:"username"`
-				} `json:"result"`
-			}
-			if json.Unmarshal(raw, &resp) == nil && resp.OK {
-				username = resp.Result.Username
-			}
-		}
+		username = chatUsername(b, chatID)
 	}
 
 	go func() {
@@ -176,46 +166,175 @@ func applyJoinBackfill(b *core.Bot, chatID int64, rows []backfillRow) int {
 	return filled
 }
 
-// joinBackfillLookupCap 是逐个补查名单的人数上限。名单只是一条兜底路径，
-// 太大的群不该把它拖成几十分钟的逐人请求（脚本另有时间预算兜底）。
-const joinBackfillLookupCap = 2000
+// chatUsername 取群的公开用户名（私有群取不到，返回空串）。
+func chatUsername(b *core.Bot, chatID int64) string {
+	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID})
+	if err != nil {
+		return ""
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
+		return ""
+	}
+	return resp.Result.Username
+}
 
-// writeJoinBackfillUnknowns 把该群里入群时间未知的 uid 写成一列（每行
-// `uid\t最新留底消息id`），交给补全脚本逐个补查。消息 id 是给最后一条兜底
-// 路径用的：受限账号搜不到时，用这条消息把本人的 access_hash 抠出来再单查。
-// 返回写入的人数。
-func writeJoinBackfillUnknowns(b *core.Bot, chatID int64, path string, limit int) (int, error) {
-	rows, err := b.Store.Read.Query(`SELECT g.user_id,
-		COALESCE((SELECT m.message_id FROM group_messages m
-		          WHERE m.chat_id=g.chat_id AND m.user_id=g.user_id
-		          ORDER BY m.at DESC LIMIT 1), 0)
-		FROM group_members g
-		WHERE g.chat_id=? AND g.joined_at=0
-		ORDER BY g.user_id LIMIT ?`, chatID, limit)
+// ---- 按需实时查询（单个人） ----
+//
+// 批量列表会漏人（大群服务端截断在一万条左右，小群也会漏受限账号），而
+// 绝大部分成员一辈子也不会被用到。所以不再预先全查：/jtime、判定与复查
+// 真正需要年龄轴时，实时查这一个人，查到就写进 group_members.joined_at
+// —— 库就是缓存，查过一次之后都是秒回。
+
+// joinLookupTimeout 是单人查询的等待上限。脚本要起 python、连 MTProto、
+// 发一两次请求，正常几秒；超时按查不到处理，别把调用方拖太久。
+const joinLookupTimeout = 20 * time.Second
+
+const (
+	// joinLookupMissTTL 是「确实查不到」（已退群/被踢）的负缓存时长。
+	joinLookupMissTTL = 6 * time.Hour
+	// joinLookupErrTTL 是查询本身失败（网络、FLOOD_WAIT、超时）的负缓存，
+	// 短一些：过一会儿值得再试。
+	joinLookupErrTTL = 15 * time.Minute
+)
+
+// joinLookupMissRec 是负缓存的一条。
+type joinLookupMissRec struct {
+	at  time.Time
+	ttl time.Duration
+}
+
+var (
+	// joinLookupMu 让单人查询排队：同一个 bot 的 MTProto 会话文件不能并发。
+	joinLookupMu sync.Mutex
+	// joinLookupMiss 是查不到的人的负缓存，避免反复起脚本。
+	joinLookupMiss sync.Map // key -> joinLookupMissRec
+	// joinLookupRunner 是单人查询的实现，测试里替换。
+	joinLookupRunner = runJoinLookupScript
+)
+
+// ResolveJoinTime 实时查一个人在某群的入群时间，查到就写回 group_members。
+//
+// 返回 (时间戳, 是否拿到)。入群时间在库里就是缓存：joined_at>0 直接返回；
+// 查不到的进负缓存，短时间内不再重试。批量补全正在跑时直接放弃 ——
+// 会话文件在用，而且判定路径不能为此等上十分钟。
+func ResolveJoinTime(b *core.Bot, chatID, uid int64) (int64, bool) {
+	if b == nil || b.IsMainBot() || chatID == 0 || uid <= 0 {
+		return 0, false
+	}
+	if gm, ok := loadMember(b.Store, chatID, uid); ok && gm.JoinedAt > 0 {
+		return gm.JoinedAt, true
+	}
+	if b.Cfg.TGAPIID == 0 || b.Cfg.TGAPIHash == "" {
+		return 0, false
+	}
+	key := backfillKey(b.BotID(), chatID) + ":" + strconv.FormatInt(uid, 10)
+	missed := func() bool {
+		if v, ok := joinLookupMiss.Load(key); ok {
+			if r, ok := v.(joinLookupMissRec); ok && time.Since(r.at) < r.ttl {
+				return true
+			}
+		}
+		return false
+	}
+	if missed() {
+		return 0, false
+	}
+
+	joinLookupMu.Lock()
+	defer joinLookupMu.Unlock()
+	// 等锁期间别人可能已经查到了、或者刚失败过。
+	if gm, ok := loadMember(b.Store, chatID, uid); ok && gm.JoinedAt > 0 {
+		return gm.JoinedAt, true
+	}
+	if missed() {
+		return 0, false
+	}
+	if !joinBackfillRunning.TryLock() {
+		return 0, false
+	}
+	defer joinBackfillRunning.Unlock()
+
+	ts, err := joinLookupRunner(b, chatID, uid)
+	if err != nil {
+		slog.Info("入群时间实时查询：失败", "chat", chatID, "uid", uid, "err", err)
+		joinLookupMiss.Store(key, joinLookupMissRec{at: time.Now(), ttl: joinLookupErrTTL})
+		return 0, false
+	}
+	if ts <= 0 {
+		// 脚本正常跑完但没数据：已退群/被踢，短时间内不用再查。
+		joinLookupMiss.Store(key, joinLookupMissRec{at: time.Now(), ttl: joinLookupMissTTL})
+		return 0, false
+	}
+	if _, err := b.Store.Write.Exec(`UPDATE group_members SET joined_at=?
+		WHERE chat_id=? AND user_id=? AND joined_at=0`, ts, chatID, uid); err != nil {
+		slog.Warn("入群时间实时查询：写库失败", "chat", chatID, "uid", uid, "err", err)
+	}
+	return ts, true
+}
+
+// ensureJoinAge 在画像还没拿到入群时间时补一次实时查询，失败就维持未知。
+func ensureJoinAge(b *core.Bot, chatID int64, p *senderProfile) {
+	if p == nil || p.AgeKnown || p.UserID <= 0 || p.IsChannel {
+		return
+	}
+	ts, ok := ResolveJoinTime(b, chatID, p.UserID)
+	if !ok {
+		return
+	}
+	p.AgeKnown = true
+	if now := time.Now().Unix(); now > ts {
+		p.AgeHours = (now - ts) / 3600
+	}
+}
+
+// runJoinLookupScript 起一次单人查询，返回入群时间（0 表示查不到）。
+func runJoinLookupScript(b *core.Bot, chatID, uid int64) (int64, error) {
+	script, err := ensureJoinBackfillScript(b)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	var sb strings.Builder
-	n := 0
-	for rows.Next() {
-		var uid, msgID int64
-		if rows.Scan(&uid, &msgID) != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), joinLookupTimeout)
+	defer cancel()
+
+	args := []string{script, "--chat", strconv.FormatInt(chatID, 10),
+		"--lookup", strconv.FormatInt(uid, 10)}
+	if username := chatUsername(b, chatID); username != "" {
+		args = append(args, "--username", username)
+	}
+	// 留底消息是最后一条兜底路径的钥匙（抠 access_hash），有就带上。
+	if msgID, _, ok := latestKept(b.Store, chatID, uid); ok && msgID > 0 {
+		args = append(args, "--lookup-msg", strconv.FormatInt(msgID, 10))
+	}
+	cmd := exec.CommandContext(ctx, "python3", args...)
+	cmd.Env = append(os.Environ(),
+		"TG_BOT_TOKEN="+b.Token,
+		"TG_API_ID="+strconv.Itoa(b.Cfg.TGAPIID),
+		"TG_API_HASH="+b.Cfg.TGAPIHash,
+		"TG_SESSION_DIR="+sessionsDir(b),
+		"PYTHONUNBUFFERED=1",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, errWithStderr(err, stderr.String())
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.Split(strings.TrimSpace(line), "\t")
+		if len(parts) != 3 {
 			continue
 		}
-		sb.WriteString(strconv.FormatInt(uid, 10))
-		sb.WriteByte('\t')
-		sb.WriteString(strconv.FormatInt(msgID, 10))
-		sb.WriteByte('\n')
-		n++
+		if ts, e := strconv.ParseInt(parts[2], 10, 64); e == nil && ts > 0 {
+			return ts, nil
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return n, err
-	}
-	if n == 0 {
-		return 0, nil
-	}
-	return n, os.WriteFile(path, []byte(sb.String()), 0o600)
+	return 0, nil
 }
 
 // runJoinBackfillScript 把嵌入的脚本落到数据目录下再执行，读回 TSV。
@@ -230,17 +349,6 @@ func runJoinBackfillScript(b *core.Bot, chatID int64, username string) ([]backfi
 	args := []string{script, "--chat", strconv.FormatInt(chatID, 10)}
 	if username != "" {
 		args = append(args, "--username", username)
-	}
-	// 批量列表会漏人：服务端给 channels.getParticipants 的翻页上限在一万
-	// 条左右，大群只能扫到一部分；小群也会漏受限账号。把入群时间未知的
-	// uid 写出来，让脚本逐个补查（单查，或按名字搜索越过截断）。写不出
-	// 名单也不影响批量那条路。
-	unknownFile := filepath.Join(filepath.Dir(script),
-		"unknowns_"+strconv.FormatInt(chatID, 10)+".txt")
-	if n, err := writeJoinBackfillUnknowns(b, chatID, unknownFile, joinBackfillLookupCap); err != nil {
-		slog.Warn("入群时间补全：写未知成员名单失败", "chat", chatID, "err", err)
-	} else if n > 0 {
-		args = append(args, "--unknowns", unknownFile)
 	}
 	cmd := exec.CommandContext(ctx, "python3", args...)
 	cmd.Env = append(os.Environ(),

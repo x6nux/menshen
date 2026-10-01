@@ -82,6 +82,11 @@ func hashHit(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Messag
 		WHERE bot_id=? AND hash=?`, time.Now().Unix(), b.BotID(), adHashKey(text))
 
 	note := fmt.Sprintf("（与 #%d 内容相同，直接删除）", h.LogID)
+	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
+	if m.Chat != nil {
+		ensureJoinAge(b, m.Chat.ID, &state.Sender)
+		profile = state.Sender
+	}
 	v := adVerdict{IsAd: true, Confidence: h.Confidence, Kind: h.Kind, Scope: "message",
 		Decider: deciderHash, Reason: note}
 	pre := adAction{Delete: true}

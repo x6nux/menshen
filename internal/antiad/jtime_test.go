@@ -2,9 +2,11 @@ package antiad
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"menshen/internal/core"
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
 )
@@ -101,11 +103,16 @@ func TestJtimeShowsJoinTime(t *testing.T) {
 	}
 }
 
-// TestJtimeUnknownSaysWhy：没有入群记录时如实说未知并给出补救入口，
-// 不编时间；频道身份则直接说明没有入群时间。
+// TestJtimeUnknownSaysWhy：没有入群记录、实时查也查不到时，如实说未知并
+// 给出补救入口，不编时间；频道身份则直接说明没有入群时间。
 func TestJtimeUnknownSaysWhy(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
+	// 实时查询固定返回「查不到」，用例只关心渲染。
+	joinLookupMiss = sync.Map{}
+	old := joinLookupRunner
+	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) { return 0, nil }
+	defer func() { joinLookupRunner = old }()
 
 	// 有画像（发过言）但入群时间未知：给首见时间当「至少待到这时」。
 	first := time.Now().Add(-48 * time.Hour).Unix()
@@ -129,5 +136,30 @@ func TestJtimeUnknownSaysWhy(t *testing.T) {
 	HandleGroupMessage(b, m)
 	if n := lastNoticeContaining(t, fake, "频道"); !strings.Contains(n, "没有入群时间") {
 		t.Errorf("频道应说明没有入群时间，得到：%s", n)
+	}
+}
+
+// TestJtimeResolvesOnDemand：库里没有入群时间时，/jtime 实时查一次再答
+// （查到即入库，之后就是秒回；不预先全量补全）。
+func TestJtimeResolvesOnDemand(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
+	joinLookupMiss = sync.Map{}
+	ts := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	calls := 0
+	old := joinLookupRunner
+	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) {
+		calls++
+		return ts, nil
+	}
+	defer func() { joinLookupRunner = old }()
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 7007, 40, "/jtime"))
+	if n := lastNoticeContaining(t, fake, "入群时间"); !strings.Contains(n, "30 天前") {
+		t.Errorf("实时查到的时间应展示出来，得到：%s", n)
+	}
+	if calls != 1 {
+		t.Errorf("应实时查询一次，得到 %d 次", calls)
 	}
 }

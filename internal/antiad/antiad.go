@@ -377,7 +377,11 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 			core.CtxMsg{Name: senderName(target), Text: h.Text, At: h.At})
 	}
 
-	if !b.AdSubmit(func() { reviewAndAct(b, snap, conf, tgt, profile, state) }) {
+	if !b.AdSubmit(func() {
+		// 复查同样按需补入群时间：worker 上查，不拖更新处理。
+		ensureJoinAge(b, m.Chat.ID, &state.Sender)
+		reviewAndAct(b, snap, conf, tgt, profile, state)
+	}) {
 		sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
 	}
 }
@@ -776,6 +780,11 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 简介与简介里的链接要发 getChat，所以放在异步段取：同步段每多一次 TG
 	// 往返，更新处理就多停一次。
 	enrichSender(b, &state.Sender)
+	// 入群时间未知时按需实时查一次：年龄轴决定「老成员免禁言」这类处置，
+	// 缺了它老成员会被按新人处置。查询也在异步段，不拖更新处理。
+	if m.Chat != nil {
+		ensureJoinAge(b, m.Chat.ID, &state.Sender)
+	}
 	// 定案用的是同一份补全过的画像：planAction 的资历判断、以及资料放行的
 	// **指纹**都在后面按它算。指纹必须与下次判定时算出来的完全一致，否则
 	// 放行永远命中不了 —— 实测同一个人一天里被反复放行 12/24/48 小时，却
@@ -1099,7 +1108,11 @@ func HandleMyChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 			old = cu.OldChatMember.Status
 		}
 		if old != "administrator" && old != "creator" {
-			StartJoinBackfill(b, cu.Chat.ID, cu.Chat.Username, false)
+			// 以前这里会自动跑一遍全群补全，现在改成按需：判定、复查、
+			// /jtime 用到谁就实时查谁（见 ResolveJoinTime）。要预热整群
+			// 时走 Mini App 的「补全历史入群时间」按钮。
+			slog.Info("反广告：bot 获得管理员权限（入群时间按需实时查询）",
+				"chat", cu.Chat.ID, "from", old)
 		}
 		return
 	}
@@ -2128,6 +2141,8 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	gm, _ := loadMember(b.Store, chatID, u.ID)
 	p := buildProfile(b, msg, gm, time.Now().Unix())
 	enrichSender(b, &p)
+	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
+	ensureJoinAge(b, chatID, &p)
 
 	// 硬规则（冒用国家领导人）同样先过一遍：资料命中直接封禁。
 	if leaderGateWorker(b, snap, conf, msg, p) {
