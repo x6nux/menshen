@@ -5,7 +5,7 @@
 // 拿到 initData 之后再传 enabled: true —— 否则请求会带着空 initData 发出，
 // 服务端回 401，UI 会显示误导性的「身份失效」。外壳可以在 initTelegram()
 // resolve 前先用 enabled: false 挂载页面。
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import type {
   AppealDetail,
@@ -23,6 +23,11 @@ export const miniQueryKeys = {
   user: (id: number, filter: string, page: number) => ['user', id, filter, page] as const,
   appeals: (filter: string, page: number) => ['appeals', filter, page] as const,
   appeal: (id: number) => ['appeal', id] as const,
+  // 无限列表用独立 key（数据形状是 pages，不能与单页查询共 key）；
+  // 前缀仍以资源名开头，写操作的 ['logs']/['user']/['appeals'] 失效照常命中。
+  logsInfinite: (filter: string, q: string) => ['logs', 'infinite', filter, q] as const,
+  userInfinite: (id: number, filter: string) => ['user', 'infinite', id, filter] as const,
+  appealsInfinite: (filter: string) => ['appeals', 'infinite', filter] as const,
 }
 
 /**
@@ -114,5 +119,75 @@ export function useAppeal(id: number, enabled = true) {
     queryKey: miniQueryKeys.appeal(id),
     queryFn: ({ signal }) => api<AppealDetail>('appeal', { id }, signal),
     enabled: enabled && id > 0,
+  })
+}
+
+// ---- 无限列表（记录/申诉/用户页）----
+//
+// 全部用 total/shown 与「已加载条数」比较来决定下一页：
+// - logs/appeals 的 total 是同一 WHERE 的总数；
+// - user 用 shown（当前筛选下的总数）——用 total 会因筛选偏大而多翻一页。
+// 页大小 20 由后端 LIMIT 固定。keepPreviousData 让切换筛选时列表不闪空，
+// 并在新一页到达前沿用旧数据（isPlaceholderData 区分）。
+
+export interface InfiniteLogsParams {
+  /** deleted（默认）/ all / ad / clean / skipped。 */
+  filter?: string
+  q?: string
+  enabled?: boolean
+}
+
+export function useInfiniteLogs(params: InfiniteLogsParams = {}) {
+  const filter = normalizeLogFilter(params.filter)
+  const q = params.q ?? ''
+  return useInfiniteQuery({
+    queryKey: miniQueryKeys.logsInfinite(filter, q),
+    queryFn: ({ pageParam, signal }) =>
+      api<LogsResp>('logs', { verdict: filter === 'all' ? '' : filter, q, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
+      return loaded < last.total ? pages.length + 1 : undefined
+    },
+    enabled: params.enabled ?? true,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export interface InfiniteAppealsParams {
+  /** open（默认）/ '' 或 all（全部）。 */
+  filter?: string
+  enabled?: boolean
+}
+
+export function useInfiniteAppeals(params: InfiniteAppealsParams = {}) {
+  const filter = normalizeAppealFilter(params.filter ?? 'open')
+  return useInfiniteQuery({
+    queryKey: miniQueryKeys.appealsInfinite(filter),
+    queryFn: ({ pageParam, signal }) =>
+      api<AppealsResp>('appeals', { filter: filter === 'open' ? 'open' : '', page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.appeals.length, 0)
+      return loaded < last.total ? pages.length + 1 : undefined
+    },
+    enabled: params.enabled ?? true,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useInfiniteUserLogs(userId: number, filter = 'act', enabled = true) {
+  const normalized = normalizeUserFilter(filter)
+  return useInfiniteQuery({
+    queryKey: miniQueryKeys.userInfinite(userId, normalized),
+    queryFn: ({ pageParam, signal }) =>
+      api<UserDossier>('user', { user_id: userId, filter: normalized, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
+      return loaded < last.shown ? pages.length + 1 : undefined
+    },
+    enabled: enabled && userId > 0,
+    placeholderData: keepPreviousData,
   })
 }

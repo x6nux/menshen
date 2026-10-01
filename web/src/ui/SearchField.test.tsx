@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SearchField } from './SearchField'
 
 function Wrapper() {
@@ -39,5 +39,20 @@ describe('SearchField', () => {
     )
     expect(screen.getByRole('textbox', { name: '按群号搜索' })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: '搜索群组' })).not.toBeInTheDocument()
+  })
+
+  it('回车触发 onSubmit，输入过程不触发', async () => {
+    const user = userEvent.setup()
+    const submitted = vi.fn()
+    render(<Wrapper />)
+    const input = screen.getByPlaceholderText('搜索群组')
+
+    await user.type(input, 'abc')
+    expect(submitted).not.toHaveBeenCalled()
+
+    // Wrapper 没接 onSubmit，换个带 onSubmit 的实例验证回车
+    render(<SearchField value="abc" onChange={() => {}} placeholder="回车搜索" onSubmit={submitted} />)
+    await user.type(screen.getByPlaceholderText('回车搜索'), '{Enter}')
+    expect(submitted).toHaveBeenCalledTimes(1)
   })
 })

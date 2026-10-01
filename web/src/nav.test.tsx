@@ -32,6 +32,7 @@ function Probe() {
       <button onClick={() => nav.switchTab('chats')}>tab-chats</button>
       <button onClick={() => nav.switchTab('chats', 'bot:1')}>tab-chats-bot</button>
       <button onClick={() => nav.switchTab('records', 'appeals')}>tab-records-appeals</button>
+      <button onClick={() => nav.clearIntent()}>clear-intent</button>
     </>
   )
 }
@@ -148,5 +149,17 @@ describe('NavProvider', () => {
     expect(screen.getByTestId('intent').textContent).toBe('appeals')
     fireEvent.click(screen.getByText('tab-chats'))
     expect(screen.getByTestId('intent').textContent).toBe('')
+  })
+
+  it('clearIntent 消费意图，不影响 tab 与栈', () => {
+    renderNav()
+    fireEvent.click(screen.getByText('tab-records-appeals'))
+    fireEvent.click(screen.getByText('push-bot'))
+    fireEvent.click(screen.getByText('tab-chats-bot'))
+    expect(screen.getByTestId('intent').textContent).toBe('bot:1')
+
+    fireEvent.click(screen.getByText('clear-intent'))
+    expect(screen.getByTestId('intent').textContent).toBe('')
+    expect(screen.getByTestId('tab').textContent).toBe('chats')
   })
 })

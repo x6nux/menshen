@@ -3,6 +3,7 @@ import Close from '@mui/icons-material/Close'
 import Search from '@mui/icons-material/Search'
 import { IconButton, InputAdornment, TextField } from '@mui/material'
 import type { SxProps, Theme } from '@mui/material/styles'
+import type { KeyboardEvent } from 'react'
 
 export interface SearchFieldProps {
   value: string
@@ -14,6 +15,8 @@ export interface SearchFieldProps {
   disabled?: boolean
   /** 有内容时显示清空按钮，默认显示。 */
   clearable?: boolean
+  /** 按回车时立即触发（服务端搜索用；本地过滤不需要）。 */
+  onSubmit?: () => void
   sx?: SxProps<Theme>
 }
 
@@ -25,6 +28,7 @@ export function SearchField({
   autoFocus = false,
   disabled = false,
   clearable = true,
+  onSubmit,
   sx,
 }: SearchFieldProps) {
   const fieldSx: SxProps<Theme> = {
@@ -51,7 +55,12 @@ export function SearchField({
       sx={[fieldSx, ...(Array.isArray(sx) ? sx : [sx])]}
       slotProps={{
         // 显式给 input 一个无障碍名称：placeholder 只作视觉提示，读屏更依赖 aria-label。
-        htmlInput: { 'aria-label': ariaLabel ?? placeholder },
+        htmlInput: {
+          'aria-label': ariaLabel ?? placeholder,
+          onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
+            if (event.key === 'Enter') onSubmit?.()
+          },
+        },
         input: {
           startAdornment: (
             <InputAdornment position="start">

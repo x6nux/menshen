@@ -33,6 +33,8 @@ export interface NavValue {
   pop(): void
   /** switchTab 切一级 Tab，并清空页面栈；intent 缺省即清空。 */
   switchTab(tab: TabKey, intent?: string): void
+  /** clearIntent 消费掉当前意图（目标页读取后调用），避免导航往返重复应用。 */
+  clearIntent(): void
 }
 
 /**
@@ -91,6 +93,7 @@ export function NavProvider({ children, backButton }: NavProviderProps) {
     setStack([])
     setIntent(nextIntent ?? null)
   }, [])
+  const clearIntent = useCallback(() => setIntent(null), [])
 
   // BackButton 的点击回调只注册一次，通过 ref 读最新的 pop。
   const popRef = useRef(pop)
@@ -110,8 +113,8 @@ export function NavProvider({ children, backButton }: NavProviderProps) {
   }, [backButton])
 
   const value = useMemo<NavValue>(
-    () => ({ tab, stack, intent, push, pop, switchTab }),
-    [tab, stack, intent, push, pop, switchTab],
+    () => ({ tab, stack, intent, push, pop, switchTab, clearIntent }),
+    [tab, stack, intent, push, pop, switchTab, clearIntent],
   )
   return <NavContext.Provider value={value}>{children}</NavContext.Provider>
 }

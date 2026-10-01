@@ -45,6 +45,9 @@ function searchLogs(rows: LogRow[], q: string): LogRow[] {
 
 const LOG_PAGE_SIZE = 20
 
+/** 未结申诉状态（与后端 store.AppealOpenStatusesSQL 一致），mock 列表筛选用。 */
+const APPEAL_OPEN_STATUSES = ['statement', 'ai', 'web', 'noweb', 'code']
+
 export const handlers = [
   http.post('*/miniapp/api/state', () => HttpResponse.json(mockState)),
   http.post('*/miniapp/api/logs', async ({ request }) => {
@@ -60,8 +63,35 @@ export const handlers = [
     })
   }),
   http.post('*/miniapp/api/log', () => HttpResponse.json(mockLogDetail)),
-  http.post('*/miniapp/api/user', () => HttpResponse.json(mockUser)),
-  http.post('*/miniapp/api/appeals', () => HttpResponse.json({ appeals: mockAppeals, page: 1, total: mockAppeals.length })),
+  http.post('*/miniapp/api/user', async ({ request }) => {
+    const body = await bodyOf(request)
+    const all = body.filter === 'all'
+    // 「被处置过」= 有处置动作（与后端 ProcessedCond 的口径一致，mock 用 action!='none' 近似）。
+    const filtered = all ? mockUser.logs : mockUser.logs.filter((l) => l.action !== 'none')
+    const page = Math.max(1, Number(body.page ?? 1) || 1)
+    const start = (page - 1) * LOG_PAGE_SIZE
+    return HttpResponse.json({
+      ...mockUser,
+      filter: all ? 'all' : 'act',
+      logs: filtered.slice(start, start + LOG_PAGE_SIZE),
+      shown: filtered.length,
+      page,
+    })
+  }),
+  http.post('*/miniapp/api/appeals', async ({ request }) => {
+    const body = await bodyOf(request)
+    const filtered =
+      body.filter === 'open'
+        ? mockAppeals.filter((a) => APPEAL_OPEN_STATUSES.includes(a.status))
+        : mockAppeals
+    const page = Math.max(1, Number(body.page ?? 1) || 1)
+    const start = (page - 1) * LOG_PAGE_SIZE
+    return HttpResponse.json({
+      appeals: filtered.slice(start, start + LOG_PAGE_SIZE),
+      page,
+      total: filtered.length,
+    })
+  }),
   http.post('*/miniapp/api/appeal', () => HttpResponse.json(mockAppealDetail)),
   // 其余写操作（set/bot/chat/upstream/model/admin/gban/gbanown/whitelist/digest/）
   // logact/appealact）统一返回成功；note 与真实服务端文案格式一致。

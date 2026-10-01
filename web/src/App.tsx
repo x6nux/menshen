@@ -18,12 +18,16 @@ import { useMiniState } from './api/hooks'
 import type { State } from './api/types'
 import { NavProvider, useNav } from './nav'
 import type { Page, TabKey } from './nav'
+import { AppealDetailPage } from './pages/AppealDetailPage'
 import { BotDetailPage } from './pages/BotDetailPage'
 import { BotsPage } from './pages/BotsPage'
 import { ChatDetailPage } from './pages/ChatDetailPage'
 import { ChatsPage } from './pages/ChatsPage'
+import { LogDetailPage } from './pages/LogDetailPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { Placeholder } from './pages/Placeholder'
+import { RecordsPage } from './pages/RecordsPage'
+import { UserPage } from './pages/UserPage'
 import { buildMiniTheme } from './theme'
 import { initTelegram } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
@@ -182,7 +186,7 @@ function Shell() {
   )
 }
 
-/** renderTabPage 是一级 Tab 的页面映射；记录/我的暂由 T3/T4 实现。 */
+/** renderTabPage 是一级 Tab 的页面映射；我的暂由 T4 实现。 */
 function renderTabPage(tab: TabKey): ReactNode {
   switch (tab) {
     case 'overview':
@@ -191,6 +195,8 @@ function renderTabPage(tab: TabKey): ReactNode {
       return <BotsPage />
     case 'chats':
       return <ChatsPage />
+    case 'records':
+      return <RecordsPage />
     default:
       return <Placeholder name={TAB_NAMES[tab]} />
   }
@@ -203,6 +209,12 @@ function renderStackPage(page: Page): ReactNode {
       return <BotDetailPage botId={page.id} />
     case 'chat':
       return <ChatDetailPage botId={page.botId} chatId={page.chatId} />
+    case 'log':
+      return <LogDetailPage key={page.id} id={page.id} />
+    case 'user':
+      return <UserPage key={page.id} id={page.id} />
+    case 'appeal':
+      return <AppealDetailPage key={page.id} id={page.id} />
     default:
       return <Placeholder name={PAGE_NAMES[page.k]} />
   }
@@ -219,6 +231,12 @@ function detailTitle(page: Page, state: State): string {
       )
       return chat?.title || (chat ? String(chat.chat_id) : PAGE_NAMES.chat)
     }
+    case 'log':
+      return `记录 #${page.id}`
+    case 'user':
+      return `用户 uid ${page.id}`
+    case 'appeal':
+      return `申诉 #${page.id}`
     default:
       return PAGE_NAMES[page.k]
   }

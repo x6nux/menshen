@@ -80,6 +80,14 @@ export function botIdFromURL(search?: string): string {
   return new URLSearchParams(qs).get('bot') || '0'
 }
 
+/** openLink 在页面里打开外部链接：优先 Telegram SDK（App 内打开），回退新窗口。 */
+export function openLink(url: string): void {
+  if (!url) return
+  const app = tryGetWebApp(defaultGetWebApp)
+  if (app?.openLink) app.openLink(url)
+  else if (typeof window !== 'undefined') window.open(url, '_blank')
+}
+
 function tryGetWebApp(getter: () => TelegramWebAppLike | undefined): TelegramWebAppLike | undefined {
   try {
     return getter()

@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { ApiError, api } from './api/client'
-import { mockLogs, mockState } from './mocks/fixtures'
+import { mockAppealDetail, mockAppeals, mockLogDetail, mockLogs, mockState, mockUser } from './mocks/fixtures'
 import { initTelegram } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
 
@@ -25,6 +25,10 @@ function mockApiByOp() {
   mockApi.mockImplementation((async (op: string) => {
     if (op === 'state') return mockState
     if (op === 'logs') return { logs: mockLogs, page: 1, total: mockLogs.length }
+    if (op === 'log') return mockLogDetail
+    if (op === 'user') return mockUser
+    if (op === 'appeals') return { appeals: mockAppeals, page: 1, total: mockAppeals.length }
+    if (op === 'appeal') return mockAppealDetail
     return { ok: true }
   }) as never)
 }
@@ -164,5 +168,33 @@ describe('App', () => {
     expect(await screen.findByText('第二个群')).toBeInTheDocument()
     expect(screen.queryByText('测试群')).not.toBeInTheDocument()
     expect(screen.getByLabelText('搜索群组')).toHaveValue('第二个')
+  })
+
+  it('记录 Tab：判定/申诉分段、记录详情与用户页的动态标题', async () => {
+    const { bridge } = makeBridge()
+    mockInit.mockResolvedValue(bridge)
+    mockApiByOp()
+
+    render(<App />)
+    await screen.findByText('门神')
+
+    fireEvent.click(screen.getByRole('button', { name: '记录' }))
+    // 记录分段默认「已删除」
+    expect(await screen.findByText('已删除')).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: /#9812/ }))
+    expect(await screen.findByText('记录 #9812')).toBeInTheDocument()
+
+    // 详情里的 uid 链接进用户页
+    fireEvent.click(screen.getByText('uid 555（资料）'))
+    expect(await screen.findByText('用户 uid 555')).toBeInTheDocument()
+    expect(await screen.findByText('演示用户')).toBeInTheDocument()
+
+    // 返回记录页后切申诉分段，行进申诉详情
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    fireEvent.click(await screen.findByRole('button', { name: /申诉/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /#77/ }))
+    expect(await screen.findByText('申诉 #77')).toBeInTheDocument()
   })
 })

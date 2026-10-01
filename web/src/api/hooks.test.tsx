@@ -1,9 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from './client'
-import { useAppeals, useLog, useLogs, useMiniState, useUser } from './hooks'
+import {
+  useAppeals,
+  useInfiniteAppeals,
+  useInfiniteLogs,
+  useInfiniteUserLogs,
+  useLog,
+  useLogs,
+  useMiniState,
+  useUser,
+} from './hooks'
 
 vi.mock('./client', () => ({ api: vi.fn() }))
 const mockApi = vi.mocked(api)
@@ -115,5 +124,87 @@ describe('查询 hooks', () => {
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(mockApi).toHaveBeenCalledWith('state', undefined, expect.anything())
+  })
+})
+
+describe('无限列表 hooks', () => {
+  function rows(n: number) {
+    return Array.from({ length: n }, (_, i) => ({ id: i + 1 }))
+  }
+
+  it('useInfiniteLogs：pageParam 从 1 递增，loaded < total 才有下一页', async () => {
+    const client = makeClient()
+    mockApi.mockImplementation((async (_op: string, body: { page: number }) =>
+      body.page === 1
+        ? { logs: rows(20), page: 1, total: 25 }
+        : { logs: rows(5), page: 2, total: 25 }) as never)
+    const { result } = renderHook(() => useInfiniteLogs({ filter: 'ad', q: 'hello' }), {
+      wrapper: ({ children }) => makeQuery(children, client),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockApi).toHaveBeenLastCalledWith(
+      'logs',
+      { verdict: 'ad', q: 'hello', page: 1 },
+      expect.anything(),
+    )
+    expect(result.current.hasNextPage).toBe(true)
+
+    await act(() => result.current.fetchNextPage())
+    await waitFor(() => expect(result.current.hasNextPage).toBe(false))
+    expect(mockApi).toHaveBeenLastCalledWith(
+      'logs',
+      { verdict: 'ad', q: 'hello', page: 2 },
+      expect.anything(),
+    )
+    // 加载数（25）≥ total（25）后 fetchNextPage 不再发请求
+    await act(() => result.current.fetchNextPage())
+    expect(mockApi).toHaveBeenCalledTimes(2)
+  })
+
+  it('useInfiniteLogs 默认 deleted；useInfiniteAppeals 默认 open 且 all 归一化', async () => {
+    const client = makeClient()
+    mockApi.mockResolvedValue({ logs: [], page: 1, total: 0, appeals: [] } as never)
+    const logs = renderHook(() => useInfiniteLogs(), {
+      wrapper: ({ children }) => makeQuery(children, client),
+    })
+    await waitFor(() => expect(logs.result.current.isSuccess).toBe(true))
+    expect(mockApi).toHaveBeenLastCalledWith(
+      'logs',
+      { verdict: 'deleted', q: '', page: 1 },
+      expect.anything(),
+    )
+
+    const appeals = renderHook(() => useInfiniteAppeals({ filter: '' }), {
+      wrapper: ({ children }) => makeQuery(children, client),
+    })
+    await waitFor(() => expect(appeals.result.current.isSuccess).toBe(true))
+    expect(mockApi).toHaveBeenLastCalledWith(
+      'appeals',
+      { filter: '', page: 1 },
+      expect.anything(),
+    )
+  })
+
+  it('useInfiniteUserLogs：用 shown 判断下一页；默认 filter=act', async () => {
+    const client = makeClient()
+    mockApi.mockImplementation((async (_op: string, body: { page: number }) =>
+      body.page === 1
+        ? { logs: rows(20), page: 1, shown: 21, total: 99 }
+        : { logs: rows(1), page: 2, shown: 21, total: 99 }) as never)
+    const { result } = renderHook(() => useInfiniteUserLogs(555), {
+      wrapper: ({ children }) => makeQuery(children, client),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockApi).toHaveBeenLastCalledWith(
+      'user',
+      { user_id: 555, filter: 'act', page: 1 },
+      expect.anything(),
+    )
+    // total=99 但 shown=21：只按 shown 翻一页
+    expect(result.current.hasNextPage).toBe(true)
+    await act(() => result.current.fetchNextPage())
+    await waitFor(() => expect(result.current.hasNextPage).toBe(false))
+    expect(mockApi).toHaveBeenCalledTimes(2)
   })
 })
