@@ -17,8 +17,9 @@ status/permissions/until_date），只有 MTProto 的 channels.getParticipants
      （拿实时记录过入群时间的 40 多人交叉验证过）。
 
 因此：先批量扫，再用 --unknowns 名单逐个补查（单查走会话缓存；不行就用
-Bot API 拿名字，再按名字搜索成员列表 —— 搜索能越过批量列表的截断）。
-已经退群/被踢的人没有任何接口能拿到入群时间，直接放弃。
+Bot API 拿名字，再按名字搜索成员列表 —— 搜索能越过批量列表的截断；受限
+账号连搜索都不给时，用名单里那条留底消息把本人的 access_hash 抠出来再
+单查一次）。已经退群/被踢的人没有任何接口能拿到入群时间，直接放弃。
 
 环境变量：
   TG_BOT_TOKEN   必填，要用的那个 bot 的 token
@@ -30,7 +31,8 @@ Bot API 拿名字，再按名字搜索成员列表 —— 搜索能越过批量�
   --chat <chat_id>       群 id（-100 开头的超群）
   --username <name>      群的公开用户名（有的话用它解析，最稳）
   --limit <n>            最多输出多少行（默认全部）
-  --unknowns <file>      入群时间未知的 uid 名单（每行一个），逐个补查
+  --unknowns <file>      入群时间未知的名单（每行 `uid\t最新留底消息id`），
+                         逐个补查
   --lookup-budget <sec>  逐个补查的时间预算（默认 180 秒）
   --max-lookups <n>      逐个补查的人数上限（默认 400）
 
@@ -71,6 +73,7 @@ async def main():
         from telethon import TelegramClient
         from telethon.tl.functions.channels import (GetParticipantRequest,
                                                     GetParticipantsRequest)
+        from telethon.tl.functions.messages import GetMessagesRequest
         from telethon.tl.types import (
             ChannelParticipant,
             ChannelParticipantAdmin,
@@ -78,6 +81,7 @@ async def main():
             ChannelParticipantCreator,
             ChannelParticipantLeft,
             ChannelParticipantsSearch,
+            InputPeerUser,
         )
     except Exception as e:  # noqa: BLE001
         print("需要 python3 + telethon：%s" % e, file=sys.stderr)
@@ -186,15 +190,22 @@ async def main():
             if args.limit and len(out) >= args.limit:
                 break
 
-        # 逐个补查批量列表漏掉的人。
+        # 逐个补查批量列表漏掉的人。名单每行 `uid\t最新留底消息id`。
         lookups = hits = 0
         if args.unknowns and os.path.exists(args.unknowns):
             deadline = time.monotonic() + max(0.0, args.lookup_budget)
+            pending = []
             try:
-                pending = [int(x) for x in open(args.unknowns) if x.strip()]
+                for line in open(args.unknowns):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split("\t")
+                    msg_id = int(parts[1]) if len(parts) > 1 and parts[1].strip() else 0
+                    pending.append((int(parts[0]), msg_id))
             except ValueError:
                 pending = []
-            for uid in pending:
+            for uid, msg_id in pending:
                 if lookups >= args.max_lookups or time.monotonic() >= deadline:
                     break
                 if uid in seen:
@@ -211,11 +222,26 @@ async def main():
                         ts = await lookup_by_name(uid)
                     except Exception:  # noqa: BLE001
                         ts = 0
+                if not ts and msg_id:
+                    # 最后一条路：受限账号搜索不给、会话缓存里也没有他的
+                    # access_hash。把他留下的一条消息取出来，响应的 users
+                    # 里带着 access_hash，拿它再单查一次。
+                    try:
+                        r3 = await client(GetMessagesRequest(channel=entity, id=[msg_id]))
+                        for u2 in (getattr(r3, "users", None) or []):
+                            if getattr(u2, "id", 0) == uid:
+                                r4 = await client(GetParticipantRequest(
+                                    channel=entity,
+                                    participant=InputPeerUser(u2.id, u2.access_hash)))
+                                ts = join_ts(r4.participant)
+                                break
+                    except Exception:  # noqa: BLE001
+                        ts = 0
                 if ts:
                     out.append("%d\t%d\t%d" % (args.chat, uid, ts))
                     seen.add(uid)
                     hits += 1
-                # 手轻一点：连续搜索容易撞 FLOOD_WAIT。
+                # 手轻一点：连续搜索容易连撞 FLOOD_WAIT。
                 await asyncio.sleep(0.25)
 
         for line in out:

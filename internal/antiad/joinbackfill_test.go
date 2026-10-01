@@ -124,6 +124,12 @@ func TestJoinBackfillUnknownsFile(t *testing.T) {
 	seed(11, now-3600) // 已知：不该进名单
 	seed(12, 0)
 	seed(13, 0)
+	// uid 10 有一条留底：名单要带上它，供最后一条兜底路径抠 access_hash。
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at) VALUES (-100,77,10,'广告',?)`,
+		now-50); err != nil {
+		t.Fatal(err)
+	}
 
 	p := filepath.Join(t.TempDir(), "unknowns.txt")
 	n, err := writeJoinBackfillUnknowns(b, -100, p, 2) // 上限 2：只带升序的前两个
@@ -137,8 +143,9 @@ func TestJoinBackfillUnknownsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Fields(string(raw)); len(got) != 2 || got[0] != "10" || got[1] != "12" {
-		t.Errorf("名单应只含 joined_at=0 的 uid（升序、受上限约束），得到 %v", got)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 || lines[0] != "10\t77" || lines[1] != "12\t0" {
+		t.Errorf("名单应为 `uid\\t最新留底消息id`（升序、受上限约束），得到 %v", lines)
 	}
 	// 没有未知成员时不建文件、也不算错。
 	empty := filepath.Join(t.TempDir(), "none.txt")

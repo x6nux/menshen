@@ -180,11 +180,18 @@ func applyJoinBackfill(b *core.Bot, chatID int64, rows []backfillRow) int {
 // 太大的群不该把它拖成几十分钟的逐人请求（脚本另有时间预算兜底）。
 const joinBackfillLookupCap = 2000
 
-// writeJoinBackfillUnknowns 把该群里入群时间未知的 uid 写成一列（每行一个），
-// 交给补全脚本逐个补查。返回写入的人数。
+// writeJoinBackfillUnknowns 把该群里入群时间未知的 uid 写成一列（每行
+// `uid\t最新留底消息id`），交给补全脚本逐个补查。消息 id 是给最后一条兜底
+// 路径用的：受限账号搜不到时，用这条消息把本人的 access_hash 抠出来再单查。
+// 返回写入的人数。
 func writeJoinBackfillUnknowns(b *core.Bot, chatID int64, path string, limit int) (int, error) {
-	rows, err := b.Store.Read.Query(`SELECT user_id FROM group_members
-		WHERE chat_id=? AND joined_at=0 ORDER BY user_id LIMIT ?`, chatID, limit)
+	rows, err := b.Store.Read.Query(`SELECT g.user_id,
+		COALESCE((SELECT m.message_id FROM group_messages m
+		          WHERE m.chat_id=g.chat_id AND m.user_id=g.user_id
+		          ORDER BY m.at DESC LIMIT 1), 0)
+		FROM group_members g
+		WHERE g.chat_id=? AND g.joined_at=0
+		ORDER BY g.user_id LIMIT ?`, chatID, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -192,11 +199,13 @@ func writeJoinBackfillUnknowns(b *core.Bot, chatID int64, path string, limit int
 	var sb strings.Builder
 	n := 0
 	for rows.Next() {
-		var uid int64
-		if rows.Scan(&uid) != nil {
+		var uid, msgID int64
+		if rows.Scan(&uid, &msgID) != nil {
 			continue
 		}
 		sb.WriteString(strconv.FormatInt(uid, 10))
+		sb.WriteByte('\t')
+		sb.WriteString(strconv.FormatInt(msgID, 10))
 		sb.WriteByte('\n')
 		n++
 	}
