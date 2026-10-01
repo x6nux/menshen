@@ -1,189 +1,219 @@
-# 入群时间：接口与调用方式
+# 入群时间：API 文档
 
-入群时间是「新人 / 老人」分档（年龄轴）和 `/jtime` 的数据来源。Bot API
-拿不到它，只能走 MTProto —— 好在**仍然不需要用户账号**：用 bot 自己的
-token 就能登录（`auth.importBotAuthorization`）。
+查群成员「入群时间」用到的接口参考。全流程只用 bot token，不需要用户账号。
 
-本文是这条链路的接口清单与调用方式。按需实时查询的实现见
-`internal/antiad/joinbackfill.go`（`ResolveJoinTime`），脚本见
-`internal/antiad/scripts/tgjoin_backfill.py`。
+**先说清楚两件事**：
 
-## 一、为什么 Bot API 不够用
+1. **只有 Bot API 能直接用 curl 调**（`getChat`、`getChatMember`）；
+2. **MTProto 方法（`channels.getParticipant` 等）不能 curl** —— 它是二进制
+   加密协议，Telegram 没有把它暴露成 HTTP/REST（原因见 1.2）。入群时间
+   恰恰只在 MTProto 的成员记录里，所以纯 curl 拿不到入群时间本身。
 
-- `getChatMember` 没有任何「入群时间」字段，只有 `status` / 权限 /
-  `until_date`（而且 `until_date` 只对限制有效）。
-- Bot API 的 `chat_member` 更新只在**实时发生**时推送 —— 它负责新入群的
-  实时记录（主来源），但 bot 拿到管理员权限之前就在群里的人没有事件可收。
-- 群主以外的成员记录里，入群时间只在 MTProto 的 participant 记录里
-  （`ChannelParticipant.date`，官方定义就是 Date joined）。
+## 1. 总览
 
-## 二、接口清单
+### 1.1 接口清单
 
-### Bot API（HTTPS，bot token）
+| 接口 | 协议 | curl 直调 | 用途 |
+|---|---|---|---|
+| `getChat` | Bot API（HTTPS） | ✅ | 取群资料（公开用户名等） |
+| `getChatMember` | Bot API（HTTPS） | ✅ | 取成员状态、昵称、用户名 |
+| `auth.importBotAuthorization` | MTProto | ❌ | bot 登录 MTProto（拿 auth_key） |
+| `updates.getState` | MTProto | ❌ | 取更新状态（拉增量、缓存 peer） |
+| `channels.getParticipant` | MTProto | ❌ | 单查一个成员的记录，**入群时间在这里** |
+| `channels.getParticipants` | MTProto | ❌ | 批量列成员；带搜索过滤器可按名字找 |
+| `channels.getAdminLog` | MTProto | ❌ | 有入群事件，但 **bot 被 Telegram 禁止调用** |
+| `messages.getChatInviteImporters` | MTProto | ❌ | 邀请导入者（带日期），同样被禁 |
+| `messages.getExportedChatInvites` | MTProto | ❌ | 导出邀请链接，同样被禁 |
 
-| 接口 | 用途 | 什么时候调用 |
+### 1.2 为什么 MTProto 不能用 curl
+
+MTProto 不是 HTTP API，而是二进制加密协议：
+
+1. 先做 `auth_key` 握手（Diffie-Hellman 密钥交换）；
+2. 之后每个请求都要用 AES-IGE 加密、带 message id / seqno、按 TL schema
+   二进制序列化；
+3. Telegram 没有提供 HTTP/REST 网关。（协议里的 "HTTP transport" 也只是把
+   加密后的二进制包塞进 HTTP body，没有客户端库照样调不动。）
+
+所以 MTProto 方法必须用 MTProto 客户端（Telethon、TDLib 等）调用；能
+curl 的只有 Bot API，而 Bot API 没有入群时间字段。
+
+### 1.3 参数里的两种凭据
+
+| 凭据 | 从哪来 | 用在哪 |
 |---|---|---|
-| `getChat` | 取群的公开用户名（给脚本解析群实体用） | 每次批量 / 单查前（Go 侧 `chatUsername`） |
-| `getChatMember` | 取用户状态与昵称 / 用户名 | **只在单查主路径没结果时的兜底**（判断还在不在群、按名字搜索） |
+| bot token | @BotFather | Bot API 的 URL；MTProto 登录 |
+| api_id / api_hash | my.telegram.org 申请 | MTProto 登录（客户端应用标识） |
+
+## 2. Bot API（curl 可调）
+
+- 基址：`https://api.telegram.org/bot<TOKEN>/<方法>`
+- 参数可放 query string（GET）或 JSON body（POST）
+- 返回统一为 `{"ok":true,"result":…}`；失败为
+  `{"ok":false,"error_code":…,"description":"…"}`
+- 高频调用会返回 `429` / `retry_after`，按提示等待
+
+### 2.1 getChat
+
+取群资料。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `chat_id` | 是 | 群 id（`-100…`）或公开群用户名（`@CMLiussss`） |
 
 ```bash
-curl "https://api.telegram.org/bot<TOKEN>/getChat?chat_id=-1002124027757"
-curl "https://api.telegram.org/bot<TOKEN>/getChatMember?chat_id=-1002124027757&user_id=1397983659"
+curl -s "https://api.telegram.org/bot$TOKEN/getChat?chat_id=@CMLiussss"
 ```
 
-注意：`getChatMember` 的 `status` 可能是 `member` / `restricted` /
-`administrator` / `creator` / `left` / `kicked`。**`restricted` 也可能是
-残留记录** —— 人其实已经被移出（MTProto 里是 `left=True`），不能只凭
-Bot API 状态判断他还在不在群。
+```json
+{"ok":true,"result":{"id":-1002124027757,"title":"CMLiussss 技术交流群",
+ "type":"supergroup","username":"CMLiussss","is_forum":false}}
+```
 
-### MTProto（Telethon + bot token）
+用途说明：本链路只用它取 `username` —— 有公开用户名时 MTProto 解析群实体
+最稳、私有群里没有 `username` 字段。
 
-| 接口 | 用途 | 什么时候调用 |
+### 2.2 getChatMember
+
+取某成员的状态与资料。
+
+| 参数 | 必填 | 说明 |
 |---|---|---|
-| `auth.importBotAuthorization`（`client.start(bot_token=...)`） | bot 登录 MTProto | 每次起脚本 |
-| `updates.getState` 增量（`client.catch_up`） | 把错过的更新里的 peer 塞进实体缓存 | 每次起脚本（失败不影响后续） |
-| **`channels.getParticipant`** | 单查一个人的成员记录 | **按需实时查询的主路径** |
-| `channels.getParticipants` | 批量扫成员列表 | 批量模式（Mini App「补全历史入群时间」按钮） |
-| `channels.getParticipants` + `ChannelParticipantsSearch(q=名字)` | 按名字搜索成员（可越过批量列表的截断） | 单查主路径失败后的兜底 |
+| `chat_id` | 是 | 群 id 或 `@用户名` |
+| `user_id` | 是 | 对方的数字 id |
 
-```python
-from telethon import TelegramClient
-from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.types import InputPeerUser
-
-client = TelegramClient(session_path, api_id, api_hash)
-await client.start(bot_token=token)
-ch = await client.get_entity("group_username")   # 或按 chat_id（私有群要靠会话缓存）
-
-r = await client(GetParticipantRequest(channel=ch, participant=InputPeerUser(uid, 0)))
-p = r.participant      # ChannelParticipant / ChannelParticipantBanned / …
+```bash
+curl -s "https://api.telegram.org/bot$TOKEN/getChatMember?chat_id=@CMLiussss&user_id=1397983659"
 ```
 
-**关键坑（吃过大亏）**：`participant` 一定要用 `InputPeerUser(uid, 0)`，
-**access_hash 传 0 就能拿到记录**。直接传裸 `uid`（int）时 Telethon 会先
-去解析实体，没缓存就报 `Could not find the input entity for PeerUser(...)`
-—— 会把还在群的人误判成「查不到」。
+```json
+{"ok":true,"result":{"status":"member",
+ "user":{"id":1397983659,"is_bot":false,"first_name":"…","username":"…"}}}
+```
 
-**批量列表有硬上限**：Telegram 对 `channels.getParticipants` 的可翻页数
-有服务端限制，实测约 **1 万条** —— 五万人的群只能扫到 ~9988，小群也会漏
-（受限账号等）。Telethon 1.45 里 `iter_participants(aggressive=True)` 已是
-空操作（官方注释：API 限制不再允许绕过）。所以批量结果只是「尽量补」，
-漏掉的人靠按需单查。
+`status` 取值与注意点：
 
-### 试过、但 Telegram 不给 bot 用（别再试）
+| status | 含义 | 备注 |
+|---|---|---|
+| `creator` / `administrator` | 群主 / 管理员 | 在群 |
+| `member` | 普通成员 | 在群 |
+| `restricted` | 受限成员 | 带 `until_date`（0=永久）与一组 `can_*` 权限字段；**可能是残留记录** —— 人其实已被移出（MTProto 里 `left=true`），不能只凭它判断还在不在群 |
+| `left` / `kicked` | 已退群 / 被踢 | 不在群 |
 
-| 接口 | 结果 |
-|---|---|
-| `channels.getAdminLog`（管理日志里有入群事件） | `BOT_METHOD_INVALID`：bot 用户被禁止调用 |
-| `messages.getChatInviteImporters`（邀请导入者，带日期） | 同上 |
-| `messages.getExportedChatInvites`（导出邀请链接） | 同上 |
+- **没有入群时间字段**：`until_date` 只对限制/踢出有效。
+- 对不在群/查不到的人返回 400，例如
+  `{"ok":false,"error_code":400,"description":"Bad Request: user not found"}`
+- 返回的 `user` 里有名字与用户名，MTProto 侧解析不开实体时可用它做按名字搜索。
 
-### 其他消息
+## 3. MTProto（curl 不可调，需 MTProto 客户端）
 
-`channels.getMessages`（曾经想用它反查 access_hash）已删除：被删除的消息
-取回来没有 `from_id`、`users` 为空，抠不出东西。
+以下按官方 schema 列出方法名、参数与返回；参数名与返回字段名保持 schema
+原样，便于对照官方文档。
 
-## 三、成员记录的语义（决定 date 能不能用）
+### 3.1 auth.importBotAuthorization
 
-| 记录类型 | 含义 | `date` 的语义 | 能当入群时间吗 |
+bot 以自身 token 登录，换 `auth_key`。所有 MTProto 调用的前提。
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `api_id` | int | my.telegram.org 申请 |
+| `api_hash` | string | 同上 |
+| `bot_auth_token` | string | bot token（`123456:ABC…`） |
+
+成功后进入正常会话；bot 会话不需要手机号验证码。
+
+### 3.2 updates.getState
+
+取当前更新状态。无参数。返回 `updates.state{pts,qts,date,seq,unread_count}`。
+
+用途：客户端启动时拉一次增量（`updates.getDifference`），顺带把错过的更新
+里的 peer 写进实体缓存 —— 私有群（没有公开用户名）靠它才解析得出群实体。
+
+### 3.3 channels.getParticipant —— 单查（入群时间在这里）
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `channel` | InputChannel | 目标群（`-100…` 的超群） |
+| `participant` | InputPeer | 要查的人：`inputPeerUser{user_id, access_hash}` |
+
+返回 `channels.channelParticipant{participant: …}`。
+
+**关键**：`access_hash` **填 0 也能拿到记录**（实测）。不要只传裸
+`user_id` —— 多数客户端会先做本地实体解析，缓存里没有就报
+`Could not find the input entity for PeerUser(...)`，把还在群的人误判成
+「查不到」。
+
+`participant` 是六种构造器之一，语义见第 4 节。
+
+常见错误：`USER_NOT_PARTICIPANT`（目标不在群）、`CHANNEL_INVALID`（群实体
+不对或身份不对）。
+
+### 3.4 channels.getParticipants —— 批量 / 按名字搜索
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `channel` | InputChannel | 目标群 |
+| `filter` | ChannelParticipantsFilter | `channelParticipantsSearch{q: 名字}` 按名字搜索（昵称/姓/用户名包含 q）；不传则默认列表 |
+| `offset` | int | 分页偏移 |
+| `limit` | int | 单次条数，上限 200 |
+| `hash` | long | 填 0 |
+
+返回 `channels.channelParticipants{count, participants, users}`；
+`participants` 就是第 4 节那六种构造器的列表（普通成员带入群时间）。
+
+限制（实测）：
+
+- **服务端可翻页总量约 1 万条**：五万人的群只能扫到 ~9988（小群也会漏，
+  比如部分受限账号）——批量只能「尽量补」，漏掉的人要单查。
+- 连续翻页会撞 `FLOOD_WAIT_X`，需要等 X 秒再继续。
+
+## 4. 成员记录的 date 语义
+
+`channels.getParticipant` / `channels.getParticipants` 返回的
+`participant` 有六种构造器，`date` 的含义不一样：
+
+| 构造器 | 含义 | 关键字段 | `date` 能当入群时间吗 |
 |---|---|---|---|
-| `ChannelParticipant` | 普通成员 | 入群时间 | ✅ |
-| `ChannelParticipantAdmin` | 管理员 | 入群时间 | ✅ |
-| `ChannelParticipantBanned`，`left=False` | 受限但仍在本群 | **入群时间** | ✅ |
-| `ChannelParticipantBanned`，`left=True` | 已被移出 | **移除时间**，不是入群时间 | ❌ |
-| `ChannelParticipantLeft` | 已退群 | 无 date 字段 | ❌ |
-| `ChannelParticipantCreator` | 群主 | 无 date 字段 | ❌ |
+| `channelParticipant` | 普通成员 | `user_id`、`date` | ✅ 入群时间 |
+| `channelParticipantAdmin` | 管理员 | `user_id`、`date`、`promoted_by` | ✅ 入群时间 |
+| `channelParticipantBanned`，`left=false` | 受限但仍在群 | `peer`、`date`、`banned_rights` | ✅ **入群时间** |
+| `channelParticipantBanned`，`left=true` | 已被移出 | `peer`、`date`、`kicked_by` | ❌ 移除时间 |
+| `channelParticipantLeft` | 已退群 | `peer` | ❌ 无 `date` |
+| `channelParticipantCreator` | 群主 | `user_id`、`rank` | ❌ 无 `date` |
 
-`ChannelParticipantBanned` 的官方注释写的是 "When was the user banned"，
-很容易以为那是限制时间而跳过 —— 实测对 `left=False`（还在群、只被限制
-部分权限）的记录，**date 就是入群时间**。
+易错点：`channelParticipantBanned` 的官方注释写的是 "When was the user
+banned"，容易以为 `date` 是限制时间而跳过 —— 实测对 `left=false`（还在群、
+只被限制部分权限）的记录，`date` 就是入群时间。
 
-验证方法（将来回归可复用）：拿**实时记录过入群时间**的人（Bot API
-`chat_member` 更新写入的 `joined_at`）与 MTProto 记录逐条对照。曾在两个群
-全量比对（4411 + 9989 人）：普通成员 **348 条一致**、受限成员 **53 条一致**
-（少数不一致，疑似重新入群后 date 取最近一次）；再用 4 个「我们处罚过、
-处罚时间明显晚于入群」的人做对照，date 全部等于入群时间而不是处罚时间。
+验证方法（回归时可用）：拿 Bot API `chat_member` 更新实时记录过的入群时间，
+与 MTProto 记录逐条对照。曾两个群全量比对（4411 + 9989 人）：普通成员
+348 条一致、受限成员 53 条一致；另用 4 个「处罚时间明显晚于入群」的人做
+对照，`date` 全部等于入群时间而不是处罚时间。
 
-## 四、调用流程
+## 5. 错误与限制速查
 
-### 按需单查（主路径）
-
-```
-/jtime、消息判定、哈希命中、/check 复查、冷判定
-        │
-        ▼
-ResolveJoinTime(bot, chat_id, uid)                       [Go]
-  ├─ 库里 joined_at>0？→ 直接返回（库就是缓存）
-  ├─ 负缓存命中？→ 直接放弃
-  ├─ 拿不到脚本锁（批量在跑）？→ 放弃，不排队
-  └─ 起脚本：python3 tgjoin_backfill.py --chat … --username … --lookup <uid>
-        │
-        ▼
-  ① channels.getParticipant(InputPeerUser(uid, 0))       [主路径]
-  ② ①没结果 → getChatMember 拿名字 + channels.getParticipants(search)  [兜底]
-        │
-        ▼
-  输出一行 TSV：chat_id \t uid \t unix
-        │
-        ▼
-  Go 侧写库：UPDATE group_members SET joined_at=? WHERE … AND joined_at=0
-```
-
-### 批量（Mini App 按钮）
-
-```
-面板 POST /miniapp/api/chat {action:"backfill"}          [Go]
-  → StartJoinBackfill（force：绕过 24h 冷却；全局单飞锁）
-  → python3 tgjoin_backfill.py --chat … --username …
-      → channels.getParticipants 分页扫成员
-      → 每行 TSV
-  → 只填 joined_at=0 的行（不覆盖实时记录）
-  → 私聊通知管理员「补上 N 条」
-```
-
-## 五、缓存、限流与触发点
-
-- **库即缓存**：查到一次写进 `group_members.joined_at`，之后所有路径秒回；
-  批量写入也只填 `joined_at=0`，不覆盖实时记录。
-- **负缓存**：`ResolveJoinTime` 内部按 (bot, chat, uid) 记失败 ——
-  「确实没有」（已退群/被踢）缓存 6 小时，「查询失败」（网络 / FLOOD_WAIT /
-  超时）缓存 15 分钟，避免反复起脚本。
-- **单飞与串行**：所有脚本共用一把全局锁 `joinBackfillRunning`（同一个 bot
-  的 MTProto 会话文件不能并发给两个进程用）；单查之间另有 `joinLookupMu`
-  排队。批量在跑时单查直接放弃，不让判定排队等十分钟。
-- **超时**：单查 20 秒（`joinLookupTimeout`），批量 10 分钟
-  （`joinBackfillTimeout`）。
-- **触发点**：`/jtime`、`judgeAndAct`（消息判定）、`hashHit`（哈希命中）、
-  `HandleAdCommand`（/check 复查）、`coldJudge`（进群冷判定）、
-  `reviewProfileOnly`（资料复查）。都通过 `ensureJoinAge` 补进画像。
-- **新成员**：由 Bot API `chat_member` 更新实时记录，不走这条路。
-
-## 六、调用量与耗时
-
-| 场景 | 请求数 | 耗时 |
+| 现象 | 出处 | 含义 / 处理 |
 |---|---|---|
-| 单查命中（正常） | 2~3 次：`getChat` + 解析群实体 + `getParticipant` | 约 2~5 秒（含起 python + 连 MTProto） |
-| 单查走兜底 | 最多 +2 次：`getChatMember` + 搜索 | 再多几秒 |
-| 批量（万人群） | 1 次 `getChat` + 约 100 次翻页 | 1 分钟内（10 万人群受 1 万条上限约束，扫不满） |
+| `400 user not found` | getChatMember | 查不到此人；按未知处理 |
+| `USER_NOT_PARTICIPANT` | channels.getParticipant | 目标不在群；入群时间无解 |
+| `BOT_METHOD_INVALID` | 各类 MTProto 方法 | bot 被禁止调用该方法（见第 6 节） |
+| `FLOOD_WAIT_X` | MTProto | 请求过快，等 X 秒 |
+| `429 retry_after` | Bot API | 同上 |
+| 批量扫不满 | channels.getParticipants | 服务端约 1 万条上限；漏掉的人单查 |
 
-## 七、运行前提与配置
+## 6. bot 不可用的 MTProto 方法（已实测确认）
 
-- 配置项 `tg_api_id` / `tg_api_hash`（my.telegram.org 申请；这是 MTProto
-  客户端标识，与 bot token 不是一回事）。没配就只记日志、跳过。
-- 宿主需要 `python3` + `telethon`（缺了同样只记日志、跳过，不影响判定）。
-- 脚本以 `go:embed` 嵌进二进制，首次使用时写到
-  `data/join_backfill/tgjoin_backfill.py`；MTProto 会话文件在
-  `data/join_backfill/sessions/`（每个 bot 一份，重启复用，写权限 700）。
+| 方法 | 本可用来做什么 | 结果 |
+|---|---|---|
+| `channels.getAdminLog` | 管理日志里的「成员加入」事件带时间 | `BOT_METHOD_INVALID` |
+| `messages.getChatInviteImporters` | 邀请链接导入者列表（带日期） | `BOT_METHOD_INVALID` |
+| `messages.getExportedChatInvites` | 导出群邀请链接 | `BOT_METHOD_INVALID` |
 
-## 八、代码位置
+补充：`channels.getMessages`（曾想用被删消息反查 access_hash）已确认无用 ——
+被删消息取回来没有 `from_id`、`users` 为空。
 
-| 位置 | 干什么 |
-|---|---|
-| `internal/antiad/scripts/tgjoin_backfill.py` | 脚本本体：批量模式 + 单查模式（`--lookup`） |
-| `internal/antiad/joinbackfill.go` | `StartJoinBackfill`（按钮批量）、`ResolveJoinTime`（按需单查）、`ensureJoinAge`、`chatUsername`、负缓存与锁 |
-| `internal/antiad/jtime.go` | `/jtime` 渲染，库里没有时调 `ResolveJoinTime` |
-| `internal/panel/miniapp.go` / `miniapp_html.go` | 群组卡片的「补全历史入群时间」按钮 |
-| `internal/antiad/antiad.go`、`hash.go`、`coldjudge.go` | 各判定路径的 `ensureJoinAge` 触发点 |
+## 附：为什么还需要 chat_member
 
-设计上**不再预先全量补全**：拿到管理员权限不再自动扫全群，逐人批量补查也
-已去掉；用到谁查谁、查到即入库。批量只保留 Mini App 按钮这一个手动入口。
+Bot API 的 `chat_member` 更新带加入/离开事件，但**只在实时推送**：它负责
+新入群的实时记录；bot 拿到管理员权限之前就在群里的人没有事件可收，只能按
+本文的办法回查。
