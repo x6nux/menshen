@@ -6,7 +6,7 @@
 //
 // 契约：initData 就绪前不得发请求（api 鉴权头为空会 401）——本组件只在
 // bridge.available 之后才挂载 Shell，Shell 内 useMiniState(true) 必已带上 initData。
-// 页面映射集中在 Shell 一处，Task 2-4 会用真实页面替换 Placeholder。
+// 页面映射集中在 Shell 一处。
 import { Box, CssBaseline, Skeleton, Typography } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
@@ -37,7 +37,7 @@ import { initTelegram } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
 import { ActionSheetProvider, ErrorState, Skeletons, TabBar, ToastProvider, TopBar } from './ui'
 
-/** 一级 Tab 名称（占位页用）。 */
+/** 一级 Tab 名称（TopBar 标题用）。 */
 const TAB_NAMES: Record<TabKey, string> = {
   overview: '概览',
   bots: '机器人',
@@ -46,7 +46,7 @@ const TAB_NAMES: Record<TabKey, string> = {
   mine: '我的',
 }
 
-/** 二级页标题：Task 2-4 换成真实页面时同步维护。 */
+/** 二级页标题：列表数据里找不到具体名称时的回退。 */
 const PAGE_NAMES: Record<Page['k'], string> = {
   bot: '机器人详情',
   chat: '群组详情',

@@ -39,7 +39,6 @@ const miniBotIDHeader = "X-Bot-Id"
 //
 // 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
 //   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
-//   - GET/HEAD  /miniapp/classic   → 旧版内联页面（验收对照期保留，之后删除）
 //   - GET/HEAD  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
 //   - GET/HEAD  /miniapp/<其他>     → SPA 回退到入口页（无产物则 404）
 //   - POST      /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
@@ -62,11 +61,6 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 				return
 			}
 			miniAppIndex(w, r)
-		case p == "/miniapp/classic":
-			if !allowPageMethod(w, r) {
-				return
-			}
-			writeHTML(w, r, http.StatusOK, miniAppHTML)
 		case p == "/miniapp/api" || strings.HasPrefix(p, "/miniapp/api/"):
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", http.MethodPost)

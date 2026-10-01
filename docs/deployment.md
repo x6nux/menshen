@@ -130,6 +130,11 @@ docker compose up -d
 仅 webhook 模式存在（轮询模式没有 HTTP 服务）。菜单按钮由服务在启动或接入
 bot 时自动设置（`setChatMenuButton`，只挂在管理员私聊里）。
 
+界面是 5 个 Tab（概览 / 机器人 / 群组 / 记录 / 我的）：工作台待办、群组批量
+操作、记录内申诉分段、名单分段、设置智能控件与上游连通性测试都在这里
+（详见 [面板、命令与通知](panel.md#mini-app)）。
+
 全部配置项都能在 Mini App 里读写：上游、模型、机器人、群组、全局与单 bot
 参数、白名单、管理员、联合封禁、判定记录与申诉单。鉴权用 Telegram WebApp
-的 `initData` 验签（24 小时有效期），权限与面板一致。
+的 `initData` 验签（24 小时有效期），权限与面板一致。前端由 `docker build`
+的 web 阶段构建并带 `-tags miniapp` 嵌入二进制，部署无需手工构建前端。

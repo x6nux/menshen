@@ -323,21 +323,6 @@ func TestMiniMutations(t *testing.T) {
 	}
 }
 
-// TestMiniAppGlobalTogglesValidJS：三个全局开关的 onclick 必须是合法调用。
-// 曾经生成 act('set',{...value:1,'已切换')——对象字面量缺右括号，且 value
-// 传的是数字（服务端只认字符串），三个开关在 App 里完全点不动。
-func TestMiniAppGlobalTogglesValidJS(t *testing.T) {
-	for _, key := range []string{"antiad_enabled", "alert_copy_main", "gban_enabled"} {
-		open := "key:\\'" + key + "\\',value:\\'"
-		if !strings.Contains(miniAppHTML, open) {
-			t.Errorf("%s 的按钮应把 value 拼成带引号的字符串，缺 %q", key, open)
-		}
-		if !strings.Contains(miniAppHTML, "\\'},\\'已切换\\')") {
-			t.Error("开关按钮应在 okMsg 之前闭合对象字面量（value:'…'},'已切换'）")
-		}
-	}
-}
-
 // TestClampPage：页码必须有上限。没有上限时 (page-1)*size 会算出巨大的
 // OFFSET（极端值还会溢出成负数），一次查询就把库扫一遍。
 func TestClampPage(t *testing.T) {
@@ -390,22 +375,6 @@ func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	}
 	if _, ok := st["global_defaults"].(map[string]any)["antiad_mute_minutes"]; !ok {
 		t.Error("状态里应包含 antiad_mute_minutes 全局默认值")
-	}
-}
-
-// TestMiniAppChatDetailShowsEffectivePunish：群详情要显示实际会执行的处罚
-// 与时长——只写「禁言」时，很容易以为永久封禁已经生效。
-func TestMiniAppChatDetailShowsEffectivePunish(t *testing.T) {
-	for _, want := range []string{
-		"实际执行",
-		"跟随 bot 设置",
-		"muteOptLabel(c.bot_id)",
-		"永久禁言",
-		"要改成永久禁言",
-	} {
-		if !strings.Contains(miniAppHTML, want) {
-			t.Errorf("群详情缺少 %q", want)
-		}
 	}
 }
 
@@ -560,25 +529,6 @@ func TestMiniStateTZAndSettingsSet(t *testing.T) {
 	}
 }
 
-// TestMiniAppListSearch：名单类列表要能搜。名单长起来之后只能靠肉眼翻，
-// 想确认「某个人在不在名单里」得从头滑到尾。搜索只重绘列表容器，
-// 不动输入框本身（整体 render() 会丢焦点与输入法组合）。
-func TestMiniAppListSearch(t *testing.T) {
-	for _, want := range []string{
-		"function filterRows(",
-		// 全局组、专属组、白名单三处都要有搜索框与列表容器。
-		`id="gb_q"`, `id="gb_list"`, `id="gb_count"`,
-		`id="ow_q"`, `id="ow_list"`, `id="ow_count"`,
-		`id="wl_q"`, `id="wl_list"`, `id="wl_count"`,
-		// 搜索走 oninput（即时过滤），且不整页重绘。
-		`oninput="filterRows(`,
-	} {
-		if !strings.Contains(miniAppHTML, want) {
-			t.Errorf("Mini App 缺少 %q", want)
-		}
-	}
-}
-
 // TestMiniAppProfileOKListAndRevoke：复判给的「资料放行」要能在 App 里
 // 看到并撤销（它只免资料这一路，不是整号放行，所以单列一张卡）。
 func TestMiniAppProfileOKListAndRevoke(t *testing.T) {
@@ -702,19 +652,6 @@ func seedMiniLog(t *testing.T, b *core.Bot, uid int64, text, action string) int6
 		}
 	}
 	return id
-}
-
-// TestMiniAppUserViewWired：用户页要有入口（记录列表与详情里的 uid 可点）与
-// 默认只看处置记录的过滤变量。
-func TestMiniAppUserViewWired(t *testing.T) {
-	for _, want := range []string{
-		"function viewUser(", "loadUserLogs(", "USERF = 'act'",
-		"'user:'", "api('user',", "只看被处置过的", "全部判定记录",
-	} {
-		if !strings.Contains(miniAppHTML, want) {
-			t.Errorf("Mini App 缺少 %q", want)
-		}
-	}
 }
 
 // TestMiniAppBackfillAction：群组卡片上的「补全历史入群时间」要能手动触发
@@ -1103,8 +1040,7 @@ func TestMiniAppChatBulkUpdate(t *testing.T) {
 
 // TestMiniAppServesEmbeddedApp：/miniapp 由嵌入的前端产物托管。
 // 带 -tags miniapp 且已 npm --prefix web run build 时验证真实产物；
-// 无产物或 untagged 时验证 503 占位页与 /miniapp/classic 旧页仍可用
-// （不跳过整个测试，两条路径都要有回归）。
+// 无产物或 untagged 时验证 503 占位页（不跳过整个测试，两条路径都要有回归）。
 func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	env := newMiniEnv(t)
 	get := func(path string) *httptest.ResponseRecorder {
@@ -1117,15 +1053,6 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	// API 只收 POST：GET 必须 405，不能落入 SPA 回退。
 	if w := get("/miniapp/api"); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET /miniapp/api 应 405，得到 %d", w.Code)
-	}
-
-	// 旧页面在验收前保留在 /miniapp/classic，且不缓存。
-	if w := get("/miniapp/classic"); w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), "telegram-web-app.js") {
-		t.Fatalf("/miniapp/classic 应 200 且是旧页面，得到 %d", w.Code)
-	}
-	if w := get("/miniapp/classic"); w.Header().Get("Cache-Control") != "no-store" {
-		t.Error("/miniapp/classic 应 no-store")
 	}
 
 	dist, ok := miniAppDistFS()
@@ -1196,7 +1123,6 @@ func TestMiniAppRouteBoundaries(t *testing.T) {
 	// 页面路由只收 GET/HEAD，405 要带 Allow。
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPost, "/miniapp"},
-		{http.MethodPost, "/miniapp/classic"},
 		{http.MethodDelete, "/miniapp/xxx"},
 	} {
 		w := do(tc.method, tc.path)
@@ -1224,11 +1150,6 @@ func TestMiniAppRouteBoundaries(t *testing.T) {
 	// HEAD 页面：只写头不写 body（入口页有无产物都成立）。
 	if w := do(http.MethodHead, "/miniapp"); w.Body.Len() != 0 {
 		t.Errorf("HEAD /miniapp 不应有 body，得到 %d 字节", w.Body.Len())
-	}
-	if w := do(http.MethodHead, "/miniapp/classic"); w.Code != http.StatusOK {
-		t.Errorf("HEAD /miniapp/classic 应 200，得到 %d", w.Code)
-	} else if w.Body.Len() != 0 {
-		t.Errorf("HEAD /miniapp/classic 不应有 body，得到 %d 字节", w.Body.Len())
 	}
 
 	dist, ok := miniAppDistFS()

@@ -19,17 +19,21 @@ go vet ./...
 
 ## 前端（Mini App，web/）
 
-Mini App 是独立的 React + Vite 工程（`web/`），构建产物由 Go 在 `/miniapp` 托管。
-需要 Node ≥ 22.12（Vite 8 的下限）：
+Mini App 是独立的 React + MUI 工程（`web/`，源码在 `web/src/`），构建产物由 Go
+在 `/miniapp` 托管。需要 Node ≥ 22.12（Vite 8 的下限）：
 
 ```bash
 npm --prefix web install          # 安装依赖
 npm --prefix web run dev          # 开发服务器；/miniapp/api 代理到 127.0.0.1:8081
+VITE_MOCK=1 npm --prefix web run dev   # 不连后端：MSW 在浏览器里 mock /miniapp/api
 npm --prefix web run typecheck    # tsc -b
 npm --prefix web run test         # vitest run
 npm --prefix web run lint         # oxlint
-npm --prefix web run build        # 产物输出到 internal/panel/webdist/
+npm --prefix web run build        # tsc -b && vite build，产物输出到 internal/panel/webdist/
 ```
+
+（`VITE_MOCK=1` 只 mock 接口；页面仍要能读到 `window.Telegram.WebApp` 才过得了
+打开检查，通常直接在 Telegram 客户端里开，或在 DevTools 里注入一个假 SDK。）
 
 - **构建产物不入库**（`internal/panel/webdist/` 已 gitignore），仓库里不存在构建结果。
 - Go 侧是 build tag 双实现：`go build -tags miniapp` 用 `go:embed all:webdist`
@@ -37,7 +41,8 @@ npm --prefix web run build        # 产物输出到 internal/panel/webdist/
   因此没有 Node、没有产物的机器上 `go build` / `go test` 照常工作。
 - 本地要看真实页面：先 `npm --prefix web run build`，再 `go build -tags miniapp`。
 - `docker build` 会自动构建前端并带 tag 编译（Dockerfile 的 web 阶段），部署无需手工构建前端。
-- 旧页面在重构期间保留在 `/miniapp/classic` 供对照，验收后删除。
+- CI 会跑 `go test -tags miniapp ./...`（此时 webdist 已构建），本地要复现同样先
+  `npm --prefix web run build`。
 
 ## 发布镜像
 
