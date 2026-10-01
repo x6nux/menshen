@@ -17,6 +17,7 @@ import (
 
 	"menshen/internal/antiad"
 	"menshen/internal/core"
+	"menshen/internal/store"
 	"menshen/internal/testutil"
 )
 
@@ -720,5 +721,318 @@ func TestMiniUserWithoutBodyBotID(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"user_id":555`) {
 		t.Errorf("应返回该用户的资料：%s", w.Body.String())
+	}
+}
+
+// TestMiniAppTodoCounts：工作台待办（state.todo）的口径——未结申诉按权限
+// 与「未结」状态集合统计，演练群与停用 bot 按可见范围统计；申诉结案后
+// 未结计数要跟着减少。
+func TestMiniAppTodoCounts(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	// bot 43 停用；两个 bot 各挂一个正式群与一个演练群。
+	if _, err := sh.Store.Write.Exec(`UPDATE bots SET enabled=0 WHERE bot_id=43`); err != nil {
+		t.Fatal(err)
+	}
+	seedChat := func(botID, chatID, dryrun int64) {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
+			(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
+			VALUES (?,?,?,1,?,0,0)`, botID, chatID, "测试群", dryrun); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedChat(testutil.TestBotID, -100, 0)
+	seedChat(testutil.TestBotID, -101, 1)
+	seedChat(43, -200, 0)
+	seedChat(43, -201, 1)
+	// 申诉：主 bot 名下一张未结一张已结，43 名下一张未结。
+	seedAppeal := func(botID int64, status string) {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO appeals
+			(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,?,0,0)`,
+			botID, 555, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedAppeal(testutil.TestBotID, "noweb")
+	seedAppeal(testutil.TestBotID, "lifted")
+	seedAppeal(43, "statement")
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	todoOf := func(token, initData string, botID int64) map[string]any {
+		t.Helper()
+		w := miniDo(t, env.h, token, initData, botID, "state", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("state 应 200，得到 %d：%s", w.Code, w.Body.String())
+		}
+		var st map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		todo, ok := st["todo"].(map[string]any)
+		if !ok {
+			t.Fatalf("state 缺少 todo：%v", st)
+		}
+		return todo
+	}
+	num := func(todo map[string]any, key string) int64 {
+		t.Helper()
+		f, ok := todo[key].(float64)
+		if !ok {
+			t.Fatalf("todo.%s 不是数字：%v", key, todo[key])
+		}
+		return int64(f)
+	}
+
+	// 主管理员：两个 bot 可见（43 停用），两张未结申诉，两个演练群。
+	todo := todoOf(testutil.TestToken, env.adminInit(), testutil.TestBotID)
+	if got := num(todo, "open_appeals"); got != 2 {
+		t.Errorf("未结申诉应为 2，得到 %d", got)
+	}
+	if got := num(todo, "dryrun_chats"); got != 2 {
+		t.Errorf("演练群应为 2，得到 %d", got)
+	}
+	if got := num(todo, "disabled_bots"); got != 1 {
+		t.Errorf("停用 bot 应为 1，得到 %d", got)
+	}
+
+	// 次级管理员：只看得到自己名下的 43——一张未结申诉、一个演练群、一个停用 bot。
+	sub := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+	todo = todoOf(testToken2, sub, 43)
+	if got := num(todo, "open_appeals"); got != 1 {
+		t.Errorf("次管可见的未结申诉应为 1，得到 %d", got)
+	}
+	if got := num(todo, "dryrun_chats"); got != 1 {
+		t.Errorf("次管可见的演练群应为 1，得到 %d", got)
+	}
+	if got := num(todo, "disabled_bots"); got != 1 {
+		t.Errorf("次管可见的停用 bot 应为 1，得到 %d", got)
+	}
+
+	// 申诉结案后未结计数减少。
+	if _, err := sh.Store.Write.Exec(
+		`UPDATE appeals SET status='lifted' WHERE bot_id=? AND status='noweb'`,
+		testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	todo = todoOf(testutil.TestToken, env.adminInit(), testutil.TestBotID)
+	if got := num(todo, "open_appeals"); got != 1 {
+		t.Errorf("结案后未结申诉应为 1，得到 %d", got)
+	}
+	if got := num(todo, "dryrun_chats"); got != 2 {
+		t.Errorf("结案不应影响演练群计数，得到 %d", got)
+	}
+}
+
+// TestMiniAppLogsTotal：记录列表要给出「当前筛选下的总数」，供前端无限
+// 滚动判断还有没有下一页；total 的口径必须与列表的 WHERE 一致，且不随
+// 分页变化。
+func TestMiniAppLogsTotal(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+	seed := func(verdict, action, text string) {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+			(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,
+			 ad_kind,action,reason,created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			testutil.TestBotID, -100, 555, 7, text, verdict, 0.9, "so",
+			"", action, "", env.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 25; i++ {
+		seed("ad", "deleted_muted", "加微信买号")
+	}
+	for i := 0; i < 3; i++ {
+		seed("clean", "none", "日常闲聊")
+	}
+	seed("skipped", "skipped", "加微信但被护栏拦下")
+
+	call := func(body map[string]any) map[string]any {
+		t.Helper()
+		w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "logs", body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("logs 应 200，得到 %d：%s", w.Code, w.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	total := func(out map[string]any) int64 {
+		t.Helper()
+		f, ok := out["total"].(float64)
+		if !ok {
+			t.Fatalf("logs 响应缺少 total：%v", out)
+		}
+		return int64(f)
+	}
+
+	if got := total(call(map[string]any{"verdict": "deleted"})); got != 25 {
+		t.Errorf("已删除筛选的 total 应为 25，得到 %d", got)
+	}
+	if got := total(call(map[string]any{"verdict": "clean"})); got != 3 {
+		t.Errorf("正常筛选的 total 应为 3，得到 %d", got)
+	}
+	if got := total(call(map[string]any{"verdict": "skipped"})); got != 1 {
+		t.Errorf("跳过筛选的 total 应为 1，得到 %d", got)
+	}
+	if got := total(call(map[string]any{"q": "微信"})); got != 26 {
+		t.Errorf("搜索「微信」的 total 应为 26，得到 %d", got)
+	}
+	// 与分页无关：翻页后仍是同一批筛选下的总数。
+	p1 := call(map[string]any{"verdict": "deleted", "page": 1})
+	p2 := call(map[string]any{"verdict": "deleted", "page": 2})
+	if total(p1) != total(p2) || total(p1) != 25 {
+		t.Errorf("total 不应随页码变化：第 1 页 %d，第 2 页 %d", total(p1), total(p2))
+	}
+	if rows := p1["logs"].([]any); len(rows) != 20 {
+		t.Errorf("第 1 页应为 20 行，得到 %d", len(rows))
+	}
+	if rows := p2["logs"].([]any); len(rows) != 5 {
+		t.Errorf("第 2 页应为 5 行，得到 %d", len(rows))
+	}
+}
+
+// TestMiniAppChatBulkUpdate：群组批量更新——一个请求只碰一个 bot 的群
+// （bot_id 必填，防跨 bot 误伤同 chat_id 的行），fields 里没出现的键不改，
+// 上限 100 个。
+func TestMiniAppChatBulkUpdate(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	seedChat := func(botID, chatID, enabled, dryrun, punish int64) {
+		if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
+			(bot_id,chat_id,title,enabled,dryrun,group_alert,punish,created_at)
+			VALUES (?,?,?,?,?,0,?,0)`,
+			botID, chatID, "测试群", enabled, dryrun, punish); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedChat(testutil.TestBotID, -100, 1, 0, 0)
+	seedChat(testutil.TestBotID, -101, 1, 1, 1)
+	// 另一个 bot 名下有同一个 chat_id：批量更新不能跨 bot 误伤。
+	seedChat(43, -100, 1, 0, 0)
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	init := env.adminInit()
+	sub := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+	conf := func(botID, chatID int64) store.BotChat {
+		t.Helper()
+		c, ok := sh.Cache.Snap().ChatConf(botID, chatID)
+		if !ok {
+			t.Fatalf("群 %d/%d 不在快照里", botID, chatID)
+		}
+		return c
+	}
+
+	// 缺 bot_id → 400（而不是落到权限检查报 403）。
+	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "chat_ids": []int64{-100},
+			"fields": map[string]any{"dryrun": true}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("缺 bot_id 应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// 次管批量改别人的 bot → 403。
+	w = miniDo(t, env.h, testToken2, sub, 43, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": []int64{-100}, "fields": map[string]any{"dryrun": true}})
+	if w.Code != http.StatusForbidden {
+		t.Errorf("次管批量改别人的 bot 应 403，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// 主管理员批量：目标 bot 的群生效，不存在的 chat_id 跳过，
+	// 另一个 bot 的同 chat_id 不受影响。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": []int64{-100, -101, -999},
+			"fields":   map[string]any{"dryrun": true}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("批量更新应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["note"] != "已更新 2 个群" {
+		t.Errorf("成功提示应为「已更新 2 个群」，得到 %v", out["note"])
+	}
+	// 「没出现的键不改」：只带 dryrun 时 enabled/punish 保持原样。
+	if c := conf(testutil.TestBotID, -100); !c.Dryrun || !c.Enabled || c.Punish != 0 {
+		t.Errorf("主 bot 的 -100 应只改 dryrun，得到 %+v", c)
+	}
+	if c := conf(testutil.TestBotID, -101); !c.Dryrun || !c.Enabled || c.Punish != 1 {
+		t.Errorf("主 bot 的 -101 应保持 enabled/punish，得到 %+v", c)
+	}
+	if c := conf(43, -100); c.Dryrun || !c.Enabled || c.Punish != 0 {
+		t.Errorf("bot 43 的 -100 不该被跨 bot 误改，得到 %+v", c)
+	}
+
+	// 多个字段一起改：enabled/punish 同时落库。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": []int64{-100},
+			"fields":   map[string]any{"enabled": false, "punish": 1}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("批量更新应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if c := conf(testutil.TestBotID, -100); c.Enabled || c.Punish != 1 {
+		t.Errorf("enabled/punish 应同时落库，得到 %+v", c)
+	}
+	// punish 越界 → 400，且不能落库。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": []int64{-100}, "fields": map[string]any{"punish": 2}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("punish 越界应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if c := conf(testutil.TestBotID, -100); c.Punish != 1 {
+		t.Errorf("越界的 punish 不该落库，得到 %+v", c)
+	}
+
+	// 空数组与超过 100 个都拒绝。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": []int64{}, "fields": map[string]any{"dryrun": true}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("空 chat_ids 应 400，得到 %d", w.Code)
+	}
+	big := make([]int64, 101)
+	for i := range big {
+		big[i] = int64(-1000 - i)
+	}
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": testutil.TestBotID,
+			"chat_ids": big, "fields": map[string]any{"dryrun": true}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("超过 100 个 chat_ids 应 400，得到 %d", w.Code)
+	}
+
+	// 次管批量改自己名下的 bot：放行并落库。
+	w = miniDo(t, env.h, testToken2, sub, 43, "chat",
+		map[string]any{"action": "bulk_update", "bot_id": 43,
+			"chat_ids": []int64{-100}, "fields": map[string]any{"group_alert": true}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("次管批量改自己的 bot 应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if c := conf(43, -100); !c.GroupAlert {
+		t.Errorf("group_alert 应落库，得到 %+v", c)
 	}
 }

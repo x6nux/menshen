@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -293,6 +294,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 	out := map[string]any{
 		"me": me, "bots": bots, "chats": chats, "bot_settings": botSettings,
 		"specs": specs, "sections": sections, "stats": stats,
+		"todo":            miniTodo(sh, uid, main),
 		"global_defaults": defaults,
 	}
 	if main {
@@ -408,6 +410,35 @@ func miniStats(sh *core.Shared, uid int64, main bool) map[string]any {
 	return map[string]any{
 		"checked": checked, "hits": hits, "cost": cost,
 		"cost_text": billing.FormatUSDFine(cost), "chats": chats,
+	}
+}
+
+// miniTodo 汇总工作台的待办：可见范围内未结的申诉单数、演练中的群数与
+// 停用的 bot 数。未结申诉与 miniAppeals 用同一套权限 clause 与状态集合，
+// 两处的数字必须一致；演练群与停用 bot 直接数快照，与群/机器人列表同口径。
+func miniTodo(sh *core.Shared, uid int64, main bool) map[string]any {
+	where, args := miniBotsClause(sh, uid, main)
+	var openAppeals int64
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeals
+		WHERE 1=1`+where+` AND status IN (`+store.AppealOpenStatusesSQL+`)`,
+		args...).Scan(&openAppeals); err != nil {
+		slog.Error("miniapp：统计未结申诉失败", "err", err)
+	}
+	snap := sh.Cache.Snap()
+	dryrun, disabled := 0, 0
+	for _, rec := range snap.BotsOwnedBy(uid, main) {
+		if !rec.Enabled {
+			disabled++
+		}
+		for _, c := range snap.ChatsOf(rec.BotID) {
+			if c.Dryrun {
+				dryrun++
+			}
+		}
+	}
+	return map[string]any{
+		"open_appeals": openAppeals, "dryrun_chats": dryrun,
+		"disabled_bots": disabled,
 	}
 }
 
@@ -706,11 +737,25 @@ func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	botID := miniInt(body, "bot_id")
 	chatID := miniInt(body, "chat_id")
+	action := miniStr(body, "action")
+	if action == "bulk_update" {
+		// 批量更新一次只碰一个 bot 的群：bot_id 必填且先于权限检查校验，
+		// 否则主管理员缺 bot_id 时会被当成 0 号 bot 一路放行到「未知操作」。
+		if botID == 0 {
+			miniErr(w, http.StatusBadRequest, "缺少 bot_id")
+			return
+		}
+		if !miniCanManageBot(sh, uid, botID) {
+			miniErr(w, http.StatusForbidden, "无权管理该 bot")
+			return
+		}
+		miniChatBulk(sh, w, botID, body)
+		return
+	}
 	if !miniCanManageBot(sh, uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权管理该 bot")
 		return
 	}
-	action := miniStr(body, "action")
 	if action == "backfill" {
 		// 手动补全历史成员入群时间：与自动触发同一条路径，但绕过 24 小时冷却。
 		if chatID == 0 {
@@ -751,46 +796,14 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 				return
 			}
 		}
-		// 其余字段按请求里出现的项更新。
-		cols := []string{}
-		args := []any{}
-		for _, f := range []string{"enabled", "dryrun", "group_alert"} {
-			if v, ok := body[f]; ok {
-				on := false
-				switch t := v.(type) {
-				case bool:
-					on = t
-				case float64:
-					on = t != 0
-				}
-				cols = append(cols, f+"=?")
-				if on {
-					args = append(args, 1)
-				} else {
-					args = append(args, 0)
-				}
-			}
-		}
-		if v, ok := body["title"]; ok {
-			cols = append(cols, "title=?")
-			args = append(args, fmt.Sprint(v))
-		}
-		if v, ok := body["punish"]; ok {
-			p := miniInt(map[string]any{"v": v}, "v")
-			if p < -1 || p > 1 {
-				miniErr(w, http.StatusBadRequest, "punish 只能是 -1（跟随）、0（禁言）、1（封禁）")
+		// 其余字段按请求里出现的项更新；字段规则与批量更新共用一处。
+		if _, err := updateChatConf(sh, botID, chatID, body); err != nil {
+			if errors.Is(err, errChatPunish) {
+				miniErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			cols = append(cols, "punish=?")
-			args = append(args, p)
-		}
-		if len(cols) > 0 {
-			args = append(args, botID, chatID)
-			if _, err := sh.Store.Write.Exec(`UPDATE bot_chats SET `+
-				strings.Join(cols, ",")+` WHERE bot_id=? AND chat_id=?`, args...); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
 		}
 	case "remove":
 		if _, err := sh.Store.Write.Exec(`DELETE FROM bot_chats
@@ -806,6 +819,140 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 		slog.Error("miniapp：刷新缓存失败", "err", err)
 	}
 	miniOK(w, map[string]any{"ok": true})
+}
+
+// errChatPunish 是 punish 越界的哨兵错误：单条更新与批量更新都据此回 400，
+// 而不是笼统的「保存失败」。
+var errChatPunish = fmt.Errorf("punish 只能是 -1（跟随）、0（禁言）、1（封禁）")
+
+// updateChatConf 收集 fields 里出现的群配置字段并落库，返回实际命中的行数；
+// 没出现的键一律不动（enabled:false 是合法值，不能用零值当哨兵）。
+// 单条 update 与 bulk_update 共用它，字段取值规则只有这一处。
+func updateChatConf(sh *core.Shared, botID, chatID int64, fields map[string]any) (int64, error) {
+	cols := []string{}
+	args := []any{}
+	for _, f := range []string{"enabled", "dryrun", "group_alert"} {
+		if v, ok := fields[f]; ok {
+			on := false
+			switch t := v.(type) {
+			case bool:
+				on = t
+			case float64:
+				on = t != 0
+			}
+			cols = append(cols, f+"=?")
+			args = append(args, boolToInt64(on))
+		}
+	}
+	if v, ok := fields["title"]; ok {
+		cols = append(cols, "title=?")
+		args = append(args, fmt.Sprint(v))
+	}
+	if v, ok := fields["punish"]; ok {
+		p := miniInt(map[string]any{"v": v}, "v")
+		if p < -1 || p > 1 {
+			return 0, errChatPunish
+		}
+		cols = append(cols, "punish=?")
+		args = append(args, p)
+	}
+	if len(cols) == 0 {
+		return 0, nil
+	}
+	args = append(args, botID, chatID)
+	res, err := sh.Store.Write.Exec(`UPDATE bot_chats SET `+
+		strings.Join(cols, ",")+` WHERE bot_id=? AND chat_id=?`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// miniChatBulk 批量更新一个 bot 名下的群配置（chat op 的 bulk_update）。
+// 只更新该 bot 名下真实存在的群（WHERE bot_id=? AND chat_id=?），不存在的
+// chat_id 跳过；fields 只认 enabled/dryrun/group_alert/punish，未出现的键不改。
+func miniChatBulk(sh *core.Shared, w http.ResponseWriter, botID int64, body map[string]any) {
+	ids, err := miniChatIDList(body)
+	if err != nil {
+		miniErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	fields := map[string]any{}
+	if raw, ok := body["fields"]; ok {
+		m, isMap := raw.(map[string]any)
+		if !isMap {
+			miniErr(w, http.StatusBadRequest, "fields 必须是对象")
+			return
+		}
+		for _, f := range []string{"enabled", "dryrun", "group_alert", "punish"} {
+			if v, exists := m[f]; exists {
+				fields[f] = v
+			}
+		}
+	}
+	updated := int64(0)
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		n, err := updateChatConf(sh, botID, id, fields)
+		if err != nil {
+			if errors.Is(err, errChatPunish) {
+				miniErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		updated += n
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		slog.Error("miniapp：刷新缓存失败", "err", err)
+	}
+	miniOK(w, map[string]any{"ok": true,
+		"note": fmt.Sprintf("已更新 %d 个群", updated)})
+}
+
+// miniChatIDList 解析 bulk_update 的 chat_ids：必须是非空数组、最多 100 个；
+// 元素容错 JSON 解码后的 float64 与直接构造的 int64（以及 json.Number）。
+func miniChatIDList(body map[string]any) ([]int64, error) {
+	raw, ok := body["chat_ids"]
+	if !ok {
+		return nil, fmt.Errorf("缺少 chat_ids")
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("chat_ids 必须是数组")
+	}
+	if len(arr) == 0 {
+		return nil, fmt.Errorf("chat_ids 不能为空")
+	}
+	if len(arr) > 100 {
+		return nil, fmt.Errorf("一次最多更新 100 个群")
+	}
+	out := make([]int64, 0, len(arr))
+	for _, e := range arr {
+		switch n := e.(type) {
+		case float64:
+			out = append(out, int64(n))
+		case int64:
+			out = append(out, n)
+		case int:
+			out = append(out, int64(n))
+		case json.Number:
+			i, err := n.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("chat_ids 里有非数字项")
+			}
+			out = append(out, i)
+		default:
+			return nil, fmt.Errorf("chat_ids 里有非数字项")
+		}
+	}
+	return out, nil
 }
 
 func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
@@ -1374,6 +1521,14 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 
 	q := append([]any{}, clauseArgs...)
 	q = append(q, condArgs...)
+	// total 与列表用完全相同的 WHERE 与 args（同一份 clauseWhere/condWhere），
+	// 只是不带分页；前端靠它判断无限滚动还有没有下一页。
+	var total int64
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE 1=1`+clauseWhere+condWhere, q...).Scan(&total); err != nil {
+		miniErr(w, http.StatusInternalServerError, "查询失败")
+		return
+	}
 	rows, err := sh.Store.Read.Query(`SELECT `+miniLogCols+` FROM antiad_log
 		WHERE 1=1`+clauseWhere+condWhere+` ORDER BY id DESC LIMIT 20 OFFSET ?`,
 		append(q, (page-1)*20)...)
@@ -1396,7 +1551,7 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			out = append(out, m)
 		}
 	}
-	miniOK(w, map[string]any{"logs": out, "page": page})
+	miniOK(w, map[string]any{"logs": out, "page": page, "total": total})
 }
 
 // miniLogDetail 单条记录的全部字段，供点进去的详情页。
