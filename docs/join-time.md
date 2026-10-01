@@ -108,7 +108,11 @@ curl -s "https://api.telegram.org/bot$TOKEN/getChatMember?chat_id=@CMLiussss&use
 ## 3. MTProto（curl 不可调，需 MTProto 客户端）
 
 以下按官方 schema 列出方法名、参数与返回；参数名与返回字段名保持 schema
-原样，便于对照官方文档。
+原样，便于对照官方文档。示例基于 **Telethon**（本项目用的就是它）：
+
+```bash
+pip install telethon            # Python 3.8+
+```
 
 ### 3.1 auth.importBotAuthorization
 
@@ -122,12 +126,23 @@ bot 以自身 token 登录，换 `auth_key`。所有 MTProto 调用的前提。
 
 成功后进入正常会话；bot 会话不需要手机号验证码。
 
+```python
+from telethon import TelegramClient
+
+client = TelegramClient("demo.session", api_id, api_hash)  # api_id/api_hash 来自 my.telegram.org
+await client.start(bot_token="123456:ABC…")                # 内部即 auth.importBotAuthorization
+```
+
 ### 3.2 updates.getState
 
 取当前更新状态。无参数。返回 `updates.state{pts,qts,date,seq,unread_count}`。
 
 用途：客户端启动时拉一次增量（`updates.getDifference`），顺带把错过的更新
 里的 peer 写进实体缓存 —— 私有群（没有公开用户名）靠它才解析得出群实体。
+
+```python
+await client.catch_up()      # 内部：updates.getState + updates.getDifference
+```
 
 ### 3.3 channels.getParticipant —— 单查（入群时间在这里）
 
@@ -148,6 +163,26 @@ bot 以自身 token 登录，换 `auth_key`。所有 MTProto 调用的前提。
 常见错误：`USER_NOT_PARTICIPANT`（目标不在群）、`CHANNEL_INVALID`（群实体
 不对或身份不对）。
 
+```python
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.types import (ChannelParticipant, ChannelParticipantAdmin,
+                               ChannelParticipantBanned, InputPeerUser)
+
+ch = await client.get_entity("@CMLiussss")     # 或 -100 开头的群 id（私有群靠 catch_up 缓存）
+r = await client(GetParticipantRequest(channel=ch,
+        participant=InputPeerUser(1397983659, 0)))   # access_hash 填 0
+p = r.participant
+print(type(p).__name__, getattr(p, "date", None), getattr(p, "left", None))
+
+def join_ts(p):
+    """六种构造器里，哪些 date 能当入群时间。"""
+    if isinstance(p, (ChannelParticipant, ChannelParticipantAdmin)):
+        return int(p.date.timestamp())
+    if isinstance(p, ChannelParticipantBanned) and not p.left:   # 受限但仍在群
+        return int(p.date.timestamp())
+    return 0        # 群主 / 已被移出 / 已退群：拿不到
+```
+
 ### 3.4 channels.getParticipants —— 批量 / 按名字搜索
 
 | 参数 | 类型 | 说明 |
@@ -166,6 +201,60 @@ bot 以自身 token 登录，换 `auth_key`。所有 MTProto 调用的前提。
 - **服务端可翻页总量约 1 万条**：五万人的群只能扫到 ~9988（小群也会漏，
   比如部分受限账号）——批量只能「尽量补」，漏掉的人要单查。
 - 连续翻页会撞 `FLOOD_WAIT_X`，需要等 X 秒再继续。
+
+```python
+from telethon.tl.functions.channels import GetParticipantsRequest
+from telethon.tl.types import ChannelParticipantsSearch
+
+ch = await client.get_entity("@CMLiussss")
+
+# 一页（limit 上限 200；翻页就改 offset，直到返回条数 < limit）
+r = await client(GetParticipantsRequest(channel=ch, hash=0,
+        filter=ChannelParticipantsSearch(q=""), offset=0, limit=200))
+print(r.count, len(r.participants))       # count 是总数（但翻页最多约 1 万条）
+
+# 按名字找某个人：批量列表漏掉时的兜底
+r2 = await client(GetParticipantsRequest(channel=ch, hash=0,
+        filter=ChannelParticipantsSearch(q="张"), offset=0, limit=200))
+hit = [p for p in r2.participants
+       if (getattr(p, "user_id", None) or p.peer.user_id) == 1397983659]
+```
+
+小提示：`participants` 里受限/已退群的记录没有 `user_id`，改用 `p.peer.user_id`。
+
+### 3.5 合起来的完整最小示例
+
+```python
+"""查一个人在某个群的入群时间。"""
+import asyncio
+from telethon import TelegramClient
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.types import (ChannelParticipant, ChannelParticipantAdmin,
+                               ChannelParticipantBanned, InputPeerUser)
+
+API_ID, API_HASH = 2040, "b18441a1ff607e10a989891a5462e627"   # my.telegram.org
+TOKEN = "123456:ABC…"                # @BotFather
+GROUP = -1002124027757               # 或 "@CMLiussss"
+UID = 1397983659
+
+def join_ts(p):
+    if isinstance(p, (ChannelParticipant, ChannelParticipantAdmin)):
+        return int(p.date.timestamp())
+    if isinstance(p, ChannelParticipantBanned) and not p.left:
+        return int(p.date.timestamp())
+    return 0                          # 群主 / 已被移出 / 已退群
+
+async def main():
+    client = TelegramClient("demo.session", API_ID, API_HASH)
+    await client.start(bot_token=TOKEN)
+    await client.catch_up()           # 私有群要靠它缓存 peer
+    ch = await client.get_entity(GROUP)
+    r = await client(GetParticipantRequest(channel=ch,
+            participant=InputPeerUser(UID, 0)))
+    print(join_ts(r.participant))     # 0 = 拿不到
+
+asyncio.run(main())
+```
 
 ## 4. 成员记录的 date 语义
 
