@@ -46,6 +46,13 @@
 - 不为轮询模式提供网页（现状即如此：`public_url` 为空时无 HTTP 服务）。
 - 首版不做下拉刷新（列为 P1.1），先提供列表自动刷新与按钮刷新。
 
+### 0.4 实施记录（随任务更新，后续以本节为准）
+
+- **T7 完成**（`866b12a`）：`state.todo` / `logs.total` / `chat.bulk_update` 落地；`appeals.total`、`user.total/shown` 复用既有实现，未改动。
+- **T0 完成**（`fd93616` + 加固 `a88bf5d`）：`web/` 工程落地。实际版本与计划有漂移——Vite **8.3（Rolldown）**、TS 6、React 19.2、**oxlint**（非 ESLint）、vitest 5；MUI 钉在 **7.3.11**。`manualChunks` 需用函数形式；`publicDir: false`（静态资源只进 `assets/`）；产物不入库 + build tag 双实现（`-tags miniapp` 嵌入 / 默认 stub 占位页）。
+- 托管路由已加固：`path.Clean` 归一、`..`/编码穿越 404、HEAD 支持、405 带 `Allow`、assets 仅普通文件可 200。CI 同时跑 untagged 与 tagged 的 Go 测试，lint 已接入，前端 test 由 T1 接入。
+- **后续任务若与正文提到 Vite 7 / ESLint 9 冲突，一律按本节的实际版本执行。**
+
 ---
 
 ## Chunk 1：技术方案与工程基建
