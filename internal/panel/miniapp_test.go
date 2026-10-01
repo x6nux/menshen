@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,13 +70,14 @@ func miniDo(t *testing.T, h http.Handler, token, initData string,
 type miniTestEnv struct {
 	t   *testing.T
 	h   http.Handler
+	sh  *core.Shared
 	now int64
 }
 
 func newMiniEnv(t *testing.T) *miniTestEnv {
 	t.Helper()
 	_, b := testutil.NewTestRegistry(t, nil)
-	return &miniTestEnv{t: t, h: MiniAppHandler(b.Shared), now: time.Now().Unix()}
+	return &miniTestEnv{t: t, h: MiniAppHandler(b.Shared), sh: b.Shared, now: time.Now().Unix()}
 }
 
 func (e *miniTestEnv) adminInit() string {
@@ -1281,5 +1284,154 @@ func TestMiniAppRouteBoundaries(t *testing.T) {
 	w = do(http.MethodHead, "/miniapp/xxx")
 	if w.Code != http.StatusOK || w.Body.Len() != 0 {
 		t.Errorf("HEAD SPA 回退应 200 且无 body，得到 %d/%d 字节", w.Code, w.Body.Len())
+	}
+}
+
+// TestMiniAppUpstreamTest：上游连通性测试（upstream action=test）的三条路径
+// 与权限 —— 无可用模型 400、请求失败 200 + ok:false、成功 200 + latency/model；
+// 次级管理员与非管理员沿用 miniUpstream 的主管理员限制，一律 403。
+func TestMiniAppUpstreamTest(t *testing.T) {
+	env := newMiniEnv(t)
+	sh := env.sh
+
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	sub := signInitData(t, testutil.TestToken, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+	if w := miniDo(t, env.h, testutil.TestToken, sub, testutil.TestBotID, "upstream",
+		map[string]any{"action": "test", "id": 1}); w.Code != http.StatusForbidden {
+		t.Errorf("次级管理员测试上游应 403，得到 %d：%s", w.Code, w.Body.String())
+	}
+	outsider := signInitData(t, testutil.TestToken, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":12345}`})
+	if w := miniDo(t, env.h, testutil.TestToken, outsider, testutil.TestBotID, "upstream",
+		map[string]any{"action": "test", "id": 1}); w.Code != http.StatusForbidden {
+		t.Errorf("非管理员测试上游应 403，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// 假上游：mode 0 返回最小 chat completion，1 返回 500。收到的请求
+	// （路径/鉴权头/请求体）投进带缓冲 channel，测试端断言不会卡住 handler。
+	var mode atomic.Int32
+	type capturedReq struct{ path, auth, body string }
+	got := make(chan capturedReq, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got <- capturedReq{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(raw)}
+		if mode.Load() == 1 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"pong"}}]}`)
+	}))
+	defer srv.Close()
+
+	res, err := sh.Store.Write.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
+		VALUES ('t6up',?,'sk-test',1,1,1,0)`, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return miniDo(t, env.h, testutil.TestToken, env.adminInit(),
+			testutil.TestBotID, "upstream", map[string]any{"action": "test", "id": upID})
+	}
+	decode := func(w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("响应不是 JSON：%v（%s）", err, w.Body.String())
+		}
+		return out
+	}
+
+	// 没有登记模型：400 + 明确的中文错误。
+	w := call()
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("无可用模型应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if msg, _ := decode(w)["error"].(string); msg != "该上游还没有登记可用模型" {
+		t.Errorf("无可用模型的错误文案不对：%q", msg)
+	}
+
+	// 只有停用的模型也算「没有可用模型」。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO models
+		(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES ('t6up/m1',0,0,0,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(); w.Code != http.StatusBadRequest {
+		t.Fatalf("只有停用模型应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	if _, err := sh.Store.Write.Exec(
+		`UPDATE models SET enabled=1 WHERE name='t6up/m1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 上游 500：HTTP 200 + ok:false + 可读原因，且请求确实走了
+	// 判定链路的路径、鉴权头与模型名（剥掉上游前缀）。
+	mode.Store(1)
+	w = call()
+	if w.Code != http.StatusOK {
+		t.Fatalf("上游 500 时应 200 + ok:false，得到 %d：%s", w.Code, w.Body.String())
+	}
+	out := decode(w)
+	if out["ok"] != false {
+		t.Errorf("上游 500 时 ok 应为 false，得到 %v", out["ok"])
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "500") {
+		t.Errorf("错误文案应含 HTTP 状态，得到 %q", msg)
+	}
+	req := <-got
+	if req.path != "/v1/chat/completions" {
+		t.Errorf("请求路径应是 /v1/chat/completions，得到 %q", req.path)
+	}
+	if req.auth != "Bearer sk-test" {
+		t.Errorf("鉴权头应带上游 api_key，得到 %q", req.auth)
+	}
+	if !strings.Contains(req.body, `"model":"m1"`) {
+		t.Errorf("请求体应带剥掉前缀的模型 ID，得到 %s", req.body)
+	}
+
+	// 成功：200 + ok:true + latency_ms + 「上游名/模型ID」文案。
+	mode.Store(0)
+	w = call()
+	if w.Code != http.StatusOK {
+		t.Fatalf("成功时应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	out = decode(w)
+	if out["ok"] != true {
+		t.Errorf("成功时 ok 应为 true，得到 %v（错误：%v）", out["ok"], out["error"])
+	}
+	if out["model"] != "t6up/m1" {
+		t.Errorf("model 应是上游名/模型ID，得到 %v", out["model"])
+	}
+	if _, ok := out["latency_ms"].(float64); !ok {
+		t.Errorf("latency_ms 应是数字，得到 %T", out["latency_ms"])
+	}
+	req = <-got
+	if req.path != "/v1/chat/completions" || req.auth != "Bearer sk-test" {
+		t.Errorf("成功路径的请求不对：%+v", req)
+	}
+	if !strings.Contains(req.body, `"messages"`) {
+		t.Errorf("请求体应带 messages，得到 %s", req.body)
 	}
 }

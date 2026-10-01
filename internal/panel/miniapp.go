@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1200,6 +1201,26 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 			miniErr(w, http.StatusInternalServerError, "删除失败")
 			return
 		}
+	case "test":
+		// 连通性测试不改库，不走下面的 Cache.Reload / {"ok":true} 收尾。
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		model, latency, err := antiad.TestUpstream(ctx, sh, miniInt(body, "id"))
+		if err != nil {
+			if errors.Is(err, antiad.ErrUpstreamNotFound) ||
+				errors.Is(err, antiad.ErrUpstreamNoModel) ||
+				errors.Is(err, antiad.ErrUpstreamNoChat) {
+				miniErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			// 请求本身失败（网络、鉴权、上游 5xx）：HTTP 200 + ok:false，
+			// 前端行内展示原因，不当成接口错误处理。
+			miniOK(w, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		miniOK(w, map[string]any{
+			"ok": true, "latency_ms": latency.Milliseconds(), "model": model})
+		return
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return

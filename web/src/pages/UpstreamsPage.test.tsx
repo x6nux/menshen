@@ -1,5 +1,5 @@
 // 上游渠道：列表、添加参数、详情（api_key 留空 = 不改、能力开关、改名、
-// 启停乐观更新、删除确认）。
+// 启停乐观更新、删除确认、测试连通的成功/失败/禁用态）。
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -134,5 +134,58 @@ describe('UpstreamDetailPage', () => {
 
     await waitFor(() => expect(bodies).toHaveLength(1))
     expect(bodies[0]).toEqual({ action: 'remove', id: 1 })
+  })
+
+  it('测试连通成功：提交 action=test/id，行内展示延迟与模型', async () => {
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post('*/miniapp/api/upstream', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ ok: true, latency_ms: 123, model: 'demo/gpt-5-mini' })
+      }),
+    )
+    renderPage(<UpstreamDetailPage id={1} />)
+    await screen.findByText('https://api.example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连通' }))
+    expect(await screen.findByText('✅ 连通 · 123ms · demo/gpt-5-mini')).toBeInTheDocument()
+    expect(bodies[0]).toEqual({ action: 'test', id: 1 })
+  })
+
+  it('测试连通失败：HTTP 200 + ok:false 时行内展示错误原因', async () => {
+    server.use(
+      http.post('*/miniapp/api/upstream', () =>
+        HttpResponse.json({ ok: false, error: '上游 demo 返回 500' }),
+      ),
+    )
+    renderPage(<UpstreamDetailPage id={1} />)
+    await screen.findByText('https://api.example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连通' }))
+    expect(await screen.findByText('❌ 上游 demo 返回 500')).toBeInTheDocument()
+  })
+
+  it('测试连通 pending：按钮禁用，不阻塞其他操作', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.use(
+      http.post('*/miniapp/api/upstream', async () => {
+        await gate
+        return HttpResponse.json({ ok: true, latency_ms: 5, model: 'demo/m' })
+      }),
+    )
+    renderPage(<UpstreamDetailPage id={1} />)
+    await screen.findByText('https://api.example.com')
+
+    const btn = screen.getByRole('button', { name: '测试连通' })
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn).toBeDisabled())
+    // 连通测试只锁自己：同一时间启停等其它操作照常可用。
+    expect(screen.getByRole('switch', { name: '启用' })).toBeEnabled()
+
+    release()
+    expect(await screen.findByText('✅ 连通 · 5ms · demo/m')).toBeInTheDocument()
   })
 })

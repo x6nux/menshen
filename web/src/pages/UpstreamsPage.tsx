@@ -2,14 +2,16 @@
 // - 列表：名称 + 启用徽标 + base_url 副行；
 // - 「＋」抽屉：名称 / base_url / api_key / chat / systemone / 启用 → upstream add；
 // - 详情：渠道配置抽屉（api_key 留空 = 不改，显示当前掩码）、启停 Switch（乐观）、
-//   改名抽屉、危险区删除（ActionSheet 写明对象与后果）。
-// - 连通性测试属 T6（upstream action=test），本页暂留位置，不做。
-import { Box, TextField, Typography } from '@mui/material'
+//   改名抽屉、危险区删除（ActionSheet 写明对象与后果）；
+// - 「测试连通」（T6）：upstream {action:'test'} 发一次最小请求，结果行内
+//   展示延迟/模型或可读错误，pending 时禁用自身按钮、不阻塞其他操作。
+import NetworkCheckOutlined from '@mui/icons-material/NetworkCheckOutlined'
+import { Box, Button, TextField, Typography } from '@mui/material'
 import { useState } from 'react'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { useOptimisticMiniMutation, useUpstreamMutation } from '../api/mutations'
-import type { State } from '../api/types'
+import type { State, UpstreamTestResp } from '../api/types'
 import { useNav } from '../nav'
 import {
   Badge,
@@ -170,6 +172,7 @@ export function UpstreamDetailPage({ id }: { id: number }) {
   const updateMut = useUpstreamMutation()
   const renameMut = useUpstreamMutation()
   const removeMut = useUpstreamMutation()
+  const testMut = useUpstreamMutation<UpstreamTestResp>()
   const statusMut = useOptimisticMiniMutation('upstream')
 
   const [editOpen, setEditOpen] = useState(false)
@@ -179,6 +182,7 @@ export function UpstreamDetailPage({ id }: { id: number }) {
   const [soDraft, setSoDraft] = useState(true)
   const [renameOpen, setRenameOpen] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {
@@ -274,6 +278,27 @@ export function UpstreamDetailPage({ id }: { id: number }) {
     )
   }
 
+  function runTest() {
+    setTestResult(null)
+    testMut.mutate(
+      { action: 'test', id },
+      {
+        onSuccess: (resp) => {
+          if (resp.ok) {
+            setTestResult({
+              ok: true,
+              text: `✅ 连通 · ${resp.latency_ms ?? 0}ms · ${resp.model ?? ''}`,
+            })
+          } else {
+            setTestResult({ ok: false, text: `❌ ${resp.error || '测试失败'}` })
+          }
+        },
+        // 配置类问题（没有可用模型等）服务端回 400，client 抛 ApiError。
+        onError: (err) => setTestResult({ ok: false, text: `❌ ${err.message}` }),
+      },
+    )
+  }
+
   return (
     <Box data-testid="upstream-detail-page">
       <SectionCard>
@@ -304,7 +329,31 @@ export function UpstreamDetailPage({ id }: { id: number }) {
           value="编辑"
           onClick={openEdit}
         />
-        {/* T6：上游连通性测试按钮（upstream {action:"test"}）将放在这张卡里。 */}
+        <Box sx={{ px: 2, py: 1.5 }}>
+          <Button
+            fullWidth
+            variant="outlined"
+            startIcon={<NetworkCheckOutlined />}
+            loading={testMut.isPending}
+            disabled={testMut.isPending}
+            onClick={runTest}
+          >
+            测试连通
+          </Button>
+          {testResult && (
+            <Typography
+              data-testid="upstream-test-result"
+              sx={{
+                mt: 1,
+                fontSize: 13,
+                lineHeight: 1.6,
+                color: testResult.ok ? 'success.main' : 'error.main',
+              }}
+            >
+              {testResult.text}
+            </Typography>
+          )}
+        </Box>
       </SectionCard>
 
       <SectionCard title="危险区">

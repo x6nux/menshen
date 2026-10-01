@@ -57,8 +57,8 @@ export function useBotMutation() {
 export function useChatMutation() {
   return useMiniMutation('chat')
 }
-export function useUpstreamMutation() {
-  return useMiniMutation('upstream')
+export function useUpstreamMutation<TResp = OkResp>() {
+  return useMiniMutation<Record<string, unknown>, TResp>('upstream')
 }
 export function useModelMutation() {
   return useMiniMutation('model')

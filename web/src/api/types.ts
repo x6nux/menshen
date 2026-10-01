@@ -114,6 +114,19 @@ export interface Model {
   model_id: string
 }
 
+/**
+ * UpstreamTestResp 是 upstream {action:'test'} 的结果：请求本身失败（网络、
+ * 鉴权、上游 5xx）时 HTTP 仍是 200，但 ok=false、error 是可读原因；
+ * 配置类问题（没有可用模型等）走 400，由 client 抛 ApiError。
+ */
+export interface UpstreamTestResp {
+  ok: boolean
+  latency_ms?: number
+  /** <上游名>/<模型ID>，成功时返回。 */
+  model?: string
+  error?: string
+}
+
 export interface AdminRow {
   user_id: number
   note: string
