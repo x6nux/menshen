@@ -1,6 +1,6 @@
 // 用户页行为测试（5.1 迁移不变量）：默认只看被处置过的、记录行可进详情、
 // hasMore 用 shown 判断；资料卡字段完整渲染。
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import type { UserDossier, UserLogRow } from '../api/types'
@@ -75,6 +75,37 @@ describe('UserPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '全部判定记录' }))
     await waitFor(() => expect(bodies).toHaveLength(2))
     expect(bodies[1]).toEqual({ user_id: 555, filter: 'all', page: 1 })
+  })
+
+  it('切筛选请求未回来时不显示空态（轻量加载行）', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    server.use(
+      http.post('*/miniapp/api/user', async ({ request }) => {
+        calls += 1
+        const body = (await request.json()) as { filter: string }
+        if (calls === 1) {
+          return HttpResponse.json(dossier({ logs: [], shown: 0, filter: body.filter as 'act' }))
+        }
+        await gate
+        return HttpResponse.json(dossier({ logs: [userLog(9812)], shown: 1, filter: 'all' }))
+      }),
+    )
+    renderPage(<UserPage id={555} />)
+
+    expect(await screen.findByText('没有记录')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '全部判定记录' }))
+    await waitFor(() => expect(screen.queryByText('没有记录')).not.toBeInTheDocument())
+    expect(screen.getByTestId('list-loading')).toHaveTextContent('加载中…')
+
+    await act(async () => {
+      release()
+    })
+    expect(await screen.findByRole('button', { name: /#9812/ })).toBeInTheDocument()
   })
 
   it('hasMore 用 shown：shown=21 时加载第二页，加载满后停止', async () => {

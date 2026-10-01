@@ -11,12 +11,14 @@ import { appealStatusInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { Badge, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
-import { InfoRow } from './shared'
+import { InfoRow, UserLink } from './shared'
+import { useBarReserve } from './useBarReserve'
 
 /** 未结状态集合：与旧页 viewAppealDetail 的 open 数组一致。 */
 const OPEN_STATUSES = ['statement', 'ai', 'web', 'noweb', 'code']
 
-const BOTTOM_RESERVE = 'calc(120px + env(safe-area-inset-bottom))'
+/** 底部操作栏兜底高度（4 按钮 + 说明）；有 ResizeObserver 时以实测为准。 */
+const BAR_FALLBACK = 170
 const MONO = 'ui-monospace, Menlo, monospace'
 
 export function AppealDetailPage({ id }: { id: number }) {
@@ -26,6 +28,10 @@ export function AppealDetailPage({ id }: { id: number }) {
   const state = useMiniState(true)
   const appeal = useAppeal(id)
   const act = useAppealactMutation()
+  // hooks 必须无条件调用：条形高度在数据到达前先用兜底估算。
+  const { barRef, reserved } = useBarReserve(
+    appeal.data !== undefined && OPEN_STATUSES.includes(appeal.data.status) ? BAR_FALLBACK : 0,
+  )
 
   if (appeal.isPending) return <Skeletons rows={4} />
   if (appeal.isError) {
@@ -69,21 +75,17 @@ export function AppealDetailPage({ id }: { id: number }) {
   }
 
   return (
-    <Box data-testid="appeal-detail-page" sx={{ pb: open ? BOTTOM_RESERVE : 0 }}>
+    <Box
+      data-testid="appeal-detail-page"
+      data-reserved={reserved}
+      sx={{ pb: open ? `calc(${reserved}px + env(safe-area-inset-bottom))` : 0 }}
+    >
       <SectionCard>
         <InfoRow label="状态">
           <Badge tone={status.tone}>{status.label}</Badge>
         </InfoRow>
         <InfoRow label="申诉人 / bot">
-          <Box
-            component="span"
-            role="link"
-            tabIndex={0}
-            onClick={() => nav.push({ k: 'user', id: a.user_id })}
-            sx={{ color: 'primary.main' }}
-          >
-            uid {a.user_id}
-          </Box>
+          <UserLink userId={a.user_id} onClick={() => nav.push({ k: 'user', id: a.user_id })} />
           {` / ${bot ? bot.label : a.bot_id}`}
         </InfoRow>
         <InfoRow label="提交 / 更新">
@@ -175,6 +177,7 @@ export function AppealDetailPage({ id }: { id: number }) {
 
       {open ? (
         <Box
+          ref={barRef}
           data-testid="appeal-action-bar"
           sx={{
             position: 'fixed',

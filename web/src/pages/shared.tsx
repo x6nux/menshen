@@ -1,6 +1,7 @@
-// 页面内复用的小展示件：状态徽标、指标格、信息行与无限列表页脚。
+// 页面内复用的小展示件：状态徽标、指标格、信息行、无限列表页脚、
+// 键盘可达的用户链接与列表计数/加载占位。
 // 纯展示/加载编排，无请求逻辑（请求留给各页的 query hook）。
-import { Box, Button, Typography } from '@mui/material'
+import { Box, Button, ButtonBase, Typography } from '@mui/material'
 import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
@@ -46,6 +47,87 @@ export function InfoRow({ label, children }: { label: ReactNode; children: React
         {children}
       </Box>
     </Box>
+  )
+}
+
+/**
+ * ListCount 是列表顶部的「共 N 条」行。total 未知或正在切换筛选（占位数据）
+ * 时显示占位符，避免旧筛选的总数误导。
+ */
+export function ListCount({
+  total,
+  loading,
+  testId,
+}: {
+  total: number | undefined
+  loading: boolean
+  testId?: string
+}) {
+  return (
+    <Box
+      data-testid={testId}
+      sx={{ px: 0.5, mb: 0.5, fontSize: 13, color: 'text.secondary' }}
+    >
+      {loading || total === undefined ? '共 … 条' : `共 ${total} 条`}
+    </Box>
+  )
+}
+
+/** ListLoading 是筛选/搜索请求进行中的轻量占位，替代会误导的空态。 */
+export function ListLoading() {
+  return (
+    <Typography
+      data-testid="list-loading"
+      sx={{ py: 2, textAlign: 'center', fontSize: 13, color: 'text.secondary' }}
+    >
+      加载中…
+    </Typography>
+  )
+}
+
+/**
+ * UserLink 是详情/列表里的 uid 资料链接。用 ButtonBase 渲染成 span（避免嵌在
+ * 行按钮里产生嵌套 button/a 的非法结构），自带 Enter/Space 键盘激活；
+ * stopPropagation 保证不触发外层行跳转。
+ */
+export function UserLink({
+  userId,
+  onClick,
+  testId,
+}: {
+  userId: number
+  onClick: () => void
+  testId?: string
+}) {
+  return (
+    <ButtonBase
+      component="span"
+      role="link"
+      tabIndex={0}
+      data-testid={testId}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      sx={{
+        p: 0,
+        minWidth: 0,
+        fontSize: 'inherit',
+        lineHeight: 'inherit',
+        fontFamily: 'inherit',
+        color: 'primary.main',
+        textAlign: 'inherit',
+        verticalAlign: 'baseline',
+        borderRadius: '2px',
+        '&.Mui-focusVisible': {
+          outline: '2px solid',
+          outlineColor: 'primary.main',
+          outlineOffset: 1,
+        },
+      }}
+    >
+      uid {userId}（资料）
+    </ButtonBase>
   )
 }
 

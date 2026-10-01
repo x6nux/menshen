@@ -10,7 +10,7 @@ import { actionLabel, fmtTS } from '../lib/format'
 import { verdictInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { Badge, EmptyState, ErrorState, ListRow, SectionCard, Segmented, Skeletons } from '../ui'
-import { InfiniteFooter, InfoRow } from './shared'
+import { InfiniteFooter, InfoRow, ListLoading } from './shared'
 
 const MONO = 'ui-monospace, Menlo, monospace'
 
@@ -68,12 +68,16 @@ export function UserPage({ id }: { id: number }) {
       </Box>
 
       {rows.length === 0 ? (
-        <EmptyState
-          title="没有记录"
-          description={
-            filter === 'act' ? '该用户还没有被处置过的记录。' : '该用户还没有判定记录。'
-          }
-        />
+        user.isPlaceholderData || user.isFetching ? (
+          <ListLoading />
+        ) : (
+          <EmptyState
+            title="没有记录"
+            description={
+              filter === 'act' ? '该用户还没有被处置过的记录。' : '该用户还没有判定记录。'
+            }
+          />
+        )
       ) : (
         <>
           <SectionCard>

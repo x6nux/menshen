@@ -4,7 +4,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mockLogDetail, mockState } from '../mocks/fixtures'
-import { renderPage } from '../test/renderPage'
+import { NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { LogDetailPage } from './LogDetailPage'
 
@@ -121,6 +121,29 @@ describe('LogDetailPage', () => {
     await screen.findByText('AI 复查')
     expect(screen.queryByRole('button', { name: '联合封禁' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '解除联合封禁' })).not.toBeInTheDocument()
+  })
+
+  it('用户链接键盘可达：Enter 进用户页', async () => {
+    renderPage(
+      <>
+        <LogDetailPage id={9812} />
+        <NavProbe />
+      </>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'uid 555（资料）' })
+    fireEvent.keyDown(link, { key: 'Enter' })
+    expect(screen.getByTestId('nav-top').textContent).toBe('user')
+  })
+
+  it('主管理员 6 按钮场景底部预留 ≥210（无 ResizeObserver 时用兜底值）', async () => {
+    renderPage(<LogDetailPage id={9812} />)
+
+    await screen.findByRole('button', { name: '联合封禁' })
+    const reserved = Number(
+      screen.getByTestId('log-detail-page').getAttribute('data-reserved'),
+    )
+    expect(reserved).toBeGreaterThanOrEqual(210)
   })
 
   it('动作失败时 toast 服务端错误文案，按钮保留', async () => {

@@ -5,7 +5,7 @@ import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import type { AppealDetail } from '../api/types'
 import { mockAppealDetail } from '../mocks/fixtures'
-import { renderPage } from '../test/renderPage'
+import { NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { AppealDetailPage } from './AppealDetailPage'
 
@@ -145,5 +145,34 @@ describe('AppealDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '重跑 AI 复核' }))
     await waitFor(() => expect(acts).toHaveLength(2))
     expect(acts[1]).toEqual({ id: 77, action: 'rerun' })
+  })
+
+  it('申诉人链接键盘可达：Enter 进用户页', async () => {
+    server.use(
+      http.post('*/miniapp/api/appeal', () => HttpResponse.json(detail({ status: 'noweb' }))),
+    )
+    renderPage(
+      <>
+        <AppealDetailPage id={77} />
+        <NavProbe />
+      </>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'uid 555（资料）' })
+    fireEvent.keyDown(link, { key: 'Enter' })
+    expect(screen.getByTestId('nav-top').textContent).toBe('user')
+  })
+
+  it('底部操作栏预留高度暴露在 data-reserved（无 RO 用兜底 ≥170）', async () => {
+    server.use(
+      http.post('*/miniapp/api/appeal', () => HttpResponse.json(detail({ status: 'noweb' }))),
+    )
+    renderPage(<AppealDetailPage id={77} />)
+    await screen.findByRole('button', { name: '人工解除' })
+
+    const reserved = Number(
+      screen.getByTestId('appeal-detail-page').getAttribute('data-reserved'),
+    )
+    expect(reserved).toBeGreaterThanOrEqual(170)
   })
 })

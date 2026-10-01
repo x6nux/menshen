@@ -19,7 +19,7 @@ import {
   Segmented,
   Skeletons,
 } from '../ui'
-import { InfiniteFooter } from './shared'
+import { InfiniteFooter, ListCount, ListLoading, UserLink } from './shared'
 
 type Section = 'logs' | 'appeals'
 
@@ -94,6 +94,11 @@ export function RecordsPage() {
   const openAppeals = state.data?.todo.open_appeals ?? 0
   const logRows = logs.data?.pages.flatMap((page) => page.logs) ?? []
   const appealRows = appeals.data?.pages.flatMap((page) => page.appeals) ?? []
+  // 总数取第一页的 total；切换筛选时 pages[0] 还是旧筛选的占位数据，必须显示占位。
+  const logTotal = logs.data?.pages[0]?.total
+  const appealTotal = appeals.data?.pages[0]?.total
+  const logCountLoading = logs.isPending || logs.isPlaceholderData
+  const appealCountLoading = appeals.isPending || appeals.isPlaceholderData
 
   const sectionOptions = [
     { value: 'logs', label: '判定记录' },
@@ -161,30 +166,39 @@ export function RecordsPage() {
           </Box>
           {logs.isError && logs.data === undefined ? (
             <ErrorState status={errorStatus(logs.error)} onRetry={() => void logs.refetch()} />
-          ) : logs.isPending ? (
-            <Skeletons rows={3} />
-          ) : logRows.length === 0 ? (
-            <EmptyState title="没有记录" description="换个筛选条件或搜索词试试。" />
           ) : (
             <>
-              <Box sx={{ mt: 0.5 }}>
-                {logRows.map((log) => (
-                  <LogListRow
-                    key={log.id}
-                    log={log}
-                    onOpen={() => nav.push({ k: 'log', id: log.id })}
-                    onUser={() => nav.push({ k: 'user', id: log.user_id })}
+              <ListCount total={logTotal} loading={logCountLoading} testId="logs-total" />
+              {logs.isPending ? (
+                <Skeletons rows={3} />
+              ) : logRows.length === 0 ? (
+                logs.isPlaceholderData || logs.isFetching ? (
+                  <ListLoading />
+                ) : (
+                  <EmptyState title="没有记录" description="换个筛选条件或搜索词试试。" />
+                )
+              ) : (
+                <>
+                  <Box sx={{ mt: 0.5 }}>
+                    {logRows.map((log) => (
+                      <LogListRow
+                        key={log.id}
+                        log={log}
+                        onOpen={() => nav.push({ k: 'log', id: log.id })}
+                        onUser={() => nav.push({ k: 'user', id: log.user_id })}
+                      />
+                    ))}
+                  </Box>
+                  <InfiniteFooter
+                    hasNextPage={logs.hasNextPage}
+                    isFetchingNextPage={logs.isFetchingNextPage}
+                    isFetchNextPageError={logs.isFetchNextPageError}
+                    error={logs.error}
+                    onLoadMore={() => void logs.fetchNextPage()}
+                    onRetry={() => void logs.fetchNextPage()}
                   />
-                ))}
-              </Box>
-              <InfiniteFooter
-                hasNextPage={logs.hasNextPage}
-                isFetchingNextPage={logs.isFetchingNextPage}
-                isFetchNextPageError={logs.isFetchNextPageError}
-                error={logs.error}
-                onLoadMore={() => void logs.fetchNextPage()}
-                onRetry={() => void logs.fetchNextPage()}
-              />
+                </>
+              )}
             </>
           )}
         </>
@@ -204,29 +218,38 @@ export function RecordsPage() {
           </Box>
           {appeals.isError && appeals.data === undefined ? (
             <ErrorState status={errorStatus(appeals.error)} onRetry={() => void appeals.refetch()} />
-          ) : appeals.isPending ? (
-            <Skeletons rows={3} />
-          ) : appealRows.length === 0 ? (
-            <EmptyState title="没有申诉" description="当前筛选下没有需要处理的申诉单。" />
           ) : (
             <>
-              <Box sx={{ mt: 0.5 }}>
-                {appealRows.map((appeal) => (
-                  <AppealListRow
-                    key={appeal.id}
-                    appeal={appeal}
-                    onOpen={() => nav.push({ k: 'appeal', id: appeal.id })}
+              <ListCount total={appealTotal} loading={appealCountLoading} testId="appeals-total" />
+              {appeals.isPending ? (
+                <Skeletons rows={3} />
+              ) : appealRows.length === 0 ? (
+                appeals.isPlaceholderData || appeals.isFetching ? (
+                  <ListLoading />
+                ) : (
+                  <EmptyState title="没有申诉" description="当前筛选下没有需要处理的申诉单。" />
+                )
+              ) : (
+                <>
+                  <Box sx={{ mt: 0.5 }}>
+                    {appealRows.map((appeal) => (
+                      <AppealListRow
+                        key={appeal.id}
+                        appeal={appeal}
+                        onOpen={() => nav.push({ k: 'appeal', id: appeal.id })}
+                      />
+                    ))}
+                  </Box>
+                  <InfiniteFooter
+                    hasNextPage={appeals.hasNextPage}
+                    isFetchingNextPage={appeals.isFetchingNextPage}
+                    isFetchNextPageError={appeals.isFetchNextPageError}
+                    error={appeals.error}
+                    onLoadMore={() => void appeals.fetchNextPage()}
+                    onRetry={() => void appeals.fetchNextPage()}
                   />
-                ))}
-              </Box>
-              <InfiniteFooter
-                hasNextPage={appeals.hasNextPage}
-                isFetchingNextPage={appeals.isFetchingNextPage}
-                isFetchNextPageError={appeals.isFetchNextPageError}
-                error={appeals.error}
-                onLoadMore={() => void appeals.fetchNextPage()}
-                onRetry={() => void appeals.fetchNextPage()}
-              />
+                </>
+              )}
             </>
           )}
         </>
@@ -259,19 +282,7 @@ function LogListRow({
       }
       secondary={
         <Box component="span" sx={{ display: 'block' }}>
-          <Box
-            component="span"
-            role="link"
-            tabIndex={0}
-            data-testid={`log-user-${log.id}`}
-            onClick={(event) => {
-              event.stopPropagation()
-              onUser()
-            }}
-            sx={{ color: 'primary.main' }}
-          >
-            uid {log.user_id}（资料）
-          </Box>
+          <UserLink userId={log.user_id} onClick={onUser} testId={`log-user-${log.id}`} />
           {` · 群 ${log.chat_id} · ${Math.round(log.confidence * 100)}% · ${log.cost_text}`}
           {log.text !== '' && (
             <Box component="span" sx={{ display: 'block' }}>

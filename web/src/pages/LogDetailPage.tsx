@@ -11,10 +11,11 @@ import { actionLabel, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
-import { InfoRow } from './shared'
+import { InfoRow, UserLink } from './shared'
+import { useBarReserve } from './useBarReserve'
 
 // 主操作（与旧页四个按钮一一对应）；危险项带确认文案。
-// 底部操作栏 6 个按钮最多 3 行（主管理员）+ 说明文字，内容区预留 150px。
+// 内容区底部预留由 useBarReserve 实测（主管理员 6 按钮 + 说明约 210px，兜底值）。
 interface ActionSpec {
   action: string
   label: string
@@ -55,7 +56,10 @@ const GBAN_ACTIONS: ActionSpec[] = [
   },
 ]
 
-const BOTTOM_RESERVE = 'calc(150px + env(safe-area-inset-bottom))'
+/** 底部操作栏兜底高度：普通管理员 4 按钮约 170px；主管理员 6 按钮 ≥210px。
+ * 有 ResizeObserver 时以实测为准（useBarReserve），这里只是 jsdom 等环境的保底。 */
+const BAR_FALLBACK = 170
+const BAR_FALLBACK_MAIN = 210
 
 export function LogDetailPage({ id }: { id: number }) {
   const nav = useNav()
@@ -64,6 +68,8 @@ export function LogDetailPage({ id }: { id: number }) {
   const state = useMiniState(true)
   const log = useLog(id)
   const act = useLogactMutation()
+  const isMain = state.data?.me.main ?? false
+  const { barRef, reserved } = useBarReserve(isMain ? BAR_FALLBACK_MAIN : BAR_FALLBACK)
 
   if (log.isPending) return <Skeletons rows={4} />
   if (log.isError) {
@@ -72,7 +78,6 @@ export function LogDetailPage({ id }: { id: number }) {
 
   const l = log.data
   const chat = state.data?.chats.find((c) => c.chat_id === l.chat_id)
-  const isMain = state.data?.me.main ?? false
 
   const run = (spec: ActionSpec) => {
     return async () => {
@@ -104,15 +109,7 @@ export function LogDetailPage({ id }: { id: number }) {
           <Mono>{String(l.chat_id)}</Mono>
           {chat?.title ? ` · ${chat.title}` : ''}
           {' / '}
-          <Box
-            component="span"
-            role="link"
-            tabIndex={0}
-            onClick={() => nav.push({ k: 'user', id: l.user_id })}
-            sx={{ color: 'primary.main' }}
-          >
-            uid {l.user_id}（资料）
-          </Box>
+          <UserLink userId={l.user_id} onClick={() => nav.push({ k: 'user', id: l.user_id })} />
         </>
       ),
     },
@@ -133,7 +130,11 @@ export function LogDetailPage({ id }: { id: number }) {
   ]
 
   return (
-    <Box data-testid="log-detail-page" sx={{ pb: BOTTOM_RESERVE }}>
+    <Box
+      data-testid="log-detail-page"
+      data-reserved={reserved}
+      sx={{ pb: `calc(${reserved}px + env(safe-area-inset-bottom))` }}
+    >
       <SectionCard>
         {details.map((row) => (
           <InfoRow key={row.label} label={row.label}>
@@ -175,6 +176,7 @@ export function LogDetailPage({ id }: { id: number }) {
       </SectionCard>
 
       <Box
+        ref={barRef}
         data-testid="log-action-bar"
         sx={{
           position: 'fixed',

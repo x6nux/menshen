@@ -1,9 +1,9 @@
-// 记录页行为测试：分段/筛选/搜索防抖/无限滚动/intent 消费/uid 链接。
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+// 记录页行为测试：分段/筛选/搜索防抖/无限滚动/intent 消费/uid 链接/键盘可达。
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
-import type { LogRow } from '../api/types'
+import type { AppealRow, LogRow } from '../api/types'
 import { mockAppeals, mockLogs } from '../mocks/fixtures'
 import { IntentSetter, NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
@@ -17,6 +17,10 @@ function hit(id: number): LogRow {
 
 function hits(ids: number[]): LogRow[] {
   return ids.map(hit)
+}
+
+function appealRow(id: number): AppealRow {
+  return { ...mockAppeals[0], id }
 }
 
 describe('RecordsPage', () => {
@@ -100,10 +104,12 @@ describe('RecordsPage', () => {
     // 第一页 20 条，还有下一页
     expect(await screen.findByRole('button', { name: /#9020/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /#9021/ })).not.toBeInTheDocument()
+    expect(screen.getByTestId('logs-total')).toHaveTextContent('共 25 条')
 
     fireEvent.click(screen.getByRole('button', { name: '加载更多' }))
     expect(await screen.findByRole('button', { name: /#9025/ })).toBeInTheDocument()
     expect(pages).toEqual([1, 2])
+    expect(screen.getByTestId('logs-total')).toHaveTextContent('共 25 条')
 
     // 25 ≥ total=25：没有下一页，也不再发请求
     expect(screen.getByText('没有更多了')).toBeInTheDocument()
@@ -182,6 +188,7 @@ describe('RecordsPage', () => {
     expect(await screen.findByText('#77 · uid 555')).toBeInTheDocument()
     expect(screen.getByText('待人工处理')).toBeInTheDocument()
     expect(screen.getByText(/维持原判/)).toBeInTheDocument()
+    expect(screen.getByTestId('appeals-total')).toHaveTextContent('共 1 条')
 
     fireEvent.click(screen.getByText('全部'))
     await waitFor(() => expect(bodies).toHaveLength(2))
@@ -189,6 +196,138 @@ describe('RecordsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /#77/ }))
     expect(screen.getByTestId('nav-top').textContent).toBe('appeal')
+  })
+
+  it('切筛选请求未回来时不显示空态：轻量加载行 + 总数占位', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    server.use(
+      http.post('*/miniapp/api/logs', async () => {
+        calls += 1
+        if (calls === 1) {
+          return HttpResponse.json({ logs: [], page: 1, total: 0 })
+        }
+        await gate
+        return HttpResponse.json({ logs: hits([9001]), page: 1, total: 1 })
+      }),
+    )
+    renderPage(<RecordsPage />)
+
+    // 首个筛选（已删除）确实为空：空态可见
+    expect(await screen.findByText('没有记录')).toBeInTheDocument()
+    expect(screen.getByTestId('logs-total')).toHaveTextContent('共 0 条')
+
+    // 切「命中」后请求被 gate 拦住：不得再显示空态，改为加载行 + 总数占位
+    fireEvent.click(screen.getByText('命中'))
+    await waitFor(() => expect(screen.queryByText('没有记录')).not.toBeInTheDocument())
+    expect(screen.getByTestId('list-loading')).toHaveTextContent('加载中…')
+    expect(screen.getByTestId('logs-total')).toHaveTextContent('共 … 条')
+
+    await act(async () => {
+      release()
+    })
+    expect(await screen.findByRole('button', { name: /#9001/ })).toBeInTheDocument()
+    expect(screen.getByTestId('logs-total')).toHaveTextContent('共 1 条')
+  })
+
+  it('下一页失败显示错误卡，重试成功后加载第二页并停止', async () => {
+    let page2Calls = 0
+    server.use(
+      http.post('*/miniapp/api/logs', async ({ request }) => {
+        const body = (await request.json()) as { page: number }
+        if (body.page === 1) {
+          return HttpResponse.json({
+            logs: hits(Array.from({ length: 20 }, (_, i) => 9001 + i)),
+            page: 1,
+            total: 21,
+          })
+        }
+        page2Calls += 1
+        if (page2Calls === 1) {
+          return HttpResponse.json({ error: '服务暂时不可用' }, { status: 500 })
+        }
+        return HttpResponse.json({ logs: hits([9021]), page: 2, total: 21 })
+      }),
+    )
+    renderPage(<RecordsPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }))
+    expect(await screen.findByText('网络异常')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByRole('button', { name: /#9021/ })).toBeInTheDocument()
+    expect(screen.getByText('没有更多了')).toBeInTheDocument()
+    expect(page2Calls).toBe(2)
+  })
+
+  it('申诉无限滚动：第二页边界后不再请求', async () => {
+    const pages: number[] = []
+    server.use(
+      http.post('*/miniapp/api/appeals', async ({ request }) => {
+        const body = (await request.json()) as { page: number }
+        pages.push(body.page)
+        if (body.page === 1) {
+          return HttpResponse.json({
+            appeals: Array.from({ length: 20 }, (_, i) => appealRow(7000 + i)),
+            page: 1,
+            total: 21,
+          })
+        }
+        return HttpResponse.json({ appeals: [appealRow(7020)], page: 2, total: 21 })
+      }),
+    )
+    renderPage(<RecordsPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: /申诉/ }))
+    expect(await screen.findByRole('button', { name: /#7019/ })).toBeInTheDocument()
+    expect(screen.getByTestId('appeals-total')).toHaveTextContent('共 21 条')
+
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }))
+    expect(await screen.findByRole('button', { name: /#7020/ })).toBeInTheDocument()
+    expect(screen.getByText('没有更多了')).toBeInTheDocument()
+    expect(pages).toEqual([1, 2])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(pages).toEqual([1, 2])
+  })
+
+  it('uid 链接 Enter 键进用户页，且不触发整行跳转', async () => {
+    server.use(
+      http.post('*/miniapp/api/logs', () =>
+        HttpResponse.json({ logs: [hit(9812)], page: 1, total: 1 }),
+      ),
+    )
+    renderPage(
+      <>
+        <RecordsPage />
+        <NavProbe />
+      </>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'uid 555（资料）' })
+    fireEvent.keyDown(link, { key: 'Enter' })
+    expect(screen.getByTestId('nav-top').textContent).toBe('user')
+  })
+
+  it('uid 链接 Space 键进用户页，且不触发整行跳转', async () => {
+    server.use(
+      http.post('*/miniapp/api/logs', () =>
+        HttpResponse.json({ logs: [hit(9812)], page: 1, total: 1 }),
+      ),
+    )
+    renderPage(
+      <>
+        <RecordsPage />
+        <NavProbe />
+      </>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'uid 555（资料）' })
+    fireEvent.keyDown(link, { key: ' ' })
+    fireEvent.keyUp(link, { key: ' ' })
+    expect(screen.getByTestId('nav-top').textContent).toBe('user')
   })
 })
 
