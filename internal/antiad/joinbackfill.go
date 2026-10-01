@@ -64,21 +64,42 @@ type backfillRow struct {
 // backfillRunner 是「跑一次补全脚本」的实现，测试里替换掉。
 var backfillRunner = runJoinBackfillScript
 
-// maybeJoinBackfill 在 bot 刚拿到管理员权限时补全该群的历史成员入群时间。
-// 只做安全检查并起一个后台任务，不阻塞更新路径。
+// BackfillRow 是补全结果的一行（导出版，供测试与其他包使用）。
+type BackfillRow = backfillRow
+
+// SwapBackfillRunner 替换补全脚本的执行器，返回原实现。仅供测试。
+func SwapBackfillRunner(fn func(*core.Bot, int64, string) ([]BackfillRow, error)) func(*core.Bot, int64, string) ([]BackfillRow, error) {
+	old := backfillRunner
+	if fn != nil {
+		backfillRunner = fn
+	}
+	return old
+}
+
+// maybeJoinBackfill 是自动触发（拿到管理员权限时）的入口，不走 force。
 func maybeJoinBackfill(b *core.Bot, chatID int64, username string) {
+	StartJoinBackfill(b, chatID, username, false)
+}
+
+// StartJoinBackfill 起一个补全任务，返回是否真的起了与不能起的原因。
+//
+// force 为真时绕过 24 小时冷却 —— 配置台上的「补全历史入群时间」是管理员
+// 的明确动作，不该被自动触发的冷却挡住。任务跑在后台：万人大群要翻很多页，
+// 结果由私聊通知给出。
+func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (bool, string) {
 	if b == nil || b.IsMainBot() || chatID == 0 {
-		return
+		return false, "该群不可用"
 	}
 	if b.Cfg.TGAPIID == 0 || b.Cfg.TGAPIHash == "" {
-		slog.Info("入群时间补全：未配置 tg_api_id/tg_api_hash，跳过",
-			"chat", chatID, "说明", "到 my.telegram.org 申请后填进配置文件")
-		return
+		slog.Info("入群时间补全：未配置 tg_api_id/tg_api_hash，跳过", "chat", chatID)
+		return false, "未配置 tg_api_id/tg_api_hash（到 my.telegram.org 申请后填进配置文件）"
 	}
 	key := backfillKey(b.BotID(), chatID)
-	if v, ok := joinBackfillDone.Load(key); ok {
-		if t, ok := v.(time.Time); ok && time.Since(t) < joinBackfillCooldown {
-			return
+	if !force {
+		if v, ok := joinBackfillDone.Load(key); ok {
+			if t, ok := v.(time.Time); ok && time.Since(t) < joinBackfillCooldown {
+				return false, ""
+			}
 		}
 	}
 	joinBackfillDone.Store(key, time.Now())
@@ -123,6 +144,7 @@ func maybeJoinBackfill(b *core.Bot, chatID int64, username string) {
 				nil)
 		}
 	}()
+	return true, ""
 }
 
 func backfillKey(botID, chatID int64) string {

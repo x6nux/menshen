@@ -711,6 +711,31 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 		return
 	}
 	action := miniStr(body, "action")
+	if action == "backfill" {
+		// 手动补全历史成员入群时间：与自动触发同一条路径，但绕过 24 小时冷却。
+		if chatID == 0 {
+			miniErr(w, http.StatusBadRequest, "chat_id 无效")
+			return
+		}
+		inst, live := lookupBot(sh, botID)
+		if !live {
+			miniErr(w, http.StatusBadRequest, "该 bot 未在运行，无法补全")
+			return
+		}
+		title := miniChatTitle(sh, botID, chatID)
+		started, why := antiad.StartJoinBackfill(inst, chatID, title, true)
+		if !started {
+			if why == "" {
+				miniErr(w, http.StatusBadRequest, "补全任务已在运行，稍等结果")
+				return
+			}
+			miniErr(w, http.StatusBadRequest, why)
+			return
+		}
+		miniOK(w, map[string]any{"ok": true,
+			"note": "已开始补全，结果会私聊发给管理员（大群可能要几分钟）"})
+		return
+	}
 	switch action {
 	case "add", "update":
 		if chatID == 0 {

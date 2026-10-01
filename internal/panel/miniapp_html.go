@@ -321,6 +321,11 @@ function viewChatDetail(c){
     '<div class="row"><span class="k">实际执行</span><span>'+esc(punishLabel(c.bot_id,c.punish))+'</span></div>'+
     (punishLabel(c.bot_id,c.punish).indexOf('禁言')===0?
       '<div class="hint">要改成永久禁言：把本 bot 的「禁言时长（小时）」设为 0；要踢出群就选「封禁出群」。</div>':'')+
+    '<button class="b g" style="margin-top:10px" '+
+      'onclick="act(\'chat\',{bot_id:'+c.bot_id+',chat_id:'+c.chat_id+',action:\'backfill\'},'+
+      '\'已开始补全历史入群时间\')">🗂 补全历史入群时间</button>'+
+    '<div class="hint">Bot API 没有入群时间字段，这里用该 bot 的 token 走 MTProto 把'+
+    '「入群时就在群里」的那批成员补上（只填未知的，不覆盖实时记录）。新入群一直是自动记的。</div>'+
     '<button class="d" style="margin-top:10px" '+
       'onclick="if(confirm(\'移除该群？判定与处置立即停止，配置一并删除。\'))act(\'chat\',{bot_id:'+c.bot_id+
       ',chat_id:'+c.chat_id+',action:\'remove\'},\'已移除\')">移除该群</button>'+

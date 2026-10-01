@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"menshen/internal/antiad"
 	"menshen/internal/core"
 	"menshen/internal/testutil"
 )
@@ -648,5 +649,52 @@ func TestMiniAppUserViewWired(t *testing.T) {
 		if !strings.Contains(miniAppHTML, want) {
 			t.Errorf("Mini App 缺少 %q", want)
 		}
+	}
+}
+
+// TestMiniAppBackfillAction：群组卡片上的「补全历史入群时间」要能手动触发
+// （绕过自动触发的 24 小时冷却），并把结果交给私聊通知。
+func TestMiniAppBackfillAction(t *testing.T) {
+	reg, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	botID := b.BotID()
+	chatID := int64(-100)
+	testutil.EnableAntiad(t, b, chatID)
+	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
+
+	// 换掉脚本执行器：只记录被调用。
+	type call struct {
+		chat     int64
+		username string
+	}
+	calls := make(chan call, 4)
+	oldRunner := antiad.SwapBackfillRunner(func(_ *core.Bot, chat int64, username string) ([]antiad.BackfillRow, error) {
+		calls <- call{chat, username}
+		return nil, nil
+	})
+	defer antiad.SwapBackfillRunner(oldRunner)
+	_ = reg
+
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "chat",
+		map[string]any{"bot_id": botID, "chat_id": chatID, "action": "backfill"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("补全应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	select {
+	case c := <-calls:
+		if c.chat != chatID {
+			t.Errorf("应带上群 id，得到 %d", c.chat)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("应触发补全任务")
+	}
+
+	// 缺配置时要给出明确原因，而不是静默成功。
+	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 0, ""
+	w = miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "chat",
+		map[string]any{"bot_id": botID, "chat_id": chatID, "action": "backfill"})
+	if w.Code == http.StatusOK {
+		t.Error("没配 tg_api_id 时应报错，而不是假装已开始")
 	}
 }

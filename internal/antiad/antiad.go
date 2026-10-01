@@ -1097,7 +1097,7 @@ func HandleMyChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 			old = cu.OldChatMember.Status
 		}
 		if old != "administrator" && old != "creator" {
-			maybeJoinBackfill(b, cu.Chat.ID, cu.Chat.Username)
+			StartJoinBackfill(b, cu.Chat.ID, cu.Chat.Username, false)
 		}
 		return
 	}
