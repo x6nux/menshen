@@ -62,4 +62,41 @@ describe('ActionSheet / useConfirm', () => {
     fireEvent.click(screen.getByText('ask'))
     expect(screen.getByRole('button', { name: '移除' })).toHaveClass('MuiButton-colorError')
   })
+
+  it('连点确认只结算一次', async () => {
+    const resolutions: string[] = []
+    function CountProbe() {
+      const confirm = useConfirm()
+      return (
+        <button
+          onClick={() => {
+            void confirm({ title: '确认？' }).then((ok) => {
+              resolutions.push(ok ? 'yes' : 'no')
+            })
+          }}
+        >
+          ask
+        </button>
+      )
+    }
+    render(
+      <ActionSheetProvider>
+        <CountProbe />
+      </ActionSheetProvider>,
+    )
+
+    fireEvent.click(screen.getByText('ask'))
+    const confirmButton = screen.getByRole('button', { name: '确定' })
+    fireEvent.click(confirmButton)
+    fireEvent.click(confirmButton)
+    await waitFor(() => expect(resolutions).toEqual(['yes']))
+  })
+
+  it('Escape 等于取消（返回 false）', async () => {
+    setup()
+    fireEvent.click(screen.getByText('ask'))
+    // 键盘事件要落在 Drawer 纸面上，才能冒泡到 Modal 的处理。
+    fireEvent.keyDown(document.querySelector('.MuiDrawer-paper') as HTMLElement, { key: 'Escape' })
+    await waitFor(() => expect(screen.getByTestId('result')).toHaveTextContent('no'))
+  })
 })

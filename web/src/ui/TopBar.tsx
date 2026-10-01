@@ -41,6 +41,7 @@ export function TopBar({ title, subtitle, actions, onBack }: TopBarProps) {
       <Toolbar
         disableGutters
         sx={{
+          position: 'relative',
           minHeight: 44,
           '@media (min-width:600px)': { minHeight: 44 },
           px: 1,
@@ -56,26 +57,44 @@ export function TopBar({ title, subtitle, actions, onBack }: TopBarProps) {
           >
             <ArrowBackIosNew sx={{ fontSize: 18 }} />
           </IconButton>
-        ) : (
-          <Box sx={{ width: SLOT_WIDTH, flexShrink: 0 }} />
-        )}
-        <Box sx={{ flex: 1, minWidth: 0, textAlign: 'center' }}>
-          <Typography noWrap sx={{ fontSize: 17, fontWeight: 600, lineHeight: 1.3 }}>
+        ) : null}
+        {/* 标题绝对居中：右侧动作数量/宽度变化不影响中线；px 给返回与动作留安全边。 */}
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            px: '56px',
+            pointerEvents: 'none',
+          }}
+        >
+          <Typography noWrap sx={{ maxWidth: '100%', fontSize: 17, fontWeight: 600, lineHeight: 1.3 }}>
             {title}
           </Typography>
           {subtitle !== undefined && (
-            <Typography noWrap sx={{ fontSize: 13, color: 'text.secondary', lineHeight: 1.3 }}>
+            <Typography noWrap sx={{ maxWidth: '100%', fontSize: 13, color: 'text.secondary', lineHeight: 1.3 }}>
               {subtitle}
             </Typography>
           )}
         </Box>
         <Box
+          data-testid="topbar-actions"
           sx={{
-            width: SLOT_WIDTH,
-            flexShrink: 0,
+            ml: 'auto',
+            minWidth: SLOT_WIDTH,
+            width: 'auto',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'flex-end',
+            gap: 0.5,
+            position: 'relative',
+            zIndex: 1,
           }}
         >
           {actions}

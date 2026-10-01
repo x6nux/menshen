@@ -8,6 +8,8 @@ export interface SearchFieldProps {
   value: string
   onChange: (value: string) => void
   placeholder?: string
+  /** 输入框的无障碍名称；缺省用 placeholder。 */
+  ariaLabel?: string
   autoFocus?: boolean
   disabled?: boolean
   /** 有内容时显示清空按钮，默认显示。 */
@@ -19,6 +21,7 @@ export function SearchField({
   value,
   onChange,
   placeholder = '搜索',
+  ariaLabel,
   autoFocus = false,
   disabled = false,
   clearable = true,
@@ -47,6 +50,8 @@ export function SearchField({
       size="small"
       sx={[fieldSx, ...(Array.isArray(sx) ? sx : [sx])]}
       slotProps={{
+        // 显式给 input 一个无障碍名称：placeholder 只作视觉提示，读屏更依赖 aria-label。
+        htmlInput: { 'aria-label': ariaLabel ?? placeholder },
         input: {
           startAdornment: (
             <InputAdornment position="start">

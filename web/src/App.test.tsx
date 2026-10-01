@@ -54,6 +54,14 @@ describe('App', () => {
     expect(mockApi).not.toHaveBeenCalled()
   })
 
+  it('initTelegram 异常时进入引导页，不停留在骨架屏', async () => {
+    mockInit.mockRejectedValue(new Error('注入实现异常'))
+    render(<App />)
+    expect(await screen.findByTestId('unavailable-guide')).toBeInTheDocument()
+    expect(screen.queryByTestId('boot-skeleton')).not.toBeInTheDocument()
+    expect(mockApi).not.toHaveBeenCalled()
+  })
+
   it('telegram 就绪前不发请求；就绪后渲染标题、身份与 TabBar', async () => {
     const { bridge } = makeBridge()
     let resolveInit!: (bridge: TelegramBridge) => void

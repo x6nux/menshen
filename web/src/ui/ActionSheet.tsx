@@ -24,8 +24,14 @@ export interface ActionSheetProviderProps {
   children: ReactNode
 }
 
+/** open 与 options 一起存 state：关闭后 options 保留到退场动画结束（onExited）再清，避免文案闪空。 */
+interface SheetState {
+  open: boolean
+  options: ConfirmOptions | null
+}
+
 export function ActionSheetProvider({ children }: ActionSheetProviderProps) {
-  const [sheet, setSheet] = useState<ConfirmOptions | null>(null)
+  const [sheet, setSheet] = useState<SheetState>({ open: false, options: null })
   const resolver = useRef<((ok: boolean) => void) | null>(null)
 
   const confirm = useCallback<ConfirmFn>((options) => {
@@ -33,25 +39,27 @@ export function ActionSheetProvider({ children }: ActionSheetProviderProps) {
     resolver.current?.(false)
     return new Promise<boolean>((resolve) => {
       resolver.current = resolve
-      setSheet(options)
+      setSheet({ open: true, options })
     })
   }, [])
 
   const settle = useCallback((ok: boolean) => {
     const resolve = resolver.current
     resolver.current = null
-    setSheet(null)
+    // 只关面板，options 留给退场动画渲染。
+    setSheet((prev) => ({ open: false, options: prev.options }))
     resolve?.(ok)
   }, [])
 
   const value = useMemo(() => confirm, [confirm])
+  const shown = sheet.options
 
   return (
     <ConfirmContext.Provider value={value}>
       {children}
       <Drawer
         anchor="bottom"
-        open={sheet !== null}
+        open={sheet.open}
         onClose={() => settle(false)}
         slotProps={{
           paper: {
@@ -61,24 +69,30 @@ export function ActionSheetProvider({ children }: ActionSheetProviderProps) {
               pb: 'env(safe-area-inset-bottom)',
             },
           },
+          transition: {
+            onExited: () => {
+              // 退场完成后才真正丢弃内容；若期间又打开了新面板则不动它。
+              setSheet((prev) => (prev.open ? prev : { open: false, options: null }))
+            },
+          },
         }}
       >
         <Box sx={{ px: 2, pt: 2, pb: 0.5, textAlign: 'center' }}>
-          <Typography sx={{ fontSize: 16, fontWeight: 600 }}>{sheet?.title}</Typography>
-          {sheet?.description !== undefined && (
+          <Typography sx={{ fontSize: 16, fontWeight: 600 }}>{shown?.title}</Typography>
+          {shown?.description !== undefined && (
             <Typography sx={{ mt: 1, fontSize: 13, color: 'text.secondary', lineHeight: 1.6 }}>
-              {sheet.description}
+              {shown.description}
             </Typography>
           )}
         </Box>
         <Box sx={{ px: 2, pt: 1.5, pb: 1.5 }}>
           <Button
             fullWidth
-            color={sheet?.danger ? 'error' : 'primary'}
+            color={shown?.danger ? 'error' : 'primary'}
             onClick={() => settle(true)}
             sx={{ fontWeight: 600, fontSize: 16 }}
           >
-            {sheet?.confirmText ?? '确定'}
+            {shown?.confirmText ?? '确定'}
           </Button>
           <Button
             fullWidth
@@ -86,7 +100,7 @@ export function ActionSheetProvider({ children }: ActionSheetProviderProps) {
             onClick={() => settle(false)}
             sx={{ mt: 0.5, color: 'text.secondary', fontSize: 16 }}
           >
-            {sheet?.cancelText ?? '取消'}
+            {shown?.cancelText ?? '取消'}
           </Button>
         </Box>
       </Drawer>

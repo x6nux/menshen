@@ -53,12 +53,18 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
-    void initTelegram().then((bridge) => {
-      if (!alive) return
-      // 查询发出前注入鉴权头；不可用时 initData 为空串，也不会走到查询。
-      setApiBridge(bridge)
-      setBoot(bridge.available ? { phase: 'ready', bridge } : { phase: 'unavailable' })
-    })
+    void initTelegram()
+      .then((bridge) => {
+        if (!alive) return
+        // 查询发出前注入鉴权头；不可用时 initData 为空串，也不会走到查询。
+        setApiBridge(bridge)
+        setBoot(bridge.available ? { phase: 'ready', bridge } : { phase: 'unavailable' })
+      })
+      .catch(() => {
+        // initTelegram 自身不抛（超时返回不可用桥）；这里兜底注入实现的异常，
+        // 让界面落到引导页而不是一直卡在骨架屏。
+        if (alive) setBoot({ phase: 'unavailable' })
+      })
     return () => {
       alive = false
     }

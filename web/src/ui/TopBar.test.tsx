@@ -49,4 +49,28 @@ describe('TopBar', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回' }))
     expect(onBack).toHaveBeenCalledTimes(1)
   })
+
+  it('多个右侧动作时标题照常渲染，动作槽宽度自适应且不小于 40', () => {
+    render(
+      <NavProvider>
+        <TopBar
+          title="门神"
+          actions={
+            <>
+              <button>一</button>
+              <button>二</button>
+              <button>三</button>
+            </>
+          }
+        />
+      </NavProvider>,
+    )
+    expect(screen.getByText('门神')).toBeInTheDocument()
+    const slot = screen.getByTestId('topbar-actions')
+    for (const name of ['一', '二', '三']) {
+      expect(slot).toContainElement(screen.getByRole('button', { name }))
+    }
+    // 40 是返回按钮等宽的下限；宽度随动作数量增长（auto）。
+    expect(getComputedStyle(slot).minWidth).toBe('40px')
+  })
 })

@@ -28,4 +28,16 @@ describe('SearchField', () => {
     render(<SearchField value="abc" onChange={() => {}} clearable={false} />)
     expect(screen.queryByRole('button', { name: '清空' })).not.toBeInTheDocument()
   })
+
+  it('aria-label 默认取 placeholder，可被覆盖', () => {
+    const first = render(<SearchField value="" onChange={() => {}} placeholder="搜索群组" />)
+    expect(screen.getByRole('textbox', { name: '搜索群组' })).toBeInTheDocument()
+    first.unmount()
+
+    render(
+      <SearchField value="" onChange={() => {}} placeholder="搜索群组" ariaLabel="按群号搜索" />,
+    )
+    expect(screen.getByRole('textbox', { name: '按群号搜索' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: '搜索群组' })).not.toBeInTheDocument()
+  })
 })

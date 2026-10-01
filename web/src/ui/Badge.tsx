@@ -12,16 +12,31 @@ export interface BadgeProps {
   sx?: SxProps<Theme>
 }
 
+/**
+ * 语义色调的固定文字色：浅色主题用深色字、深色主题用亮色字。
+ * 不用 MUI 自动 dark 变体（会随 main 变，无法保证对比度）；这里的取值都在
+ * 16% 同色淡底（合成到卡片白/深底）上实测 ≥4.5:1（11px 小字 AA）。
+ */
+const TONE_TEXT: Record<Exclude<BadgeTone, 'neutral'>, { light: string; dark: string }> = {
+  ok: { light: '#067A3E', dark: '#4ADE80' },
+  no: { light: '#C62828', dark: '#FF8A80' },
+  warn: { light: '#7A5B00', dark: '#FFD54F' },
+}
+
+const TONE_PALETTE: Record<Exclude<BadgeTone, 'neutral'>, 'success' | 'error' | 'warning'> = {
+  ok: 'success',
+  no: 'error',
+  warn: 'warning',
+}
+
 function toneSx(tone: BadgeTone): SxProps<Theme> {
-  switch (tone) {
-    case 'ok':
-      return { color: 'success.main', bgcolor: (theme) => alpha(theme.palette.success.main, 0.16) }
-    case 'no':
-      return { color: 'error.main', bgcolor: (theme) => alpha(theme.palette.error.main, 0.16) }
-    case 'warn':
-      return { color: 'warning.main', bgcolor: (theme) => alpha(theme.palette.warning.main, 0.16) }
-    default:
-      return { color: 'text.secondary', bgcolor: 'action.hover' }
+  if (tone === 'neutral') {
+    return { color: 'text.secondary', bgcolor: 'action.hover' }
+  }
+  const text = TONE_TEXT[tone]
+  return {
+    color: (theme) => (theme.palette.mode === 'dark' ? text.dark : text.light),
+    bgcolor: (theme) => alpha(theme.palette[TONE_PALETTE[tone]].main, 0.16),
   }
 }
 

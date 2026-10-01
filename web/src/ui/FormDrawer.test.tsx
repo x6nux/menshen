@@ -55,4 +55,24 @@ describe('FormDrawer', () => {
     )
     expect(screen.getByRole('button', { name: '提交' })).toBeDisabled()
   })
+
+  it('pending 时 Escape 不关闭，恢复后 Escape 关闭一次', () => {
+    const onClose = vi.fn()
+    const view = render(
+      <FormDrawer open onClose={onClose} title="添加群" onSubmit={() => {}} pending>
+        <input aria-label="chat_id" />
+      </FormDrawer>,
+    )
+    // Escape 要派发在 Drawer 纸面上，才能冒泡到 Modal 的键盘处理。
+    fireEvent.keyDown(document.querySelector('.MuiDrawer-paper') as HTMLElement, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    view.rerender(
+      <FormDrawer open onClose={onClose} title="添加群" onSubmit={() => {}}>
+        <input aria-label="chat_id" />
+      </FormDrawer>,
+    )
+    fireEvent.keyDown(document.querySelector('.MuiDrawer-paper') as HTMLElement, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
 })
