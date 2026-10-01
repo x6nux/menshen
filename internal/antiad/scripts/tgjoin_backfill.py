@@ -11,9 +11,9 @@ status/permissions/until_date），只有 MTProto 的 channels.getParticipants
   批量（不给 --lookup）：扫一遍成员列表。服务端翻页上限在一万条左右，
     五万人的群只能扫到 ~9988；小群也会漏（受限账号等）。只给 Mini App
     的「补全历史入群时间」按钮用。
-  单人（--lookup <uid>）：按需实时查一个人 —— 先按会话缓存单查；不行用
-    Bot API 拿名字再按名字搜索成员列表（搜索能越过批量截断）；受限账号
-    连搜索都不给时，用留底消息把本人的 access_hash 抠出来再单查一次。
+  单人（--lookup <uid>）：按需实时查一个人 —— GetParticipant 时 access_hash
+    传 0 就能拿到参与记录（不需要先把实体塞进会话缓存）；极少数账号单查
+    不给东西，再用 Bot API 拿名字、按名字搜索成员列表兜一次。
 
 受限成员（仍在群、只被限制部分权限）的记录类型是 ChannelParticipantBanned，
 官方注释写的是 "When was the user banned"，很容易被当成限制时间跳过 ——
@@ -32,7 +32,6 @@ date 是处置时间不是入群时间），直接放弃。
   --username <name>      群的公开用户名（有的话用它解析，最稳）
   --limit <n>            最多输出多少行（默认全部；仅批量模式）
   --lookup <uid>         只查这一个 uid 的入群时间（按需实时查询用）
-  --lookup-msg <id>      --lookup 的兜底：该用户的一条留底消息 id
 
 输出：每行 `chat_id\tuser_id\t入群时间(unix)`。
 """
@@ -51,7 +50,6 @@ def parse_args():
     ap.add_argument("--username", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--lookup", type=int, default=0)
-    ap.add_argument("--lookup-msg", type=int, default=0)
     return ap.parse_args()
 
 
@@ -68,7 +66,6 @@ async def main():
         from telethon import TelegramClient
         from telethon.tl.functions.channels import (GetParticipantRequest,
                                                     GetParticipantsRequest)
-        from telethon.tl.functions.messages import GetMessagesRequest
         from telethon.tl.types import (
             ChannelParticipant,
             ChannelParticipantAdmin,
@@ -169,37 +166,27 @@ async def main():
                             return ts
             return 0
 
-        async def lookup_by_message(uid, msg_id):
-            """最后一条路：受限账号搜索不给、会话缓存里也没有 access_hash。
-            把他留下的一条消息取出来，响应的 users 里带着 access_hash。"""
-            try:
-                r = await client(GetMessagesRequest(channel=entity, id=[msg_id]))
-                for u2 in (getattr(r, "users", None) or []):
-                    if getattr(u2, "id", 0) == uid:
-                        r2 = await client(GetParticipantRequest(
-                            channel=entity,
-                            participant=InputPeerUser(u2.id, u2.access_hash)))
-                        return join_ts(r2.participant)
-            except Exception:  # noqa: BLE001
-                return 0
-            return 0
+        async def lookup_one(uid):
+            """单查一个人：access_hash 传 0 就行。
 
-        async def lookup_one(uid, msg_id):
+            不需要先从会话缓存里解析实体（预跟踪的成员本来就不在缓存里），
+            Telegram 对仍在本群/有记录的成员直接给参与记录；受限成员是
+            ChannelParticipantBanned，left=False 时 date 就是入群时间。
+            """
             try:
-                r = await client(GetParticipantRequest(channel=entity, participant=uid))
+                r = await client(GetParticipantRequest(
+                    channel=entity, participant=InputPeerUser(uid, 0)))
                 ts = join_ts(r.participant)
                 if ts:
                     return ts
-            except Exception:  # noqa: BLE001
-                pass
-            ts = await lookup_by_name(uid)
-            if not ts and msg_id:
-                ts = await lookup_by_message(uid, msg_id)
-            return ts
+            except Exception as e:  # noqa: BLE001
+                print("单查失败：%s" % e, file=sys.stderr)
+            # 单查没给东西时再按名字搜索一次（少数账号要这样才现形）。
+            return await lookup_by_name(uid)
 
         # ---- 单人模式：按需实时查 ----
         if args.lookup:
-            ts = await lookup_one(args.lookup, args.lookup_msg)
+            ts = await lookup_one(args.lookup)
             if ts:
                 print("%d\t%d\t%d" % (args.chat, args.lookup, ts))
             else:

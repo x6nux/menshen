@@ -307,10 +307,6 @@ func runJoinLookupScript(b *core.Bot, chatID, uid int64) (int64, error) {
 	if username := chatUsername(b, chatID); username != "" {
 		args = append(args, "--username", username)
 	}
-	// 留底消息是最后一条兜底路径的钥匙（抠 access_hash），有就带上。
-	if msgID, _, ok := latestKept(b.Store, chatID, uid); ok && msgID > 0 {
-		args = append(args, "--lookup-msg", strconv.FormatInt(msgID, 10))
-	}
 	cmd := exec.CommandContext(ctx, "python3", args...)
 	cmd.Env = append(os.Environ(),
 		"TG_BOT_TOKEN="+b.Token,
