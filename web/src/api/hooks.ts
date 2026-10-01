@@ -25,17 +25,21 @@ export const miniQueryKeys = {
   appeal: (id: number) => ['appeal', id] as const,
 }
 
-/** 记录筛选归一化：'' 与 'all' 都表示不筛，统一成 'all' 共用 queryKey/请求。 */
+/**
+ * 记录筛选归一化：不传（undefined）= 默认「已删除」（旧页 LOGF='deleted'）；
+ * ''/'all' = 全部，统一成 'all' 共用 queryKey；其余原样透传。
+ */
 function normalizeLogFilter(filter?: string): string {
-  return !filter || filter === 'all' ? 'all' : filter
+  if (filter === undefined) return 'deleted'
+  return filter === '' || filter === 'all' ? 'all' : filter
 }
 
-/** 申诉筛选归一化：''/'all' 都表示全部，其余（默认 'open'）统一成 'open'。 */
+/** 申诉筛选归一化：''/'all' 表示全部；非法/未知值按默认档 'open' 兜底。 */
 function normalizeAppealFilter(filter: string): 'open' | 'all' {
   return filter === '' || filter === 'all' ? 'all' : 'open'
 }
 
-/** 用户页筛选归一化：''/'act' 都是只看被处置过的，其余按 all。 */
+/** 用户页筛选归一化：'all' 是全部，其余（含 ''/未知值）按默认档 'act' 兜底。 */
 function normalizeUserFilter(filter: string): 'act' | 'all' {
   return filter === 'all' ? 'all' : 'act'
 }

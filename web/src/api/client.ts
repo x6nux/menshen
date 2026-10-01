@@ -59,8 +59,10 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
 }
 
 /** api 调用一个 op；非 2xx 抛 ApiError，body 的 error 文案优先。
- * 网络失败是 ApiError{status:0}；abort 则原样抛出 AbortError —— React Query
- * 把它归为取消：不重试、不冒泡给 UI，转成 ApiError 反而会被当真实失败重试。
+ * 网络失败是 ApiError{status:0}；abort 则原样抛出 AbortError（fetch 的标准
+ * 语义）——取消不是真实失败，转成 ApiError 会让调用方与日志把它当网络错误。
+ * React Query 侧另有自有的 CancelledError 标记取消（取消时 retryer 已
+ * settled，不会再重试），这里保持异常原样只是不把取消伪装成真实失败。
  * 2xx 但响应不是 JSON 时抛 ApiError(status, '响应格式错误')。signal 原样透传给 fetch。 */
 export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response
@@ -84,7 +86,9 @@ export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): 
   let parsed = true
   try {
     data = await res.json()
-  } catch {
+  } catch (err) {
+    // 读 body 阶段也可能因 abort 失败，取消同样原样抛出。
+    if (isAbortError(err, signal)) throw err
     parsed = false
   }
   if (!res.ok) {

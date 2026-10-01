@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ApiError, api, setApiAuth } from './client'
 
 const server = setupServer()
@@ -9,6 +9,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
   server.resetHandlers()
   setApiAuth({ initData: '', botId: '0' })
+  vi.restoreAllMocks()
 })
 afterAll(() => server.close())
 
@@ -83,9 +84,27 @@ describe('api', () => {
     const pending = api('state', undefined, controller.signal)
     controller.abort()
     const err = (await pending.catch((e: unknown) => e)) as Error
-    // React Query 靠 AbortError 识别取消：不重试、不冒泡给 UI
-    expect((err as Error).name).toBe('AbortError')
+    // 取消不是真实失败：原样抛 AbortError，不落成 ApiError{status:0}
+    expect(err.name).toBe('AbortError')
     expect(err).not.toBeInstanceOf(ApiError)
+  })
+
+  it('读取响应体阶段被 abort，同样原样抛 AbortError', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const abortErr = new DOMException('The operation was aborted.', 'AbortError')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(abortErr),
+    } as unknown as Response)
+
+    const err = (await api('state', undefined, controller.signal).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(err).toBe(abortErr)
+    expect(err).not.toBeInstanceOf(ApiError)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
   it('abort 之外的网络失败仍是 ApiError{status:0}（不受取消分支影响）', async () => {

@@ -32,6 +32,26 @@ describe('查询 hooks', () => {
     expect(client.getQueryData(['logs', 'ad', 'hello', 2])).toEqual({ logs: [], page: 2, total: 0 })
   })
 
+  it("useLogs() 无参默认 deleted（与旧页 LOGF='deleted' 一致）", async () => {
+    const client = makeClient()
+    mockApi.mockResolvedValue({ logs: [], page: 1, total: 0 } as never)
+    const { result } = renderHook(() => useLogs(), {
+      wrapper: ({ children }) => makeQuery(children, client),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockApi).toHaveBeenCalledWith(
+      'logs',
+      { verdict: 'deleted', q: '', page: 1 },
+      expect.anything(),
+    )
+    // queryKey 与显式传 'deleted' 相同
+    expect(client.getQueryData(['logs', 'deleted', '', 1])).toEqual({
+      logs: [],
+      page: 1,
+      total: 0,
+    })
+  })
+
   it("useLogs 的 '' 与 'all' 归一化成同一个 queryKey，只请求一次", async () => {
     // staleTime 设成无限：第二次挂载若命中同一 key 就不会再发请求，
     // 因此「只请求一次」能直接证明两个筛选归一化成了同一个 queryKey。
