@@ -698,3 +698,27 @@ func TestMiniAppBackfillAction(t *testing.T) {
 		t.Error("没配 tg_api_id 时应报错，而不是假装已开始")
 	}
 }
+
+// TestMiniUserWithoutBodyBotID：用户页不带 bot_id 时要用 X-Bot-Id 头兜底。
+// 以前这里读的是 w.Header().Get("")（永远空串），botID 一直是 0 —— 所有人
+// （包括主管理员）都会被判「无权查看该 bot 的数据」。
+func TestMiniUserWithoutBodyBotID(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,555,7,'广告','ad',0.9,'llm','scam','deleted_muted','',?,?)`,
+		time.Now().Unix(), b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), b.BotID(), "user",
+		map[string]any{"user_id": 555})
+	if w.Code != http.StatusOK {
+		t.Fatalf("不带 bot_id 时应靠 X-Bot-Id 头通过，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"user_id":555`) {
+		t.Errorf("应返回该用户的资料：%s", w.Body.String())
+	}
+}

@@ -192,7 +192,7 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 	case "digest":
 		miniDigest(sh, w, uid, body)
 	case "user":
-		miniUser(sh, w, uid, body)
+		miniUser(sh, w, r, uid, body)
 	case "logs":
 		miniLogs(sh, w, uid, body)
 	case "log":
@@ -1245,11 +1245,23 @@ func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at i
 	out["view_url"] = viewURL
 }
 
+// mainBotID 返回主 bot 的记录号；没配主 bot 时返回 0。
+// 主管理员在 Mini App 里要的是平台级视角（统计与记录不过滤 bot），
+// 拿主 bot 的记录号当作「全局范围」的标记用。
+func mainBotID(sh *core.Shared) int64 {
+	for _, rec := range sh.Cache.Snap().Bots {
+		if rec.IsMain {
+			return rec.BotID
+		}
+	}
+	return 0
+}
+
 // miniUser 返回一个人的资料卡与判定记录（Mini App 的用户页）。
 //
 // 默认只给被处置过的记录（antiad.ProcessedCond）：管理员点进一个人的页面，
 // 先要看他被罚过什么，而不是他所有被判过正常的话；点切换看全部。
-func miniUser(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64, body map[string]any) {
 	target := miniInt(body, "user_id")
 	if target == 0 {
 		miniErr(w, http.StatusBadRequest, "缺少 user_id")
@@ -1259,27 +1271,42 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	page := clampPage(miniInt(body, "page"))
 	botID := miniInt(body, "bot_id")
 	if botID == 0 {
-		botID, _ = strconv.ParseInt(w.Header().Get(""), 10, 64)
+		// 前端只在切 bot 时带 body；常规请求靠 X-Bot-Id 头（每个请求都带）。
+		// 以前这里读的是 w.Header().Get("")（永远空），于是所有人都被判
+		// 「无权查看该 bot 的数据」。
+		botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
 	}
 	if botID == 0 || !miniCanManageBot(sh, uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权查看该 bot 的数据")
 		return
 	}
 
-	d := antiad.LoadUserDossier(sh, botID, target)
+	// 主管理员是平台级视角（与面板 /user、Mini App 记录列表一致）：统计与
+	// 记录按全局算，而不是按他恰好打开的那个 bot。拿主 bot 的记录号来算 ——
+	// logScope/dossierChats 见到 is_main 就不设范围。
+	scopeBot := botID
+	if sh.IsMain(uid) {
+		if id := mainBotID(sh); id != 0 {
+			scopeBot = id
+		}
+	}
+
+	d := antiad.LoadUserDossier(sh, scopeBot, target)
 	// 昵称/用户名/简介：有活着的实例就走 getChat（带缓存），查不到留空。
-	if inst, live := lookupBot(sh, botID); live {
+	if inst, live := lookupBot(sh, scopeBot); live {
 		d.Name, d.Username, d.Bio = antiad.UserProfile(inst, target)
 	}
 
-	where, args := `bot_id=? AND user_id=?`, []any{botID, target}
+	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
+	where := `user_id=?` + clauseWhere
+	args := append([]any{target}, clauseArgs...)
 	if !all {
 		where += ` AND ` + antiad.ProcessedCond
 	}
 	var total int64
 	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE `+where, args...).Scan(&total)
 
-	rows := antiad.LoadUserLogs(sh, botID, target, !all, 20, int((page-1)*20))
+	rows := antiad.LoadUserLogs(sh, scopeBot, target, !all, 20, int((page-1)*20))
 	logs := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		logs = append(logs, map[string]any{
