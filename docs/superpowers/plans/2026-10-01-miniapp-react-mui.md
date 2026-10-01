@@ -52,6 +52,8 @@
 - **T0 完成**（`fd93616` + 加固 `a88bf5d`）：`web/` 工程落地。实际版本与计划有漂移——Vite **8.3（Rolldown）**、TS 6、React 19.2、**oxlint**（非 ESLint）、vitest 5；MUI 钉在 **7.3.11**。`manualChunks` 需用函数形式；`publicDir: false`（静态资源只进 `assets/`）；产物不入库 + build tag 双实现（`-tags miniapp` 嵌入 / 默认 stub 占位页）。
 - 托管路由已加固：`path.Clean` 归一、`..`/编码穿越 404、HEAD 支持、405 带 `Allow`、assets 仅普通文件可 200。CI 同时跑 untagged 与 tagged 的 Go 测试，lint 已接入，前端 test 由 T1 接入。
 - **后续任务若与正文提到 Vite 7 / ESLint 9 冲突，一律按本节的实际版本执行。**
+- **T1-T6 全部完成**（`git log 37e3f55..feat/miniapp-react`）：15 个通用组件 + 全部业务页面（概览工作台/机器人/群组/记录/申诉/用户/我的/名单/上游/模型/设置）；246 个前端用例；后端增量仅有 `state.todo`、`state.tz_name`、`state.settings_set`、`logs.total`、`chat.bulk_update`、`upstream.test`；旧内联页与 `/miniapp/classic` 已删除，`/miniapp` 由 `web/` 产物经 `go:embed`（`-tags miniapp`）服务。
+- **终审结论**：可交付、无必修项；剩余为人工验收——Telegram 真机 E2E（计划 5.3 清单，含次管账号与 iOS/Android），已单独记为 bd 工单。
 
 ---
 
