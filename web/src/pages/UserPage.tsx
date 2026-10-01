@@ -4,9 +4,9 @@
 import { Box } from '@mui/material'
 import { useState } from 'react'
 import { errorStatus } from '../api/client'
-import { useInfiniteUserLogs } from '../api/hooks'
+import { useInfiniteUserLogs, useMiniState } from '../api/hooks'
 import type { UserDossier, UserLogRow } from '../api/types'
-import { actionLabel, fmtTS } from '../lib/format'
+import { actionLabel, displayTz, fmtTS } from '../lib/format'
 import { verdictInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { Badge, EmptyState, ErrorState, ListRow, SectionCard, Segmented, Skeletons } from '../ui'
@@ -17,6 +17,7 @@ const MONO = 'ui-monospace, Menlo, monospace'
 export function UserPage({ id }: { id: number }) {
   const nav = useNav()
   const [filter, setFilter] = useState<'act' | 'all'>('act')
+  const state = useMiniState(true)
   const user = useInfiniteUserLogs(id, filter)
 
   if (user.isError && user.data === undefined) {
@@ -27,6 +28,7 @@ export function UserPage({ id }: { id: number }) {
   const pages = user.data?.pages ?? []
   const profile: UserDossier | undefined = pages[0]
   const rows = pages.flatMap((page) => page.logs)
+  const tz = state.data ? displayTz(state.data) : undefined
 
   return (
     <Box data-testid="user-page">
@@ -45,8 +47,8 @@ export function UserPage({ id }: { id: number }) {
               留底 {profile.kept} 条 ｜ 画像累计 {profile.msgs} 条 ｜ 历史命中 {profile.hits} 次
             </InfoRow>
             <InfoRow label="群组">
-              {profile.chats} 个 ｜ 首见 {fmtTS(profile.first_seen)} ｜ 最近发言{' '}
-              {fmtTS(profile.last_msg)}
+              {profile.chats} 个 ｜ 首见 {fmtTS(profile.first_seen, tz)} ｜ 最近发言{' '}
+              {fmtTS(profile.last_msg, tz)}
             </InfoRow>
             <InfoRow label="判定">
               共 {profile.total} 条，其中被处置过 {profile.processed} 条
@@ -85,6 +87,7 @@ export function UserPage({ id }: { id: number }) {
               <UserLogListRow
                 key={row.id}
                 log={row}
+                tz={tz}
                 onOpen={() => nav.push({ k: 'log', id: row.id })}
               />
             ))}
@@ -104,14 +107,22 @@ export function UserPage({ id }: { id: number }) {
 }
 
 /** UserLogListRow：`#id · 时间` + 判定/处置徽标 + 群号与置信度 + 原文 50 字。 */
-function UserLogListRow({ log, onOpen }: { log: UserLogRow; onOpen: () => void }) {
+function UserLogListRow({
+  log,
+  tz,
+  onOpen,
+}: {
+  log: UserLogRow
+  tz?: string
+  onOpen: () => void
+}) {
   const verdict = verdictInfo(log.verdict)
   return (
     <ListRow
       primary={
         <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
           <Box component="span" sx={{ fontFamily: MONO, fontSize: 14 }}>
-            #{log.id} · {fmtTS(log.created_at)}
+            #{log.id} · {fmtTS(log.created_at, tz)}
           </Box>
           <Badge tone={verdict.tone}>{verdict.label}</Badge>
           <Badge>{actionLabel(log.action)}</Badge>

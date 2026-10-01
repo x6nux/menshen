@@ -222,4 +222,34 @@ describe('App', () => {
     expect(await screen.findByText('默认豁免（内置，无需配置）')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '资料放行' })).toBeInTheDocument()
   })
+
+  it('次级管理员：我的 → 名单管理进入联封分段', async () => {
+    const { bridge } = makeBridge()
+    mockInit.mockResolvedValue(bridge)
+    mockApi.mockImplementation((async (op: string) => {
+      if (op === 'state') {
+        return {
+          ...structuredClone(mockState),
+          me: { uid: 200, main: false },
+          bots: mockState.bots.map((b) => ({ ...b, owner_id: 200 })),
+        }
+      }
+      if (op === 'logs') return { logs: [], page: 1, total: 0 }
+      return { ok: true }
+    }) as never)
+
+    render(<App />)
+    await screen.findByText('门神')
+
+    fireEvent.click(screen.getByRole('button', { name: '我的' }))
+    expect(await screen.findByText('名单管理')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('名单管理'))
+
+    // 次管 push 的是 {k:'lists', section:'gban'}：直接进联封，没有
+    // 白名单/资料放行/次级管理员分段。
+    expect(await screen.findByText('全局联合封禁组')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '白名单' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '资料放行' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '次级管理员' })).not.toBeInTheDocument()
+  })
 })

@@ -171,6 +171,8 @@ export function SettingsPage() {
   const data = state.data
   const global = data.global ?? {}
   const enabledModels = (data.models ?? []).filter((m) => m.enabled)
+  // 「已设置」只认显式写过的键（settings 表里有行）；global 里的是代码默认值。
+  const settingsSet = new Set(data.settings_set ?? [])
 
   /** toggleKey 是总开关与 spec 开关共用的乐观写：全局值只认字符串 '1'/'0'。 */
   function toggleKey(key: string, next: boolean) {
@@ -413,7 +415,7 @@ export function SettingsPage() {
         <SettingsSection
           key={sec.name}
           name={sec.name}
-          configured={sec.specs.filter((sp) => (global[sp.key] ?? '') !== '').length}
+          configured={sec.specs.filter((sp) => settingsSet.has(sp.key)).length}
         >
           {sec.specs.map((sp) => specRow(sp))}
         </SettingsSection>
@@ -690,6 +692,7 @@ export function SettingsPage() {
           placeholder="② 使用指南 (https://t.me/your_link)"
           value={footerDraft}
           onChange={(event) => setFooterDraft(event.target.value)}
+          slotProps={{ htmlInput: { maxLength: 300 } }}
           helperText="留空 = 不附加；上限 300 字"
         />
       </FormDrawer>

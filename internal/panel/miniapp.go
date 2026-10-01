@@ -424,11 +424,18 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 		"specs": specs, "sections": sections, "stats": stats,
 		"todo":            miniTodo(sh, uid, main),
 		"global_defaults": defaults,
+		// tz_name 是展示时区（IANA）：次级管理员没有 global（那是主管理员的
+		// 设置全量），所以单独给所有管理员下发一份，前端全站时间格式化用它。
+		"tz_name": snap.Setting("tz_name"),
 	}
 	if main {
 		out["global"] = snap.Settings
 		out["digest"] = snap.Setting("antiad_digest")
 		out["digest_fix"] = snap.Setting("antiad_digest_fix")
+		// settings_set 是显式写过的设置键（settings 表里有行的键）。
+		// snap.Settings 里铺了代码默认值，不能用来判断「已设置」；设置页的
+		// 「已设置 N 项」只数这个集合。
+		out["settings_set"] = miniSettingsSet(sh)
 	}
 	out["whitelist"] = miniWhitelistRows(sh, uid, main)
 	out["profile_ok"] = miniProfileOKRows(sh, uid, main)
@@ -508,6 +515,30 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
 		out["owner_opts"] = opts
 	}
 	miniOK(w, out)
+}
+
+// miniSettingsSet 返回显式写过的设置键（settings 表里有行的 k）。代码默认值
+// 只铺在快照内存里、不会进表——设置页「已设置 N 项」要的正是这个区别。
+func miniSettingsSet(sh *core.Shared) []string {
+	keys := []string{}
+	rows, err := sh.Store.Read.Query(`SELECT k FROM settings`)
+	if err != nil {
+		slog.Error("miniapp：读取已设置键失败", "err", err)
+		return keys
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			slog.Error("miniapp：读取已设置键失败", "err", err)
+			return keys
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("miniapp：读取已设置键失败", "err", err)
+	}
+	return keys
 }
 
 func miniBotLive(sh *core.Shared, botID int64) bool {

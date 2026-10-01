@@ -328,7 +328,7 @@ export function UpstreamDetailPage({ id }: { id: number }) {
         <TextField
           fullWidth
           size="small"
-          label="base_url"
+          label="base_url（留空 = 不改）"
           value={baseDraft}
           onChange={(event) => setBaseDraft(event.target.value)}
         />

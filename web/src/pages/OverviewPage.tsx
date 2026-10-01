@@ -3,7 +3,7 @@
 import { Box, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useLogs, useMiniState } from '../api/hooks'
-import { actionLabel, fmtTS, kindLabel, verdictLabel } from '../lib/format'
+import { actionLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { ErrorState, ListRow, SectionCard, Skeletons } from '../ui'
 import { BotStatusBadge, Metric } from './shared'
@@ -19,6 +19,7 @@ export function OverviewPage() {
   }
 
   const { todo, stats, bots } = state.data
+  const tz = displayTz(state.data)
   const todos = [
     {
       key: 'appeals',
@@ -97,7 +98,7 @@ export function OverviewPage() {
               key={log.id}
               primary={`#${log.id} ${verdictLabel(log.verdict)}`}
               secondary={[actionLabel(log.action), kindLabel(log.kind)].join(' · ')}
-              value={fmtTS(log.created_at)}
+              value={fmtTS(log.created_at, tz)}
               chevron
               onClick={() => nav.push({ k: 'log', id: log.id })}
             />

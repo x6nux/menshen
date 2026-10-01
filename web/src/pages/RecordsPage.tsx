@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { errorStatus } from '../api/client'
 import { useInfiniteAppeals, useInfiniteLogs, useMiniState } from '../api/hooks'
 import type { AppealRow, LogRow } from '../api/types'
-import { actionLabel, fmtTS } from '../lib/format'
+import { actionLabel, displayTz, fmtTS } from '../lib/format'
 import { appealStatusInfo, appealSummary, verdictInfo } from '../lib/status'
 import { useNav } from '../nav'
 import {
@@ -92,6 +92,7 @@ export function RecordsPage() {
   }
 
   const openAppeals = state.data?.todo.open_appeals ?? 0
+  const tz = state.data ? displayTz(state.data) : undefined
   const logRows = logs.data?.pages.flatMap((page) => page.logs) ?? []
   const appealRows = appeals.data?.pages.flatMap((page) => page.appeals) ?? []
   // 总数取第一页的 total；切换筛选时 pages[0] 还是旧筛选的占位数据，必须显示占位。
@@ -184,6 +185,7 @@ export function RecordsPage() {
                       <LogListRow
                         key={log.id}
                         log={log}
+                        tz={tz}
                         onOpen={() => nav.push({ k: 'log', id: log.id })}
                         onUser={() => nav.push({ k: 'user', id: log.user_id })}
                       />
@@ -261,10 +263,12 @@ export function RecordsPage() {
 /** LogListRow：`#id · 时间` + 判定/处置徽标 + uid 链接 + 群号/置信度/开销 + 原文 50 字。 */
 function LogListRow({
   log,
+  tz,
   onOpen,
   onUser,
 }: {
   log: LogRow
+  tz?: string
   onOpen: () => void
   onUser: () => void
 }) {
@@ -274,7 +278,7 @@ function LogListRow({
       primary={
         <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
           <Box component="span" sx={{ fontFamily: MONO, fontSize: 14 }}>
-            #{log.id} · {fmtTS(log.created_at)}
+            #{log.id} · {fmtTS(log.created_at, tz)}
           </Box>
           <Badge tone={verdict.tone}>{verdict.label}</Badge>
           <Badge>{actionLabel(log.action)}</Badge>

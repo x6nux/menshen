@@ -7,7 +7,7 @@ import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
 import { useLog, useMiniState } from '../api/hooks'
 import { useLogactMutation } from '../api/mutations'
-import { actionLabel, fmtTS, kindLabel, verdictLabel } from '../lib/format'
+import { actionLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
@@ -77,6 +77,7 @@ export function LogDetailPage({ id }: { id: number }) {
   }
 
   const l = log.data
+  const tz = state.data ? displayTz(state.data) : undefined
   const chat = state.data?.chats.find((c) => c.chat_id === l.chat_id)
 
   const run = (spec: ActionSpec) => {
@@ -101,7 +102,7 @@ export function LogDetailPage({ id }: { id: number }) {
   }
 
   const details: { label: string; value: ReactNode }[] = [
-    { label: '时间', value: <Mono>{fmtTS(l.created_at)}</Mono> },
+    { label: '时间', value: <Mono>{fmtTS(l.created_at, tz)}</Mono> },
     {
       label: '群 / 用户',
       value: (

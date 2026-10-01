@@ -6,7 +6,7 @@ import { Box, Button, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useAppeal, useMiniState } from '../api/hooks'
 import { useAppealactMutation } from '../api/mutations'
-import { apAI, fmtTS } from '../lib/format'
+import { apAI, displayTz, fmtTS } from '../lib/format'
 import { appealStatusInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
@@ -40,6 +40,7 @@ export function AppealDetailPage({ id }: { id: number }) {
 
   const a = appeal.data
   const status = appealStatusInfo(a.status)
+  const tz = state.data ? displayTz(state.data) : undefined
   const bot = state.data?.bots.find((b) => b.bot_id === a.bot_id)
   const open = OPEN_STATUSES.includes(a.status)
   const canIssueCode = a.status === 'web' || a.status === 'noweb'
@@ -90,7 +91,7 @@ export function AppealDetailPage({ id }: { id: number }) {
         </InfoRow>
         <InfoRow label="提交 / 更新">
           <Box component="span" sx={{ fontFamily: MONO }}>
-            {fmtTS(a.created_at)} / {fmtTS(a.updated_at)}
+            {fmtTS(a.created_at, tz)} / {fmtTS(a.updated_at, tz)}
           </Box>
         </InfoRow>
       </SectionCard>
@@ -145,7 +146,7 @@ export function AppealDetailPage({ id }: { id: number }) {
         <InfoRow label="到期">
           {a.has_code || a.code !== ''
             ? a.code_expires > 0
-              ? fmtTS(a.code_expires)
+              ? fmtTS(a.code_expires, tz)
               : '无到期时间'
             : '—'}
         </InfoRow>
@@ -160,7 +161,7 @@ export function AppealDetailPage({ id }: { id: number }) {
           a.redeems.map((redeem, index) => (
             <InfoRow key={`${redeem.chat_id}-${redeem.at}-${index}`} label={`兑换 ${index + 1}`}>
               <Box component="span" sx={{ fontFamily: MONO }}>
-                群 {redeem.chat_id} · uid {redeem.by_uid} · {fmtTS(redeem.at)}
+                群 {redeem.chat_id} · uid {redeem.by_uid} · {fmtTS(redeem.at, tz)}
               </Box>
             </InfoRow>
           ))

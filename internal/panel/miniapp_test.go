@@ -497,6 +497,66 @@ func TestMiniStateSections(t *testing.T) {
 	}
 }
 
+// TestMiniStateTZAndSettingsSet：展示时区要给所有管理员下发（次管没有 global，
+// 前端全站时间格式化依赖顶层 tz_name）；settings_set 只给主管理员，且只包含
+// 显式写过的键——快照里铺的代码默认值不算「已设置」。
+func TestMiniStateTZAndSettingsSet(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	if err := sh.PutSetting("tz_name", "Pacific/Kiritimati"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.PutSetting("antiad_mute_minutes", "30"); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+
+	stateOf := func(token, initData string, botID int64) map[string]any {
+		t.Helper()
+		w := miniDo(t, env.h, token, initData, botID, "state", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("state 应 200，得到 %d：%s", w.Code, w.Body.String())
+		}
+		var st map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	main := stateOf(testutil.TestToken, env.adminInit(), testutil.TestBotID)
+	if got := main["tz_name"]; got != "Pacific/Kiritimati" {
+		t.Errorf("主管理员 state 的 tz_name 应为 Pacific/Kiritimati，得到 %v", got)
+	}
+	setList, ok := main["settings_set"].([]any)
+	if !ok {
+		t.Fatalf("主管理员 state 应带 settings_set，得到 %v", main["settings_set"])
+	}
+	set := map[string]bool{}
+	for _, k := range setList {
+		set[k.(string)] = true
+	}
+	for _, want := range []string{"tz_name", "antiad_mute_minutes"} {
+		if !set[want] {
+			t.Errorf("settings_set 应包含显式写过的 %s，得到 %v", want, setList)
+		}
+	}
+	if set["log_retention_days"] {
+		t.Errorf("settings_set 不应把只有代码默认值的键算成已设置，得到 %v", setList)
+	}
+
+	sub := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+	subState := stateOf(testToken2, sub, 43)
+	if got := subState["tz_name"]; got != "Pacific/Kiritimati" {
+		t.Errorf("次级管理员 state 也应带 tz_name，得到 %v", got)
+	}
+}
+
 // TestMiniAppListSearch：名单类列表要能搜。名单长起来之后只能靠肉眼翻，
 // 想确认「某个人在不在名单里」得从头滑到尾。搜索只重绘列表容器，
 // 不动输入框本身（整体 render() 会丢焦点与输入法组合）。

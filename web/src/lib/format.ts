@@ -1,11 +1,20 @@
 // 展示格式化函数：从旧内联页（internal/panel/miniapp_html.go）的 JS 等价迁移。
 // 行为保持一致，仅 fmtTS 增加了可选的展示时区（对应全局设置 tz_name）。
+import type { State } from '../api/types'
 
 /** 设置值从 JSON 来，可能是字符串或数字；统一用宽松类型接住。 */
 export type SettingValue = string | number | null | undefined
 
 export type BotSettingsMap = Record<string, Record<string, SettingValue>>
 export type SettingsMap = Record<string, SettingValue>
+
+/**
+ * displayTz 取全站展示时区：优先顶层 tz_name（主/次管都有）；回退 global
+ * 是为了兼容旧响应（顶层字段上线前只给主管理员下发过 global）。
+ */
+export function displayTz(state: Pick<State, 'tz_name' | 'global'>): string | undefined {
+  return state.tz_name ?? state.global?.tz_name
+}
 
 const FORMAT_LOCALE = 'en-CA'
 

@@ -4,7 +4,7 @@ import { HttpResponse, http } from 'msw'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 import type { AppealRow, LogRow } from '../api/types'
-import { mockAppeals, mockLogs } from '../mocks/fixtures'
+import { mockAppeals, mockLogs, mockState } from '../mocks/fixtures'
 import { IntentSetter, NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { RecordsPage } from './RecordsPage'
@@ -24,6 +24,21 @@ function appealRow(id: number): AppealRow {
 }
 
 describe('RecordsPage', () => {
+  it('列表时间按 state.tz_name 渲染（Pacific/Kiritimati，UTC+14）', async () => {
+    // hit() 继承 mockLogs[0].created_at = 1700000000（2023-11-14 22:13 UTC）；
+    // Kiritimati（UTC+14）= 11-15 12:13。这条断言只有真的用了 tz_name 才成立。
+    server.use(
+      http.post('*/miniapp/api/state', () =>
+        HttpResponse.json({ ...structuredClone(mockState), tz_name: 'Pacific/Kiritimati' }),
+      ),
+      http.post('*/miniapp/api/logs', () =>
+        HttpResponse.json({ logs: [hit(9100)], page: 1, total: 1 }),
+      ),
+    )
+    renderPage(<RecordsPage />)
+    expect(await screen.findByText(/11-15 12:13/)).toBeInTheDocument()
+  })
+
   it('筛选 chips 切换发出的请求参数正确（默认已删除）', async () => {
     const bodies: Record<string, unknown>[] = []
     server.use(

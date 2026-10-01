@@ -42,6 +42,28 @@ describe('ListsPage 可见性', () => {
     }
   })
 
+  it('白名单时间按 state.tz_name 渲染（Pacific/Kiritimati，UTC+14）', async () => {
+    // 1700000000 = 2023-11-14 22:13:20 UTC；Kiritimati（UTC+14）= 11-15 12:13。
+    // 浏览器本地时区（UTC / Asia/Shanghai）都不该出现这个结果。
+    useState(
+      stateWith({
+        tz_name: 'Pacific/Kiritimati',
+        whitelist: [
+          {
+            bot_id: 1,
+            chat_id: 0,
+            user_id: 555,
+            expires_at: 1700000000,
+            source: 'adw',
+            by_uid: 100,
+          },
+        ],
+      }),
+    )
+    renderPage(<ListsPage />)
+    expect(await screen.findByText('来源 adw · 到 11-15 12:13')).toBeInTheDocument()
+  })
+
   it('section 参数直接进入联封', async () => {
     renderPage(<ListsPage section="gban" />)
     expect(await screen.findByText('全局联合封禁组')).toBeInTheDocument()
@@ -217,6 +239,52 @@ describe('ListsPage 写操作参数', () => {
     expect(bodies[1]).toEqual({ action: 'remove', bot_id: 1, chat_id: 0, user_id: 555 })
   })
 
+  it('白名单添加：uid/chat_id/hours 非法输入本地拦截，不提交', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('whitelist', bodies)
+    await renderMain()
+
+    fireEvent.click(screen.getByRole('button', { name: '新增' }))
+    expect(await screen.findByText('加入白名单')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('user_id'), { target: { value: 'abc' } })
+    fireEvent.click(screen.getByRole('button', { name: '加入' }))
+    expect(await screen.findByText('user_id 必须是正整数')).toBeInTheDocument()
+    expect(bodies).toHaveLength(0)
+
+    fireEvent.change(screen.getByLabelText('user_id'), { target: { value: '777' } })
+    fireEvent.change(screen.getByLabelText('chat_id（0 = 该 bot 所有群）'), {
+      target: { value: 'x' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '加入' }))
+    expect(
+      await screen.findByText('chat_id 必须是整数（0 = 该 bot 所有群）'),
+    ).toBeInTheDocument()
+    expect(bodies).toHaveLength(0)
+
+    fireEvent.change(screen.getByLabelText('chat_id（0 = 该 bot 所有群）'), {
+      target: { value: '0' },
+    })
+    fireEvent.change(screen.getByLabelText('小时（留空 = 永久）'), { target: { value: '-5' } })
+    fireEvent.click(screen.getByRole('button', { name: '加入' }))
+    expect(
+      await screen.findByText('小时必须是非负整数（留空 = 永久）'),
+    ).toBeInTheDocument()
+    expect(bodies).toHaveLength(0)
+
+    // 合法值仍照常提交
+    fireEvent.change(screen.getByLabelText('小时（留空 = 永久）'), { target: { value: '24' } })
+    fireEvent.click(screen.getByRole('button', { name: '加入' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({
+      action: 'add',
+      bot_id: 1,
+      chat_id: 0,
+      user_id: '777',
+      hours: 24,
+    })
+  })
+
   it('资料放行：撤销走 whitelist unprofile', async () => {
     const bodies: Record<string, unknown>[] = []
     capturePost('whitelist', bodies)
@@ -300,7 +368,7 @@ describe('ListsPage 写操作参数', () => {
     expect(bodies[0]).toEqual({ action: 'chat', chat_id: -1001234567890, on: false })
   })
 
-  it('次级管理员：添加管理员/移除参数', async () => {
+  it('管理员分段：主管理员添加/移除次级管理员', async () => {
     const bodies: Record<string, unknown>[] = []
     capturePost('admin', bodies)
     await renderMain()

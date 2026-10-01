@@ -139,6 +139,13 @@ export interface State {
   todo: Todo
   global_defaults: Record<string, string>
   global?: Record<string, string>
+  /** tz_name 是展示时区（IANA），所有管理员都会下发（次管没有 global）。 */
+  tz_name?: string
+  /**
+   * settings_set 是显式写过的设置键（仅主管理员下发）。快照的 global 里铺了
+   * 代码默认值，判断「已设置」只能看这个集合。
+   */
+  settings_set?: string[]
   digest?: string
   digest_fix?: string
   whitelist: WhiteRow[]

@@ -106,6 +106,19 @@ describe('SettingsPage 主题折叠卡（智能控件）', () => {
     expect(screen.getByText('1440 分钟（= 1 天）')).toBeInTheDocument()
   })
 
+  it('「已设置 N 项」只数显式写过的键（global 里的默认值不算）', async () => {
+    await renderSettings()
+    // global 是生产形状：铺满了代码默认值（antiad_so_trust=95、
+    // antiad_hedge_minutes=5…）；settings_set 只列 fixture 显式配置的键。
+    expect(screen.getByText('已设置 2 项')).toBeInTheDocument()
+    expect(screen.getAllByText('已设置 0 项')).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('button', { name: /判定与模型/ }))
+    // 默认值行照常展示，但不计入「已设置」
+    expect(screen.getByText('采信线：systemone 置信度')).toBeInTheDocument()
+    expect(screen.getByText('并发模式持续（分钟）')).toBeInTheDocument()
+  })
+
   it('时长类抽屉的预设按 min/max 过滤，越界值被拦截', async () => {
     const bodies: Record<string, unknown>[] = []
     capturePost('set', bodies)

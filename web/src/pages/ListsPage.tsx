@@ -18,7 +18,7 @@ import {
 } from '../api/mutations'
 import type { AdminRow, Bot, Chat, GbanRow, ProfileOKRow, State, WhiteRow } from '../api/types'
 import { filterRows, gbanKey, profileOKKey, whiteKey } from '../lib/filters'
-import { fmtTS } from '../lib/format'
+import { displayTz, fmtTS } from '../lib/format'
 import {
   Badge,
   ErrorState,
@@ -112,6 +112,7 @@ export function ListsPage({ section }: { section?: string }) {
   const main = data.me.main
   const activeSeg: MainSection = main ? seg : 'gban'
   const { whitelist, profile_ok: profileOK, gban, gban_own: gbanOwn, admins, bots } = data
+  const tz = displayTz(data)
 
   const whiteRows = filterRows(whitelist, whiteQ, whiteKey)
   const profileRows = filterRows(profileOK, profileQ, (p: ProfileOKRow) =>
@@ -150,13 +151,29 @@ export function ListsPage({ section }: { section?: string }) {
   }
 
   function submitWhite() {
+    // 本地先校验整数，非法输入不提交（服务端 400 文案较泛，这里给出可操作提示）。
+    const uid = whiteUID.trim()
+    if (!/^\d+$/.test(uid)) {
+      toast('user_id 必须是正整数')
+      return
+    }
+    const chat = whiteChat.trim()
+    if (chat !== '' && !/^-?\d+$/.test(chat)) {
+      toast('chat_id 必须是整数（0 = 该 bot 所有群）')
+      return
+    }
+    const hours = whiteHours.trim()
+    if (hours !== '' && !/^\d+$/.test(hours)) {
+      toast('小时必须是非负整数（留空 = 永久）')
+      return
+    }
     whiteMut.mutate(
       {
         action: 'add',
         bot_id: whiteBot,
-        chat_id: Number(whiteChat) || 0,
-        user_id: whiteUID.trim(),
-        hours: Number(whiteHours) || 0,
+        chat_id: chat === '' ? 0 : Number(chat),
+        user_id: uid,
+        hours: hours === '' ? 0 : Number(hours),
       },
       {
         onSuccess: (resp) => {
@@ -316,7 +333,7 @@ export function ListsPage({ section }: { section?: string }) {
   const showAdd = activeSeg !== 'profile'
 
   return (
-    <Box data-testid="lists-page" sx={{ pb: showAdd ? 'calc(80px + env(safe-area-inset-bottom))' : 0 }}>
+    <Box data-testid="lists-page" sx={{ pb: showAdd ? 'calc(72px + env(safe-area-inset-bottom))' : 0 }}>
       <Segmented
         value={activeSeg}
         onChange={(next) => setSeg(next as MainSection)}
@@ -334,7 +351,8 @@ export function ListsPage({ section }: { section?: string }) {
           sx={{
             position: 'fixed',
             right: 16,
-            bottom: 'calc(72px + env(safe-area-inset-bottom))',
+            // ListsPage 是二级页，TabBar 在这时不渲染：贴着底部安全区放。
+            bottom: 'calc(16px + env(safe-area-inset-bottom))',
             zIndex: (theme) => theme.zIndex.appBar,
           }}
         >
@@ -361,7 +379,7 @@ export function ListsPage({ section }: { section?: string }) {
                 key={`${w.bot_id}:${w.chat_id}:${w.user_id}`}
                 primary={`${w.user_id} · ${scopeText(w)}`}
                 secondary={`来源 ${w.source || '—'} · ${
-                  w.expires_at ? `到 ${fmtTS(w.expires_at)}` : '永久'
+                  w.expires_at ? `到 ${fmtTS(w.expires_at, tz)}` : '永久'
                 }`}
                 trailing={
                   <Button
@@ -442,7 +460,7 @@ export function ListsPage({ section }: { section?: string }) {
             <ListRow
               key={`${p.bot_id}:${p.user_id}`}
               primary={`${p.user_id} · ${botLabelOf(bots, p.bot_id)}`}
-              secondary={`${p.hours} 小时 · 到 ${fmtTS(p.expires_at)}`}
+              secondary={`${p.hours} 小时 · 到 ${fmtTS(p.expires_at, tz)}`}
               trailing={
                 <Button
                   size="small"
@@ -499,7 +517,7 @@ export function ListsPage({ section }: { section?: string }) {
                 <ListRow
                   key={g.user_id}
                   primary={`${g.user_id} · ${g.reason || '（无原因）'}`}
-                  secondary={g.created_at ? `加入 ${fmtTS(g.created_at)}` : undefined}
+                  secondary={g.created_at ? `加入 ${fmtTS(g.created_at, tz)}` : undefined}
                   trailing={
                     <Button
                       size="small"
