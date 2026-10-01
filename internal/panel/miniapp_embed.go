@@ -7,6 +7,8 @@ import (
 	"io/fs"
 )
 
+//go:generate sh -c "cd ../../web && npm run build"
+
 // miniAppDist 是 web/ 的构建产物（npm --prefix web run build 输出到
 // internal/panel/webdist）。产物不入库：只有带 -tags miniapp 编译
 // （Docker/CI 会先构建前端）时才会嵌入；不带 tag 的构建走 miniapp_stub.go。

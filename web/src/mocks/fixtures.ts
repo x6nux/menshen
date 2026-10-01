@@ -1,0 +1,234 @@
+// mock 数据：一份最小可用 State + 记录/用户/申诉样例。
+// 字段与 internal/panel/miniapp.go 的响应保持一致（类型来自 api/types.ts）。
+import type {
+  AppealDetail,
+  AppealRow,
+  LogRow,
+  LogsResp,
+  Spec,
+  State,
+  UserDossier,
+} from '../api/types'
+
+const SPECS: Spec[] = [
+  { key: 'antiad_mute_minutes', label: '禁言时长（分钟）', hint: '非负整数，0 = 永久禁言', min: 0, max: 0, group: 'antiad' },
+  { key: 'antiad_ban', label: '禁言改为封禁', hint: '1 = 永久封禁出群，0 = 禁言', min: 0, max: 1, group: 'antiad' },
+  { key: 'antiad_cold', label: '进群冷判定', hint: '1 = 开，0 = 关', min: 0, max: 1, group: 'both' },
+  { key: 'antiad_so_trust', label: '采信线：systemone 置信度', hint: '0-100 的整数', min: 0, max: 100, group: 'antiad' },
+  { key: 'antiad_hedge_minutes', label: '并发模式持续（分钟）', hint: '1-1440 的整数', min: 1, max: 1440, group: 'both' },
+  { key: 'antiad_alert_every', label: '私聊汇总间隔（分钟）', hint: '1-1440 的整数', min: 1, max: 1440, group: 'antiad' },
+  { key: 'log_retention_days', label: '记录保留天数', hint: '正整数，至少 1', min: 1, max: 0, group: '' },
+]
+
+export const mockState: State = {
+  me: { uid: 100, main: true },
+  bots: [
+    {
+      bot_id: 1,
+      username: 'menshen_demo_bot',
+      label: '门神小助手',
+      owner_id: 100,
+      enabled: true,
+      is_main: true,
+      so_models: [],
+      llm_models: [],
+      live: true,
+    },
+    {
+      bot_id: 2,
+      username: 'second_demo_bot',
+      label: '演示机器人',
+      owner_id: 100,
+      enabled: false,
+      is_main: false,
+      so_models: ['demo/gpt-5-mini'],
+      llm_models: [],
+      live: false,
+    },
+  ],
+  chats: [
+    {
+      bot_id: 1,
+      chat_id: -1001234567890,
+      title: '测试群',
+      enabled: true,
+      dryrun: false,
+      group_alert: true,
+      punish: -1,
+    },
+    {
+      bot_id: 2,
+      chat_id: -1009876543210,
+      title: '演练群',
+      enabled: false,
+      dryrun: true,
+      group_alert: false,
+      punish: 0,
+    },
+  ],
+  bot_settings: { '2': { antiad_mute_minutes: '30' } },
+  specs: SPECS,
+  sections: [
+    { name: '处置与分档', specs: SPECS.filter((s) => ['antiad_mute_minutes', 'antiad_ban'].includes(s.key)) },
+    {
+      name: '判定与模型',
+      specs: SPECS.filter((s) => ['antiad_so_trust', 'antiad_hedge_minutes'].includes(s.key)),
+    },
+    { name: '其他', specs: SPECS.filter((s) => ['antiad_cold', 'antiad_alert_every', 'log_retention_days'].includes(s.key)) },
+  ],
+  stats: { checked: 1284, hits: 12, cost: 42, cost_text: '$0.42', chats: 8 },
+  todo: { open_appeals: 3, dryrun_chats: 1, disabled_bots: 1 },
+  global_defaults: { antiad_mute_minutes: '1440', antiad_ban: '0', antiad_cold: '1' },
+  global: {
+    antiad_enabled: '1',
+    alert_copy_main: '0',
+    gban_enabled: '1',
+    tz_name: 'Asia/Shanghai',
+    antiad_mute_minutes: '1440',
+    antiad_ban: '0',
+    antiad_group_footer: '',
+  },
+  digest: '（mock）测试群以技术交流为主。',
+  digest_fix: '',
+  whitelist: [
+    { bot_id: 1, chat_id: 0, user_id: 555, expires_at: 0, source: 'adw', by_uid: 100 },
+  ],
+  profile_ok: [
+    { bot_id: 1, user_id: 666, hours: 24, reason: '（mock）资料没问题', created_at: 1700000000, expires_at: 1700086400 },
+  ],
+  gban: [{ user_id: 999, reason: '（mock）发广告', src_chat: -1001234567890, created_at: 1700000000 }],
+  gban_own: { enabled: true, chats: [-1001234567890], bans: [{ user_id: 888, reason: '（mock）专属组', src_chat: 0, created_at: 1700000000 }] },
+  upstreams: [
+    {
+      id: 1,
+      name: 'demo',
+      base_url: 'https://api.example.com',
+      api_key: 'sk-****',
+      weight: 1,
+      status: true,
+      supports_chat: true,
+      supports_systemone: true,
+    },
+  ],
+  models: [
+    {
+      name: 'demo/gpt-5-mini',
+      enabled: true,
+      prompt_price: 0.1,
+      completion_price: 0.2,
+      cache_read_price: 0.01,
+      cache_write_price: 0.01,
+      upstream: 'demo',
+      model_id: 'gpt-5-mini',
+    },
+  ],
+  admins: [{ user_id: 200, note: '（mock）备用管理员' }],
+  owner_opts: [
+    { user_id: 100, label: '主管理员' },
+    { user_id: 200, label: '次级管理员 ·（mock）备用管理员' },
+  ],
+}
+
+export const mockLogs: LogRow[] = [
+  {
+    id: 9812,
+    bot_id: 1,
+    chat_id: -1001234567890,
+    user_id: 555,
+    message_id: 42,
+    verdict: 'ad',
+    confidence: 0.97,
+    kind: 'scam',
+    action: 'deleted_muted',
+    reason: '（mock）兼职招募诈骗',
+    text: '（mock）加我兼职日结，先交押金。',
+    decider: 'llm',
+    cost_text: '$0.0031',
+    created_at: 1700000000,
+    view_url: 'https://example.com/log/9812',
+  },
+  {
+    id: 9811,
+    bot_id: 1,
+    chat_id: -1001234567890,
+    user_id: 556,
+    message_id: 41,
+    verdict: 'clean',
+    confidence: 0.42,
+    kind: 'none',
+    action: 'none',
+    reason: '',
+    text: '（mock）这是一条正常消息。',
+    decider: 'so',
+    cost_text: '$0.0002',
+    created_at: 1699999000,
+    view_url: '',
+  },
+]
+
+export const mockLogsResp: LogsResp = { logs: mockLogs, page: 1, total: mockLogs.length }
+
+export const mockLogDetail: LogRow = {
+  ...mockLogs[0],
+  text: '（mock）加我兼职日结，先交押金。详情接口的正文比列表更完整。',
+}
+
+export const mockUser: UserDossier = {
+  user_id: 555,
+  name: '演示用户',
+  username: 'demo_user',
+  bio: '（mock）简介',
+  kept: 12,
+  msgs: 30,
+  hits: 2,
+  chats: 1,
+  first_seen: 1699000000,
+  last_msg: 1700000000,
+  total: 2,
+  processed: 1,
+  shown: 1,
+  page: 1,
+  filter: 'act',
+  logs: [
+    {
+      id: 9812,
+      chat_id: -1001234567890,
+      verdict: 'ad',
+      confidence: 0.97,
+      kind: 'scam',
+      action: 'deleted_muted',
+      reason: '（mock）兼职招募诈骗',
+      text: '（mock）加我兼职日结，先交押金。',
+      created_at: 1700000000,
+    },
+  ],
+}
+
+export const mockAppeals: AppealRow[] = [
+  {
+    id: 77,
+    bot_id: 1,
+    user_id: 555,
+    status: 'noweb',
+    statement: '（mock）我没有发广告，是朋友借我账号。',
+    ai_result: 'uphold',
+    ai_conf: 0.88,
+    ai_reason: '（mock）与命中记录一致，维持原判。',
+    ai_model: 'demo/gpt-5-mini',
+    web_attempts: 1,
+    has_code: false,
+    code_expires: 0,
+    created_at: 1700000000,
+    updated_at: 1700000100,
+    detail_url: 'https://example.com/appeal/77',
+  },
+]
+
+export const mockAppealDetail: AppealDetail = {
+  ...mockAppeals[0],
+  code: '',
+  ai_cost: '$0.0012',
+  web_checks: 1,
+  web_passes: 0,
+  redeems: [],
+}

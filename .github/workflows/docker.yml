@@ -36,6 +36,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web --no-audit --no-fund
       - run: npm --prefix web run lint
+      - run: npm --prefix web run test
       - run: npm --prefix web run typecheck
       - run: npm --prefix web run build
       - name: gofmt
