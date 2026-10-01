@@ -94,9 +94,16 @@ func waitIdle(t *testing.T, b *core.Bot) {
 
 // soReply 造一条 systemone 响应。
 func soReply(choice string, conf float64, kind, scope string) string {
+	return soReplySev(choice, conf, kind, scope, 2)
+}
+
+// soReplySev 同 soReply，但自定义危害度：高危害不受资历豁免那条要用它区分
+// 「普通广告」与「色情/诈骗这类高危害」。
+func soReplySev(choice string, conf float64, kind, scope string, sev float64) string {
 	return `{"answers":{"is_ad":{"choice":"` + choice + `","confidence":` +
 		strconv.FormatFloat(conf, 'f', -1, 64) + `},"ad_kind":{"choice":"` + kind +
-		`"},"ad_scope":{"choice":"` + scope + `"},"severity":{"score":2}}}`
+		`"},"ad_scope":{"choice":"` + scope + `"},"severity":{"score":` +
+		strconv.FormatFloat(sev, 'f', -1, 64) + `}}}`
 }
 
 // llmReply 造一条大模型（非流式形状）响应。

@@ -96,6 +96,7 @@ var settingDefaults = map[string]string{
 	// 引入浮点要改动整套设置面板机制，不值当。
 	"antiad_so_trust":     strconv.Itoa(DefaultSoTrust),    // systemone 置信度采信线
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
+	"antiad_severe_mute":  "2",                             // 高危害不受资历豁免（危害度）
 	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不复判
 	"antiad_act_hard":     "90",                            // 删除 + 禁言线
 	"antiad_act_soft":     "75",                            // 删除线

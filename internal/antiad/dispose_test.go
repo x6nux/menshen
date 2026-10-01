@@ -134,7 +134,8 @@ func TestReviewCleanKeepsOtherMute(t *testing.T) {
 func TestConfidentOldMemberSkipsReview(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	_, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"), llmReply(true, 0.9, "scam", "message"))
+	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.95, "promo", "message", 1),
+		llmReply(true, 0.9, "promo", "message"))
 	b.Store.Write.Exec(`INSERT INTO group_members (chat_id,user_id,joined_at,first_seen,msg_count)
 		VALUES (-100,42,1,1,500)`)
 
@@ -406,8 +407,8 @@ func TestShortMuteOnDeletedTier(t *testing.T) {
 	if err := b.PutBotSetting(b.BotID(), "antiad_short_mute", "1"); err != nil {
 		t.Fatal(err)
 	}
-	_, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
-		llmReply(true, 0.95, "scam", "message"))
+	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.95, "promo", "message", 1),
+		llmReply(true, 0.95, "promo", "message"))
 
 	// 老人（发言 50 条、100 小时前进群）高置信：矩阵给「删除」，不触发复判。
 	// 时间基准用消息自带的 Date（1700000000）：用 time.Now() 会算出「进群
@@ -472,8 +473,8 @@ func TestBoolVerdictMode(t *testing.T) {
 	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
-	_, llmN := fakeAIWith(t, b, soReply("ad", 0.88, "porn_bait", "message"),
-		llmReply(true, 0.82, "porn_bait", "message"))
+	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.88, "promo", "message", 1),
+		llmReply(true, 0.82, "promo", "message"))
 
 	// 新人：置信度只有 82%，按旧规则只会「删除 + 短禁言」。
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "探花 9000 一单"))
@@ -494,7 +495,8 @@ func TestBoolVerdictMode(t *testing.T) {
 		t.Error("要禁言时应过复判")
 	}
 
-	// 老人：bool 模式不改变「老人只删不禁」的底线。
+	// 老人：普通广告（非高危害）仍只删不禁 —— 底线不变；高危害那条
+	// 由 TestSevereAdBeatsVeteranExemption 覆盖。
 	const msgDate = int64(1700000000)
 	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
@@ -537,5 +539,43 @@ func TestHashHitPunishesInBoolMode(t *testing.T) {
 	}
 	if _, action, _ := logRow(t, b); action == "deleted" {
 		t.Errorf("复判失败不该让哈希命中退回 deleted，得到 %q", action)
+	}
+}
+
+// TestSevereAdBeatsVeteranExemption：高危害（色情/诈骗/赌博，或危害度达标）
+// 不受老成员免禁言豁免 —— 老人免禁言是为了避免误伤普通聊天，不是给惯犯留
+// 豁免。实测：一个发了 40 条言、反复转发色情相册截图的账号，因为算老成员
+// 只吃「已删除 + 5 分钟短禁言」。
+func TestSevereAdBeatsVeteranExemption(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "1"); err != nil {
+		t.Fatal(err)
+	}
+	snap := b.Cache.Snap()
+	old := func(v adVerdict) adAction { return decideAction(b, snap, false, v) }
+
+	// 普通推广广告：老成员仍只删（免禁言这条底线不变）。
+	if act := old(adVerdict{IsAd: true, Confidence: 0.9, Kind: "promo"}); act.Mute {
+		t.Error("老成员的普通广告不该禁言")
+	}
+	// 高危害（色情，危害度 2.9）：老成员也禁言。
+	if act := old(adVerdict{IsAd: true, Confidence: 0.96, Kind: "porn_bait", Severity: 2.9}); !act.Mute {
+		t.Error("高危害广告老成员也该禁言")
+	}
+	// 复判结论没有危害度，按分类兜底（置信度够才算）。
+	if act := old(adVerdict{IsAd: true, Confidence: 0.9, Kind: "scam"}); !act.Mute {
+		t.Error("诈骗分类且置信度够时老成员也该禁言")
+	}
+	if act := old(adVerdict{IsAd: true, Confidence: 0.6, Kind: "scam"}); act.Mute {
+		t.Error("置信度不够的诈骗分类不该套用高危害")
+	}
+	// 阈值设 0：关闭这条，回到老人只删。
+	if err := b.PutBotSetting(b.BotID(), "antiad_severe_mute", "0"); err != nil {
+		t.Fatal(err)
+	}
+	snap = b.Cache.Snap()
+	if act := decideAction(b, snap, false, adVerdict{IsAd: true, Confidence: 0.96,
+		Kind: "porn_bait", Severity: 2.9}); act.Mute {
+		t.Error("阈值设 0 后应回到老人只删")
 	}
 }

@@ -442,9 +442,66 @@ func IsAdDispositionCallback(data string) bool {
 func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad.AdLogRow) {
 	switch op {
 	case "ok":
-		// 只留痕，不动群内。样本保持在正例池里供形态总结取用。
-		antiad.UpdateAdLog(b, row.ID, row.Action, appendReason(row.Reason, "管理员确认判定正确"))
-		b.AnswerCallback(q.ID, "已确认")
+		// 管理员确认判定正确：**绕过老成员免禁言** —— 人已经看过原文并背书，
+		// 不该再按资历只删不罚。按本群处罚方式补一次正式处置（记录里没删过
+		// 的消息连带补删），动作标签与理由同步更新；样本留在正例池里供形态
+		// 总结取用，之后按「误判」仍可走原有的解禁路径。
+		snap := b.Cache.Snap()
+		conf, _ := snap.ChatConf(row.BotID, row.ChatID)
+		ban := snap.BanMode(conf)
+		mins := snap.BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
+
+		// 仅告警档的消息还在群里：一起补删，处置要与判定一致。
+		deleted := strings.HasPrefix(row.Action, "deleted") ||
+			strings.HasPrefix(row.Action, "dryrun:deleted")
+		if !deleted && row.MessageID != 0 {
+			if ok2, _ := b.CallOK("deleteMessage", map[string]any{
+				"chat_id": row.ChatID, "message_id": row.MessageID}); ok2 {
+				deleted = true
+			}
+		}
+
+		done, fail := "", ""
+		if ban {
+			if ok2, desc := antiad.BanSender(b, row.ChatID, row.UserID); !ok2 {
+				fail = "封禁失败: " + core.TruncateRunes(desc, 60)
+			} else {
+				done = "封禁出群"
+			}
+		} else if ok2, desc := antiad.MuteSender(b, row.ChatID, row.UserID,
+			time.Duration(mins)*time.Minute); !ok2 {
+			fail = "禁言失败: " + core.TruncateRunes(desc, 60)
+		} else {
+			done = antiad.MuteLabel(mins)
+		}
+
+		// 动作标签按实际结果写：误判/解封路径靠它决定怎么解。
+		action := row.Action
+		switch {
+		case fail == "" && ban && deleted:
+			action = "deleted_banned"
+		case fail == "" && ban:
+			action = "banned"
+		case fail == "" && deleted:
+			action = "deleted_muted"
+		case fail == "":
+			action = "muted"
+		case deleted:
+			action = "deleted"
+		}
+		note := "管理员确认判定正确（不看资历）"
+		if done != "" {
+			note += "：" + done
+		}
+		if fail != "" {
+			note += "；" + fail
+		}
+		antiad.UpdateAdLog(b, row.ID, action, appendReason(row.Reason, note))
+		if fail != "" {
+			b.AnswerCallback(q.ID, fail)
+			return
+		}
+		b.AnswerCallback(q.ID, "已确认并"+done)
 
 	case "fp":
 		// 误判是整个闭环最值钱的一环：解禁、回退命中数，

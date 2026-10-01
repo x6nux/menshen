@@ -420,8 +420,8 @@ func TestTrustLineDefault95(t *testing.T) {
 		(chat_id,user_id,joined_at,first_seen,msg_count) VALUES (-100,42,1,1,500)`); err != nil {
 		t.Fatal(err)
 	}
-	_, llmN := fakeAIWith(t, b2, soReply("ad", 0.90, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
+	_, llmN := fakeAIWith(t, b2, soReplySev("ad", 0.90, "promo", "message", 1),
+		llmReply(true, 0.9, "promo", "message"))
 	HandleGroupMessage(b2, testutil.GroupMsg(-100, 42, 7, "加微信 日入5000"))
 	waitIdle(t, b2)
 	if llmN.Load() != 1 {
@@ -435,8 +435,8 @@ func TestTrustLineDefault95(t *testing.T) {
 		(chat_id,user_id,joined_at,first_seen,msg_count) VALUES (-100,43,1,1,500)`); err != nil {
 		t.Fatal(err)
 	}
-	_, llmN3 := fakeAIWith(t, b3, soReply("ad", 0.96, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
+	_, llmN3 := fakeAIWith(t, b3, soReplySev("ad", 0.96, "promo", "message", 1),
+		llmReply(true, 0.9, "promo", "message"))
 	HandleGroupMessage(b3, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
 	waitIdle(t, b3)
 	if llmN3.Load() != 0 {

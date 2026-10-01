@@ -277,3 +277,43 @@ func TestUserCardShowsProfileAndProcessedOnly(t *testing.T) {
 		t.Errorf("切换后应同时列出两条记录（#%d、#%d）：\n%s", paid, clean, all)
 	}
 }
+
+// TestConfirmBypassesVeteranExemption：管理员点「✅ 判定正确」等于给判定背书，
+// 该按本群处罚方式补一次正式处置（绕过老成员免禁言），动作标签同步更新 ——
+// 之后点「误判」仍能按标签解禁。
+func TestConfirmBypassesVeteranExemption(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// 老成员档的落库：只删不禁（deleted）。
+	id := seedLog(t, b, 555, "转发色情相册截图", "deleted")
+	if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET verdict='ad',ad_kind='porn_bait' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	HandleAdminCallback(b, cb(1, "a:ad:ok:"+itoa(id)))
+
+	// 补了一次正式禁言。
+	if fake.CountCalls("restrictChatMember") == 0 {
+		t.Fatal("确认后应按本群处罚方式禁言")
+	}
+	// 动作标签与理由更新。
+	var action, reason string
+	if err := b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log WHERE id=?`, id).
+		Scan(&action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if action != "deleted_muted" {
+		t.Errorf("动作应更新成 deleted_muted，得到 %q", action)
+	}
+	if !strings.Contains(reason, "管理员确认判定正确") ||
+		!strings.Contains(reason, "不看资历") {
+		t.Errorf("理由里应写明绕过资历，得到 %q", reason)
+	}
+
+	// 反悔：点误判应把这条禁言解掉（按动作标签走既有解禁路径）。
+	before := fake.CountCalls("restrictChatMember")
+	HandleAdminCallback(b, cb(1, "a:ad:fp:"+itoa(id)))
+	if fake.CountCalls("restrictChatMember") <= before {
+		t.Error("确认后再点误判应解禁（沿用原有解禁路径）")
+	}
+}
