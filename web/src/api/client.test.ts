@@ -72,7 +72,7 @@ describe('api', () => {
     expect(err.status).toBe(0)
   })
 
-  it('AbortSignal 透传：中断后以 ApiError{status:0} 冒泡', async () => {
+  it('AbortSignal 透传：中断后原样抛 AbortError（不是 ApiError）', async () => {
     server.use(
       http.post('*/miniapp/api/state', async () => {
         await new Promise((resolve) => setTimeout(resolve, 30))
@@ -82,7 +82,18 @@ describe('api', () => {
     const controller = new AbortController()
     const pending = api('state', undefined, controller.signal)
     controller.abort()
-    const err = (await pending.catch((e: unknown) => e)) as ApiError
+    const err = (await pending.catch((e: unknown) => e)) as Error
+    // React Query 靠 AbortError 识别取消：不重试、不冒泡给 UI
+    expect((err as Error).name).toBe('AbortError')
+    expect(err).not.toBeInstanceOf(ApiError)
+  })
+
+  it('abort 之外的网络失败仍是 ApiError{status:0}（不受取消分支影响）', async () => {
+    server.use(http.post('*/miniapp/api/state', () => HttpResponse.error()))
+    const controller = new AbortController()
+    const err = (await api('state', undefined, controller.signal).catch(
+      (e: unknown) => e,
+    )) as ApiError
     expect(err).toBeInstanceOf(ApiError)
     expect(err.status).toBe(0)
   })

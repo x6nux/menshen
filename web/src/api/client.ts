@@ -47,9 +47,21 @@ function errorMessage(data: unknown): string | null {
   return null
 }
 
+/** isAbortError 判断失败是否来自请求取消（signal 已中止或异常名是 AbortError）。 */
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'name' in err &&
+    (err as { name?: unknown }).name === 'AbortError'
+  )
+}
+
 /** api 调用一个 op；非 2xx 抛 ApiError，body 的 error 文案优先。
- * 网络失败与主动 abort 统一是 status 0；2xx 但响应不是 JSON 时抛
- * ApiError(status, '响应格式错误')。signal 原样透传给 fetch。 */
+ * 网络失败是 ApiError{status:0}；abort 则原样抛出 AbortError —— React Query
+ * 把它归为取消：不重试、不冒泡给 UI，转成 ApiError 反而会被当真实失败重试。
+ * 2xx 但响应不是 JSON 时抛 ApiError(status, '响应格式错误')。signal 原样透传给 fetch。 */
 export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response
   try {
@@ -64,6 +76,7 @@ export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): 
       signal,
     })
   } catch (err) {
+    if (isAbortError(err, signal)) throw err
     throw new ApiError(0, err instanceof Error ? err.message : '网络异常')
   }
 
