@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"menshen/internal/core"
+	"menshen/internal/store"
 )
 
 // ---- 用户资料卡（面板 /user 与 Mini App 用户页共用） ----
@@ -35,7 +36,9 @@ type UserDossier struct {
 
 // LoadUserDossier 读一个人的资料与摘要。
 //
-// 统计只覆盖**本 bot 名下的群**：多租户下不能把别人的群数据算进来。
+// 统计范围：工作 bot 只覆盖**自己名下的群**（多租户下不能把别人的群数据算
+// 进来）；主 bot 是平台级视图 —— 它自己不入群、不判定，统计按全局算（所有
+// bot 名下的群）。
 func LoadUserDossier(sh *core.Shared, botID, uid int64) UserDossier {
 	d := UserDossier{UID: uid}
 	if uid == 0 {
@@ -44,10 +47,7 @@ func LoadUserDossier(sh *core.Shared, botID, uid int64) UserDossier {
 	snap := sh.Cache.Snap()
 
 	// 画像统计：首见 / 最近发言 / 发言数 / 命中数 / 群数。
-	chats := make([]int64, 0, 8)
-	for _, c := range snap.ChatsOf(botID) {
-		chats = append(chats, c.ChatID)
-	}
+	chats := dossierChats(snap, botID)
 	in, inArgs := inClause(chats)
 	args := append([]any{uid}, inArgs...)
 	sh.Store.Read.QueryRow(`SELECT COALESCE(MIN(first_seen),0),
@@ -61,11 +61,45 @@ func LoadUserDossier(sh *core.Shared, botID, uid int64) UserDossier {
 		WHERE user_id=? AND chat_id `+in, args...).Scan(&d.Kept)
 
 	// 判定流水：总数与处置数分开算，管理员一眼能看出「查过 vs 罚过」。
-	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE bot_id=? AND user_id=?`,
-		botID, uid).Scan(&d.Total)
-	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE bot_id=? AND user_id=?
-		AND `+ProcessedCond, botID, uid).Scan(&d.Processed)
+	scope, scopeArgs := logScope(snap, botID)
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE user_id=?`+scope,
+		append([]any{uid}, scopeArgs...)...).Scan(&d.Total)
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE user_id=?`+scope+
+		` AND `+ProcessedCond, append([]any{uid}, scopeArgs...)...).Scan(&d.Processed)
 	return d
+}
+
+// dossierChats 返回资料统计覆盖的群：工作 bot 只算自己的，主 bot 算全局
+// （所有 bot 名下已启用的群，同一个群被多个 bot 覆盖只算一次）。
+func dossierChats(snap *store.Snapshot, botID int64) []int64 {
+	if rec := snap.Bots[botID]; rec == nil || !rec.IsMain {
+		out := make([]int64, 0, 8)
+		for _, c := range snap.ChatsOf(botID) {
+			out = append(out, c.ChatID)
+		}
+		return out
+	}
+	seen := map[int64]bool{}
+	var out []int64
+	for _, rec := range snap.Bots {
+		for _, c := range snap.ChatsOf(rec.BotID) {
+			if !c.Enabled || seen[c.ChatID] {
+				continue
+			}
+			seen[c.ChatID] = true
+			out = append(out, c.ChatID)
+		}
+	}
+	return out
+}
+
+// logScope 是判定流水的过滤条件：主 bot 不过滤（平台级视图），工作 bot 只看
+// 自己判的。
+func logScope(snap *store.Snapshot, botID int64) (string, []any) {
+	if rec := snap.Bots[botID]; rec != nil && rec.IsMain {
+		return "", nil
+	}
+	return " AND bot_id=?", []any{botID}
 }
 
 // processedCond 是「被真正处置过」的判据：动作不是「未处置/未送检」，也不是
@@ -94,13 +128,17 @@ type UserLogRow struct {
 func LoadUserLogs(sh *core.Shared, botID, uid int64, processedOnly bool,
 	limit, offset int) []UserLogRow {
 
-	where := `bot_id=? AND user_id=?`
+	snap := sh.Cache.Snap()
+	scope, scopeArgs := logScope(snap, botID)
+	where := `user_id=?` + scope
+	args := append([]any{uid}, scopeArgs...)
 	if processedOnly {
 		where += ` AND ` + processedCond
 	}
+	args = append(args, limit, offset)
 	rows, err := sh.Store.Read.Query(`SELECT id,chat_id,verdict,confidence,ad_kind,
 		action,reason,text,created_at FROM antiad_log WHERE `+where+`
-		ORDER BY id DESC LIMIT ? OFFSET ?`, botID, uid, limit, offset)
+		ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		slog.Error("用户资料：读取判定记录失败", "uid", uid, "err", err)
 		return nil
