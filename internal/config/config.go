@@ -63,9 +63,10 @@ type Config struct {
 	TurnstileSiteKey string
 	TurnstileSecret  string
 	// TGAPIID / TGAPIHash 是「客户端应用」标识（my.telegram.org 申请），
-	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，补全历史成员的
-	// 入群时间（Bot API 没有这个字段）。留空则该能力自动跳过，其余功能不受
-	// 影响 —— 与 bot token 不同，它不代表任何账号的控制权。
+	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，回查历史成员的
+	// 入群时间（Bot API 没有这个字段）。不配时走内置的公开 Telegram Desktop
+	// 值（defaultTGAPIID/defaultTGAPIHash），开箱可用；想彻底关掉这一项时把
+	// tg_api_id 显式配成空串。与 bot token 不同，它不代表任何账号的控制权。
 	TGAPIID   int
 	TGAPIHash string
 
@@ -77,6 +78,16 @@ type Config struct {
 }
 
 const defaultListenAddr = "127.0.0.1:8081"
+
+// defaultTGAPIID / defaultTGAPIHash 是内置的 MTProto 客户端标识：公开的
+// Telegram Desktop 值，只用于「入群时间」回查（用 bot 的 token 登录 MTProto
+// 读成员记录的 date）。没配就用它们，保证开箱可用 —— 想换成自己的（推荐，
+// my.telegram.org 免费申请），在配置文件或环境变量里覆盖即可；想彻底关掉
+// 这一项（不发起任何 MTProto 连接），把 tg_api_id 显式配成空串。
+const (
+	defaultTGAPIID   = 2040
+	defaultTGAPIHash = "b18441a1ff607e10a989891a5462e627"
+)
 
 // UseWebhook 报告是否走 webhook 模式。
 func (c *Config) UseWebhook() bool { return c.PublicURL != "" }
@@ -99,7 +110,8 @@ func (c *Config) IsAdmin(id int64) bool {
 // 支持 "key: value" 和 admin_ids 的 "- N" / "[1, 2]" 两种写法。
 func Load(path string) (*Config, error) {
 	c := &Config{DBPath: "data.db", TGAPIBase: defaultTGAPIBase,
-		ListenAddr: defaultListenAddr}
+		ListenAddr: defaultListenAddr,
+		TGAPIID:    defaultTGAPIID, TGAPIHash: defaultTGAPIHash}
 
 	if err := loadFile(path, c); err != nil {
 		return nil, err
@@ -264,15 +276,16 @@ func assign(c *Config, key, val string) error {
 	case "client_ip_header":
 		c.ClientIPHeader = strings.TrimSpace(val)
 	case "tg_api_id":
-		// 客户端应用标识（见 Config.TGAPIID）。只用于可选的历史成员补全，
-		// 非法值按「没配」处理，不让它挡住启动。
+		// 客户端应用标识（见 Config.TGAPIID）。不配走内置默认值；
+		// 显式配 0 或空串 = 关闭「入群时间」回查。非法值不挡住启动，
+		// 按关闭处理。
 		if val == "" {
 			c.TGAPIID = 0
 			break
 		}
 		n, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil || n <= 0 {
-			return fmt.Errorf("tg_api_id 应为正整数，得到 %q", val)
+		if err != nil || n < 0 {
+			return fmt.Errorf("tg_api_id 应为非负整数（0 = 关闭入群时间回查），得到 %q", val)
 		}
 		c.TGAPIID = n
 	case "tg_api_hash":

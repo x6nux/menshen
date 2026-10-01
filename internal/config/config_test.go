@@ -190,3 +190,39 @@ func TestMissingFileWithoutEnvStillFails(t *testing.T) {
 		t.Error("既没有文件也没有环境变量时应当报错")
 	}
 }
+
+// TestTGAPIDefaults：tg_api_id/tg_api_hash 不配时走内置默认值（入群时间
+// 回查开箱可用）；配了就用自己的；配 0 或空串则关闭这一项。
+func TestTGAPIDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, ""))
+	if err != nil {
+		t.Fatalf("加载配置失败: %v", err)
+	}
+	if cfg.TGAPIID != defaultTGAPIID || cfg.TGAPIHash != defaultTGAPIHash {
+		t.Errorf("不配时应走内置默认值，得到 %d/%q", cfg.TGAPIID, cfg.TGAPIHash)
+	}
+
+	c2, err := Load(writeConfig(t, "tg_api_id: 1234\ntg_api_hash: \"myhash\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.TGAPIID != 1234 || c2.TGAPIHash != "myhash" {
+		t.Errorf("显式配置应生效，得到 %d/%q", c2.TGAPIID, c2.TGAPIHash)
+	}
+
+	c3, err := Load(writeConfig(t, "tg_api_id: 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c3.TGAPIID != 0 {
+		t.Errorf("tg_api_id: 0 应关闭回查，得到 %d", c3.TGAPIID)
+	}
+
+	c4, err := Load(writeConfig(t, "tg_api_id: \"\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c4.TGAPIID != 0 {
+		t.Errorf("空串应关闭回查，得到 %d", c4.TGAPIID)
+	}
+}

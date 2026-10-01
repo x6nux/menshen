@@ -86,8 +86,8 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 		return false, "该群不可用"
 	}
 	if b.Cfg.TGAPIID == 0 || b.Cfg.TGAPIHash == "" {
-		slog.Info("入群时间补全：未配置 tg_api_id/tg_api_hash，跳过", "chat", chatID)
-		return false, "未配置 tg_api_id/tg_api_hash（到 my.telegram.org 申请后填进配置文件）"
+		slog.Info("入群时间补全：回查已关闭（tg_api_id=0/空），跳过", "chat", chatID)
+		return false, "入群时间回查已关闭（配置里 tg_api_id 为 0 或空）"
 	}
 	key := backfillKey(b.BotID(), chatID)
 	if !force {

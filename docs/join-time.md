@@ -45,11 +45,11 @@ curl 的只有 Bot API，而 Bot API 没有入群时间字段。
 | bot token | @BotFather | Bot API 的 URL；MTProto 登录 |
 | api_id / api_hash | my.telegram.org 申请 | MTProto 登录（客户端应用标识） |
 
-补充：`api_id / api_hash` 是**可选**的 —— 只在需要回查历史成员的入群时间时
-才用得到。不配就跳过这类查询（已经记录过的人不受影响，新入群由 `chat_member`
-实时记录）。要用的话建议填自己申请的；自建实例用公开的 Telegram Desktop
-值（`2040` / `b18441a1ff607e10a989891a5462e627`）也能用，但共用同一个
-api_id 有被限流的风险。
+补充：`api_id / api_hash` **不配也能用** —— 服务内置了公开的 Telegram
+Desktop 值（`2040` / `b18441a1ff607e10a989891a5462e627`），只用于回查入群
+时间（新入群由 `chat_member` 实时记录，其余功能与它无关）。建议换成自己
+申请的（my.telegram.org，免费）：共用公开值会被限流。想彻底关掉回查
+（不发起任何 MTProto 连接），把 `tg_api_id` 配成 `0` 或空串。
 
 ## 2. Bot API（curl 可调）
 
