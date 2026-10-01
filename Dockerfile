@@ -8,6 +8,8 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
+# 半成品构建尽早失败：没有 index.html 的话 go:embed 出来的也是坏产物。
+RUN test -f /internal/panel/webdist/index.html
 
 # 构建阶段固定跑在构建机的原生架构上，靠 GOOS/GOARCH 交叉编译出目标架构：
 # 纯 Go 交叉编译只要几秒，而让 arm64 走 QEMU 模拟整个 go build 要慢十几倍。

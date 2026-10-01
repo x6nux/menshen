@@ -35,6 +35,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web --no-audit --no-fund
+      - run: npm --prefix web run lint
       - run: npm --prefix web run typecheck
       - run: npm --prefix web run build
       - name: gofmt
@@ -45,9 +46,11 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      # 不带 tag：走 miniapp_stub.go 的占位路径，503 分支由测试覆盖。
+      - run: go test ./...
       # 带 tag：嵌入上面构建好的前端产物，覆盖托管逻辑与产物内容。
       - run: go test -tags miniapp ./...
-      # 不带 tag：走 miniapp_stub.go 的占位路径，验证无产物的仓库照常编译。
+      # 不带 tag 的构建：验证无产物的仓库照常编译。
       - run: go build ./...
       # 版本号写死在 main.go，tag 只是发布动作。两者不一致的话，镜像叫 2.3.0，
       # -version 却打印旧版本号，线上排查时会被它误导。

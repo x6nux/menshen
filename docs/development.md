@@ -20,7 +20,7 @@ go vet ./...
 ## 前端（Mini App，web/）
 
 Mini App 是独立的 React + Vite 工程（`web/`），构建产物由 Go 在 `/miniapp` 托管。
-需要 Node ≥ 22：
+需要 Node ≥ 22.12（Vite 8 的下限）：
 
 ```bash
 npm --prefix web install          # 安装依赖

@@ -1117,3 +1117,109 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 		t.Errorf("SPA 回退应 200 且含 id=\"root\"，得到 %d", w.Code)
 	}
 }
+
+// TestMiniAppRouteBoundaries：路由规范化、HEAD 与 405 Allow 的边界。
+// 资产相关子用例只在有产物时跑（untagged 或未构建时没有真实资产可指），
+// 页面/方法边界在两条路径下都跑。
+func TestMiniAppRouteBoundaries(t *testing.T) {
+	env := newMiniEnv(t)
+	do := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		w := httptest.NewRecorder()
+		env.h.ServeHTTP(w, req)
+		return w
+	}
+
+	// 页面路由只收 GET/HEAD，405 要带 Allow。
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/miniapp"},
+		{http.MethodPost, "/miniapp/classic"},
+		{http.MethodDelete, "/miniapp/xxx"},
+	} {
+		w := do(tc.method, tc.path)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s 应 405，得到 %d", tc.method, tc.path, w.Code)
+		}
+		if allow := w.Header().Get("Allow"); !strings.Contains(allow, "GET") ||
+			!strings.Contains(allow, "HEAD") {
+			t.Errorf("%s %s 的 Allow 应含 GET/HEAD，得到 %q", tc.method, tc.path, allow)
+		}
+	}
+
+	// API 只收 POST：GET 405 且 Allow 只有 POST。
+	if w := do(http.MethodGet, "/miniapp/api"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /miniapp/api 应 405，得到 %d", w.Code)
+	} else if allow := w.Header().Get("Allow"); allow != http.MethodPost {
+		t.Errorf("GET /miniapp/api 的 Allow 应为 POST，得到 %q", allow)
+	}
+	// 空 op 的 POST：鉴权通过后仍是未知操作 404，不能落入 SPA 回退。
+	if w := miniDo(t, env.h, testutil.TestToken, env.adminInit(),
+		testutil.TestBotID, "", nil); w.Code != http.StatusNotFound {
+		t.Errorf("POST /miniapp/api/ 应 404，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// HEAD 页面：只写头不写 body（入口页有无产物都成立）。
+	if w := do(http.MethodHead, "/miniapp"); w.Body.Len() != 0 {
+		t.Errorf("HEAD /miniapp 不应有 body，得到 %d 字节", w.Body.Len())
+	}
+	if w := do(http.MethodHead, "/miniapp/classic"); w.Code != http.StatusOK {
+		t.Errorf("HEAD /miniapp/classic 应 200，得到 %d", w.Code)
+	} else if w.Body.Len() != 0 {
+		t.Errorf("HEAD /miniapp/classic 不应有 body，得到 %d 字节", w.Body.Len())
+	}
+
+	dist, ok := miniAppDistFS()
+	if !ok {
+		// 无产物：没有真实资产可指，页面/方法边界已覆盖。
+		return
+	}
+	assets, err := fs.Glob(dist, "assets/*")
+	if err != nil || len(assets) == 0 {
+		t.Logf("产物里没有 assets/*（%v %v），跳过资产子用例", assets, err)
+		return
+	}
+	asset := assets[0]
+
+	// .. 与编码的 .. 都不能逃出 assets（含 .. 的路径一律 404）。
+	for _, bad := range []string{
+		"/miniapp/assets/../index.html",
+		"/miniapp/assets/%2e%2e%2findex.html",
+	} {
+		if w := do(http.MethodGet, bad); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s 应 404，得到 %d", bad, w.Code)
+		}
+	}
+
+	// // 归一：/miniapp//assets/x 就是 /miniapp/assets/x。
+	if w := do(http.MethodGet, "/miniapp//"+asset); w.Code != http.StatusOK {
+		t.Errorf("GET /miniapp//%s 应 200，得到 %d", asset, w.Code)
+	}
+
+	// HEAD 资产：200、body 空、immutable。
+	w := do(http.MethodHead, "/miniapp/"+asset)
+	if w.Code != http.StatusOK {
+		t.Errorf("HEAD /miniapp/%s 应 200，得到 %d", asset, w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("HEAD /miniapp/%s 不应有 body，得到 %d 字节", asset, w.Body.Len())
+	}
+	if got := w.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("HEAD 资产应 immutable，得到 %q", got)
+	}
+
+	// 资产只收 GET/HEAD。
+	w = do(http.MethodPost, "/miniapp/assets/x")
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /miniapp/assets/x 应 405，得到 %d", w.Code)
+	}
+	if allow := w.Header().Get("Allow"); !strings.Contains(allow, "GET") ||
+		!strings.Contains(allow, "HEAD") {
+		t.Errorf("资产 405 的 Allow 应含 GET/HEAD，得到 %q", allow)
+	}
+
+	// HEAD SPA 回退：只写头不写 body。
+	w = do(http.MethodHead, "/miniapp/xxx")
+	if w.Code != http.StatusOK || w.Body.Len() != 0 {
+		t.Errorf("HEAD SPA 回退应 200 且无 body，得到 %d/%d 字节", w.Code, w.Body.Len())
+	}
+}

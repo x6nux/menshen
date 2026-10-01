@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,31 +37,38 @@ const miniBotIDHeader = "X-Bot-Id"
 // MiniAppHandler 返回 /miniapp 的处理器；由 main 组合进 HTTP 服务。
 //
 // 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
-//   - GET  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
-//   - GET  /miniapp/classic   → 旧版内联页面（验收对照期保留，之后删除）
-//   - GET  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
-//   - GET  /miniapp/<其他>     → SPA 回退到入口页（无产物则 404）
-//   - POST /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
+//   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
+//   - GET/HEAD  /miniapp/classic   → 旧版内联页面（验收对照期保留，之后删除）
+//   - GET/HEAD  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
+//   - GET/HEAD  /miniapp/<其他>     → SPA 回退到入口页（无产物则 404）
+//   - POST      /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
 func MiniAppHandler(sh *core.Shared) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := strings.TrimRight(r.URL.Path, "/")
+		raw := r.URL.Path
+		// 含 .. 的路径一律 404：path.Clean 会把 .. 解析到 assets 之外
+		// （/miniapp/assets/../index.html → /miniapp/index.html），那样它
+		// 就从 SPA 回退拿到入口页了。fs 层同样拒绝这类名字（fs.ValidPath）。
+		if containsDotDot(raw) {
+			http.NotFound(w, r)
+			return
+		}
+		// path.Clean 归一 //、尾斜杠与 . 段：/miniapp//assets/x 与
+		// /miniapp/assets/x、/miniapp/ 与 /miniapp 都是同一路由。
+		p := path.Clean(raw)
 		switch {
 		case p == "/miniapp":
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			if !allowPageMethod(w, r) {
 				return
 			}
-			miniAppIndex(w)
+			miniAppIndex(w, r)
 		case p == "/miniapp/classic":
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			if !allowPageMethod(w, r) {
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-store")
-			fmt.Fprint(w, miniAppHTML)
+			writeHTML(w, r, http.StatusOK, miniAppHTML)
 		case p == "/miniapp/api" || strings.HasPrefix(p, "/miniapp/api/"):
 			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
@@ -70,14 +78,14 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 			}
 			miniAPI(sh, w, r, op)
 		case p == "/miniapp/assets" || strings.HasPrefix(p, "/miniapp/assets/"):
-			if r.Method != http.MethodGet {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			miniAppAsset(w, r)
+			miniAppAsset(w, r, p)
 		case strings.HasPrefix(p, "/miniapp/"):
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			if !allowPageMethod(w, r) {
 				return
 			}
 			// 自研导航栈不写 URL，回退只为兜住刷新与外链；没有产物就没有页面可回退。
@@ -85,11 +93,46 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
-			miniAppIndex(w)
+			miniAppIndex(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// containsDotDot 报告路径里是否有 .. 段（与 net/http 的同名判断一致）。
+func containsDotDot(p string) bool {
+	if !strings.Contains(p, "..") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// allowPageMethod 校验页面路由的方法（GET/HEAD），否则写 405 与 Allow 头。
+func allowPageMethod(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	w.Header().Set("Allow", "GET, HEAD")
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
+}
+
+// writeHTML 输出一段 HTML；HEAD 只写头不写 body（net/http 对直接 Write 的
+// 响应不会替我们拦 body，httptest 里也看得到）。
+func writeHTML(w http.ResponseWriter, r *http.Request, status int, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		fmt.Fprint(w, body)
+	}
 }
 
 // miniAppMissingHTML 是产物缺失时的占位页：文案直接给出构建方式，
@@ -110,13 +153,10 @@ const miniAppMissingHTML = `<!doctype html>
 </html>`
 
 // miniAppIndex 输出前端入口页；产物缺失时返回 503 与构建提示。
-func miniAppIndex(w http.ResponseWriter) {
+func miniAppIndex(w http.ResponseWriter, r *http.Request) {
 	dist, ok := miniAppDistFS()
 	if !ok {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprint(w, miniAppMissingHTML)
+		writeHTML(w, r, http.StatusServiceUnavailable, miniAppMissingHTML)
 		return
 	}
 	index, err := fs.ReadFile(dist, "index.html")
@@ -124,21 +164,19 @@ func miniAppIndex(w http.ResponseWriter) {
 		http.Error(w, "index.html 读取失败", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(index)
+	writeHTML(w, r, http.StatusOK, string(index))
 }
 
-// miniAppAsset 输出 /miniapp/assets/* 下的静态资源。只服务 fs.Stat 命中
-// 且为普通文件的路径：目录（含 /miniapp/assets/）与缺失一律 404，
-// 不允许把产物目录列举出去。文件名带内容哈希，可以长期强缓存。
-func miniAppAsset(w http.ResponseWriter, r *http.Request) {
+// miniAppAsset 输出 /miniapp/assets/* 下的静态资源。p 是 path.Clean 后的
+// 路径；只服务 fs.Stat 命中且为普通文件的路径：目录（含 /miniapp/assets/）
+// 与缺失一律 404，不允许把产物目录列举出去。文件名带内容哈希，可以长期强缓存。
+func miniAppAsset(w http.ResponseWriter, r *http.Request, p string) {
 	dist, ok := miniAppDistFS()
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	name := strings.TrimPrefix(strings.TrimRight(r.URL.Path, "/"), "/miniapp/")
+	name := strings.TrimPrefix(p, "/miniapp/")
 	info, err := fs.Stat(dist, name)
 	if err != nil || info.IsDir() {
 		http.NotFound(w, r)

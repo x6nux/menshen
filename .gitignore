@@ -24,6 +24,4 @@ CLAUDE.md
 # 前端（web/）：依赖与构建产物都不入库；产物由 Docker/CI 或本地
 # npm --prefix web run build 生成，带 -tags miniapp 编译时嵌入 Go 二进制
 web/node_modules/
-web/.vite/
-web/coverage/
 internal/panel/webdist/

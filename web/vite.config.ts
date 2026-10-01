@@ -5,6 +5,9 @@ import { defineConfig } from 'vitest/config'
 // 开发服务器也走同一路径，保证 dev 与线上引用资源的方式一致。
 export default defineConfig({
   base: '/miniapp/',
+  // 约定静态资源只走 src 的 import（进 assets/），不设 public 目录：
+  // 产物根下多出文件的话，会被 /miniapp/<其他> 的 SPA 回退遮蔽。
+  publicDir: false,
   plugins: [react()],
   build: {
     // 产物直接落到 Go 侧 go:embed 的目录；该目录不入库（见 .gitignore），

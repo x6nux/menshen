@@ -1,18 +1,14 @@
-# Logs
-logs
-*.log
+# 依赖与本地文件（构建产物在 web/ 之外：../internal/panel/webdist，由根 .gitignore 忽略）
+node_modules
+*.local
+
+# 包管理器调试日志
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# 编辑器目录与文件
 .vscode/*
 !.vscode/extensions.json
 .idea
