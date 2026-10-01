@@ -357,12 +357,12 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			kb = kbWithNav(kb, fmt.Sprintf(":%d:%d", uid, page))
 			b.Edit(chatID, msgID, text,
 				tg.KBAppend(kb, [][2]string{{"◀️ 返回列表",
-					fmt.Sprintf("a:ad:ul:%d:%d", uid, page)}}))
+					userLogsCB(uid, page, false)}}))
 			return
 		}
 		b.Send(chatID, text, kb)
 
-	case "ul": // a:ad:ul:<uid>:<page> —— 某人的判定记录列表
+	case "ul": // a:ad:ul:<uid>:<page>[:all] —— 某人的资料卡 + 判定记录
 		if len(parts) < 5 {
 			b.AnswerCallback(q.ID, "参数缺失")
 			return
@@ -373,8 +373,9 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "参数无效")
 			return
 		}
+		all := len(parts) > 5 && parts[5] == "all"
 		b.AnswerCallback(q.ID, "")
-		showUserLogs(b, chatID, msgID, q.From.ID, uid, int(page))
+		showUserLogs(b, chatID, msgID, q.From.ID, uid, int(page), all)
 
 	case "ok", "fp", "del", "mute", "ban":
 		if len(parts) < 4 {
@@ -598,29 +599,57 @@ func ShowLogCard(b *core.Bot, chatID, uid, id int64) {
 	b.Send(chatID, text, kb)
 }
 
-// ShowUserLogs 渲染某人的判定记录列表（/user <uid>）。
+// ShowUserLogs 渲染某人的资料卡与判定记录（/user <uid>）。
 func ShowUserLogs(b *core.Bot, chatID, uid, target int64) {
-	showUserLogs(b, chatID, 0, uid, target, 1)
+	showUserLogs(b, chatID, 0, uid, target, 1, false)
+}
+
+// userLogsCB 拼「某人的资料卡」回调：filter 为真时连未处置的一起列。
+func userLogsCB(uid, page int64, all bool) string {
+	s := fmt.Sprintf("a:ad:ul:%d:%d", uid, page)
+	if all {
+		s += ":all"
+	}
+	return s
 }
 
 const userLogsPerPage = 10
 
-// showUserLogs 渲染列表并原地编辑（msgID 为 0 时新发一条）。
-func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
+// showUserLogs 渲染资料卡与判定记录列表并原地编辑（msgID 为 0 时新发一条）。
+//
+// 默认只列**被处置过**的记录（见 antiad.processedCond）：管理员查一个人时
+// 先要看他被罚过什么，而不是他所有被判过正常的话。点切换可以看全部。
+func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all bool) {
 	page = clampPageInt(page)
 	where, args := managedBotsClause(b, uid)
 	if where == " AND 0" {
 		b.EditOrSend(chatID, msgID, "你名下没有机器人。", nil)
 		return
 	}
+	snap := b.Cache.Snap()
 
+	// 资料卡：昵称/用户名/简介要发一次 getChat（带缓存）。
+	name, username, bio := antiad.UserProfile(b, target)
+	d := antiad.UserDossier{UID: target, Name: name, Username: username, Bio: bio}
+	if rec := snap.Bots[b.BotID()]; rec != nil {
+		d = antiad.LoadUserDossier(b.Shared, b.BotID(), target)
+		d.Name, d.Username, d.Bio = name, username, bio
+	}
+
+	countQ := `SELECT COUNT(*) FROM antiad_log WHERE user_id=?` + where
+	if !all {
+		countQ += ` AND ` + antiad.ProcessedCond
+	}
 	var total int64
-	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
-		WHERE user_id=?`+where, append([]any{target}, args...)...).Scan(&total)
+	b.Store.Read.QueryRow(countQ, append([]any{target}, args...)...).Scan(&total)
 
-	rows, err := b.Store.Read.Query(`SELECT id,chat_id,verdict,confidence,ad_kind,
-		action,created_at FROM antiad_log WHERE user_id=?`+where+
-		` ORDER BY id DESC LIMIT ? OFFSET ?`,
+	listQ := `SELECT id,chat_id,verdict,confidence,ad_kind,action,created_at
+		FROM antiad_log WHERE user_id=?` + where
+	if !all {
+		listQ += ` AND ` + antiad.ProcessedCond
+	}
+	listQ += ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	rows, err := b.Store.Read.Query(listQ,
 		append(append([]any{target}, args...), userLogsPerPage, (page-1)*userLogsPerPage)...)
 	if err != nil {
 		b.Send(chatID, "查询失败。", nil)
@@ -645,9 +674,17 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
 	}
 	rows.Close()
 
-	loc := b.Cache.Snap().Location()
+	loc := snap.Location()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "📋 <b>用户 %d 的判定记录</b>\n共 %d 条\n\n", target, total)
+	sb.WriteString(antiad.UserDossierText(b, d, loc))
+	sb.WriteString("\n")
+	if all {
+		fmt.Fprintf(&sb, "📋 <b>判定记录（全部 %d 条）</b>\n\n", total)
+	} else {
+		fmt.Fprintf(&sb, "📋 <b>处置记录（%d 条）</b>\n"+
+			"<i>默认只列被处置过的；点下方按钮可看全部 %d 条。</i>\n\n",
+			total, d.Total)
+	}
 	var kb [][][2]string
 	for _, it := range list {
 		fmt.Fprintf(&sb, "• <code>#%d</code> %s · %s · %s\n",
@@ -665,13 +702,20 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int) {
 	if pages > 1 {
 		nav := [][2]string{}
 		if page > 1 {
-			nav = append(nav, [2]string{"◀️", fmt.Sprintf("a:ad:ul:%d:%d", target, page-1)})
+			nav = append(nav, [2]string{"◀️", userLogsCB(target, int64(page-1), all)})
 		}
 		nav = append(nav, [2]string{fmt.Sprintf("%d/%d", page, pages), "a:noop"})
 		if page < pages {
-			nav = append(nav, [2]string{"▶️", fmt.Sprintf("a:ad:ul:%d:%d", target, page+1)})
+			nav = append(nav, [2]string{"▶️", userLogsCB(target, int64(page+1), all)})
 		}
 		kb = append(kb, nav)
+	}
+	if all {
+		kb = append(kb, [][2]string{{"🙈 只看被处置过的",
+			userLogsCB(target, 1, false)}})
+	} else {
+		kb = append(kb, [][2]string{{"👀 显示全部判定记录",
+			userLogsCB(target, 1, true)}})
 	}
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(kb...))
 }

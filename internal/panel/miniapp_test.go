@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"menshen/internal/core"
 	"menshen/internal/testutil"
 )
 
@@ -559,5 +560,93 @@ func TestMiniAppProfileOKListAndRevoke(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("撤销后不该还有行，剩 %d", n)
+	}
+}
+
+// TestMiniAppUserDossier：Mini App 的用户页接口要给出资料卡（昵称/用户名/
+// ID/简介/发言统计）与判定记录，且默认只列被处置过的（filter=all 才全列）。
+func TestMiniAppUserDossier(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	botID := b.BotID()
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getChat"] = `{"ok":true,"result":{"first_name":"白展堂",` +
+		`"username":"tgdsBZT","bio":"我的TG频道 @tgds100"}}`
+
+	paid := seedMiniLog(t, b, 555, "广告原文", "deleted_muted")
+	clean := seedMiniLog(t, b, 555, "日常闲聊", "none")
+
+	// 默认：只看被处置过的。
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "user",
+		map[string]any{"user_id": 555, "bot_id": botID, "filter": "act"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("user 接口应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		UserID    int64  `json:"user_id"`
+		Name      string `json:"name"`
+		Username  string `json:"username"`
+		Bio       string `json:"bio"`
+		Total     int64  `json:"total"`
+		Processed int64  `json:"processed"`
+		Logs      []struct {
+			ID int64 `json:"id"`
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.UserID != 555 || out.Name != "白展堂" || out.Username != "tgdsBZT" ||
+		!strings.Contains(out.Bio, "tgds100") {
+		t.Errorf("资料卡字段不对：%+v", out)
+	}
+	if out.Total != 2 || out.Processed != 1 {
+		t.Errorf("统计应为 共2/处置1，得到 共%d/处置%d", out.Total, out.Processed)
+	}
+	if len(out.Logs) != 1 || out.Logs[0].ID != paid {
+		t.Errorf("默认只该给被处置过的 #%d，得到 %+v", paid, out.Logs)
+	}
+
+	// filter=all：两条都列。
+	w = miniDo(t, env.h, testutil.TestToken, env.adminInit(), botID, "user",
+		map[string]any{"user_id": 555, "bot_id": botID, "filter": "all"})
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Logs) != 2 {
+		t.Errorf("filter=all 应列出两条，得到 %+v", out.Logs)
+	}
+	_ = clean
+}
+
+// seedMiniLog 落一条流水（Mini App 测试用）。
+func seedMiniLog(t *testing.T, b *core.Bot, uid int64, text, action string) int64 {
+	t.Helper()
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log (chat_id,user_id,message_id,text,
+		verdict,confidence,decider,ad_kind,action,reason,created_at,bot_id)
+		VALUES (-100,?,7,?,'ad',0.95,'systemone','scam',?,'',0,?)`, uid, text, action, b.BotID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	if action == "none" {
+		if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET verdict='clean' WHERE id=?`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return id
+}
+
+// TestMiniAppUserViewWired：用户页要有入口（记录列表与详情里的 uid 可点）与
+// 默认只看处置记录的过滤变量。
+func TestMiniAppUserViewWired(t *testing.T) {
+	for _, want := range []string{
+		"function viewUser(", "loadUserLogs(", "USERF = 'act'",
+		"'user:'", "api('user',", "只看被处置过的", "全部判定记录",
+	} {
+		if !strings.Contains(miniAppHTML, want) {
+			t.Errorf("Mini App 缺少 %q", want)
+		}
 	}
 }

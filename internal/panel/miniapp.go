@@ -191,6 +191,8 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 		miniWhitelist(sh, w, uid, body)
 	case "digest":
 		miniDigest(sh, w, uid, body)
+	case "user":
+		miniUser(sh, w, uid, body)
 	case "logs":
 		miniLogs(sh, w, uid, body)
 	case "log":
@@ -1211,6 +1213,67 @@ func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at i
 	out["cost_text"] = billing.FormatUSDFine(cost)
 	out["created_at"] = at
 	out["view_url"] = viewURL
+}
+
+// miniUser 返回一个人的资料卡与判定记录（Mini App 的用户页）。
+//
+// 默认只给被处置过的记录（antiad.ProcessedCond）：管理员点进一个人的页面，
+// 先要看他被罚过什么，而不是他所有被判过正常的话；点切换看全部。
+func miniUser(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	target := miniInt(body, "user_id")
+	if target == 0 {
+		miniErr(w, http.StatusBadRequest, "缺少 user_id")
+		return
+	}
+	all := miniStr(body, "filter") == "all"
+	page := clampPage(miniInt(body, "page"))
+	botID := miniInt(body, "bot_id")
+	if botID == 0 {
+		botID, _ = strconv.ParseInt(w.Header().Get(""), 10, 64)
+	}
+	if botID == 0 || !miniCanManageBot(sh, uid, botID) {
+		miniErr(w, http.StatusForbidden, "无权查看该 bot 的数据")
+		return
+	}
+
+	d := antiad.LoadUserDossier(sh, botID, target)
+	// 昵称/用户名/简介：有活着的实例就走 getChat（带缓存），查不到留空。
+	if inst, live := lookupBot(sh, botID); live {
+		d.Name, d.Username, d.Bio = antiad.UserProfile(inst, target)
+	}
+
+	where, args := `bot_id=? AND user_id=?`, []any{botID, target}
+	if !all {
+		where += ` AND ` + antiad.ProcessedCond
+	}
+	var total int64
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE `+where, args...).Scan(&total)
+
+	rows := antiad.LoadUserLogs(sh, botID, target, !all, 20, int((page-1)*20))
+	logs := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		logs = append(logs, map[string]any{
+			"id": r.ID, "chat_id": r.ChatID, "verdict": r.Verdict,
+			"confidence": r.Conf, "kind": r.Kind, "action": r.Action,
+			"reason": r.Reason, "text": r.Text, "created_at": r.At,
+		})
+	}
+	miniOK(w, map[string]any{
+		"user_id": target, "name": d.Name, "username": d.Username, "bio": d.Bio,
+		"kept": d.Kept, "msgs": d.Msgs, "hits": d.Hits, "chats": d.ChatCount,
+		"first_seen": d.FirstSeen, "last_msg": d.LastMsg,
+		"total": d.Total, "processed": d.Processed, "shown": total,
+		"page": page, "filter": map[bool]string{true: "all", false: "act"}[all],
+		"logs": logs,
+	})
+}
+
+// lookupBot 取一个在跑的实例（没有就返回 false：资料卡退化成只有数据库里的）。
+func lookupBot(sh *core.Shared, botID int64) (*core.Bot, bool) {
+	if sh.Reg == nil {
+		return nil, false
+	}
+	return sh.Reg.LookupID(botID)
 }
 
 func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {

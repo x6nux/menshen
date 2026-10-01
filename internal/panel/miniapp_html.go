@@ -111,6 +111,8 @@ var LSUB = 'own', UPADD = false, MDADD = false;
 // LOGF/LOGQ/LOGPAGE 是记录页的筛选、搜索与页码；APF/APPAGE 同理给申诉。
 // 记录默认筛「已删除」：被判广告删掉的才是要盯的，其余靠切换筛选看。
 var LOGF = 'deleted', LOGQ = '', LOGPAGE = 1;
+// 用户页的过滤与分页：默认只看被处置过的记录（看一个人先看他被罚过什么）。
+var USERF = 'act', USERP = 1;
 var APF = '', APPAGE = 1;
 var ADDCHAT = false;
 var TABS = [['overview','概览'],['bots','机器人'],['chats','群组'],['upstreams','上游'],
@@ -701,7 +703,68 @@ function logact(a,id){
 function apact(a,id){ act('appealact',{id:id,action:a},'已执行'); }
 
 /* ---- 记录：筛选 + 搜索 + 列表 → 详情可操作 ---- */
+/* 用户页：资料卡 + 处置记录（默认只看被处置过的，可切全部）。 */
+function viewUser(u){
+  var h=backRow()+'<div class="card" id="usercard">加载中…</div>'+
+    '<div class="card"><div class="chips" id="userfilter"></div>'+
+    '<div id="userlogs" style="margin-top:8px">加载中…</div>'+
+    '<div class="grid" style="margin-top:8px">'+
+    '<button class="b g" onclick="pageUserLogs(-1)">上一页</button>'+
+    '<button class="b g" onclick="pageUserLogs(1)">下一页</button></div></div>';
+  loadUserLogs(u);
+  return h;
+}
+function loadUserLogs(u){
+  var all=(USERF=='all');
+  api('user',{user_id:u,filter:USERF,page:USERP}).then(function(d){
+    S.UD=d;
+    var c=document.getElementById('usercard');
+    if(c){
+      var kv=[]; kv.push(['用户 ID','<code>'+d.user_id+'</code>']);
+      if(d.username) kv.push(['用户名','@'+esc(d.username)]);
+      kv.push(['昵称', d.name?esc(d.name):'（查不到）']);
+      kv.push(['个人简介', d.bio?esc(d.bio):'（空或查不到）']);
+      kv.push(['发言','留底 '+d.kept+' 条 ｜ 画像累计 '+d.msgs+' 条 ｜ 历史命中 '+d.hits+' 次']);
+      kv.push(['群组', d.chats+' 个 ｜ 首见 '+fmtTS(d.first_seen)+' ｜ 最近发言 '+fmtTS(d.last_msg)]);
+      kv.push(['判定','共 '+d.total+' 条，其中被处置过 '+d.processed+' 条']);
+      c.innerHTML='<h3>用户资料</h3>'+kv.map(function(r){
+        return '<div class="row"><span class="k">'+r[0]+'</span><span class="mono">'+r[1]+'</span></div>';
+      }).join('');
+    }
+    var f=document.getElementById('userfilter');
+    if(f){
+      f.innerHTML=[['act','只看被处置过的'],['all','全部判定记录']].map(function(x){
+        return '<button class="'+(USERF==x[0]?'on':'')+'" onclick="USERF=\''+x[0]+
+          '\';USERP=1;loadUserLogs('+u+')">'+x[1]+'</button>';
+      }).join('');
+    }
+    var box=document.getElementById('userlogs');
+    if(box){
+      box.innerHTML=(d.logs||[]).map(userLogRow).join('')||'<div class="hint">（没有记录）</div>';
+    }
+  }).catch(function(e){
+    var c=document.getElementById('usercard');
+    if(c) c.textContent='❌ '+e.message;
+  });
+}
+function userLogRow(l){
+  return '<div class="row item" onclick="go(\'logs\',\'log:'+l.id+'\')">'+
+    '<span><span class="mono">#'+l.id+' · '+fmtTS(l.created_at)+'</span> '+
+    '<span class="badge '+(l.verdict=='ad'?'no':'ok')+'">'+verdictLabel(l.verdict)+'</span>'+
+    '<span class="badge">'+esc(actionLabel(l.action))+'</span>'+
+    '<div class="hint">群 '+l.chat_id+' · '+Math.round(l.confidence*100)+'%</div>'+
+    (l.text?'<div class="hint">'+esc(String(l.text).slice(0,50))+'</div>':'')+
+    '</span><span class="chev">›</span></div>';
+}
+function pageUserLogs(d){ USERP=Math.max(1,USERP+d); loadUserLogs(S.UD?S.UD.user_id:0); }
+
 function viewLogs(){
+  if(SUB.indexOf('user:')==0){
+    var u=+SUB.slice(5);
+    if(S.UD && S.UD.user_id==u) return viewUser(u);
+    USERP=1;
+    return viewUser(u);
+  }
   if(SUB.indexOf('log:')==0){
     var id=+SUB.slice(4);
     // 详情总是走单独的接口：流水正文为空时后端会回查全量留底，
@@ -738,7 +801,9 @@ function loadLogs(){
         '<span><span class="mono">#'+l.id+' · '+fmtTS(l.created_at)+'</span> '+
         '<span class="badge '+(l.verdict=='ad'?'no':'ok')+'">'+verdictLabel(l.verdict)+'</span>'+
         '<span class="badge">'+esc(actionLabel(l.action))+'</span>'+
-        '<div class="hint">uid '+l.user_id+' · 群 '+l.chat_id+' · '+
+        '<span class="hint" onclick="event.stopPropagation();go(\'logs\',\'user:'+l.user_id+'\')">'+
+        'uid '+l.user_id+'（资料）</span>'+
+        '<div class="hint">群 '+l.chat_id+' · '+
         Math.round(l.confidence*100)+'% · '+esc(l.cost_text)+'</div>'+
         (l.text?'<div class="hint">'+esc(l.text.slice(0,50))+'</div>':'')+
         '</span><span class="chev">›</span></div>';
@@ -751,7 +816,9 @@ function viewLogDetail(l){
     (l.verdict=='ad'?'no':'ok')+'">'+verdictLabel(l.verdict)+'</span></h3>'+
     '<div class="row"><span class="k">时间</span><span class="mono">'+fmtTS(l.created_at)+'</span></div>'+
     '<div class="row"><span class="k">群 / 用户</span><span class="mono">'+l.chat_id+
-    (chatTitleOf(l.chat_id)?' · '+esc(chatTitleOf(l.chat_id)):'')+' / uid '+l.user_id+'</span></div>'+
+    (chatTitleOf(l.chat_id)?' · '+esc(chatTitleOf(l.chat_id)):'')+
+    ' / <a href="#" onclick="event.preventDefault();go(\'logs\',\'user:'+l.user_id+'\')">uid '+
+    l.user_id+'（资料）</a></span></div>'+
     '<div class="row"><span class="k">判定</span><span>'+verdictLabel(l.verdict)+' · '+
     Math.round(l.confidence*100)+'%'+(l.decider?' · '+esc(l.decider):'')+
     (l.kind?' · '+esc(kindLabel(l.kind)):'')+'</span></div>'+

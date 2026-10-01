@@ -219,3 +219,61 @@ func TestFalsePositiveLiftsRecordOwnerGban(t *testing.T) {
 		t.Errorf("理由里应注明撤了名单，得到 %q", reason)
 	}
 }
+
+// TestUserCardShowsProfileAndProcessedOnly：/user 要给出资料卡（昵称/用户名/
+// ID/简介/发言数/首见/最近/判定统计），并且**默认只列被处置过的**记录；
+// 点切换才连未处置的一起列出来。
+func TestUserCardShowsProfileAndProcessedOnly(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	// TG 侧的资料（getChat）：昵称、用户名、简介。
+	fake.Resp["getChat"] = `{"ok":true,"result":{"first_name":"白展堂",` +
+		`"username":"tgdsBZT","bio":"我的TG频道 @tgds100 👉私信找我"}}`
+	// 两条：一条被处置、一条只是被判过（正常）。
+	paid := seedLog(t, b, 555, "广告原文", "deleted_muted")
+	clean := seedLog(t, b, 555, "日常闲聊", "none")
+	if _, err := b.Store.Write.Exec(`UPDATE antiad_log SET verdict='clean' WHERE id=?`, clean); err != nil {
+		t.Fatal(err)
+	}
+
+	ShowUserLogs(b, 1, 1, 555)
+	p := fake.LastCall("sendMessage")
+	if p == nil {
+		t.Fatal("应发出资料卡")
+	}
+	text, _ := p["text"].(string)
+	for _, want := range []string{"用户资料", "555", "白展堂", "tgdsBZT",
+		"我的TG频道", "留底", "历史命中", "被处置过"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("资料卡应包含 %q：\n%s", want, text)
+		}
+	}
+	// 默认只看处置过的：被罚过的那条在、只是判过正常的那条不在。
+	if !strings.Contains(text, fmt.Sprintf("#%d", paid)) {
+		t.Errorf("默认应列出被处置过的记录 #%d：\n%s", paid, text)
+	}
+	if strings.Contains(text, fmt.Sprintf("#%d", clean)) {
+		t.Errorf("默认不该列未处置的记录 #%d", clean)
+	}
+	kb := fmt.Sprint(p["reply_markup"])
+	if !strings.Contains(kb, "a:ad:ul:555:1:all") {
+		t.Errorf("应给出「显示全部判定记录」的切换，得到 %s", kb)
+	}
+
+	// 切换后：全部列出。
+	HandleAdminCallback(b, cb(1, "a:ad:ul:555:1:all"))
+	var all string
+	for _, m := range []string{"editMessageText", "sendMessage"} {
+		for _, c := range fake.Calls(m) {
+			if s, ok := c["text"].(string); ok && strings.Contains(s, "判定记录") {
+				all = s
+			}
+		}
+	}
+	if all == "" {
+		t.Fatal("切换后应编辑出全部列表")
+	}
+	if !strings.Contains(all, fmt.Sprintf("#%d", clean)) ||
+		!strings.Contains(all, fmt.Sprintf("#%d", paid)) {
+		t.Errorf("切换后应同时列出两条记录（#%d、#%d）：\n%s", paid, clean, all)
+	}
+}

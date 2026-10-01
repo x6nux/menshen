@@ -632,7 +632,7 @@ func (b *Bot) registerMiniAppButton() {
 var adminCmds = []map[string]string{
 	{"command": "start", "description": "打开管理面板"},
 	{"command": "log", "description": "查看某条判定记录（/log 记录号）"},
-	{"command": "user", "description": "查看某人的判定记录（/user user_id）"},
+	{"command": "user", "description": "查看某人的资料与处置记录（/user user_id）"},
 	{"command": "white", "description": "把某人加入本 bot 的豁免名单"},
 }
 
