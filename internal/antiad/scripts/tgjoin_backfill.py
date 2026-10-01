@@ -19,8 +19,13 @@ status/permissions/until_date），只有 MTProto 的 channels.getParticipants
   --limit <n>            最多输出多少行（默认全部）
 
 输出：每行 `chat_id\tuser_id\t入群时间(unix)`，只包含能拿到 join date 的
-成员（普通成员与管理员有；群主、被封禁/已退群的人在 MTProto 里是另一类
-记录，那个 date 不是入群时间，跳过）。
+成员：普通成员、管理员，以及**仍在群但被限制部分权限的成员**！
+后面这类在 MTProto 里是 ChannelParticipantBanned，官方注释写的是
+"When was the user banned"，容易让人以为那是限制时间而跳过 —— 实际对
+left=False（还在群里）的记录，date 就是入群时间：拿我们实时记录过入群
+时间的 40 多人交叉验证过（含 4 个「我们处罚过、处罚时间明显晚于入群」
+的对照，date 均等于入群时间而非处罚时间）。只有 left=True（被踢走）
+的记录 date 才是别的语义，跳过。
 """
 import argparse
 import asyncio
@@ -92,6 +97,11 @@ async def main():
             n += 1
             p = getattr(u, "participant", None)
             if isinstance(p, (ChannelParticipant, ChannelParticipantAdmin)):
+                ts = int(p.date.timestamp()) if hasattr(p.date, "timestamp") else int(p.date)
+                out.append("%d\t%d\t%d" % (args.chat, u.id, ts))
+                same += 1
+            elif isinstance(p, ChannelParticipantBanned) and not getattr(p, "left", False):
+                # 受限但仍在本群的成员：date 实测即入群时间（见文件头说明）。
                 ts = int(p.date.timestamp()) if hasattr(p.date, "timestamp") else int(p.date)
                 out.append("%d\t%d\t%d" % (args.chat, u.id, ts))
                 same += 1
