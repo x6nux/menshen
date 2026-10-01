@@ -85,7 +85,7 @@ export function openLink(url: string): void {
   if (!url) return
   const app = tryGetWebApp(defaultGetWebApp)
   if (app?.openLink) app.openLink(url)
-  else if (typeof window !== 'undefined') window.open(url, '_blank')
+  else if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function tryGetWebApp(getter: () => TelegramWebAppLike | undefined): TelegramWebAppLike | undefined {
@@ -116,7 +116,7 @@ function unavailableBridge(botId: string): TelegramBridge {
     backButton: { show: noop, hide: noop, onClick: () => noop },
     openLink: (url) => {
       // 没有 SDK 也要能打开原文查看页。
-      if (typeof window !== 'undefined') window.open(url, '_blank')
+      if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
     },
   }
 }
@@ -173,7 +173,7 @@ export async function initTelegram(options: InitTelegramOptions = {}): Promise<T
     },
     openLink: (url) => {
       if (app.openLink) app.openLink(url)
-      else window.open(url, '_blank')
+      else window.open(url, '_blank', 'noopener,noreferrer')
     },
   }
 }

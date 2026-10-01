@@ -145,7 +145,7 @@ sshpass -p '<密码>' ssh root@<dev-server-ip> \
 | `internal/antiad/appeal_code.go` | 解禁码生成/识别、群内与私聊兑换、白名单写入 |
 | `internal/antiad/adview.go` | 查看页 `v` / 申诉详情页 `apv` |
 | `internal/antiad/gban.go` | 联合封禁三态：全局组 / 专属组 / 群内解封（`gban_own*` 三表） |
-| `internal/panel/miniapp.go` `miniapp_html.go` | Mini App API 与前端；`miniBot` 的 `remove` / `owner` 两个动作 |
+| `internal/panel/miniapp.go` + `web/`（构建产物经 `internal/panel/miniapp_embed.go` go:embed 托管） | Mini App API 与 React 前端；`miniBot` 的 `remove` / `owner` 两个动作 |
 | `internal/core/upstream.go` | 上游改名连带改写、旧模型自动补前缀 |
 | `internal/core/registry.go` | `SetBotOwner` 改派 + 运行中实例同步 |
 | `main.go` | `webRouter`（`_w` → 网页、`/miniapp` → Mini App、其余 → webhook）；启动走 `FinishSetup` |

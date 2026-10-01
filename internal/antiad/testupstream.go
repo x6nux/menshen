@@ -63,11 +63,12 @@ func TestUpstream(ctx context.Context, sh *core.Shared, upstreamID int64) (strin
 	sort.Strings(names)
 	model := names[0]
 
-	// 最小 chat 请求：一句话、最多 1 个 token。判定链路用的
+	// 最小 chat 请求：一句话、最多 8 个 token（不用 1：个别网关对
+	// max_tokens=1 会误报参数错误，8 仍是最小请求量级）。判定链路用的
 	// session_id / 鉴权头由 aiAttempt 统一补上，这里不重复实现。
 	payload := map[string]any{
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
+		"max_tokens": 8,
 	}
 	start := time.Now()
 	r := aiAttempt(ctx, sh, snap, upstream.EPChat, model, up, payload)

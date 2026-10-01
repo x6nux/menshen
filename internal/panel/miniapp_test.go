@@ -1233,11 +1233,14 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 	}
 
 	// 假上游：mode 0 返回最小 chat completion，1 返回 500。收到的请求
-	// （路径/鉴权头/请求体）投进带缓冲 channel，测试端断言不会卡住 handler。
+	// （路径/鉴权头/请求体）投进带缓冲 channel，测试端断言不会卡住 handler；
+	// hits 单独计数，用于断言单次请求（连通测试没有重试）。
 	var mode atomic.Int32
+	var hits atomic.Int32
 	type capturedReq struct{ path, auth, body string }
 	got := make(chan capturedReq, 8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		raw, _ := io.ReadAll(r.Body)
 		got <- capturedReq{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(raw)}
 		if mode.Load() == 1 {
@@ -1331,8 +1334,14 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 	if !strings.Contains(req.body, `"model":"m1"`) {
 		t.Errorf("请求体应带剥掉前缀的模型 ID，得到 %s", req.body)
 	}
+	// 失败路径也必须停在 aiAttempt：走 aiCall 会累计失败计数并可能触发
+	// 上游告警，连通性测试不该污染判定链路的健康度。
+	if n := sh.AIFailStreak.Load(); n != 0 {
+		t.Errorf("连通测试不应计入判定链路的失败计数，AIFailStreak=%d", n)
+	}
 
-	// 成功：200 + ok:true + latency_ms + 「上游名/模型ID」文案。
+	// 成功：200 + ok:true + latency_ms + 「上游名/模型ID」文案，且只发一次请求。
+	hits.Store(0)
 	mode.Store(0)
 	w = call()
 	if w.Code != http.StatusOK {
@@ -1354,5 +1363,8 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 	}
 	if !strings.Contains(req.body, `"messages"`) {
 		t.Errorf("请求体应带 messages，得到 %s", req.body)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("成功用例假上游应只收到 1 次请求（无重试），得到 %d", n)
 	}
 }

@@ -34,7 +34,11 @@ describe('LogDetailPage', () => {
     expect(screen.getByText('uid 555（资料）')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '打开原文查看页' }))
-    expect(openSpy).toHaveBeenCalledWith('https://example.com/log/9812', '_blank')
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://example.com/log/9812',
+      '_blank',
+      'noopener,noreferrer',
+    )
   })
 
   it('四个主操作调用 logact 的参数正确；危险标记需确认；成功 toast 服务端 note', async () => {
