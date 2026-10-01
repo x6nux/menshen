@@ -426,3 +426,28 @@ func TestStartAppealAISingleFlight(t *testing.T) {
 		t.Errorf("重复触发应只跑一次 AI，得到 %d", got)
 	}
 }
+
+// TestUserPayloadNonStaffGoesToOwnAppeal：/check 状态块里的解除深链
+// （?start=user<uid>）是给管理员的；普通用户点进来只落到自己的申诉页，
+// 绝不按深链里的 uid 展示别人的限制状态。
+func TestUserPayloadNonStaffGoesToOwnAppeal(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	// 点击者自己（6002）有一条限制；深链指向的是别人（6001）。
+	if _, err := b.Store.Write.Exec(`INSERT INTO join_mutes
+		(chat_id,user_id,bot_id,reason,notice_msg,attempts,created_at)
+		VALUES (-100,6002,?, '自己的资料写着加微信',0,0,?)`,
+		b.BotID(), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !HandleNonStaffPrivate(b, appealDM(6002), "/start "+UserPayload(6001)) {
+		t.Fatal("user payload 应被申诉入口接管")
+	}
+	text := fmt.Sprint(fake.LastCall("sendMessage")["text"])
+	if !strings.Contains(text, "申诉") || !strings.Contains(text, "-100") {
+		t.Errorf("普通用户应落到自己的申诉页，得到：%s", text)
+	}
+	if strings.Contains(text, "6001") {
+		t.Errorf("不该展示深链里那个人的信息：%s", text)
+	}
+}

@@ -230,6 +230,12 @@ func HandleNonStaffPrivate(b *core.Bot, m *tg.Message, text string) bool {
 	uid := m.From.ID
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
 		payload := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
+		// 联合封禁状态块里的「前往对应 bot 解除」是给管理员用的深链；
+		// 普通用户点进来（群里谁都能看到按钮）落到他自己的申诉页 —— 只认
+		// 账户自己的限制，绝不按深链里的 uid 展示别人的状态。
+		if _, ok := ParseUserPayload(payload); ok {
+			payload = "appeal"
+		}
 		return showAppealEntry(b, m.Chat.ID, uid, payload)
 	}
 	if captureAppealStatement(b, m.Chat.ID, uid, text) {
