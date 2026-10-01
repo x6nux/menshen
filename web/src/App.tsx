@@ -23,10 +23,14 @@ import { BotDetailPage } from './pages/BotDetailPage'
 import { BotsPage } from './pages/BotsPage'
 import { ChatDetailPage } from './pages/ChatDetailPage'
 import { ChatsPage } from './pages/ChatsPage'
+import { ListsPage } from './pages/ListsPage'
 import { LogDetailPage } from './pages/LogDetailPage'
+import { MinePage } from './pages/MinePage'
+import { ModelDetailPage, ModelsPage } from './pages/ModelsPage'
 import { OverviewPage } from './pages/OverviewPage'
-import { Placeholder } from './pages/Placeholder'
 import { RecordsPage } from './pages/RecordsPage'
+import { SettingsPage } from './pages/SettingsPage'
+import { UpstreamDetailPage, UpstreamsPage } from './pages/UpstreamsPage'
 import { UserPage } from './pages/UserPage'
 import { buildMiniTheme } from './theme'
 import { initTelegram } from './telegram'
@@ -186,7 +190,7 @@ function Shell() {
   )
 }
 
-/** renderTabPage 是一级 Tab 的页面映射；我的暂由 T4 实现。 */
+/** renderTabPage 是一级 Tab 的页面映射。 */
 function renderTabPage(tab: TabKey): ReactNode {
   switch (tab) {
     case 'overview':
@@ -197,12 +201,12 @@ function renderTabPage(tab: TabKey): ReactNode {
       return <ChatsPage />
     case 'records':
       return <RecordsPage />
-    default:
-      return <Placeholder name={TAB_NAMES[tab]} />
+    case 'mine':
+      return <MinePage />
   }
 }
 
-/** renderStackPage 渲染导航栈顶的二级页；未实现的页仍走占位。 */
+/** renderStackPage 渲染导航栈顶的二级页。 */
 function renderStackPage(page: Page): ReactNode {
   switch (page.k) {
     case 'bot':
@@ -215,12 +219,23 @@ function renderStackPage(page: Page): ReactNode {
       return <UserPage key={page.id} id={page.id} />
     case 'appeal':
       return <AppealDetailPage key={page.id} id={page.id} />
-    default:
-      return <Placeholder name={PAGE_NAMES[page.k]} />
+    case 'lists':
+      // key 带上 section：白名单 → 联封等分段切换时重挂载，初始化到正确的分段。
+      return <ListsPage key={page.section ?? 'default'} section={page.section} />
+    case 'upstreams':
+      return <UpstreamsPage />
+    case 'upstream':
+      return <UpstreamDetailPage key={page.id} id={page.id} />
+    case 'models':
+      return <ModelsPage />
+    case 'model':
+      return <ModelDetailPage key={page.name} name={page.name} />
+    case 'settings':
+      return <SettingsPage />
   }
 }
 
-/** detailTitle 用列表数据给二级页一个具体标题（bot 名 / 群名），找不到再回退通用名。 */
+/** detailTitle 用列表数据给二级页一个具体标题（bot 名 / 群名 / 上游名），找不到再回退通用名。 */
 function detailTitle(page: Page, state: State): string {
   switch (page.k) {
     case 'bot':
@@ -237,6 +252,10 @@ function detailTitle(page: Page, state: State): string {
       return `用户 uid ${page.id}`
     case 'appeal':
       return `申诉 #${page.id}`
+    case 'upstream':
+      return (state.upstreams ?? []).find((u) => u.id === page.id)?.name ?? PAGE_NAMES.upstream
+    case 'model':
+      return page.name || PAGE_NAMES.model
     default:
       return PAGE_NAMES[page.k]
   }

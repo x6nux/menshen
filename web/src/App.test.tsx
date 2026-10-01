@@ -197,4 +197,29 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /#77/ }))
     expect(await screen.findByText('申诉 #77')).toBeInTheDocument()
   })
+
+  it('我的 Tab：名单/上游/设置的页面栈接线', async () => {
+    const { bridge } = makeBridge()
+    mockInit.mockResolvedValue(bridge)
+    mockApiByOp()
+
+    render(<App />)
+    await screen.findByText('门神')
+
+    fireEvent.click(screen.getByRole('button', { name: '我的' }))
+    expect(await screen.findByText('名单管理')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('上游渠道'))
+    expect(await screen.findByText('demo')).toBeInTheDocument()
+    expect(screen.getByText('https://api.example.com')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    fireEvent.click(await screen.findByText('全局设置'))
+    expect(await screen.findByText('总开关')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    fireEvent.click(await screen.findByText('名单管理'))
+    expect(await screen.findByText('默认豁免（内置，无需配置）')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '资料放行' })).toBeInTheDocument()
+  })
 })

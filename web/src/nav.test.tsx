@@ -28,6 +28,10 @@ function Probe() {
       <div data-testid="stack">{nav.stack.map((p) => p.k).join(',')}</div>
       <button onClick={() => nav.push({ k: 'bot', id: 1 })}>push-bot</button>
       <button onClick={() => nav.push({ k: 'log', id: 9 })}>push-log</button>
+      <button onClick={() => nav.push({ k: 'lists', section: 'white' })}>push-lists-white</button>
+      <button onClick={() => nav.push({ k: 'lists', section: 'gban' })}>push-lists-gban</button>
+      <button onClick={() => nav.push({ k: 'upstream', id: 1 })}>push-upstream</button>
+      <button onClick={() => nav.push({ k: 'upstream', id: 2 })}>push-upstream-2</button>
       <button onClick={() => nav.pop()}>pop</button>
       <button onClick={() => nav.switchTab('chats')}>tab-chats</button>
       <button onClick={() => nav.switchTab('chats', 'bot:1')}>tab-chats-bot</button>
@@ -97,6 +101,26 @@ describe('NavProvider', () => {
     // 栈顶不同，即便反复按同一页也只在每次切换后入栈一次
     fireEvent.click(screen.getByText('push-log'))
     expect(screen.getByTestId('stack').textContent).toBe('bot,log')
+  })
+
+  it('lists 按 section 区分同页：同 section 不叠栈，不同 section 各自入栈', () => {
+    renderNav()
+    fireEvent.click(screen.getByText('push-lists-white'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists')
+    fireEvent.click(screen.getByText('push-lists-white'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists')
+
+    fireEvent.click(screen.getByText('push-lists-gban'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists,lists')
+    fireEvent.click(screen.getByText('push-lists-gban'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists,lists')
+
+    // 带标识的页继续按标识去重
+    fireEvent.click(screen.getByText('push-upstream'))
+    fireEvent.click(screen.getByText('push-upstream'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists,lists,upstream')
+    fireEvent.click(screen.getByText('push-upstream-2'))
+    expect(screen.getByTestId('stack').textContent).toBe('lists,lists,upstream,upstream')
   })
 
   it('StrictMode 下订阅不重复，显隐与栈状态一致', () => {
