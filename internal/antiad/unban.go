@@ -44,6 +44,25 @@ func logPayload(logID int64) string {
 	return "log" + strconv.FormatInt(logID, 10)
 }
 
+// UserPayload 把 user_id 编码进 deep link 的 start 参数：联合封禁状态里的
+// 「前往对应 bot 解除」用它打开某人的资料卡（卡片上有解除按钮）。
+func UserPayload(uid int64) string {
+	return "user" + strconv.FormatInt(uid, 10)
+}
+
+// ParseUserPayload 还原 UserPayload 里的 user_id。
+func ParseUserPayload(p string) (int64, bool) {
+	rest, ok := strings.CutPrefix(p, "user")
+	if !ok {
+		return 0, false
+	}
+	uid, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || uid == 0 {
+		return 0, false
+	}
+	return uid, true
+}
+
 // ParseLogPayload 还原记录号；第二个返回值为假表示这不是记录卡片的入口。
 //
 // 权限不在这里判：解析出来只表示「想打开哪条记录」，能不能看由面板的

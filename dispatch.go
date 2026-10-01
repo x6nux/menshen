@@ -170,6 +170,12 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 			panel.ShowLogCard(b, m.Chat.ID, m.From.ID, id)
 			return
 		}
+		// 联合封禁状态里的「前往对应 bot 解除」：直接落到那个人的资料卡，
+		// 卡片上有「解除联合封禁」按钮（权限在卡片与按钮里各自再查）。
+		if uid, ok := antiad.ParseUserPayload(payload); ok {
+			panel.ShowUserLogs(b, m.Chat.ID, m.From.ID, uid)
+			return
+		}
 		panel.ShowMainMenu(b, m.Chat.ID, 0, m.From.ID)
 		return
 	}

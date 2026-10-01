@@ -586,7 +586,18 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	} else {
 		text = renderReviewClean(b, tgt, v, lifted)
 	}
-	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID, "🔎 <b>复查结果</b>\n"+text, kb),
+	// 状态检查：写清楚他现在被什么限制着、在哪个群、什么原因；联合封禁
+	// 给出前往对应 bot 解除的链接（全局组 → 主 bot，专属组 → 归属人的
+	// bot）。没有任何限制时也明说一句，省得管理员再猜。
+	status, linkRows := RestrictionStatusText(b.Shared, b.BotID(), tgt.From.ID)
+	if status == "" {
+		status = "✅ 当前没有生效中的限制。"
+	}
+	for _, row := range linkRows {
+		kb = tg.KBAppend(kb, [][2]string{row})
+	}
+	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID,
+		"🔎 <b>复查结果</b>\n"+text+"\n\n"+status, kb),
 		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
 }
 
