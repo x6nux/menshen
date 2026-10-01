@@ -49,6 +49,62 @@ func TestJoinBackfillAppliesOnlyUnknown(t *testing.T) {
 	}
 }
 
+// TestJoinBackfillRefusesWhenBusy：同一时间只允许一个补全任务（同一个 bot 的
+// MTProto 会话文件不能并发使用）。忙的时候要如实回「有任务在跑」，不能先答应
+// 再悄悄丢掉——接口已经回过「已开始」，协程里抢不到锁直接 return 就是撒谎。
+func TestJoinBackfillRefusesWhenBusy(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
+	testutil.EnableAntiad(t, b, -100)
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getChat"] = `{"ok":true,"result":{"id":-100,"type":"supergroup","username":"testgroup"}}`
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	done := make(chan struct{}, 4)
+	oldRunner := backfillRunner
+	backfillRunner = func(_ *core.Bot, chatID int64, _ string) ([]backfillRow, error) {
+		if chatID == -100 {
+			started <- struct{}{}
+			<-release // 卡住第一个任务，模拟大群还在翻成员
+		}
+		done <- struct{}{} // runner 结束（之后协程还差一步才解锁）
+		return nil, nil
+	}
+	defer func() { backfillRunner = oldRunner }()
+
+	if ok, why := StartJoinBackfill(b, -100, "testgroup", true); !ok {
+		t.Fatalf("第一个任务该起得来：%s", why)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个任务没跑起来")
+	}
+	// 忙时：明确拒绝并给出原因。
+	if ok, why := StartJoinBackfill(b, -200, "", true); ok || why == "" {
+		t.Fatalf("忙时应拒绝并说明原因，得到 ok=%v why=%q", ok, why)
+	}
+	close(release)
+	// 等第一个任务收尾（runner 返回后协程还要写库、记日志，再解锁）。
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个任务没收尾")
+	}
+	time.Sleep(50 * time.Millisecond)
+	// 锁释放后要能再起；这一轮也等它跑完，别把锁带进下一个测试。
+	if ok, why := StartJoinBackfill(b, -200, "", true); !ok {
+		t.Fatalf("第一个任务结束后应能再起：%s", why)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第二个任务没跑完")
+	}
+	time.Sleep(50 * time.Millisecond)
+}
+
 // TestJoinBackfillTriggeredOnAdminGrant：bot 从非管理员变成管理员时触发一次；
 // 同在管理员状态的更新（改权限、置顶）不再触发；冷却期内不重复触发。
 func TestJoinBackfillTriggeredOnAdminGrant(t *testing.T) {

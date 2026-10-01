@@ -76,11 +76,6 @@ func SwapBackfillRunner(fn func(*core.Bot, int64, string) ([]BackfillRow, error)
 	return old
 }
 
-// maybeJoinBackfill 是自动触发（拿到管理员权限时）的入口，不走 force。
-func maybeJoinBackfill(b *core.Bot, chatID int64, username string) {
-	StartJoinBackfill(b, chatID, username, false)
-}
-
 // StartJoinBackfill 起一个补全任务，返回是否真的起了与不能起的原因。
 //
 // force 为真时绕过 24 小时冷却 —— 配置台上的「补全历史入群时间」是管理员
@@ -102,6 +97,15 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 			}
 		}
 	}
+	// 先同步拿锁再答应：全局同时只允许一个补全任务（同一个 bot 的 MTProto
+	// 会话文件不能并发使用）。拿不到锁就如实回「有任务在跑」——以前是先进
+	// 协程再 TryLock，抢不到就悄悄丢掉，而接口已经回了「已开始」。
+	if !joinBackfillRunning.TryLock() {
+		if !force {
+			slog.Info("入群时间补全：已有任务在跑，跳过这一轮", "chat", chatID)
+		}
+		return false, "已有补全任务在跑，等它跑完再试"
+	}
 	joinBackfillDone.Store(key, time.Now())
 
 	// 群名取一下：私有群（没有公开用户名）要靠会话缓存里出现过才能解析，
@@ -121,10 +125,6 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 	}
 
 	go func() {
-		if !joinBackfillRunning.TryLock() {
-			slog.Info("入群时间补全：已有任务在跑，跳过这一轮", "chat", chatID)
-			return
-		}
 		defer joinBackfillRunning.Unlock()
 
 		rows, err := backfillRunner(b, chatID, username)
