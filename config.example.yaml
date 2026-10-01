@@ -96,6 +96,14 @@ bot_token: "123456789:AA..."
 #    "http://host.docker.internal:7890"（Docker Desktop）或宿主机在
 #    docker0 上的地址（Linux 常见为 172.17.0.1）。
 #
+# 客户端应用标识（my.telegram.org 申请）。**可选**：只用于「入群时间」回查 ——
+# 用 bot 自己的 token 登录 MTProto 读成员记录的 date。不填则跳过这类查询，
+# 新入群照常由 chat_member 实时记录，已经记录过的人不受影响。
+# 建议填自己申请的；公开的 Telegram Desktop 值（2040 /
+# b18441a1ff607e10a989891a5462e627）也能用，但共用会被限流。
+# tg_api_id: 2040
+# tg_api_hash: ""
+
 # 代理和 tg_api_base 解决的不是同一件事：后者换的是目标地址（反代），
 # 前者换的是到达路径。多数情况下用默认的反代就够，不必配代理。
 # tg_proxy: "http://127.0.0.1:7890"
