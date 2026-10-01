@@ -4,7 +4,6 @@ import type {
   AppealDetail,
   AppealRow,
   LogRow,
-  LogsResp,
   Spec,
   State,
   UserDossier,
@@ -165,8 +164,6 @@ export const mockLogs: LogRow[] = [
     view_url: '',
   },
 ]
-
-export const mockLogsResp: LogsResp = { logs: mockLogs, page: 1, total: mockLogs.length }
 
 export const mockLogDetail: LogRow = {
   ...mockLogs[0],

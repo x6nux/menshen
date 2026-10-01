@@ -2,9 +2,13 @@
 // 失效规则：一切写操作失效 ['state']；logact 追加 ['log']/['logs']/['user']；
 // appealact 追加 ['appeal']/['appeals']。错误不吞：直接冒泡给调用方，
 // toast/回滚由 UI 层处理。
+//
+// 注意：mutation 没有内置 loading 去重——提交按钮必须用 mutation.isPending
+// 禁用，否则连点会发多次请求（后端不是幂等的）。
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { api } from './client'
+import type { ApiError } from './client'
 import type { OkResp } from './types'
 
 export type MiniMutationOp =
@@ -32,7 +36,7 @@ export function useMiniMutation<TBody = Record<string, unknown>, TResp = OkResp>
 ) {
   const queryClient = useQueryClient()
   const extraKeys = options.invalidate
-  return useMutation<TResp, Error, TBody>({
+  return useMutation<TResp, ApiError, TBody>({
     mutationFn: (body) => api<TResp>(op, body),
     onSuccess: () => {
       // 写操作都会影响 state（概览数字、列表、明细的公共缓存）。

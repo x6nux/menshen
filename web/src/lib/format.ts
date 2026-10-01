@@ -9,6 +9,10 @@ export type SettingsMap = Record<string, SettingValue>
 
 const FORMAT_LOCALE = 'en-CA'
 
+// JS Date 的上限（Unix 秒）：8.64e15 毫秒。超过它会得到 Invalid Date，
+// Intl.formatToParts 直接抛 RangeError（脏数据、字段错位都可能触发）。
+const MAX_UNIX_SECONDS = 8.64e12
+
 // 同一时区反复格式化很多行，Intl 实例建一次就够；非法时区缓存的是本地
 // 时区的实例，与「非法回退本地」的行为一致。
 const formatterCache = new Map<string, Intl.DateTimeFormat>()
@@ -40,9 +44,9 @@ function formatterFor(tzName?: string): Intl.DateTimeFormat {
   return fmt
 }
 
-/** fmtTS 把 Unix 秒格式化成「MM-DD HH:mm」；非正数或非法值显示 —。 */
+/** fmtTS 把 Unix 秒格式化成「MM-DD HH:mm」；非正数、非法值或超范围值显示 —。 */
 export function fmtTS(at: number, tzName?: string): string {
-  if (!Number.isFinite(at) || at <= 0) return '—'
+  if (!Number.isFinite(at) || at <= 0 || at > MAX_UNIX_SECONDS) return '—'
   const parts = formatterFor(tzName).formatToParts(new Date(at * 1000))
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((p) => p.type === type)?.value ?? ''

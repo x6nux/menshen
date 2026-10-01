@@ -71,4 +71,27 @@ describe('api', () => {
     expect(err).toBeInstanceOf(ApiError)
     expect(err.status).toBe(0)
   })
+
+  it('AbortSignal 透传：中断后以 ApiError{status:0} 冒泡', async () => {
+    server.use(
+      http.post('*/miniapp/api/state', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        return HttpResponse.json({})
+      }),
+    )
+    const controller = new AbortController()
+    const pending = api('state', undefined, controller.signal)
+    controller.abort()
+    const err = (await pending.catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(0)
+  })
+
+  it('2xx 但响应不是 JSON 抛「响应格式错误」', async () => {
+    server.use(http.post('*/miniapp/api/state', () => new HttpResponse('not json', { status: 200 })))
+    const err = (await api('state').catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(200)
+    expect(err.message).toBe('响应格式错误')
+  })
 })

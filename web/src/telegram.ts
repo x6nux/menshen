@@ -21,6 +21,12 @@ export interface TelegramWebAppLike {
   }
 }
 
+/** 主题的一次实时读数；themeChanged 事件后由 getTheme 重新读取。 */
+export interface TelegramTheme {
+  colorScheme: string
+  themeParams: MiniThemeParams
+}
+
 /** BackButtonLike 与导航栈对接的最小接口（NavProvider 只依赖它）。 */
 export interface TelegramBackButton {
   show(): void
@@ -35,10 +41,13 @@ export interface TelegramBridge {
   initData: string
   /** URL ?bot= 指定要管理的 bot，缺省 '0'（主 bot）。 */
   botId: string
-  colorScheme: string
-  themeParams: MiniThemeParams
-  /** 订阅主题切换，返回取消订阅函数。 */
-  onThemeChanged(cb: () => void): () => void
+  /**
+   * getTheme 每次现读 SDK 的 colorScheme/themeParams（SDK 会先更新属性
+   * 再派发 themeChanged），因此主题必须通过它取，不能缓存成静态快照。
+   */
+  getTheme(): TelegramTheme
+  /** 订阅主题切换；回调参数是事件触发时的最新主题，返回取消订阅函数。 */
+  onThemeChanged(cb: (theme: TelegramTheme) => void): () => void
   backButton: TelegramBackButton
   openLink(url: string): void
 }
@@ -80,14 +89,21 @@ function tryGetWebApp(getter: () => TelegramWebAppLike | undefined): TelegramWeb
   }
 }
 
+/** readTheme 从 SDK 对象现读主题；对象缺失时给出空主题兜底。 */
+function readTheme(app: TelegramWebAppLike | undefined): TelegramTheme {
+  return {
+    colorScheme: app?.colorScheme ?? '',
+    themeParams: { ...(app?.themeParams ?? {}) },
+  }
+}
+
 function unavailableBridge(botId: string): TelegramBridge {
   const noop = () => {}
   return {
     available: false,
     initData: '',
     botId,
-    colorScheme: '',
-    themeParams: {},
+    getTheme: () => readTheme(undefined),
     onThemeChanged: () => noop,
     backButton: { show: noop, hide: noop, onClick: () => noop },
     openLink: (url) => {
@@ -116,22 +132,28 @@ export async function initTelegram(options: InitTelegramOptions = {}): Promise<T
   if (!wa) return unavailableBridge(botId)
   const app = wa
 
+  // ready/expand 分开兜底：个别旧客户端只会在其中一个上抛。
   try {
     app.ready()
+  } catch {
+    // 忽略：页面继续跑。
+  }
+  try {
     app.expand()
   } catch {
-    // ready/expand 在个别旧客户端会抛，页面仍应继续跑。
+    // 忽略：页面继续跑。
   }
 
   return {
     available: true,
     initData: app.initData ?? '',
     botId,
-    colorScheme: app.colorScheme ?? '',
-    themeParams: { ...(app.themeParams ?? {}) },
+    getTheme: () => readTheme(app),
     onThemeChanged: (cb) => {
-      app.onEvent?.('themeChanged', cb)
-      return () => app.offEvent?.('themeChanged', cb)
+      // 事件回调不直接透传：由桥在触发时现读主题，订阅者拿到的一定是最新值。
+      const handler = () => cb(readTheme(app))
+      app.onEvent?.('themeChanged', handler)
+      return () => app.offEvent?.('themeChanged', handler)
     },
     backButton: {
       show: () => app.BackButton?.show(),

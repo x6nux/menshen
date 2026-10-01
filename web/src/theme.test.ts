@@ -13,7 +13,7 @@ describe('buildMiniTheme', () => {
     expect(theme.palette.background.default).toBe('#F5F6F7')
     expect(theme.palette.background.paper).toBe('#FFFFFF')
     expect(theme.palette.text.primary).toBe('#1A1A1A')
-    expect(theme.palette.text.secondary).toBe('#8A8A8E')
+    expect(theme.palette.text.secondary).toBe('#6B6B70')
     expect(theme.palette.primary.main).toBe('#1677FF')
     expect(theme.palette.primary.contrastText).toBe('#FFFFFF')
     expect(theme.palette.error.main).toBe('#FA5151')
@@ -56,7 +56,7 @@ describe('buildMiniTheme', () => {
     expect(themed.palette.background.default).toBe('#000001')
   })
 
-  it('关键控件 override 存在', () => {
+  it('关键控件 override 存在，且不误伤 MuiListItem', () => {
     const theme = buildMiniTheme()
     expect(rootOf(theme, 'MuiButton')).toMatchObject({
       textTransform: 'none',
@@ -65,5 +65,7 @@ describe('buildMiniTheme', () => {
     })
     expect(rootOf(theme, 'MuiListItemButton')).toMatchObject({ minHeight: 52 })
     expect(rootOf(theme, 'MuiList')).toMatchObject({ paddingTop: 0, paddingBottom: 0 })
+    // MenuItem/Select 选项内部的 ListItem 不受列表行高影响
+    expect(theme.components?.MuiListItem).toBeUndefined()
   })
 })

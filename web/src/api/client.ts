@@ -47,8 +47,10 @@ function errorMessage(data: unknown): string | null {
   return null
 }
 
-/** api 调用一个 op；非 2xx 抛 ApiError，body 的 error 文案优先。 */
-export async function api<T>(op: string, body?: unknown): Promise<T> {
+/** api 调用一个 op；非 2xx 抛 ApiError，body 的 error 文案优先。
+ * 网络失败与主动 abort 统一是 status 0；2xx 但响应不是 JSON 时抛
+ * ApiError(status, '响应格式错误')。signal 原样透传给 fetch。 */
+export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let res: Response
   try {
     res = await fetch(apiURL(op), {
@@ -59,19 +61,23 @@ export async function api<T>(op: string, body?: unknown): Promise<T> {
         'X-Bot-Id': auth.botId,
       },
       body: JSON.stringify(body ?? {}),
+      signal,
     })
   } catch (err) {
     throw new ApiError(0, err instanceof Error ? err.message : '网络异常')
   }
 
   let data: unknown = null
+  let parsed = true
   try {
     data = await res.json()
   } catch {
-    // 非 JSON 响应按无 body 处理，错误文案走 HTTP 状态兜底。
+    parsed = false
   }
   if (!res.ok) {
+    // 错误响应体不是 JSON 时用 HTTP 状态兜底。
     throw new ApiError(res.status, errorMessage(data) ?? `HTTP ${res.status}`)
   }
+  if (!parsed) throw new ApiError(res.status, '响应格式错误')
   return data as T
 }

@@ -36,7 +36,8 @@ const LIGHT_FALLBACK: FallbackPalette = {
   bg: '#F5F6F7',
   paper: '#FFFFFF',
   text: '#1A1A1A',
-  hint: '#8A8A8E',
+  // 次要文字要满足正文 AA（白底对比度 ≈5.3:1）；#8A8A8E 只有约 3.5:1。
+  hint: '#6B6B70',
   button: '#1677FF',
   buttonText: '#FFFFFF',
   destructive: '#FA5151',
@@ -100,15 +101,12 @@ export function buildMiniTheme(options: BuildMiniThemeOptions = {}): Theme {
           },
         },
       },
-      // 列表紧凑：去掉 List 自带的上下留白，列表行高 ≥52。
+      // 列表紧凑：行高只加在可点击行（ListItemButton）上。
+      // 不覆盖 MuiListItem：MenuItem、Select 选项内部也用 ListItem，
+      // 统一压行高会误伤菜单与下拉的高度。
       MuiList: {
         styleOverrides: {
           root: { paddingTop: 0, paddingBottom: 0 },
-        },
-      },
-      MuiListItem: {
-        styleOverrides: {
-          root: { minHeight: 52, paddingTop: 8, paddingBottom: 8 },
         },
       },
       MuiListItemButton: {

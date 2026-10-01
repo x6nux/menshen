@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { NavProvider, useNav } from './nav'
 import type { TelegramBackButton } from './telegram'
@@ -78,6 +79,46 @@ describe('NavProvider', () => {
     expect(screen.getByTestId('stack').textContent).toBe('')
     expect(back.hide).toHaveBeenCalledTimes(2)
     expect(back.show).toHaveBeenCalledTimes(1)
+  })
+
+  it('同页重复 push 不叠栈，不同页照常入栈', () => {
+    renderNav()
+    fireEvent.click(screen.getByText('push-bot'))
+    fireEvent.click(screen.getByText('push-bot'))
+    fireEvent.click(screen.getByText('push-bot'))
+    expect(screen.getByTestId('stack').textContent).toBe('bot')
+
+    fireEvent.click(screen.getByText('push-log'))
+    expect(screen.getByTestId('stack').textContent).toBe('bot,log')
+    // 栈顶不同，即便反复按同一页也只在每次切换后入栈一次
+    fireEvent.click(screen.getByText('push-log'))
+    expect(screen.getByTestId('stack').textContent).toBe('bot,log')
+  })
+
+  it('StrictMode 下订阅不重复，显隐与栈状态一致', () => {
+    const back = mockBackButton()
+    render(
+      <StrictMode>
+        <NavProvider backButton={back.button}>
+          <Probe />
+        </NavProvider>
+      </StrictMode>,
+    )
+    // StrictMode 会双跑 effect，但订阅（以及退订）配平，只剩一份
+    expect(back.handlers).toHaveLength(1)
+    expect(back.hide).toHaveBeenCalled()
+    expect(back.show).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('push-bot'))
+    expect(screen.getByTestId('stack').textContent).toBe('bot')
+    expect(back.show).toHaveBeenCalled()
+
+    // 通过 BackButton 回退也只弹一层
+    act(() => {
+      back.handlers.forEach((h) => h())
+    })
+    expect(screen.getByTestId('stack').textContent).toBe('')
+    expect(back.hide).toHaveBeenCalled()
   })
 
   it('卸载时取消 BackButton 订阅', () => {

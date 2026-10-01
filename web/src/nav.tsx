@@ -22,12 +22,44 @@ export type Page =
 export interface NavValue {
   tab: TabKey
   stack: Page[]
-  /** push 进入一个二级页（列表 → 详情）。 */
+  /** push 进入一个二级页（列表 → 详情）；与栈顶同页时忽略，避免双击叠栈。 */
   push(page: Page): void
   /** pop 返回上一层；已在顶层时不动作。 */
   pop(): void
   /** switchTab 切一级 Tab，并清空页面栈。 */
   switchTab(tab: TabKey): void
+}
+
+/**
+ * samePage 判断两个页面是否指向同一处：有标识的页按 kind + 标识比较，
+ * 无标识的页（upstreams/models/settings）同 kind 即同页，lists 再看 section。
+ */
+function samePage(a: Page, b: Page): boolean {
+  if (a.k !== b.k) return false
+  switch (a.k) {
+    case 'bot':
+      return a.id === (b as Extract<Page, { k: 'bot' }>).id
+    case 'chat':
+      return (
+        a.botId === (b as Extract<Page, { k: 'chat' }>).botId &&
+        a.chatId === (b as Extract<Page, { k: 'chat' }>).chatId
+      )
+    case 'log':
+      return a.id === (b as Extract<Page, { k: 'log' }>).id
+    case 'user':
+      return a.id === (b as Extract<Page, { k: 'user' }>).id
+    case 'appeal':
+      return a.id === (b as Extract<Page, { k: 'appeal' }>).id
+    case 'upstream':
+      return a.id === (b as Extract<Page, { k: 'upstream' }>).id
+    case 'model':
+      return a.name === (b as Extract<Page, { k: 'model' }>).name
+    case 'lists':
+      return (a.section ?? '') === ((b as Extract<Page, { k: 'lists' }>).section ?? '')
+    default:
+      // upstreams / models / settings 没有参数，kind 相同就是同一页。
+      return true
+  }
 }
 
 const NavContext = createContext<NavValue | null>(null)
@@ -42,7 +74,11 @@ export function NavProvider({ children, backButton }: NavProviderProps) {
   const [tab, setTab] = useState<TabKey>('overview')
   const [stack, setStack] = useState<Page[]>([])
 
-  const push = useCallback((page: Page) => setStack((s) => [...s, page]), [])
+  const push = useCallback(
+    (page: Page) =>
+      setStack((s) => (s.length > 0 && samePage(s[s.length - 1], page) ? s : [...s, page])),
+    [],
+  )
   const pop = useCallback(() => setStack((s) => (s.length ? s.slice(0, -1) : s)), [])
   const switchTab = useCallback((next: TabKey) => {
     setTab(next)

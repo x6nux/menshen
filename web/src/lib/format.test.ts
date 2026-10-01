@@ -24,6 +24,14 @@ describe('fmtTS', () => {
     expect(fmtTS(Number.NaN)).toBe('—')
   })
 
+  it('超范围时间戳显示 — 且不抛 RangeError', () => {
+    // 8.64e12 秒 = JS Date 上限（8.64e15 毫秒），再多就 Invalid Date
+    expect(() => fmtTS(8.64e12 + 1)).not.toThrow()
+    expect(fmtTS(8.64e12 + 1)).toBe('—')
+    expect(fmtTS(Number.MAX_SAFE_INTEGER)).toBe('—')
+    expect(fmtTS(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+
   it('按时区换算，同一时间戳输出不同', () => {
     expect(fmtTS(TS_DAY, 'UTC')).toBe('11-14 22:13')
     expect(fmtTS(TS_DAY, 'Asia/Shanghai')).toBe('11-15 06:13')
@@ -63,7 +71,7 @@ describe('文案映射', () => {
 })
 
 describe('muteText', () => {
-  it('0/负数/非数字 = 永久禁言', () => {
+  it('0/负数/非数字 = 永久禁言（数字 0 与字符串 "0" 同义）', () => {
     expect(muteText(0)).toBe('永久禁言')
     expect(muteText('0')).toBe('永久禁言')
     expect(muteText(-5)).toBe('永久禁言')
@@ -104,5 +112,12 @@ describe('settingOf / punishLabel / muteOptLabel', () => {
     expect(punishLabel(bots, defaults, 8, -1)).toBe('禁言 1 天')
     // 未配置时长时按 1 天兜底
     expect(muteOptLabel(undefined, {}, 1)).toBe('禁言 1 天')
+  })
+
+  it('数字 0（非字符串）的时长覆盖同样表示永久禁言', () => {
+    const numeric = { '7': { antiad_mute_minutes: 0 } }
+    expect(muteOptLabel(numeric, defaults, 7)).toBe('永久禁言')
+    expect(punishLabel(numeric, defaults, 7, -1)).toBe('永久禁言')
+    expect(punishLabel(numeric, defaults, 7, 0)).toBe('永久禁言')
   })
 })

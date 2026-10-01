@@ -61,26 +61,33 @@ describe('initTelegram', () => {
     // 不可用桥的方法也不抛错
     expect(() => bridge.backButton.show()).not.toThrow()
     expect(bridge.onThemeChanged(() => {})).toBeTypeOf('function')
+    expect(bridge.getTheme()).toEqual({ colorScheme: '', themeParams: {} })
   })
 
-  it('SDK 立即就绪：ready/expand、initData、themeChanged、BackButton、openLink', async () => {
+  it('轮询第 N 次才拿到 SDK 仍成功', async () => {
+    const { wa } = mockWebApp()
+    const sleep = vi.fn(async () => {})
+    let calls = 0
+    const bridge = await initTelegram({
+      getWebApp: () => (++calls >= 3 ? wa : undefined),
+      sleep,
+      timeoutMs: 3000,
+      intervalMs: 100,
+    })
+    expect(calls).toBe(3)
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(bridge.available).toBe(true)
+    expect(bridge.initData).toContain('query_id=AAA')
+  })
+
+  it('SDK 立即就绪：ready/expand、initData、BackButton、openLink', async () => {
     const { wa, calls, handlers } = mockWebApp()
     const bridge = await initTelegram({ getWebApp: () => wa })
 
     expect(bridge.available).toBe(true)
     expect(calls).toEqual(expect.arrayContaining(['ready', 'expand']))
     expect(bridge.initData).toBe('query_id=AAA&user=%7B%22id%22%3A1%7D')
-    expect(bridge.colorScheme).toBe('dark')
-    expect(bridge.themeParams.bg_color).toBe('#17212B')
-
-    // 主题订阅
-    const onTheme = vi.fn()
-    const offTheme = bridge.onThemeChanged(onTheme)
-    expect(handlers.get('themeChanged')).toHaveLength(1)
-    handlers.get('themeChanged')?.[0]()
-    expect(onTheme).toHaveBeenCalledTimes(1)
-    offTheme()
-    expect(handlers.get('themeChanged')).toHaveLength(0)
+    expect(bridge.getTheme()).toEqual({ colorScheme: 'dark', themeParams: { bg_color: '#17212B' } })
 
     // BackButton 显隐与点击（点击回调由导航栈注册）
     bridge.backButton.show()
@@ -96,11 +103,53 @@ describe('initTelegram', () => {
     expect(calls).toContain('open:https://t.me/x/1')
   })
 
-  it('botId 从地址栏读取', async () => {
-    window.history.replaceState({}, '', '/miniapp/?bot=77')
-    const { wa } = mockWebApp()
+  it('themeChanged 触发后 getTheme 与回调都拿到新主题', async () => {
+    const { wa, handlers } = mockWebApp()
     const bridge = await initTelegram({ getWebApp: () => wa })
-    expect(bridge.botId).toBe('77')
-    window.history.replaceState({}, '', '/miniapp/')
+    expect(bridge.getTheme().themeParams.bg_color).toBe('#17212B')
+
+    const seen: string[] = []
+    const off = bridge.onThemeChanged((theme) => {
+      seen.push(`${theme.colorScheme}:${theme.themeParams.bg_color ?? ''}`)
+    })
+    expect(handlers.get('themeChanged')).toHaveLength(1)
+
+    // SDK 先更新属性，再派发事件（真实行为）
+    wa.colorScheme = 'light'
+    wa.themeParams = { bg_color: '#FFFFFF', text_color: '#111111' }
+    handlers.get('themeChanged')?.[0]()
+
+    expect(bridge.getTheme()).toEqual({
+      colorScheme: 'light',
+      themeParams: { bg_color: '#FFFFFF', text_color: '#111111' },
+    })
+    expect(seen).toEqual(['light:#FFFFFF'])
+    off()
+    expect(handlers.get('themeChanged')).toHaveLength(0)
+  })
+
+  it('ready 抛错不影响 expand 与桥可用', async () => {
+    const calls: string[] = []
+    const { wa } = mockWebApp({
+      ready: () => {
+        throw new Error('ready 崩了')
+      },
+      expand: () => calls.push('expand'),
+    })
+    const bridge = await initTelegram({ getWebApp: () => wa })
+    expect(bridge.available).toBe(true)
+    expect(calls).toEqual(['expand'])
+  })
+
+  it('botId 从地址栏读取', async () => {
+    const original = window.location.href
+    try {
+      window.history.replaceState({}, '', '/miniapp/?bot=77')
+      const { wa } = mockWebApp()
+      const bridge = await initTelegram({ getWebApp: () => wa })
+      expect(bridge.botId).toBe('77')
+    } finally {
+      window.history.replaceState({}, '', original)
+    }
   })
 })

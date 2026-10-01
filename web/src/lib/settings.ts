@@ -70,7 +70,8 @@ export function specUnit(spec: Spec): string {
   return ''
 }
 
-/** specHint 设置项说明；后端 hint 没写单位时补上，表单不必每处手写。 */
+/** specHint 设置项说明；后端 hint 没写单位时补上，表单不必每处手写。
+ * T1b 的设置表单会用它做输入框辅助文案（当前 T1a 暂无调用点）。 */
 export function specHint(spec: Spec): string {
   const unit = specUnit(spec)
   return unit && !spec.hint.includes(unit) ? `${spec.hint}（单位：${unit}）` : spec.hint
@@ -78,7 +79,7 @@ export function specHint(spec: Spec): string {
 
 /**
  * specValueText 把设置值换算成人话：时长类把分钟数换算成「= 1 天」这类文案，
- * 其余类型原样返回。
+ * 其余类型原样返回。T1b 的设置行/抽屉用它展示「= 1 天」换算（当前暂无调用点）。
  */
 export function specValueText(value: number | string, spec: Spec): string {
   const raw = String(value)

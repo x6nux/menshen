@@ -34,12 +34,30 @@ function filterLogs(verdict: string): LogRow[] {
   }
 }
 
+/** 与后端一致的搜索口径：原文/理由/uid/群号。 */
+function searchLogs(rows: LogRow[], q: string): LogRow[] {
+  const query = q.trim().toLowerCase()
+  if (!query) return rows
+  return rows.filter((l) =>
+    `${l.text} ${l.reason} ${l.user_id} ${l.chat_id}`.toLowerCase().includes(query),
+  )
+}
+
+const LOG_PAGE_SIZE = 20
+
 export const handlers = [
   http.post('*/miniapp/api/state', () => HttpResponse.json(mockState)),
   http.post('*/miniapp/api/logs', async ({ request }) => {
     const body = await bodyOf(request)
-    const logs = filterLogs(String(body.verdict ?? ''))
-    return HttpResponse.json({ logs, page: Number(body.page ?? 1), total: logs.length })
+    const filtered = searchLogs(filterLogs(String(body.verdict ?? '')), String(body.q ?? ''))
+    const page = Math.max(1, Number(body.page ?? 1) || 1)
+    const start = (page - 1) * LOG_PAGE_SIZE
+    // total 是筛选后的总数，logs 是当前页切片——与后端分页行为一致。
+    return HttpResponse.json({
+      logs: filtered.slice(start, start + LOG_PAGE_SIZE),
+      page,
+      total: filtered.length,
+    })
   }),
   http.post('*/miniapp/api/log', () => HttpResponse.json(mockLogDetail)),
   http.post('*/miniapp/api/user', () => HttpResponse.json(mockUser)),
