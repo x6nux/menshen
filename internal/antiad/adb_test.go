@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"strings"
 	"testing"
 
 	"menshen/internal/core"
@@ -41,7 +42,7 @@ func TestAdbRequiresAdmin(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 42, target))
+	HandleAdbCommand(b, conf, adbMsg(-100, 42, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("普通成员用 /ban 禁言了别人（%d 次）", n)
@@ -65,7 +66,7 @@ func TestAdbByOwnerActs(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "看煮页 有码就来捡签")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target)) // 1 是主管兼归属人
+	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "") // 1 是主管兼归属人
 
 	if fake.CountCalls("restrictChatMember") != 1 {
 		t.Errorf("应当禁言一次，实际 %d 次", fake.CountCalls("restrictChatMember"))
@@ -98,7 +99,7 @@ func TestAdbRespectsDryrun(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target))
+	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("演练群里不该禁言，实际 %d 次", n)
@@ -119,7 +120,7 @@ func TestAdbFeedsGban(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 888, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 777, target)) // 777 是 newTestRegistry 的主管
+	HandleAdbCommand(b, conf, adbMsg(-100, 777, target), "") // 777 是 newTestRegistry 的主管
 
 	if _, ok := b.Cache.Snap().Gban[888]; !ok {
 		t.Error("人工标记的广告号应当进联合封禁名单")
@@ -132,7 +133,7 @@ func TestAdbNeedsReply(t *testing.T) {
 	testutil.EnableAntiad(t, b, -100)
 	conf := testutil.ChatConfOf(t, b, -100)
 
-	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban"))
+	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban"), "")
 
 	if fake.CountCalls("sendMessage") != 1 {
 		t.Errorf("应当回一条用法提示，实际发了 %d 条", fake.CountCalls("sendMessage"))
@@ -150,12 +151,72 @@ func TestAdbIgnoresSelf(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, testutil.TestBotID, 10, "🛡 反广告告警")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target))
+	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("不该对 bot 自己动手，实际 %d 次", n)
 	}
 	if _, _, _, _, n := lastLog(t, b); n != 0 {
 		t.Errorf("不该落流水，实际 %d 条", n)
+	}
+}
+
+// TestBanByUserID：/ban <user_id> 按该用户**最新一条留底**处置（删除 + 按本群
+// 处罚方式禁言/封禁），落一条人工标记流水；没有留底时只罚人、不删消息，
+// 仍落流水（别让 deleteMessage 必然失败）。
+func TestBanByUserID(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	// 两条留底：最新的那条是媒体消息（没有文字），删除也该指向它。
+	recordMessage(b, -100, 10, 555, "旧的一条", 1700000000, "")
+	recordMessage(b, -100, 11, 555, "", 1700000001, "")
+
+	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban 555"), "555")
+	waitIdle(t, b)
+
+	// 删的应是最新那条（id=11）。
+	if last := fake.LastCall("deleteMessage"); last == nil ||
+		last["message_id"] != float64(11) {
+		t.Errorf("应删除最新一条留底 #11，得到 %v", last)
+	}
+	var kind, action, reason string
+	if err := b.Store.Read.QueryRow(`SELECT ad_kind,action,reason FROM antiad_log
+		WHERE user_id=555 ORDER BY id DESC LIMIT 1`).Scan(&kind, &action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "manual" || !strings.Contains(reason, "人工标记") {
+		t.Errorf("应落人工标记流水：kind=%q reason=%q", kind, reason)
+	}
+	if action != "deleted_muted" && action != "deleted_banned" {
+		t.Errorf("应按最高档处置，得到 %q", action)
+	}
+	// 群内应有回执。
+	found := false
+	for _, p := range fake.Calls("sendMessage") {
+		if s, _ := p["text"].(string); strings.Contains(s, "人工标记") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("群里应发出人工标记回执")
+	}
+
+	// 没有留底的人：只罚人、不删消息。
+	b2, fake2 := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	conf2 := testutil.ChatConfOf(t, b2, -100)
+	HandleAdbCommand(b2, conf2, testutil.GroupMsg(-100, 1, 901, "/ban 666"), "666")
+	waitIdle(t, b2)
+	if n := fake2.CountCalls("deleteMessage"); n != 1 { // 只删命令本身那一条
+		t.Errorf("没有留底时不该删消息（命令自身除外），得到 %d 次", n)
+	}
+	var action2 string
+	if err := b2.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE user_id=666 ORDER BY id DESC LIMIT 1`).Scan(&action2); err != nil {
+		t.Fatal(err)
+	}
+	if action2 != "muted" && action2 != "banned" {
+		t.Errorf("没有留底时应只禁言/封禁，得到 %q", action2)
 	}
 }

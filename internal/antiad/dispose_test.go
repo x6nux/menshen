@@ -313,7 +313,7 @@ func TestAdbHonorsBanMode(t *testing.T) {
 	b.Cache.Reload()
 	conf := testutil.ChatConfOf(t, b, -100)
 
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, testutil.GroupMsg(-100, 777, 10, "广告")))
+	HandleAdbCommand(b, conf, adbMsg(-100, 1, testutil.GroupMsg(-100, 777, 10, "广告")), "")
 	if fake.CountCalls("banChatMember") != 1 || fake.CountCalls("restrictChatMember") != 0 {
 		t.Error("/ban 在封禁群里应封禁而不是禁言")
 	}

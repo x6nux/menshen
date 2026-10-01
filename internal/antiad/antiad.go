@@ -393,7 +393,9 @@ func canMarkAd(b *core.Bot, chatID, uid int64) bool {
 	return IsChatAdmin(b, chatID, uid)
 }
 
-const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息，发送 <code>/ban</code>。\n" +
+const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <code>/ban</code>，" +
+	"或直接发 <code>/ban &lt;user_id&gt;</code> / <code>/ban @用户名</code>" +
+	"（按该用户最新一条留底处置；频道填 -100 开头的频道 ID）。\n" +
 	"会直接按最高档处置（删除 + 禁言），不经过 AI 判定。"
 
 // handleAdbCommand 人工把一条消息标记为广告并立即处置。
@@ -403,7 +405,10 @@ const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息，发送 <co
 //
 // 标记结果会进**正例池**（verdict='ad' 且 action != 'undone'），
 // 形态总结下一轮就能学到它 —— 人工标记是质量最高的训练样本。
-func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
+//
+// 两种用法：回复某条消息（处置那条），或 /ban <user_id>（处置此人最新一条
+// 留底；没有留底时只罚人、不删消息，仍落一条人工标记流水）。
+func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	// 非授权者静默忽略：回一句「你没有权限」等于告诉刷屏的人这条命令
 	// 存在、值得去试。
 	if !canMarkAd(b, conf.ChatID, m.From.ID) {
@@ -414,12 +419,30 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 		"chat_id": conf.ChatID, "message_id": m.MessageID,
 	})
 
-	if m.ReplyToMessage == nil || m.ReplyToMessage.From == nil {
+	var target *tg.Message
+	switch {
+	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
+		// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
+		cp := *m.ReplyToMessage
+		cp.From = asSender(m.ReplyToMessage).From
+		target = &cp
+	case strings.TrimSpace(arg) != "":
+		uid, ok := resolveUIDArg(b, arg)
+		if !ok {
+			groupNotice(b, conf.ChatID, adbCmdUsage, nil, 30*time.Second)
+			return
+		}
+		// 没有具体消息时拿最新一条留底当处置对象：删除与流水都指向真实消息。
+		// 一条留底都没有（从没发过言、或留底过保留期）时只罚人。
+		t := &tg.Message{Chat: &tg.Chat{ID: conf.ChatID}, From: &tg.TGUser{ID: uid}}
+		if msgID, text, ok := latestKept(b.Store, conf.ChatID, uid); ok {
+			t.MessageID, t.Text = msgID, text
+		}
+		target = t
+	default:
 		groupNotice(b, conf.ChatID, adbCmdUsage, nil, 30*time.Second)
 		return
 	}
-	// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
-	target := asSender(m.ReplyToMessage)
 	if target.From.ID == b.BotID() {
 		return // 别把 bot 自己的告警标成广告
 	}
@@ -441,6 +464,16 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 	// 禁言与否仍服从本群的处罚方式（可改为封禁）。
 	act := withPunish(adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"},
 		snap.BanMode(conf))
+	// /ban <user_id> 而这个人没有留底时没有消息可删：摘掉删除动作，
+	// 否则 deleteMessage 必然失败，告警里还会多一条假的失败说明。
+	if target.MessageID == 0 {
+		act.Delete = false
+		if act.Name == "deleted_muted" {
+			act.Name = "muted"
+		} else if act.Name == "deleted_banned" {
+			act.Name = "banned"
+		}
+	}
 
 	note := ApplyAction(b, target, act, conf.Dryrun)
 	logID := logAd(b, target, v, logAction(act, conf.Dryrun), note)
@@ -453,6 +486,29 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message) {
 
 	text, kb := renderAdAlertBrief(b, target, v, act, note, logID, conf.Dryrun)
 	groupNotice(b, conf.ChatID, "🖐 <b>人工标记</b>\n"+text, kb, time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
+}
+
+// latestKept 取此人最新一条留底，不限有没有文字 —— 图片、贴纸广告也要能删。
+func latestKept(s *store.Store, chatID, uid int64) (int64, string, bool) {
+	var msgID int64
+	var text string
+	s.Read.QueryRow(`SELECT message_id,text FROM group_messages
+		WHERE chat_id=? AND user_id=? ORDER BY at DESC, message_id DESC LIMIT 1`,
+		chatID, uid).Scan(&msgID, &text)
+	return msgID, text, msgID != 0
+}
+
+// resolveUIDArg 把命令参数换成 user_id：数字 ID 或 @用户名。
+// 解析失败返回 false，调用方回用法说明。
+func resolveUIDArg(b *core.Bot, arg string) (int64, bool) {
+	arg = strings.TrimSpace(arg)
+	if uid, err := strconv.ParseInt(arg, 10, 64); err == nil && uid != 0 {
+		return uid, true
+	}
+	if name, ok := strings.CutPrefix(arg, "@"); ok {
+		return resolveUsernameID(b, name)
+	}
+	return 0, false
 }
 
 // reviewAndAct 跑复查并按处置矩阵动作，结果贴回群里。
@@ -605,7 +661,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 			case "/check":
 				HandleAdCommand(b, conf, m, arg)
 			case "/ban":
-				HandleAdbCommand(b, conf, m)
+				HandleAdbCommand(b, conf, m, arg)
 			case "/white":
 				HandleAdwCommand(b, conf, m, arg)
 			case "/uad":
