@@ -865,3 +865,36 @@ func TestCheckByUsernameNotFound(t *testing.T) {
 		t.Error("查不到的用户名该回一句说明")
 	}
 }
+
+// TestUnknownProfileJudgedFromKeptCount：画像读不到时不能整条放走 —— 那正是
+// 「先发正常、再编辑成广告」的规避路径（编辑过的消息最容易读不到画像：
+// 原消息不在留底里，或行被清理过）。用留底条数当发言数照常判定。
+func TestUnknownProfileJudgedFromKeptCount(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+	// 留底里有 12 条（老成员的量级）：估算出的画像不该被当成新人。
+	now := time.Now().Unix()
+	for i := range 12 {
+		recordMessage(b, -100, int64(100+i), 900, "正常发言", now-int64(i), "")
+	}
+
+	// 一条从没见过的消息被编辑成广告：edited=true，画像行不存在。
+	m := testutil.GroupMsg(-100, 900, 9999, "加微信 日入5000")
+	m.EditDate = now
+	HandleGroupMessage(b, m)
+	waitIdle(t, b)
+
+	if soN.Load()+llmN.Load() == 0 {
+		t.Fatal("画像读不到时应按留底估算照常判定，而不是整条放走")
+	}
+	var verdict, reason string
+	if err := b.Store.Read.QueryRow(`SELECT verdict,reason FROM antiad_log
+		ORDER BY id DESC LIMIT 1`).Scan(&verdict, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "ad" || strings.Contains(reason, "画像读取失败") {
+		t.Errorf("编辑成广告的消息应被判为广告，得到 verdict=%q reason=%q", verdict, reason)
+	}
+}

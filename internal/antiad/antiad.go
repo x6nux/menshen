@@ -1,7 +1,9 @@
 package antiad
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -58,10 +60,34 @@ func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
 			&gm.AdHits, &gm.Whitelisted)
 	if err != nil {
+		// 没有行是常态（编辑过的消息、行被清理过），读失败要看得见：
+		// 两者都返回 false，混在一起排查时会以为是「没这条画像」。
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("反广告：读取成员画像失败", "chat", chatID, "uid", uid, "err", err)
+		}
 		return gm, false
 	}
 	gm.Known = true
 	return gm, true
+}
+
+// profileFromKept 在画像读不到时用留底条数凑一份最小画像。
+//
+// 不能直接不判：**编辑过的消息**很容易走到这里（原消息不在留底里，或行被
+// 清理过），而「先发正常、再编辑成广告」正是要拦的规避形态。用留底条数当
+// 发言数、年龄按未知处理（AgeKnown 不上），与 /check 复查同一套口径 ——
+// 拿零值画像当新人反而会把老成员按最严档处置。
+func profileFromKept(b *core.Bot, chatID, uid int64) groupMember {
+	gm := groupMember{ChatID: chatID, UserID: uid, Known: true}
+	var kept int64
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM group_messages
+		WHERE chat_id=? AND user_id=?`, chatID, uid).Scan(&kept); err != nil {
+		slog.Error("反广告：统计留底条数失败", "chat", chatID, "uid", uid, "err", err)
+	}
+	gm.MsgCount = kept
+	slog.Warn("反广告：画像读不到，按留底条数估算", "chat", chatID,
+		"uid", uid, "留底", kept)
+	return gm
 }
 
 // handleChatMemberUpdate 把「进群」落成 joined_at。
@@ -557,12 +583,11 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	} else {
 		gm = touchMember(b, m.Chat.ID, m.From.ID, at)
 	}
-	// 画像读失败：不判、不处置。零值画像会让 isNewbie 把老成员当新人、
-	// 按最严档删+禁言——失败方向反了。宁可不判这一条，也不能误伤。
+	// 画像读不到：用留底条数估算，照常判定（见 profileFromKept）。原先直接
+	// 放走，结果是「先发正常、再编辑成广告」整条漏判 —— 编辑路径最容易
+	// 走到这里。
 	if !gm.Known {
-		slog.Warn("反广告：画像读取失败，本条不判定", "chat", m.Chat.ID, "uid", m.From.ID)
-		logAd(b, m, adVerdict{Reason: "成员画像读取失败"}, "none", "画像读取失败，未判定")
-		return
+		gm = profileFromKept(b, m.Chat.ID, m.From.ID)
 	}
 
 	// 解禁码兑换：四条门槛全满足才截下这条消息（见 handleGroupRedeem），
