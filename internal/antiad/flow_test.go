@@ -350,3 +350,46 @@ func TestContactCardOnlyMessageIsRecorded(t *testing.T) {
 		t.Fatalf("只有联系人卡片的消息没过守门，留底 = %q", text)
 	}
 }
+
+// TestJoinTimeRecordedEvenWhenInactive：bot 亲眼看到入群事件就要把入群时间
+// 写下来 —— 这是 MTProto 回查拿不到时的回退值，不该因为「这个群没开反广告」
+// 或者「这个人分给了别的 bot」而丢。
+func TestJoinTimeRecordedEvenWhenInactive(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 777) // 总开关默认关、群也没配
+
+	joinedAt := func(chatID, uid int64) int64 {
+		t.Helper()
+		var at int64
+		if err := b.Store.Read.QueryRow(`SELECT joined_at FROM group_members
+			WHERE chat_id=? AND user_id=?`, chatID, uid).Scan(&at); err != nil {
+			t.Fatalf("没有写入入群时间: %v", err)
+		}
+		return at
+	}
+
+	// chat_member 事件路径：left → member 就是一次入群。
+	HandleChatMemberUpdate(b, &tg.ChatMemberUpdated{
+		Chat:          &tg.Chat{ID: -555, Type: "supergroup"},
+		OldChatMember: &tg.ChatMemberInfo{Status: "left"},
+		NewChatMember: &tg.ChatMemberInfo{Status: "member", User: &tg.TGUser{ID: 6001}},
+		Date:          1700000000,
+	})
+	if got := joinedAt(-555, 6001); got != 1700000000 {
+		t.Errorf("chat_member 入群时间应为 1700000000，得到 %d", got)
+	}
+
+	// 入群 service 消息路径（chat_member 漏收时的兜底）。
+	m := testutil.GroupMsg(-556, 42, 9, "")
+	m.NewChatMembers = []*tg.TGUser{{ID: 6002}}
+	m.Date = 1700000001
+	HandleGroupMessage(b, m)
+	if got := joinedAt(-556, 6002); got != 1700000001 {
+		t.Errorf("service 消息入群时间应为 1700000001，得到 %d", got)
+	}
+
+	// 普通消息在未启用时仍然零写入，守门不受影响。
+	HandleGroupMessage(b, testutil.GroupMsg(-557, 42, 1, "随便说点什么"))
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_members WHERE chat_id=-557`); n != 0 {
+		t.Errorf("未启用时普通消息不该写画像，实际 %d 行", n)
+	}
+}

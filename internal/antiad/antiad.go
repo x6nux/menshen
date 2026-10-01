@@ -100,6 +100,23 @@ func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 		cu.NewChatMember.User == nil {
 		return
 	}
+
+	// 「进群」这一跃迁先把入群时间落库再谈别的 —— 这是 bot 亲眼看到入群
+	// 的原始证据，不该受「这个群开没开反广告」「这个人是不是分给了别的
+	// bot」影响。MTProto 回查拿不到（权限不够、已退群）时它就是 /jtime
+	// 与年龄轴的回退值。recordJoin 幂等，下面 onJoin 再走一次也无妨。
+	old := ""
+	if cu.OldChatMember != nil {
+		old = cu.OldChatMember.Status
+	}
+	if isMemberStatus(cu.NewChatMember.Status) && !isMemberStatus(old) {
+		at := cu.Date
+		if at == 0 {
+			at = time.Now().Unix()
+		}
+		recordJoin(b, cu.Chat.ID, cu.NewChatMember.User.ID, at)
+	}
+
 	conf, ok := chatActive(b, cu.Chat.ID)
 	if !ok {
 		return
@@ -108,10 +125,6 @@ func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	// 全量开回来，那一下会盖掉我们给的进群限制）。
 	reassertMute(b, conf, cu)
 
-	old := ""
-	if cu.OldChatMember != nil {
-		old = cu.OldChatMember.Status
-	}
 	if !isMemberStatus(cu.NewChatMember.Status) || isMemberStatus(old) {
 		return
 	}
@@ -610,16 +623,27 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// 处置都落在他身上，删除仍作用于这条消息本身。「bot 一律豁免」对这两类
 	// 不成立，否则随便 @ 几个广告 bot、或换成频道身份就能绕过检测。
 	m = asSender(m)
+	at := m.Date
+	if at == 0 {
+		at = time.Now().Unix()
+	}
+
+	// 入群 service 消息同理：先把入群时间记下来，再判这个群开没开反广告 ——
+	// bot 亲眼看到的入群是 MTProto 回查拿不到时的回退值。真正的进群处理
+	// （通知配对、冷判定）在下面 active 检查之后照旧走一遍。
+	if len(m.NewChatMembers) > 0 {
+		for _, nu := range m.NewChatMembers {
+			if nu != nil {
+				recordJoin(b, m.Chat.ID, nu.ID, at)
+			}
+		}
+	}
+
 	conf, active := chatActive(b, m.Chat.ID)
 	if !active {
 		return
 	}
 	edited := m.EditDate != 0
-
-	at := m.Date
-	if at == 0 {
-		at = time.Now().Unix()
-	}
 
 	// service 消息兜底：chat_member 在 bot 权限变动期间可能漏收，
 	// 而「谁刚进群」是整个分档的基础，两条路都要接。
