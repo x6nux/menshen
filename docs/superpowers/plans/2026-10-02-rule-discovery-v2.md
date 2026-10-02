@@ -24,6 +24,7 @@
 | `internal/store/db_test.go` | 老库迁移 | 老形状 `ad_rules` + 断言 |
 | `internal/panel/miniapp.go` | Mini App 契约 | test/list JSON、写回新列 |
 | `internal/panel/miniapp_test.go` | 面板契约 | 覆盖率字段与落库断言 |
+| `internal/panel/ruleagent_test.go` | Agent 状态冻结契约 | `created_rule_ids` 字段 |
 | `web/src/api/types.ts` | 前端类型 | Rule/RuleTest/RuleAgent 新字段 |
 | `web/src/pages/RulesPage.tsx` | 规则页 | 测试抽屉、覆盖率、多条展示 |
 | `web/src/pages/RulesPage.test.tsx` | 前端测试 | 新行为用例 |
@@ -200,6 +201,23 @@ func RuleKindsJSON(kinds []RuleKindStat) string {
 	}
 	return string(b)
 }
+
+// ParseRuleKindsJSON 解析落库的 last_kinds；空/坏数据返回空切片（非 nil），
+// 面板列表与 Agent 的 list_rules 共用，避免两处解析口径漂移。
+func ParseRuleKindsJSON(raw string) []map[string]any {
+	if raw == "" {
+		return []map[string]any{}
+	}
+	var kinds []RuleKindStat
+	if err := json.Unmarshal([]byte(raw), &kinds); err != nil || kinds == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, map[string]any{"kind": k.Kind, "total": k.Total, "matched": k.Matched})
+	}
+	return out
+}
 ```
 
 （`rules.go` 需要新增 `encoding/json` import。）
@@ -350,7 +368,8 @@ git commit -m "store: ad_rules 增加最近测试的覆盖率分母与类型细�
 	}
 ```
 
-落库断言（读库，同样放在重跑之后）：
+落库断言（读库，**放在第二次重跑之后**，即现有 `test["fp"]==0 && test["tp"]==1`
+那段断言旁边；第一次重跑时 `ads_total=0`，会误报）：
 
 ```go
 	var lastAdsTotal int64
@@ -383,23 +402,9 @@ func miniRuleWriteTest(sh *core.Shared, id int64, r antiad.RuleTestResult) error
 		r.AdsTotal, antiad.RuleKindsJSON(r.Kinds), id)
 	return err
 }
-
-// parseRuleKinds 解析落库 JSON；空/坏数据按空数组处理。
-func parseRuleKinds(raw string) []map[string]any {
-	if raw == "" {
-		return []map[string]any{}
-	}
-	var kinds []antiad.RuleKindStat
-	if err := json.Unmarshal([]byte(raw), &kinds); err != nil || kinds == nil {
-		return []map[string]any{}
-	}
-	out := make([]map[string]any, 0, len(kinds))
-	for _, k := range kinds {
-		out = append(out, map[string]any{"kind": k.Kind, "total": k.Total, "matched": k.Matched})
-	}
-	return out
-}
 ```
+
+（解析统一用 Task 1 的 `antiad.ParseRuleKindsJSON`，面板不重复实现。）
 
 `miniRuleTestJSON` 返回里加：
 
@@ -425,7 +430,7 @@ func parseRuleKinds(raw string) []map[string]any {
 
 ```go
 			"last_ads_total": lastAdsTotal,
-			"last_kinds":     parseRuleKinds(lastKinds),
+			"last_kinds":     antiad.ParseRuleKindsJSON(lastKinds),
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -624,7 +629,7 @@ func ruleCoverage(matched, total int64) float64 {
 ```
 
 （`Matched==0` 分支文案保持，不改。）
-- 补 import：`math`（round4）、`sort`（listKinds）、`slices`（listRules 反转）。
+- 补 import：`math`（round4）。（`sort`/`slices` 到 Task 5 用到时再加，Go 不允许未使用 import。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -725,11 +730,38 @@ func TestRuleAgentListRules(t *testing.T) {
 		t.Errorf("未测试规则 last_tested_at 应为 0：%v", rules[0])
 	}
 }
+
+// TestRuleAgentListRulesKeepsNewest：规则超过 100 条时仍返回最新创建的那条
+//（ORDER BY id DESC LIMIT 100 再反转为升序）。
+func TestRuleAgentListRulesKeepsNewest(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	for i := 0; i < 101; i++ {
+		if _, err := b.Store.Write.Exec(`INSERT INTO ad_rules
+			(name,pattern,source,created_at,created_by)
+			VALUES (?,?,'ai',0,1)`, fmt.Sprintf("规则%d", i), fmt.Sprintf("p%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &ruleAgentRun{sh: b.Shared}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.listRules()), &got); err != nil {
+		t.Fatal(err)
+	}
+	rules := got["rules"].([]any)
+	if len(rules) != 100 {
+		t.Fatalf("应返回 100 条，得到 %d", len(rules))
+	}
+	if last := rules[len(rules)-1].(map[string]any); last["name"].(string) != "规则100" {
+		t.Errorf("最新规则应保留在返回里：%v", last)
+	}
+}
 ```
+
+（本任务开始需要 `fmt` import；`sort`/`slices` 也在本任务加入。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `go test ./internal/antiad -run 'TestRuleAgentListKinds|TestRuleAgentReadRecords|TestRuleAgentListRules' -v`
+Run: `go test ./internal/antiad -run 'TestRuleAgentListKinds|TestRuleAgentReadRecords|TestRuleAgentListRules|TestRuleAgentListRulesKeepsNewest' -v`
 Expected: 编译失败（方法不存在）。
 
 - [ ] **Step 3: 实现**
@@ -909,7 +941,7 @@ func (r *ruleAgentRun) listRules() string {
 			"enabled": en == 1, "enforce": enf == 1, "last_tested_at": tested,
 			"last_tp": tp, "last_fp": fp, "last_ads_total": adsTotal,
 			"coverage": round4(ruleCoverage(tp, adsTotal)),
-			"last_kinds": parseKindsJSON(kindsRaw),
+			"last_kinds": ParseRuleKindsJSON(kindsRaw),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -923,23 +955,9 @@ func (r *ruleAgentRun) listRules() string {
 	})
 	return string(out)
 }
-
-// parseKindsJSON 解析落库的 last_kinds；坏数据按空数组。
-func parseKindsJSON(raw string) []map[string]any {
-	if raw == "" {
-		return []map[string]any{}
-	}
-	var kinds []RuleKindStat
-	if err := json.Unmarshal([]byte(raw), &kinds); err != nil || kinds == nil {
-		return []map[string]any{}
-	}
-	out := make([]map[string]any, 0, len(kinds))
-	for _, k := range kinds {
-		out = append(out, map[string]any{"kind": k.Kind, "total": k.Total, "matched": k.Matched})
-	}
-	return out
-}
 ```
+
+（`last_kinds` 解析用 Task 1 的 `ParseRuleKindsJSON`，与面板同源。）
 
 工具注册（`buildRuleAgentTools`）：
 
@@ -1181,6 +1199,9 @@ Expected: FAIL（第二条被拒 / 状态缺 `created_rule_ids` / 提前收尾�
 
 `ruleAgentRuntime`：`createdRuleID int64` → `createdRuleIDs []int64`。
 
+`StartRuleDiscovery` 的开场重置同步改为 `ruleAgentRT.createdRuleIDs = nil`
+（运行态清空；Status 输出时再转成非 nil 空切片，保证 JSON 是 `[]`）。
+
 同时更新 `internal/panel/ruleagent_test.go` 的冻结契约字段清单，加入
 `"created_rule_ids"`（与 `created_rule_id` 并存）。
 
@@ -1275,13 +1296,13 @@ Expected: FAIL（第二条被拒 / 状态缺 `created_rule_ids` / 提前收尾�
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `go test ./internal/antiad -v`
-Expected: PASS（注意同步改掉依赖「创建即收尾」的旧断言）。
+Run: `go test ./internal/antiad -v && go test ./internal/panel -run TestMiniRulesAgentOps -v`
+Expected: PASS（面板契约的 `created_rule_ids` 字段同步生效）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add internal/antiad/ruleagent.go internal/antiad/ruleagent_test.go
+git add internal/antiad/ruleagent.go internal/antiad/ruleagent_test.go internal/panel/ruleagent_test.go
 git commit -m "antiad: 规则发现一轮可创建多条，状态带 created_rule_ids"
 ```
 
@@ -1586,7 +1607,8 @@ it('详情展示最近测试覆盖率与落库的按类型细分', async () => {
   renderPage(<RuleDetailPage id={1} />)
   expect(await screen.findByText(/覆盖率 7\.5%/)).toBeInTheDocument()
   expect(screen.getByText('按类型覆盖')).toBeInTheDocument()
-  expect(screen.getByText('scam')).toBeInTheDocument()
+  // 用 promo 断言：scam 既是规则分类（InfoRow）也是类型行，getByText 会撞多元素。
+  expect(screen.getByText('promo')).toBeInTheDocument()
 })
 ```
 
@@ -1630,7 +1652,7 @@ function pct(matched: number, total: number): string | null {
   return `${((matched / total) * 100).toFixed(1)}%`
 }
 
-/** KindCoverageList 是「按类型覆盖」小节；countsOnly=true 用于落库数据（无样本）。 */
+/** KindCoverageList 是「按类型覆盖」小节：实时测试与落库数据共用。 */
 function KindCoverageList({ kinds, title = '按类型覆盖' }: { kinds: RuleKindStat[]; title?: string }) {
   if (kinds.length === 0) return null
   return (
