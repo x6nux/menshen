@@ -6,7 +6,13 @@
 // - 详情：全库误封测试（FP/已撤销样本红色高亮，TP 样本可折叠）、启用/强制
 //   开关（乐观更新；强制受服务端防误封门约束：未测试或 fp/undone>0 时禁用）、
 //   删除确认（写明规则名与后果）。
-import { Box, Button, TextField, Typography } from '@mui/material'
+import {
+  Box,
+  Button,
+  Chip,
+  TextField,
+  Typography,
+} from '@mui/material'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { errorStatus } from '../api/client'
@@ -38,6 +44,31 @@ import {
 import { InfoRow } from './shared'
 
 const MONO = 'ui-monospace, Menlo, monospace'
+
+/** 规则列表的筛选与排序。 */
+type RuleFilter = 'all' | 'enabled' | 'candidate' | 'enforce'
+type RuleSort = 'default' | 'coverage' | 'tp' | 'hits' | 'recent'
+
+const RULE_FILTERS: { key: RuleFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'enabled', label: '启用' },
+  { key: 'candidate', label: '候选' },
+  { key: 'enforce', label: '强制' },
+]
+
+const RULE_SORTS: { key: RuleSort; label: string }[] = [
+  { key: 'default', label: '默认' },
+  { key: 'coverage', label: '覆盖率' },
+  { key: 'tp', label: '命中广告' },
+  { key: 'hits', label: '规则命中' },
+  { key: 'recent', label: '最近创建' },
+]
+
+/** ruleCoverageValue 覆盖率排序值；未测试或分母为 0 记 -1 排最后。 */
+function ruleCoverageValue(rule: Rule): number {
+  if (rule.last_ads_total <= 0) return -1
+  return rule.last_tp / rule.last_ads_total
+}
 
 /** pct 覆盖率显示：一位小数；分母缺失或为 0 时 null（调用方决定「—」或省略）。 */
 function pct(matched: number, total: number): string | null {
@@ -92,13 +123,6 @@ function agentStatus(agent: RuleAgent | undefined): {
     return { label: '已完成', tone: 'ok' }
   }
   return { label: '空闲', tone: 'neutral' }
-}
-
-/** stepKindLabel 步骤类型：model=模型轮次，tool=一次工具调用。 */
-function stepKindLabel(kind: string): string {
-  if (kind === 'model') return '模型'
-  if (kind === 'tool') return '工具'
-  return kind
 }
 
 /** sourceLabel 规则来源文案；未知来源原样显示。 */
@@ -185,8 +209,8 @@ function TpFpValue({ rule }: { rule: Rule }) {
   )
 }
 
-/** AgentCard 是规则发现 Agent 的状态卡：状态、启停、步骤时间线、结果。 */
-function AgentCard({ tz }: { tz?: string }) {
+/** AgentCard 是规则发现 Agent 的状态卡：只显示运行状态、启停与最终结果。 */
+function AgentCard() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const agentQuery = useRuleAgent(true)
@@ -196,8 +220,7 @@ function AgentCard({ tz }: { tz?: string }) {
 
   const agent = agentQuery.data?.agent
   const running = agent?.running ?? false
-  // 一步日志一行，时间线只保留最近 50 步，避免长跑后 DOM 无限增长。
-  const steps = (agent?.steps ?? []).slice(-50)
+  const stepsCount = agent?.steps_count ?? 0
   const status = agentQuery.isError
     ? { label: '失败', tone: 'no' as const }
     : agentStatus(agent)
@@ -205,10 +228,7 @@ function AgentCard({ tz }: { tz?: string }) {
     agent !== undefined &&
     (agent.error !== '' || agent.result !== '' || agent.created_rule_id > 0)
 
-  const stepsRef = useRef<HTMLDivElement | null>(null)
-  const lastStepN = steps.length > 0 ? steps[steps.length - 1].n : 0
-
-  // 运行 → 结束的跳变：Agent 可能刚写入了新候选，刷新规则列表。
+  // 运行 → 结束的跳变：Agent 可能刚写入了新规则，刷新规则列表。
   useEffect(() => {
     if (wasRunning.current && !running) {
       void queryClient.invalidateQueries({ queryKey: miniQueryKeys.rules })
@@ -216,26 +236,20 @@ function AgentCard({ tz }: { tz?: string }) {
     wasRunning.current = running
   }, [running, queryClient])
 
-  // 新步骤到达时把时间线滚到底部，长跑时总能看到最新一条。
-  useEffect(() => {
-    const el = stepsRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [lastStepN])
-
   function start() {
     startMut.mutate(
       { action: 'agent_start' },
       {
         // 竞态防护：挂载期的 agent_status 可能还在途，等它回来时若直接
-        // setQueryData 会被旧响应覆盖（running 变回 false、轮询停掉、步骤
-        // 不再出现）。先取消在途请求，再写启动态，最后失效重取确认真值。
+        // setQueryData 会被旧响应覆盖（running 变回 false、轮询停掉、状态
+        // 不再刷新）。先取消在途请求，再写启动态，最后失效重取确认真值。
         onSuccess: async (resp) => {
           if (resp.agent) {
             await queryClient.cancelQueries({ queryKey: miniQueryKeys.rulesAgent })
             queryClient.setQueryData(miniQueryKeys.rulesAgent, { agent: resp.agent })
             await queryClient.invalidateQueries({ queryKey: miniQueryKeys.rulesAgent })
           }
-          toast('已开始规则发现，完成后会给出候选规则')
+          toast('已开始规则发现，完成后会给出新规则')
         },
         onError: (err) => toast(err.message),
       },
@@ -272,8 +286,8 @@ function AgentCard({ tz }: { tz?: string }) {
           ) : (
             <Typography sx={{ fontSize: 13, color: 'text.secondary', lineHeight: 1.5 }}>
               {running
-                ? '正在从历史封禁里总结必封正则…'
-                : '让 AI 扫描历史封禁生成候选；候选默认不启用。'}
+                ? `正在从历史封禁里总结必封规则…已执行 ${stepsCount} 步`
+                : '让 AI 扫描历史封禁生成规则；无误封的会自动启用（仅作为判定证据）。'}
             </Typography>
           )}
         </Box>
@@ -299,58 +313,6 @@ function AgentCard({ tz }: { tz?: string }) {
           </Button>
         </Box>
       </Box>
-
-      {steps.length > 0 && (
-        <Box
-          ref={stepsRef}
-          data-testid="agent-steps"
-          sx={{ maxHeight: 280, overflowY: 'auto', borderTop: '1px solid', borderColor: 'divider' }}
-        >
-          {steps.map((step) => (
-            <Box
-              key={step.n}
-              sx={{
-                display: 'flex',
-                gap: 1,
-                px: 2,
-                py: 0.75,
-                borderBottom: '1px solid',
-                borderColor: 'divider',
-                '&:last-of-type': { borderBottom: 0 },
-              }}
-            >
-              <Badge tone={step.kind === 'model' ? 'neutral' : 'warn'}>
-                {stepKindLabel(step.kind)}
-              </Badge>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>
-                  <Typography
-                    sx={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, wordBreak: 'break-all' }}
-                  >
-                    {step.name}
-                  </Typography>
-                  <Typography sx={{ flexShrink: 0, fontSize: 12, color: 'text.disabled' }}>
-                    {fmtTS(step.at, tz)}
-                  </Typography>
-                </Box>
-                {step.summary !== '' && (
-                  <Typography
-                    sx={{
-                      mt: 0.25,
-                      fontSize: 12,
-                      color: 'text.secondary',
-                      lineHeight: 1.5,
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {step.summary}
-                  </Typography>
-                )}
-              </Box>
-            </Box>
-          ))}
-        </Box>
-      )}
 
       {!running && ended && agent !== undefined && (
         <Box sx={{ px: 2, py: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
@@ -395,6 +357,9 @@ export function RulesPage() {
   // testResult 绑定提交时的 pattern：请求在途时改了输入，迟到的响应不能当
   // 当前输入的结果展示（否则会用旧统计误导「用此正则新建规则」）。
   const [testResult, setTestResult] = useState<{ test: RuleTest; pattern: string } | null>(null)
+  const [filter, setFilter] = useState<RuleFilter>('all')
+  const [sort, setSort] = useState<RuleSort>('default')
+  const [search, setSearch] = useState('')
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {
@@ -404,6 +369,32 @@ export function RulesPage() {
 
   const tz = displayTz(state.data)
   const rules = rulesQuery.data?.rules ?? []
+  const query = search.trim().toLowerCase()
+  const filteredRules = rules
+    .filter((r) => {
+      if (filter === 'enabled' && !r.enabled) return false
+      if (filter === 'candidate' && r.enabled) return false
+      if (filter === 'enforce' && !r.enforce) return false
+      return (
+        query === '' ||
+        r.name.toLowerCase().includes(query) ||
+        r.pattern.toLowerCase().includes(query)
+      )
+    })
+    .sort((a, b) => {
+      switch (sort) {
+        case 'coverage':
+          return ruleCoverageValue(b) - ruleCoverageValue(a) || a.id - b.id
+        case 'tp':
+          return b.last_tp - a.last_tp || a.id - b.id
+        case 'hits':
+          return b.hits - a.hits || a.id - b.id
+        case 'recent':
+          return b.created_at - a.created_at || a.id - b.id
+        default:
+          return a.id - b.id
+      }
+    })
 
   function openAdd() {
     setName('')
@@ -436,7 +427,7 @@ export function RulesPage() {
 
   return (
     <Box data-testid="rules-page">
-      <AgentCard tz={tz} />
+      <AgentCard />
 
       {rulesQuery.isError ? (
         <ErrorState
@@ -452,7 +443,8 @@ export function RulesPage() {
               component="h2"
               sx={{ flex: 1, fontSize: 13, fontWeight: 500, color: 'text.secondary' }}
             >
-              规则（{rules.length}）
+              规则（{filteredRules.length}
+              {filteredRules.length !== rules.length ? `/${rules.length}` : ''}）
             </Typography>
             <Button
               size="small"
@@ -469,14 +461,50 @@ export function RulesPage() {
               ＋ 手动新增
             </Button>
           </Box>
+          <Box sx={{ px: 1, mb: 0.75, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            <TextField
+              fullWidth
+              size="small"
+              placeholder="搜索名称或正则"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+              {RULE_FILTERS.map((f) => (
+                <Chip
+                  key={f.key}
+                  size="small"
+                  label={f.label}
+                  color={filter === f.key ? 'primary' : 'default'}
+                  variant={filter === f.key ? 'filled' : 'outlined'}
+                  onClick={() => setFilter(f.key)}
+                />
+              ))}
+            </Box>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+              <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>排序</Typography>
+              {RULE_SORTS.map((s) => (
+                <Chip
+                  key={s.key}
+                  size="small"
+                  label={s.label}
+                  color={sort === s.key ? 'primary' : 'default'}
+                  variant={sort === s.key ? 'filled' : 'outlined'}
+                  onClick={() => setSort(s.key)}
+                />
+              ))}
+            </Box>
+          </Box>
           <SectionCard>
             {rules.length === 0 ? (
               <EmptyState
                 title="还没有规则"
-                description="点「开始发现」让 AI 从历史封禁里生成候选，也可以手动新增后自己测试。"
+                description="点「开始发现」让 AI 从历史封禁里生成规则，也可以手动新增后自己测试。"
               />
+            ) : filteredRules.length === 0 ? (
+              <EmptyState title="没有符合条件的规则" description="换个筛选条件或清空搜索再试。" />
             ) : (
-              rules.map((rule) => (
+              filteredRules.map((rule) => (
                 <ListRow
                   key={rule.id}
                   primary={rule.name}

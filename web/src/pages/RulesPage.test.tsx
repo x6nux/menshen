@@ -1,9 +1,10 @@
-// AI 必封规则：Agent 启停/步骤/完成后刷新列表与多条创建、启动竞态、约 2 秒
-// 自动轮询与卸载停止、状态读取失败重试、列表徽标与 TP/FP/覆盖率摘要、详情
-// 全库误封测试（覆盖率与按类型细分）与强制防误封门、开关乐观更新与失败回滚、
-// 400 toast、手动新增参数与保留输入、测试正则抽屉（试跑不落库/预填新建/
-// 改输入作废旧结果）、删除确认、次管 403 且不发 rules 请求。
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+// AI 必封规则：Agent 启停/运行状态（不再展示步骤内容）/完成后刷新列表与多条
+// 创建、启动竞态、约 2 秒自动轮询与卸载停止、状态读取失败重试、列表徽标与
+// TP/FP/覆盖率摘要、筛选/搜索/排序、详情全库误封测试（覆盖率与按类型细分）与
+// 强制防误封门、开关乐观更新与失败回滚、400 toast、手动新增参数与保留输入、
+// 测试正则抽屉（试跑不落库/预填新建/改输入作废旧结果）、删除确认、
+// 次管 403 且不发 rules 请求。
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { miniQueryKeys } from '../api/hooks'
@@ -86,25 +87,20 @@ describe('RulesPage · Agent', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始发现' }))
     await waitFor(() => expect(bodies.some((b) => b.action === 'agent_start')).toBe(true))
     // 等 mutation 结算：onSuccess 会把初始运行态写进缓存，抢跑会被它盖掉。
-    expect(await screen.findByText('已开始规则发现，完成后会给出候选规则')).toBeInTheDocument()
+    expect(await screen.findByText('已开始规则发现，完成后会给出新规则')).toBeInTheDocument()
 
-    // 轮询返回运行中 + 两步（模型轮次/工具调用）。
+    // 轮询返回运行中 + 已执行 2 步（不再下发步骤内容，只显示状态）。
     agent = {
       ...agent,
       running: true,
-      steps: [
-        { n: 1, at: 1700000601, kind: 'model', name: '选样本', summary: '读取 20 条历史封禁' },
-        { n: 2, at: 1700000602, kind: 'tool', name: 'test_rule', summary: 'pattern 命中 5 条' },
-      ],
+      steps_count: 2,
     }
     await act(async () => {
       await client.refetchQueries({ queryKey: miniQueryKeys.rulesAgent })
     })
     expect(screen.getByText('运行中')).toBeInTheDocument()
-    expect(await screen.findByText('模型', undefined, { timeout: 3000 })).toBeInTheDocument()
-    expect(screen.getByText('工具')).toBeInTheDocument()
-    expect(screen.getByText('选样本')).toBeInTheDocument()
-    expect(screen.getByText('pattern 命中 5 条')).toBeInTheDocument()
+    expect(await screen.findByText(/已执行 2 步/, undefined, { timeout: 3000 })).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-steps')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '停止' }))
     await waitFor(() => expect(bodies.some((b) => b.action === 'agent_stop')).toBe(true))
@@ -160,7 +156,7 @@ describe('RulesPage · Agent', () => {
     await waitFor(() => expect(statusCalls).toBe(1))
 
     fireEvent.click(screen.getByRole('button', { name: '开始发现' }))
-    expect(await screen.findByText('已开始规则发现，完成后会给出候选规则')).toBeInTheDocument()
+    expect(await screen.findByText('已开始规则发现，完成后会给出新规则')).toBeInTheDocument()
 
     // 迟到的空闲响应现在才 resolve：卡片必须保持「运行中」。
     releaseSlow()
@@ -178,9 +174,7 @@ describe('RulesPage · Agent', () => {
       ...mockRuleAgent,
       running: true,
       started_at: 1700000600,
-      steps: [
-        { n: 1, at: 1700000601, kind: 'model', name: '选样本', summary: '读取 20 条历史封禁' },
-      ],
+      steps_count: 1,
     }
     captureRules((body) => {
       switch (body.action) {
@@ -227,7 +221,7 @@ describe('RulesPage · Agent', () => {
 
     fail = false
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
-    expect(await screen.findByText(/让 AI 扫描历史封禁生成候选/)).toBeInTheDocument()
+    expect(await screen.findByText(/让 AI 扫描历史封禁生成规则/)).toBeInTheDocument()
     expect(screen.queryByText('状态读取失败')).not.toBeInTheDocument()
   }, 15000)
 
@@ -268,8 +262,11 @@ describe('RulesPage · 列表与新增', () => {
 
     expect(await screen.findByText('（mock）兼职押金话术')).toBeInTheDocument()
     expect(screen.getByText('（mock）联系方式引流')).toBeInTheDocument()
-    expect(screen.getByText('启用')).toBeInTheDocument()
-    expect(screen.getByText('候选')).toBeInTheDocument()
+    // 「启用/候选」徽标与筛选 chip 同名：按行内 scope 断言，避免撞多元素。
+    const row1 = screen.getByRole('button', { name: /（mock）兼职押金话术/ })
+    const row2 = screen.getByRole('button', { name: /（mock）联系方式引流/ })
+    expect(within(row1).getByText('启用')).toBeInTheDocument()
+    expect(within(row2).getByText('候选')).toBeInTheDocument()
     expect(screen.getByTestId('rule-tpfp-1')).toHaveTextContent('TP 9 · FP 0')
     expect(screen.getByTestId('rule-tpfp-2')).toHaveTextContent('TP 4 · FP 2')
 
@@ -315,6 +312,69 @@ describe('RulesPage · 列表与新增', () => {
     expect(await screen.findByText('规则不能匹配空文本（会命中所有消息）')).toBeInTheDocument()
     expect(screen.getByLabelText('名称')).toHaveValue('押金话术')
     expect(screen.getByText('手动新增规则')).toBeInTheDocument()
+  })
+
+  it('筛选与搜索：候选筛选、名称/正则搜索、计数联动', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: mockRules })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('（mock）兼职押金话术')
+
+    // 候选筛选：只剩未启用的规则 2，标题计数联动。
+    fireEvent.click(screen.getByRole('button', { name: '候选' }))
+    expect(screen.queryByText('（mock）兼职押金话术')).not.toBeInTheDocument()
+    expect(screen.getByText('（mock）联系方式引流')).toBeInTheDocument()
+    expect(screen.getByText('规则（1/2）')).toBeInTheDocument()
+
+    // 全部 + 搜索：按名称过滤。
+    fireEvent.click(screen.getByRole('button', { name: '全部' }))
+    fireEvent.change(screen.getByPlaceholderText('搜索名称或正则'), {
+      target: { value: '押金' },
+    })
+    expect(screen.getByText('（mock）兼职押金话术')).toBeInTheDocument()
+    expect(screen.queryByText('（mock）联系方式引流')).not.toBeInTheDocument()
+
+    // 搜不到时给空态提示。
+    fireEvent.change(screen.getByPlaceholderText('搜索名称或正则'), {
+      target: { value: '不存在' },
+    })
+    expect(screen.getByText('没有符合条件的规则')).toBeInTheDocument()
+  })
+
+  it('排序：覆盖率把已测试的高覆盖规则排到未测试规则前', async () => {
+    const noCov: Rule = {
+      ...mockRules[0],
+      id: 1,
+      name: '无覆盖规则',
+      last_tp: 0,
+      last_ads_total: 0,
+      last_kinds: [],
+    }
+    const cov: Rule = {
+      ...mockRules[0],
+      id: 2,
+      name: '高覆盖规则',
+      last_tp: 12,
+      last_ads_total: 120,
+    }
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [noCov, cov] })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('无覆盖规则')
+
+    // 默认按 id：无覆盖规则在前。
+    let rows = screen.getAllByTestId(/^rule-tpfp-/)
+    expect(rows[0]).toHaveAttribute('data-testid', 'rule-tpfp-1')
+
+    fireEvent.click(screen.getByRole('button', { name: '覆盖率' }))
+    rows = screen.getAllByTestId(/^rule-tpfp-/)
+    expect(rows[0]).toHaveAttribute('data-testid', 'rule-tpfp-2')
   })
 
   it('次管：403 且不发 rules 请求', async () => {

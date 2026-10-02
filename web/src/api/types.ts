@@ -369,15 +369,6 @@ export interface RuleTest {
   undone_samples: RuleSample[]
 }
 
-/** RuleAgentStep 是规则发现 Agent 的一条步骤日志：kind=model（模型轮次）/tool（工具调用）。 */
-export interface RuleAgentStep {
-  n: number
-  at: number
-  kind: string
-  name: string
-  summary: string
-}
-
 export interface RuleAgent {
   running: boolean
   started_at: number
@@ -388,7 +379,8 @@ export interface RuleAgent {
   created_rule_id: number
   /** 本轮创建的全部规则 id；无创建时是空数组。 */
   created_rule_ids: number[]
-  steps: RuleAgentStep[]
+  /** 已执行的步骤数；步骤内容不再下发（前端只显示运行状态）。 */
+  steps_count: number
 }
 
 export interface RuleAgentStatusResp {
