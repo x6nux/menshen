@@ -491,6 +491,36 @@ func ownChats(snap *store.Snapshot, ownerID int64) []int64 {
 	return out
 }
 
+// LiftGbanForChat 解除「在本群生效」的联合封禁：覆盖本群的专属组条目总是
+// 解除；全局组条目只在 includeGlobal（服务管理员：主/次）时解除 —— 群管理
+// 员不该动全平台的名单。返回解除了哪些（给操作者的提示），空串表示本群
+// 没有生效中的联合封禁。
+//
+// 解封（ReleaseUser / uad / ungban）都用它：只解当前禁言/封禁、不动名单
+// 的话，人一发言又会被名单自动禁回去，管理员还得再来点一次。
+func LiftGbanForChat(sh *core.Shared, botID, chatID, uid int64, includeGlobal bool) string {
+	var lifted []string
+	snap := sh.Cache.Snap()
+	if includeGlobal && botInGlobal(snap, botID) {
+		if _, ok := snap.Gban[uid]; ok {
+			LiftGban(sh, uid)
+			lifted = append(lifted, "全局联合封禁组")
+		}
+	}
+	if rec := snap.Bots[botID]; rec != nil &&
+		snap.GbanOwnOn(rec.OwnerID) && snap.GbanOwnChats[rec.OwnerID][chatID] {
+		if _, ok := snap.GbanOwnBans[rec.OwnerID][uid]; ok {
+			if err := GbanOwnRemoveBan(sh, rec.OwnerID, uid); err != nil {
+				slog.Error("联合封禁：专属组移除失败",
+					"owner", rec.OwnerID, "uid", uid, "err", err)
+			} else {
+				lifted = append(lifted, "专属联合封禁组")
+			}
+		}
+	}
+	return strings.Join(lifted, "、")
+}
+
 // AdminLiftGban 管理员解除某人的联合封禁：全局组对所有管理员开放
 // （共同维护的名单），专属组按账本归属处理 —— 次管只动自己的；主管理员
 // 是平台级角色，各次管的专属组条目也能撤（条目在别人的账本里时，主管

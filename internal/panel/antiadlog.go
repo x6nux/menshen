@@ -418,7 +418,7 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		}
 		all := len(parts) > 6 && parts[6] == "all"
 		note := "已解除"
-		if ok, desc := antiad.ReleaseUserInChat(b, chat, target); !ok {
+		if ok, desc := antiad.ReleaseUserInChat(b, chat, target, q.From.ID); !ok {
 			note = desc
 		}
 		b.AnswerCallback(q.ID, note)
@@ -664,7 +664,7 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 	case "rel":
 		// 解封（判定维持）：撤掉还在生效的限制、清掉记录，但不动判定本身
 		// —— 与「↩️ 误判」的区别就在这里（样本池、命中数、内容哈希都不动）。
-		did := antiad.ReleaseUser(b, row)
+		did := antiad.ReleaseUser(b, row, q.From.ID)
 		b.AnswerCallback(q.ID, "已"+did+"（判定维持不变）")
 
 	case "ban":

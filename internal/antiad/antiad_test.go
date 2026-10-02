@@ -144,9 +144,13 @@ func TestParseAdCommand(t *testing.T) {
 		{"/check 12345", "/check", "12345", true},
 		{"/check@some_bot", "/check", "", true},   // 群里 TG 客户端会自动补 @botname
 		{"/check@bot 999", "/check", "999", true}, // 带参数的 @ 形态
-		// /ban 以 /check 为前缀，合并识别才不会被前者吃掉
+		// /ban、/banad 都要认；/banad 不能被 /ban 吃掉
 		{"/ban", "/ban", "", true},
 		{"/ban@some_bot", "/ban", "", true},
+		{"/banad", "/banad", "", true},
+		{"/banad 12345", "/banad", "12345", true},
+		{"/ungban", "/ungban", "", true},
+		{"/ungban @someone", "/ungban", "@someone", true},
 		{"/adx", "", "", false},
 		{"随便聊天", "", "", false},
 		{"", "", "", false},

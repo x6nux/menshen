@@ -26,6 +26,14 @@ func TestUadReleasesUser(t *testing.T) {
 		time.Now().Unix(), b.BotID()); err != nil {
 		t.Fatal(err)
 	}
+	// 本群所属的专属联合封禁也挂上：/uad 要连带解除 ——
+	// 只解群里的限制、不动名单的话，人一发言又会被名单自动禁回去。
+	if err := GbanOwnSetChat(b.Shared, b.Owner(), -100, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnAddBan(b.Shared, b.Owner(), 5001, "简介推广", 0); err != nil {
+		t.Fatal(err)
+	}
 	before := fake.CountCalls("restrictChatMember")
 
 	// 群管理员发 /uad。
@@ -67,6 +75,10 @@ func TestUadReleasesUser(t *testing.T) {
 	}
 	if source != "uad" {
 		t.Errorf("白名单来源应记 uad，得到 %q", source)
+	}
+	// 专属联合封禁条目一并解除。
+	if _, ok := b.Cache.Snap().GbanOwnBans[b.Owner()][5001]; ok {
+		t.Error("/uad 应连带解除本群所属的专属联合封禁")
 	}
 	left := expires - time.Now().Unix()
 	if left < int64(23*time.Hour/time.Second) || left > int64(25*time.Hour/time.Second) {

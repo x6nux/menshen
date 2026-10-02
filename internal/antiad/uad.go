@@ -26,7 +26,9 @@ import (
 const uadUsage = "用法：回复某人的消息发 <code>/uad</code>，" +
 	"或发 <code>/uad &lt;user_id&gt;</code>（频道填 -100 开头的频道 ID）。\n" +
 	"会解除此人在本群的禁言或封禁，清掉反广告处罚记录，" +
-	"并给他 24 小时白名单缓冲（期满恢复判定）。"
+	"并给他 24 小时白名单缓冲（期满恢复判定）。\n" +
+	"本群生效的联合封禁也会一并解除：主/次管理员连全局组一起解，" +
+	"群管理员只解本群所属的专属组。"
 
 // uadGrace 是解封后给的白名单缓冲时长：与申诉通过后的口径一致。
 const uadGrace = 24 * time.Hour
@@ -79,6 +81,13 @@ func HandleUadCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	banOK, banDesc := Unban(b, conf.ChatID, uid)
 	muteOK, muteDesc := LiftMute(b, conf.ChatID, uid)
 
+	// 本群生效的联合封禁一并解除（只解当前限制不动名单的话，人一发言又
+	// 会被名单自动禁回去，管理员还得再来点一次「解除联合封禁」）。范围按
+	// 身份分：服务管理员（主/次）连全局组一起解，群管理员只解本群所属的
+	// 专属组 —— 群里不该动全平台的名单。
+	gbanScope := LiftGbanForChat(b.Shared, b.BotID(), conf.ChatID, uid,
+		b.IsStaff(m.From.ID))
+
 	// 白名单缓冲：不写的话，他重新进群时冷判定会照着同一份资料再限制一次，
 	// 管理员看到的就是「解封没生效」。24 小时后自动失效，不是永久放行。
 	if err := AddWhitelist(b.Shared, b.BotID(), conf.ChatID, uid, uadGrace, "uad", m.From.ID); err != nil {
@@ -87,14 +96,18 @@ func HandleUadCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	}
 	unbanGateClear(b.Shared, uid)
 
-	if !banOK && !muteOK {
-		// 两样都没做成（多半是 bot 没有封禁权限），如实告诉操作者。
+	if !banOK && !muteOK && gbanScope == "" {
+		// 三样都没做成（多半是 bot 没有封禁权限），如实告诉操作者。
 		msg := strings.TrimSpace(strings.Join([]string{banDesc, muteDesc}, "；"))
 		reply("⚠️ 记录已清除，但解除 TG 限制失败：" + htmlEscapeShort(msg))
 		return
 	}
+	extra := ""
+	if gbanScope != "" {
+		extra = "，并解除了联合封禁（" + gbanScope + "）"
+	}
 	reply("✅ 已解除 " + userLink(uid) + " 在本群的限制：" +
-		"清掉了反广告处罚记录，并给了 " + uadHoursLabel() +
+		"清掉了反广告处罚记录" + extra + "，并给了 " + uadHoursLabel() +
 		"白名单缓冲（期满恢复判定）。")
 
 	// 私聊通知本人：他在群里看到的只是一条会自动撤回的提示。
@@ -116,4 +129,63 @@ func uadHoursLabel() string {
 // 群内提示走 groupNotice，那里会做转义）。
 func htmlEscapeShort(s string) string {
 	return core.TruncateRunes(strings.TrimSpace(s), 120)
+}
+
+const ungbanUsage = "用法：回复某人的消息发 <code>/ungban</code>，" +
+	"或发 <code>/ungban &lt;user_id&gt;</code> / <code>/ungban @用户名</code>。\n" +
+	"解除此人在本群生效的联合封禁：群管理员解除本群所属的专属联合封禁；" +
+	"主/次管理员在此基础上还会解除全局联合封禁组。"
+
+// HandleUngbanCommand 处理群内 /ungban：只解联合封禁，不动别的处罚。
+//
+// 权限与 /uad、/ban 同一道门（群管理员及以上，非授权者静默忽略）。
+// 范围按身份分：服务管理员（主/次）连全局组一起解，群管理员只解本群所属
+// 的专属组 —— 一个群的群管不该动全平台的名单。
+func HandleUngbanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
+	if !canMarkAd(b, conf.ChatID, m.From.ID) {
+		return
+	}
+	// 命令本身不该留在群里（与 /ban、/uad 一致）。
+	b.TG.Call("deleteMessage", map[string]any{
+		"chat_id": conf.ChatID, "message_id": m.MessageID,
+	})
+
+	ttl := time.Duration(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+	reply := func(text string) { groupNotice(b, conf.ChatID, text, nil, ttl) }
+
+	var uid int64
+	switch {
+	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
+		uid = senderOf(m.ReplyToMessage).ID
+	case strings.TrimSpace(arg) != "":
+		id, ok := resolveUIDArg(b, arg)
+		if !ok {
+			reply(ungbanUsage)
+			return
+		}
+		uid = id
+	default:
+		reply(ungbanUsage)
+		return
+	}
+	if uid < 0 {
+		reply("频道身份没有联合封禁。")
+		return
+	}
+
+	snap := b.Cache.Snap()
+	if !b.AdLimits.Allow(fmt.Sprintf("ungban:%d", m.From.ID),
+		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
+		reply("操作太频繁，请稍后再试。")
+		return
+	}
+
+	scope := LiftGbanForChat(b.Shared, b.BotID(), conf.ChatID, uid, b.IsStaff(m.From.ID))
+	if scope == "" {
+		reply("此人在本群没有生效中的联合封禁。")
+		return
+	}
+	reply("✅ 已解除 " + userLink(uid) + " 的联合封禁：" + scope + "。")
+	slog.Info("反广告：群内解除联合封禁", "chat", conf.ChatID, "uid", uid,
+		"by", m.From.ID, "范围", scope)
 }

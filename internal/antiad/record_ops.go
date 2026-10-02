@@ -102,8 +102,11 @@ func appendNote(old, add string) string {
 // 生效的限制撤掉（管理员确认过这个人现在可以放回来，但当初判得没错）。
 //
 // 记录上若是封禁就走解封，否则解禁言；两步都试，被封禁的人不在群里、解禁言
-// 那一步本来就会失败，失败只记日志。返回给管理员看的一句结果。
-func ReleaseUser(b *core.Bot, r AdLogRow) string {
+// 那一步本来就会失败，失败只记日志。在本群生效的联合封禁也一并解除（见
+// LiftGbanForChat）—— 否则人一发言又被名单禁回去，等于没解。
+// actor 是执行人：服务管理员（主/次）连全局组一起解除，群管理员只解除
+// 本群所属的专属组。返回给管理员看的一句结果。
+func ReleaseUser(b *core.Bot, r AdLogRow, actor int64) string {
 	name := strings.TrimPrefix(r.Action, "dryrun:")
 	ban := name == "banned" || name == "deleted_banned" || name == "gban_banned"
 
@@ -123,6 +126,10 @@ func ReleaseUser(b *core.Bot, r AdLogRow) string {
 		MarkPenaltiesLifted(b, r.ChatID, r.UserID)
 		did = append(did, "清除记录")
 	}
+	if s := LiftGbanForChat(b.Shared, b.BotID(), r.ChatID, r.UserID,
+		b.IsStaff(actor)); s != "" {
+		did = append(did, "联合封禁（"+s+"）")
+	}
 	UpdateAdLog(b, r.ID, r.Action,
 		appendNote(r.Reason, "管理员解封（判定维持）："+strings.Join(did, "、")))
 	slog.Info("反广告：管理员解封（判定维持）", "log", r.ID,
@@ -131,22 +138,28 @@ func ReleaseUser(b *core.Bot, r AdLogRow) string {
 }
 
 // ReleaseUserInChat 面板「生效中的限制」解除按钮的实现：封禁与禁言都试
-// 一遍，并把「个人简介限制」记录一并清掉。
+// 一遍，把「个人简介限制」记录与在本群生效的联合封禁一并清掉。
 //
 // 记录卡片上的 ReleaseUser 有具体流水行可依托（按动作选解封/解禁言）；
 // 这里只有 (群, 人)，所以两个动作都做：unban 带 only_if_banned，不会把
 // 没被封的人踢出去；LiftMute 成功时本来就清资料限制，只有它失败（人已
 // 不在群）时补一次，免得记录留着把复查任务引回来。
-func ReleaseUserInChat(b *core.Bot, chatID, uid int64) (bool, string) {
+// actor 是执行人（决定联合封禁的解除范围），与 ReleaseUser 同口径。
+func ReleaseUserInChat(b *core.Bot, chatID, uid, actor int64) (bool, string) {
 	ok1, _ := LiftMute(b, chatID, uid)
 	ok2, _ := Unban(b, chatID, uid)
-	if !ok1 && !ok2 {
+	gban := LiftGbanForChat(b.Shared, b.BotID(), chatID, uid, b.IsStaff(actor))
+	if !ok1 && !ok2 && gban == "" {
 		return false, "解除失败（可能已不在群里）"
 	}
 	if _, found := loadJoinMute(b.Store, chatID, uid); found {
 		dropJoinMute(b, chatID, uid)
 	}
-	return true, "已解除"
+	note := "已解除"
+	if gban != "" {
+		note += "（联合封禁：" + gban + "）"
+	}
+	return true, note
 }
 
 // MarkPenaltiesLifted 把某人在某群尚未标记解除的处罚流水标成已解除。

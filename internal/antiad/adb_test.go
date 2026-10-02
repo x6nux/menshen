@@ -11,7 +11,7 @@ import (
 
 // adbMsg 造一条「回复某人后发 /ban」的命令消息。
 func adbMsg(chatID, from int64, target *tg.Message) *tg.Message {
-	m := testutil.GroupMsg(chatID, from, 900, "/ban")
+	m := testutil.GroupMsg(chatID, from, 900, "/banad")
 	m.ReplyToMessage = target
 	return m
 }
@@ -42,7 +42,7 @@ func TestAdbRequiresAdmin(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 42, target), "")
+	HandleBanAdCommand(b, conf, adbMsg(-100, 42, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("普通成员用 /ban 禁言了别人（%d 次）", n)
@@ -66,7 +66,7 @@ func TestAdbByOwnerActs(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "看煮页 有码就来捡签")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "") // 1 是主管兼归属人
+	HandleBanAdCommand(b, conf, adbMsg(-100, 1, target), "") // 1 是主管兼归属人
 
 	if fake.CountCalls("restrictChatMember") != 1 {
 		t.Errorf("应当禁言一次，实际 %d 次", fake.CountCalls("restrictChatMember"))
@@ -99,7 +99,7 @@ func TestAdbRespectsDryrun(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 777, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "")
+	HandleBanAdCommand(b, conf, adbMsg(-100, 1, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("演练群里不该禁言，实际 %d 次", n)
@@ -120,7 +120,7 @@ func TestAdbFeedsGban(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, 888, 10, "广告内容")
-	HandleAdbCommand(b, conf, adbMsg(-100, 777, target), "") // 777 是 newTestRegistry 的主管
+	HandleBanAdCommand(b, conf, adbMsg(-100, 777, target), "") // 777 是 newTestRegistry 的主管
 
 	if _, ok := b.Cache.Snap().Gban[888]; !ok {
 		t.Error("人工标记的广告号应当进联合封禁名单")
@@ -133,7 +133,7 @@ func TestAdbNeedsReply(t *testing.T) {
 	testutil.EnableAntiad(t, b, -100)
 	conf := testutil.ChatConfOf(t, b, -100)
 
-	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban"), "")
+	HandleBanAdCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/banad"), "")
 
 	if fake.CountCalls("sendMessage") != 1 {
 		t.Errorf("应当回一条用法提示，实际发了 %d 条", fake.CountCalls("sendMessage"))
@@ -151,7 +151,7 @@ func TestAdbIgnoresSelf(t *testing.T) {
 	conf := testutil.ChatConfOf(t, b, -100)
 
 	target := testutil.GroupMsg(-100, testutil.TestBotID, 10, "🛡 反广告告警")
-	HandleAdbCommand(b, conf, adbMsg(-100, 1, target), "")
+	HandleBanAdCommand(b, conf, adbMsg(-100, 1, target), "")
 
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("不该对 bot 自己动手，实际 %d 次", n)
@@ -172,7 +172,7 @@ func TestBanByUserID(t *testing.T) {
 	recordMessage(b, -100, 10, 555, "旧的一条", 1700000000, "")
 	recordMessage(b, -100, 11, 555, "", 1700000001, "")
 
-	HandleAdbCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban 555"), "555")
+	HandleBanAdCommand(b, conf, testutil.GroupMsg(-100, 1, 900, "/ban 555"), "555")
 	waitIdle(t, b)
 
 	// 删的应是最新那条（id=11）。
@@ -206,7 +206,7 @@ func TestBanByUserID(t *testing.T) {
 	b2, fake2 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	conf2 := testutil.ChatConfOf(t, b2, -100)
-	HandleAdbCommand(b2, conf2, testutil.GroupMsg(-100, 1, 901, "/ban 666"), "666")
+	HandleBanAdCommand(b2, conf2, testutil.GroupMsg(-100, 1, 901, "/ban 666"), "666")
 	waitIdle(t, b2)
 	if n := fake2.CountCalls("deleteMessage"); n != 1 { // 只删命令本身那一条
 		t.Errorf("没有留底时不该删消息（命令自身除外），得到 %d 次", n)
@@ -218,5 +218,90 @@ func TestBanByUserID(t *testing.T) {
 	}
 	if action2 != "muted" && action2 != "banned" {
 		t.Errorf("没有留底时应只禁言/封禁，得到 %q", action2)
+	}
+}
+
+// TestBanCommandPlainBan：/ban 是纯封禁 —— 封人、留一条可撤销的流水，
+// 但不删发言、不进样本池、不进联合封禁（那些是 /banad 的语义）。
+func TestBanCommandPlainBan(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("gban_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	target := testutil.GroupMsg(-100, 777, 10, "捣乱")
+	HandleBanCommand(b, conf, adbMsg(-100, 1, target), "")
+
+	if n := fake.CountCalls("banChatMember"); n == 0 {
+		t.Error("/ban 应封禁出群")
+	}
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Error("/ban 是封禁，不该退化成禁言")
+	}
+	// 只删命令消息，不删被回复的那条。
+	for _, c := range fake.Calls("deleteMessage") {
+		if c["message_id"] == float64(10) {
+			t.Error("/ban 不该删被回复的发言")
+		}
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM gban`); n != 0 {
+		t.Errorf("/ban 不该进全局联合封禁，当前 %d 条", n)
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM gban_own_bans`); n != 0 {
+		t.Errorf("/ban 不该进专属联合封禁，当前 %d 条", n)
+	}
+	_, decider, action, uid, n := lastLog(t, b)
+	if n == 0 || action != "banned" || decider != "manual-ban" || uid != 777 {
+		t.Errorf("流水应记纯封禁：decider=%s action=%s uid=%d", decider, action, uid)
+	}
+}
+
+// TestUngbanScopeByRole：/ungban 的范围按身份分 —— 群管理员只解本群所属的
+// 专属联合封禁；主/次管理员连全局组一起解。
+func TestUngbanScopeByRole(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	sh := b.Shared
+
+	// 全局组与归属人（1）的专属组各一条；专属组圈定本群。
+	if err := GbanAdd(sh, 555, "跨群刷广告", 0, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnSetChat(sh, 1, -100, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnAddBan(sh, 1, 555, "简介推广", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	ungbanMsg := func(from int64) *tg.Message {
+		m := testutil.GroupMsg(-100, from, 901, "/ungban")
+		m.ReplyToMessage = testutil.GroupMsg(-100, 555, 10, "hi")
+		return m
+	}
+
+	// 群管理员 200（FakeTG 认成 administrator）：只解专属组。
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+	HandleUngbanCommand(b, conf, ungbanMsg(200), "")
+	if _, ok := sh.Cache.Snap().Gban[555]; !ok {
+		t.Error("群管理员不该动全局联合封禁")
+	}
+	if _, ok := sh.Cache.Snap().GbanOwnBans[1][555]; ok {
+		t.Error("群管理员应解除本群所属的专属联合封禁")
+	}
+
+	// 主管理员 1：连全局组一起解。
+	if err := GbanOwnAddBan(sh, 1, 555, "简介推广", 0); err != nil {
+		t.Fatal(err)
+	}
+	HandleUngbanCommand(b, conf, ungbanMsg(1), "")
+	if _, ok := sh.Cache.Snap().Gban[555]; ok {
+		t.Error("主管理员应解除全局联合封禁")
+	}
+	if _, ok := sh.Cache.Snap().GbanOwnBans[1][555]; ok {
+		t.Error("主管理员也应解除专属联合封禁")
 	}
 }

@@ -301,7 +301,7 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 		head = head[:i]
 	}
 	switch head {
-	case "/check", "/ban", "/white", "/uad", "/jtime":
+	case "/check", "/ban", "/banad", "/white", "/uad", "/ungban", "/jtime":
 		return head, strings.Join(f[1:], " "), true
 	}
 	return "", "", false
@@ -410,12 +410,92 @@ func canMarkAd(b *core.Bot, chatID, uid int64) bool {
 	return IsChatAdmin(b, chatID, uid)
 }
 
-const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <code>/ban</code>，" +
-	"或直接发 <code>/ban &lt;user_id&gt;</code> / <code>/ban @用户名</code>" +
+const banadCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <code>/banad</code>，" +
+	"或直接发 <code>/banad &lt;user_id&gt;</code> / <code>/banad @用户名</code>" +
 	"（按该用户最新一条留底处置；频道填 -100 开头的频道 ID）。\n" +
-	"会直接按最高档处置（删除 + 禁言），不经过 AI 判定。"
+	"会直接按最高档处置（删除 + 禁言/封禁），不经过 AI 判定；" +
+	"结果进正例池并参与联合封禁。"
 
-// handleAdbCommand 人工把一条消息标记为广告并立即处置。
+// resolveCmdTarget 解析 /ban、/banad 这类命令的目标：回复形态取被回复的
+// 实际发言者；参数形态支持 user_id / @用户名，并按「此人最新一条留底」
+// 做一张可处置的合成消息（删除与流水都指向真实消息；没有留底时只罚人，
+// MessageID 为 0 时调用方会摘掉删除动作）。
+func resolveCmdTarget(b *core.Bot, chatID int64, m *tg.Message, arg string) (*tg.Message, bool) {
+	if m.ReplyToMessage != nil && m.ReplyToMessage.From != nil {
+		// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
+		cp := *m.ReplyToMessage
+		cp.From = asSender(m.ReplyToMessage).From
+		return &cp, true
+	}
+	if strings.TrimSpace(arg) == "" {
+		return nil, false
+	}
+	uid, ok := resolveUIDArg(b, arg)
+	if !ok {
+		return nil, false
+	}
+	t := &tg.Message{Chat: &tg.Chat{ID: chatID}, From: &tg.TGUser{ID: uid}}
+	if msgID, text, ok := latestKept(b.Store, chatID, uid); ok {
+		t.MessageID, t.Text = msgID, text
+	}
+	return t, true
+}
+
+const banCmdUsage = "用法：<b>回复</b>某人的消息发 <code>/ban</code>，" +
+	"或发 <code>/ban &lt;user_id&gt;</code> / <code>/ban @用户名</code>。\n" +
+	"直接把此人封禁出群，并留一条可撤销的处罚记录（告警上有「🔓 解封」）。\n" +
+	"不删他的发言、不进样本池、不进联合封禁 —— 发广告请用 <code>/banad</code>。"
+
+// HandleBanCommand 群管理员直接封禁一个人（纯封禁，不判广告）。
+//
+// 与 /banad（人工标记广告）分开：管理员有时只是要清一个捣乱的人，不该
+// 顺带删掉他的发言、让形态摘要学错样本、更不该把他全平台联封。
+func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
+	if !canMarkAd(b, conf.ChatID, m.From.ID) {
+		return
+	}
+	b.TG.Call("deleteMessage", map[string]any{
+		"chat_id": conf.ChatID, "message_id": m.MessageID,
+	})
+
+	target, ok := resolveCmdTarget(b, conf.ChatID, m, arg)
+	if !ok {
+		groupNotice(b, conf.ChatID, banCmdUsage, nil, 30*time.Second)
+		return
+	}
+	if target.From.ID == b.BotID() {
+		return // 别把 bot 自己封了
+	}
+
+	snap := b.Cache.Snap()
+	if !b.AdLimits.Allow(fmt.Sprintf("ban:%d", m.From.ID),
+		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
+		groupNotice(b, conf.ChatID, "操作太频繁，请稍后再试。", nil, 30*time.Second)
+		return
+	}
+
+	// 只封禁：不删消息、不计 ad_hits、不进正例池、不联封 —— 这是治安动作，
+	// 不是广告判定。真广告用 /banad。
+	act := adAction{Ban: true, Name: "banned"}
+	note := ApplyAction(b, target, act, conf.Dryrun)
+	v := adVerdict{Decider: "manual-ban",
+		Reason: fmt.Sprintf("由 %s (%d) 人工封禁", senderName(m.From), m.From.ID)}
+	logID := logAd(b, target, v, logAction(act, conf.Dryrun), note)
+
+	ttl := time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+	text := "🚫 <b>已封禁</b> " + userLink(target.From.ID)
+	if conf.Dryrun {
+		text = "🧪 <b>演练：未真正封禁</b> " + userLink(target.From.ID)
+	} else if note != "" {
+		text += "\n<i>" + html.EscapeString(core.TruncateRunes(note, 120)) + "</i>"
+	}
+	groupNotice(b, conf.ChatID, text,
+		tg.InlineKB([][2]string{{"🔓 解封", fmt.Sprintf("a:ad:rel:%d", logID)}}), ttl)
+	slog.Info("反广告：管理员封禁", "chat", conf.ChatID, "uid", target.From.ID,
+		"by", m.From.ID, "dryrun", conf.Dryrun)
+}
+
+// HandleBanAdCommand 人工把一条消息标记为广告并立即处置。
 //
 // 不发任何 AI 请求：人已经看明白了，再花一次钱去问模型没有意义。
 // 代价是这条判定没有置信度可言，所以它只对群管理员及以上开放。
@@ -425,7 +505,7 @@ const adbCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <code>
 //
 // 两种用法：回复某条消息（处置那条），或 /ban <user_id>（处置此人最新一条
 // 留底；没有留底时只罚人、不删消息，仍落一条人工标记流水）。
-func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
+func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	// 非授权者静默忽略：回一句「你没有权限」等于告诉刷屏的人这条命令
 	// 存在、值得去试。
 	if !canMarkAd(b, conf.ChatID, m.From.ID) {
@@ -436,28 +516,9 @@ func HandleAdbCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 		"chat_id": conf.ChatID, "message_id": m.MessageID,
 	})
 
-	var target *tg.Message
-	switch {
-	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
-		// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
-		cp := *m.ReplyToMessage
-		cp.From = asSender(m.ReplyToMessage).From
-		target = &cp
-	case strings.TrimSpace(arg) != "":
-		uid, ok := resolveUIDArg(b, arg)
-		if !ok {
-			groupNotice(b, conf.ChatID, adbCmdUsage, nil, 30*time.Second)
-			return
-		}
-		// 没有具体消息时拿最新一条留底当处置对象：删除与流水都指向真实消息。
-		// 一条留底都没有（从没发过言、或留底过保留期）时只罚人。
-		t := &tg.Message{Chat: &tg.Chat{ID: conf.ChatID}, From: &tg.TGUser{ID: uid}}
-		if msgID, text, ok := latestKept(b.Store, conf.ChatID, uid); ok {
-			t.MessageID, t.Text = msgID, text
-		}
-		target = t
-	default:
-		groupNotice(b, conf.ChatID, adbCmdUsage, nil, 30*time.Second)
+	target, ok := resolveCmdTarget(b, conf.ChatID, m, arg)
+	if !ok {
+		groupNotice(b, conf.ChatID, banadCmdUsage, nil, 30*time.Second)
 		return
 	}
 	if target.From.ID == b.BotID() {
@@ -703,11 +764,15 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 			case "/check":
 				HandleAdCommand(b, conf, m, arg)
 			case "/ban":
-				HandleAdbCommand(b, conf, m, arg)
+				HandleBanCommand(b, conf, m, arg)
+			case "/banad":
+				HandleBanAdCommand(b, conf, m, arg)
 			case "/white":
 				HandleAdwCommand(b, conf, m, arg)
 			case "/uad":
 				HandleUadCommand(b, conf, m, arg)
+			case "/ungban":
+				HandleUngbanCommand(b, conf, m, arg)
 			case "/jtime":
 				HandleJtimeCommand(b, conf, m, arg)
 			}

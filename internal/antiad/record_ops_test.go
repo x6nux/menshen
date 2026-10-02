@@ -35,7 +35,7 @@ func TestReleaseUserKeepsVerdict(t *testing.T) {
 	if !ok {
 		t.Fatal("记录应能读回")
 	}
-	did := ReleaseUser(b, row)
+	did := ReleaseUser(b, row, 1)
 	if !strings.Contains(did, "解除禁言") {
 		t.Errorf("应解除禁言，得到 %q", did)
 	}
@@ -90,7 +90,7 @@ func TestReleaseUserUnbansBanRecords(t *testing.T) {
 	}
 	id, _ := res.LastInsertId()
 	row, _ := LoadAdLog(b.Store, id)
-	did := ReleaseUser(b, row)
+	did := ReleaseUser(b, row, 1)
 	if !strings.Contains(did, "解封") {
 		t.Errorf("封禁记录应走解封，得到 %q", did)
 	}

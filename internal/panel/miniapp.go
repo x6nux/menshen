@@ -1897,7 +1897,7 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			miniErr(w, http.StatusNotFound, "记录不存在")
 			return
 		}
-		antiad.ReleaseUser(inst, full)
+		antiad.ReleaseUser(inst, full, uid)
 	case "white":
 		hours := miniInt(body, "hours")
 		if hours <= 0 {
