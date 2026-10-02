@@ -158,6 +158,9 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 - 返回文案改为：「创建成功：候选规则 #N《…》（enabled=0、enforce=0）。本轮测试：
   命中广告 X 条、正常消息 0 条、覆盖率 Y%。请继续用 list_kinds / list_rules
   找下一个未覆盖形态；没有新形态时用中文总结收尾。」（Y% 见 §1.4 的百分比格式）
+- 保留现有「已忽略 N 个无效、重复或非广告的证据 id。」后缀（`filterEvidence`
+  的计数不能因为文案重写而丢掉，`TestRuleAgentCreateRuleNotesOnlyValidEvidence`
+  继续通过）。
 - 完全相同 pattern 的查重不变；已创建过的规则在库里，重复创建会被查重拒绝。
 
 ### 2.2 运行态与状态契约
@@ -171,7 +174,9 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
  "created_rule_id": 1, "created_rule_ids": [1, 2], "steps":[…]}
 ```
 
-  `created_rule_id` 保留 = 第一条（旧前端兼容）；`created_rule_ids` 是本轮全部。
+  `created_rule_id` 保留 = 第一条（旧前端兼容）；`created_rule_ids` 是本轮全部，
+  **无创建时返回 `[]` 而不是 `null`**（nil 切片要显式转成空切片，避免前端
+  `number[]` 收到 null）。
 - `finish` 成功分支（`len(createdRuleIDs)>0`）：
   「发现完成：本轮写入 N 条候选规则（#1、#2…），均未启用、未强制；
   请在必封规则列表里逐条复核测试后决定是否启用。」
@@ -220,33 +225,42 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 ### 3.3 list_rules
 
-无参数。返回现有规则与最近测试的覆盖率，**按 id 升序取前 100 条**（确定性，
-本轮新建的 id 最大、一定在返回里）：
+无参数。返回现有规则与最近测试的覆盖率：**按 id 降序取最近 100 条**（本轮
+新建的 id 最大、一定在返回里），返回数组再按 id 升序排列，保证确定性：
 
 ```json
 {
   "rules": [
     {"id": 1, "name": "兼职押金话术", "pattern": "…", "category": "scam",
      "enabled": true, "enforce": false, "last_tested_at": 1700000000,
-     "last_tp": 40, "last_fp": 0, "last_ads_total": 366, "coverage": 0.1093}
+     "last_tp": 40, "last_fp": 0, "last_ads_total": 366, "coverage": 0.1093,
+     "last_kinds": [{"kind": "scam", "total": 300, "matched": 40}]}
   ],
   "hint": "pattern 已存在的形态不要重复创建；优先补覆盖率为 0 或偏低的类型。"
 }
 ```
 
 - 直接读库（不读快照），本轮刚创建的规则立即可见。
-- 从未测试过的规则 `last_tested_at=0`、`coverage` 缺省（不写或写 0），模型据此
-  区分「没测过」与「真的 0%」；`enabled=false` 的候选同样返回。
+- 每条规则带 `last_kinds`（与列表接口同一形状），模型才能按类型找空白；
+  从未测试过的规则 `last_tested_at=0`、`coverage` **固定写 0**（用
+  `last_tested_at=0` 区分「没测过」与「真的 0%」）；`enabled=false` 的候选
+  同样返回。
+- 规则数超过 100 时只返回最近 100 条（老规则如果不在返回里，模型按返回的
+  pattern 集合去重即可）。
 
 ### 3.4 read_records
 
 参数 `{"ids": [9812, 9801, ...]}`：
 
-- `ids` 缺失、不是数组或为空：返回错误提示「ids 必须是非空数组」，不执行查询。
+- `ids` 缺失、为 null、不是数组或为空：返回错误提示「ids 必须是非空数组」。
+  注：`ids` 是 `[]int64`，JSON 类型不对（如字符串）时会在 Eino 参数解析层被
+  `wrapRuleTool` 拦成通用的「工具 read_records 调用失败：参数或执行出错…」，
+  这条路径不作为契约要求，测试只覆盖空/缺失数组。
 - 先按出现顺序去重，再截断到前 10 个；被截断与重复的 id 计入返回里的
   `ignored`（只统计这两类）。
-- 不存在或 id<=0 的 id **不算 ignored**，在 `records` 里给
-  `{"id":N,"error":"没有 id=N 的判定记录"}` 条目，不影响其他条。
+- id<=0 与不存在的 id **不算 ignored**，在 `records` 里给
+  `{"id":N,"error":"id 必须为正整数"}` / `{"id":N,"error":"没有 id=N 的判定记录"}`
+  条目，不影响其他条。
 - 返回 `{"records":[…], "ignored": N}`；每条正文与 `read_record` 一致
   （库内全文，上限 2000 字）。
 
@@ -286,10 +300,13 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
   `ads_total=0` 显示「—」）；下方新增「按类型覆盖」小节：每行
   `kind  matched/total  xx.x%`，`matched=0` 的类型用灰字，避免像误封一样红。
 - 规则列表行：`TP 40 · FP 0 · 覆盖 10.9%`（`last_tested_at=0` 仍显示「未测试」；
-  `last_ads_total=0` 不显示覆盖率段）。
-- 规则详情「最近测试」行追加 `覆盖率 10.9%`；同一卡片下方渲染**落库的**
-  `last_kinds`（无样本，只列 `kind  matched/total  xx.x%`），这样离开页面再回来
-  也能看到上一轮的按类型覆盖，不必重跑测试。实时测试面板仍展示带样本的完整版。
+  `last_ads_total=0` 时**整段省略**覆盖率，不显示「—」）。
+- 规则详情「最近测试」行追加 `覆盖率 10.9%`；`last_tested_at=0` 时该行仍显示
+  「从未测试」，`last_tested_at>0` 但 `last_ads_total=0` 时覆盖率显示「—」。
+  同一卡片下方渲染**落库的** `last_kinds`（无样本，只列
+  `kind  matched/total  xx.x%`），这样离开页面再回来也能看到上一轮的按类型
+  覆盖，不必重跑测试。实时测试面板仍展示带样本的完整版（那里 `ads_total=0`
+  时覆盖率格显示「—」）。
 - 测试结果面板同时被详情页与测试抽屉复用。
 
 ### 4.3 Agent 卡
@@ -342,8 +359,9 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
   `created_rule_ids=[A,B]`、result 提到两条、运行态归位；另测
   `失败→成功→失败→失败` 不会触发连续失败收尾（成功清零）。
 - **新工具**：`list_kinds` 的类型计数与 recent_ids；`read_records` 批量、去重
-  截断、`ignored` 语义、无效 id 容错、空/缺 ids 报错；`list_rules` 返回本轮
-  刚创建的规则、未测试规则的 `last_tested_at=0`。
+  截断、`ignored` 语义、无效 id 容错、空/缺失 ids 报错；`list_rules` 返回本轮
+  刚创建的规则、未测试规则的 `last_tested_at=0`/`coverage=0`、`last_kinds`
+  透出，以及规则数 >100 时仍包含最新创建的规则（降序取 100 再升序返回）。
 - **落库**：保存/测试/AI 创建三条路径后 `last_ads_total`、`last_kinds` 都写回；
   列表 JSON 能解析且键名固定；老库启动后两列存在且默认值正确。
 - **覆盖率不设门槛**：覆盖率极低（如 TP=1/AdsTotal=10000）但 fp=0 的规则仍能
