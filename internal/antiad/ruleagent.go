@@ -99,7 +99,7 @@ const (
 // 的可用清单提示，以及测试断言。
 var ruleAgentToolNames = []string{
 	"list_kinds", "list_banned", "read_record", "read_records",
-	"find", "test_rule", "list_rules", "create_rule",
+	"find", "test_rule", "list_rules", "list_uncovered", "create_rule",
 }
 
 // 规则发现不可用的错误。文案直接回给 Mini App，保持中文。
@@ -599,9 +599,17 @@ type readRecordsArgs struct {
 	IDs []int64 `json:"ids" jsonschema:"required,description=要读取的判定流水 id 列表（最多 10 个，去重后截断）"`
 }
 
-// listKindsArgs / listRulesArgs 无参数；InferTool 需要占位类型。
+// listKindsArgs / listRulesArgs / listUncoveredArgs 无参数或只带过滤；
+// InferTool 需要占位类型。
 type listKindsArgs struct{}
 type listRulesArgs struct{}
+
+// listUncoveredArgs 是 list_uncovered 的参数。
+type listUncoveredArgs struct {
+	Limit  int    `json:"limit" jsonschema:"description=返回的未覆盖广告条数，默认 50，最大 200"`
+	Offset int    `json:"offset" jsonschema:"description=OFFSET 分页偏移（作用于未覆盖行），默认 0"`
+	Kind   string `json:"kind" jsonschema:"description=只看某个广告类型（如 scam/porn），空串表示全部"`
+}
 
 // findArgs 是 find 的参数。
 type findArgs struct {
@@ -712,6 +720,19 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		return nil, err
 	}
 
+	uncovered, err := toolutils.InferTool("list_uncovered",
+		"列出没有被任何现有规则命中的已确认广告（覆盖空白）：返回总体与按类型的"+
+			"覆盖/空白统计，以及未覆盖广告样本（id、类型、正文摘要，可按类型过滤、"+
+			"可翻页）。找新形态时先看它，避免重复发现已有规则覆盖的广告。",
+		func(ctx context.Context, in listUncoveredArgs) (string, error) {
+			out := run.listUncovered(in)
+			run.toolStep("list_uncovered", in, out)
+			return out, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
 	create, err := toolutils.InferTool("create_rule",
 		"创建一条候选必封规则（enabled=0、enforce=0，等主管理员复核）。"+
 			"会做严格校验与全库测试；命中任何正常消息（fp>0 或 undone>0）或已存在相同正则都会被拒绝。"+
@@ -735,6 +756,7 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		wrapRuleTool(run, "find", find),
 		wrapRuleTool(run, "test_rule", test),
 		wrapRuleTool(run, "list_rules", listRulesTool),
+		wrapRuleTool(run, "list_uncovered", uncovered),
 		wrapRuleTool(run, "create_rule", create),
 	}, nil
 }
@@ -1114,6 +1136,122 @@ func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 	return string(out)
 }
 
+// listUncovered 返回没有被任何现有规则命中的已确认广告（覆盖空白）。
+//
+// 匹配用快照里的全部规则（含未启用的候选）：候选虽然还没参与判定，但它
+// 代表的形态已经被发现过，重复发现没有意义。扫描窗口与正文截断和
+// find/test_rule 同口径；offset/limit 只作用于未覆盖行。
+func (r *ruleAgentRun) listUncovered(in listUncoveredArgs) string {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = ruleAgentListBannedDefault
+	}
+	if limit > ruleAgentListBannedMax {
+		limit = ruleAgentListBannedMax
+	}
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	kind := strings.TrimSpace(in.Kind)
+
+	var rules []store.AdRuleRec
+	if snap := r.sh.Cache.Snap(); snap != nil {
+		rules = snap.AdRules
+	}
+
+	rows, err := r.sh.Store.Read.Query(`SELECT id,verdict,action,ad_kind,
+		chat_id,created_at,text FROM antiad_log
+		ORDER BY id DESC LIMIT ?`, ruleAgentFindScanLimit)
+	if err != nil {
+		return "错误：扫描判定流水失败：" + err.Error()
+	}
+	defer rows.Close()
+
+	type kindStat struct{ total, covered int64 }
+	stats := map[string]*kindStat{}
+	var (
+		scanned, adsTotal, covered, uncovered int64
+		skipped                               int
+		samples                               []ruleAgentSample
+	)
+	for rows.Next() {
+		var (
+			s               ruleAgentSample
+			verdict, action string
+			text            string
+		)
+		if err := rows.Scan(&s.ID, &verdict, &action, &s.Kind, &s.ChatID,
+			&s.At, &text); err != nil {
+			return "错误：解析判定流水失败：" + err.Error()
+		}
+		scanned++
+		if verdict != "ad" || action == "undone" {
+			continue
+		}
+		if kind != "" && s.Kind != kind {
+			continue
+		}
+		adsTotal++
+		st := stats[s.Kind]
+		if st == nil {
+			st = &kindStat{}
+			stats[s.Kind] = st
+		}
+		st.total++
+
+		matched := false
+		for _, rule := range rules {
+			if rule.Re != nil && rule.Re.MatchString(text) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			covered++
+			st.covered++
+			continue
+		}
+		uncovered++
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		if len(samples) < limit {
+			s.Verdict, s.Action = verdict, action
+			s.Text = core.TruncateRunes(text, ruleAgentSampleTextMax)
+			samples = append(samples, s)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "错误：扫描判定流水失败：" + err.Error()
+	}
+
+	kinds := make([]map[string]any, 0, len(stats))
+	for k, st := range stats {
+		kinds = append(kinds, map[string]any{
+			"kind": k, "total": st.total,
+			"covered": st.covered, "uncovered": st.total - st.covered,
+		})
+	}
+	sort.Slice(kinds, func(i, j int) bool {
+		ti, tj := kinds[i]["total"].(int64), kinds[j]["total"].(int64)
+		if ti != tj {
+			return ti > tj
+		}
+		return kinds[i]["kind"].(string) < kinds[j]["kind"].(string)
+	})
+	out, _ := json.Marshal(map[string]any{
+		"scanned": scanned, "ads_total": adsTotal,
+		"covered": covered, "uncovered": uncovered,
+		"rules": len(rules), "by_kind": kinds,
+		"rows": samples, "next_offset": offset + len(samples),
+		"hint": "rows 是现有规则都匹配不到的广告；优先挑空白最大的类型，" +
+			"用 read_records 读全文后总结新形态。",
+	})
+	return string(out)
+}
+
 // testRule 调 T-A 的全库测试（可取消版本）做正式口径验证，并给出
 // 明确的「能不能创建」结论。
 func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
@@ -1364,9 +1502,8 @@ const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现�
 
 工作流（按顺序循环，不要跳步）：
 1. list_kinds 看广告类型分布（total 从大到小）；
-2. list_rules 看已有 pattern 与覆盖率，列出还没有被覆盖的类型/形态；
-3. 针对一个未覆盖形态：list_banned（可按 kind 过滤、可翻 offset；分批读，不要一次拉满）→
-   read_records 批量读全文（一次最多 10 条），观察它区别于正常消息的组合特征；
+2. list_rules 看已有 pattern 与覆盖率，再用 list_uncovered 拿现有规则都匹配不到的广告（覆盖空白），按 by_kind 的 uncovered 从大到小选目标形态；
+3. 针对一个未覆盖形态：read_records 批量读 list_uncovered 的 rows（或 list_banned 的样本）全文（一次最多 10 条），观察它区别于正常消息的组合特征；
 4. find 用正则草稿试跑，看命中什么、误伤什么、覆盖率多少；反复收缩直到只命中广告；
 5. test_rule 用正式口径验证：fp>0 或 undone>0 时绝对不要 create_rule，回到第 4 步改进；
 6. create_rule 创建候选规则（默认不启用，等主管理员复核）；
@@ -1375,4 +1512,4 @@ const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现�
 如果 create_rule 被拒绝：仔细阅读返回的误封样本，收缩正则后重新 test_rule；连续 3 次失败本轮会被终止。收尾总结请列出：本轮创建了哪些规则、分别覆盖什么形态、依据哪些证据。`
 
 // ruleAgentUserPrompt 是每轮的启动指令。
-const ruleAgentUserPrompt = `请开始一轮规则发现：先用 list_kinds 看广告类型分布，再用 list_rules 看已有覆盖与空白；然后对每个未覆盖的高精度形态按 list_banned → read_records → find → test_rule → create_rule 的流程产出候选规则。创建成功后不要停，继续找下一个形态；没有新形态或预算将尽时总结收尾。`
+const ruleAgentUserPrompt = `请开始一轮规则发现：先用 list_kinds 看广告类型分布，用 list_rules 看已有覆盖，再用 list_uncovered 拿现有规则都匹配不到的广告；然后对每个未覆盖的高精度形态按 read_records → find → test_rule → create_rule 的流程产出候选规则。创建成功后不要停，继续找下一个形态；没有新形态或预算将尽时总结收尾。`

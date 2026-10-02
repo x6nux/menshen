@@ -871,6 +871,60 @@ func TestRuleAgentListRulesKeepsNewest(t *testing.T) {
 	}
 }
 
+// TestRuleAgentListUncovered：只返回现有规则（含未启用候选）匹配不到的广告，
+// 统计按类型细分；类型过滤与分页只作用于未覆盖行。
+func TestRuleAgentListUncovered(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	insertRule(t, b, "贷款规则", "办理贷款", "scam", true, false)
+	insertRule(t, b, "博彩候选", "博彩娱乐", "gambling", false, false)
+
+	insertRuleAgentLog(t, b, "办理贷款加微信", "ad", "deleted", "scam")      // 命中启用规则
+	insertRuleAgentLog(t, b, "刷单日结押金", "ad", "deleted", "scam")       // 未覆盖
+	insertRuleAgentLog(t, b, "博彩娱乐平台开户", "ad", "deleted", "gambling") // 命中候选（也算覆盖）
+	insertRuleAgentLog(t, b, "办理贷款（撤销）", "ad", "undone", "scam")      // 撤销不算广告
+	insertRuleAgentLog(t, b, "办理贷款只是聊天", "clean", "none", "scam")     // 正常消息不算
+
+	run := &ruleAgentRun{sh: b.Shared}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.listUncovered(listUncoveredArgs{})), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["ads_total"].(float64) != 3 || got["covered"].(float64) != 2 ||
+		got["uncovered"].(float64) != 1 {
+		t.Fatalf("覆盖统计不对：%v", got)
+	}
+	if got["rules"].(float64) != 2 {
+		t.Errorf("未启用候选也应算进匹配规则：%v", got["rules"])
+	}
+	rows := got["rows"].([]any)
+	if len(rows) != 1 || !strings.Contains(rows[0].(map[string]any)["text"].(string), "刷单") {
+		t.Fatalf("rows 应只给未覆盖广告：%v", rows)
+	}
+	kinds := got["by_kind"].([]any)
+	if kinds[0].(map[string]any)["kind"] != "scam" ||
+		kinds[0].(map[string]any)["uncovered"].(float64) != 1 {
+		t.Errorf("by_kind 不对：%v", kinds)
+	}
+
+	// 类型过滤 + 分页：再插两条未覆盖，offset=1/limit=1。
+	insertRuleAgentLog(t, b, "刷单日结押金 2", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "刷单日结押金 3", "ad", "deleted", "scam")
+	var page map[string]any
+	if err := json.Unmarshal([]byte(run.listUncovered(listUncoveredArgs{
+		Kind: "scam", Limit: 1, Offset: 1})), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page["ads_total"].(float64) != 4 || page["uncovered"].(float64) != 3 {
+		t.Errorf("类型过滤统计不对：%v", page)
+	}
+	if n := len(page["rows"].([]any)); n != 1 {
+		t.Errorf("limit=1 应给 1 条，得到 %d", n)
+	}
+	if page["next_offset"].(float64) != 2 {
+		t.Errorf("next_offset 应为 2：%v", page["next_offset"])
+	}
+}
+
 // TestRuleAgentToolErrorsDoNotKillRun：参数畸形（limit 传字符串）与调用
 // 不存在的工具都只作为工具结果回给模型，运行继续；模型据此收尾，整轮不报错。
 func TestRuleAgentToolErrorsDoNotKillRun(t *testing.T) {
