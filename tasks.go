@@ -38,9 +38,6 @@ func runBackgroundTasksEvery(stop <-chan struct{}, sh *core.Shared, reg *core.Re
 	// 整整一小时不执行。
 	tickMinute(sh, reg)
 	runHourly(sh)
-	// 空标题回填只跑一次：标题只在添加群时抓过，「先加配置、后入群」留下的
-	// 空值靠这里补上；补不到的（bot 还不在群里）交给消息路径的按需刷新。
-	go backfillChatTitles(reg)
 
 	for {
 		select {
@@ -102,6 +99,9 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 			// 私聊汇总。启动即跑的这一轮顺带把游标就位：升级后第一次只记位置，
 			// 拖到第一个整分钟的话，这一分钟里的命中会被当成「历史」跳过。
 			antiad.FlushAdSummary(b, now)
+			// 空标题补一次：先加配置、后入群的群，长期没人发言时消息路径
+			// 等不到，只有这里能自愈。有标题的群不查 TG。
+			refreshChatTitles(b, true)
 		}()
 	})
 }
@@ -110,35 +110,37 @@ func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
 	antiad.ReassertActiveMutes(sh) // 进群限制被外部解除时补一次（见 reassert.go）
 	antiad.RunAdDigest(sh, false)  // 形态摘要，样本不够时内部直接返回
+	// 全量刷一遍群标题：群改名后跟上面板，也让一直没查到的空标题再试。
+	// 启动时 runHourly 会立刻跑一轮，等于启动回填。
+	if sh.Reg != nil {
+		sh.Reg.Each(func(b *core.Bot) { refreshChatTitles(b, false) })
+	}
 }
 
-// backfillChatTitles 启动时把 bot_chats 里的空标题补一遍。
+// refreshChatTitles 用这个 bot 的 token 把名下的群标题刷一遍。
 //
-// 标题只在添加群那一刻抓一次，早于 bot 入群添加的群会一直空着（面板显示
-// 「（未命名）」、Mini App 显示裸 chat_id）。补不到的（bot 还不在群里）
-// 留给消息路径的按需刷新重试，不算失败。按 bot 限量、逐条间隔，别把
-// TG 速率限制打满。
-func backfillChatTitles(reg *core.Registry) {
-	if reg == nil {
+// 标题只在添加群那一刻抓过：先加配置、后入群的群会一直空着，群改名也不会
+// 跟着变。onlyEmpty 为真只查空标题（分钟级快速自愈）；否则全量（小时级，
+// 跟进群改名）。按 bot 限量、逐条间隔，别把 TG 速率限制打满。
+func refreshChatTitles(b *core.Bot, onlyEmpty bool) {
+	q := `SELECT chat_id FROM bot_chats WHERE bot_id=?`
+	if onlyEmpty {
+		q += ` AND title=''`
+	}
+	rows, err := b.Store.Read.Query(q+` LIMIT 200`, b.BotID())
+	if err != nil {
 		return
 	}
-	reg.Each(func(b *core.Bot) {
-		rows, err := b.Store.Read.Query(`SELECT chat_id FROM bot_chats
-			WHERE bot_id=? AND title='' LIMIT 200`, b.BotID())
-		if err != nil {
-			return
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
 		}
-		var ids []int64
-		for rows.Next() {
-			var id int64
-			if rows.Scan(&id) == nil {
-				ids = append(ids, id)
-			}
-		}
-		rows.Close()
-		for _, id := range ids {
-			b.RefreshChatTitle(id)
-			time.Sleep(50 * time.Millisecond)
-		}
-	})
+	}
+	rows.Close()
+	for _, id := range ids {
+		b.RefreshChatTitle(id)
+		time.Sleep(50 * time.Millisecond)
+	}
 }
