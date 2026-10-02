@@ -927,7 +927,7 @@ func (r *ruleAgentRun) listRules() string {
 	for rows.Next() {
 		var (
 			id, en, enf, tested, tp, fp, adsTotal int64
-			name, pattern, category, kindsRaw    string
+			name, pattern, category, kindsRaw     string
 		)
 		if err := rows.Scan(&id, &name, &pattern, &category, &en, &enf,
 			&tested, &tp, &fp, &adsTotal, &kindsRaw); err != nil {

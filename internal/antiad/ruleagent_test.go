@@ -847,7 +847,7 @@ func TestRuleAgentListRules(t *testing.T) {
 }
 
 // TestRuleAgentListRulesKeepsNewest：规则超过 100 条时仍返回最新创建的那条
-//（ORDER BY id DESC LIMIT 100 再反转为升序）。
+// （ORDER BY id DESC LIMIT 100 再反转为升序）。
 func TestRuleAgentListRulesKeepsNewest(t *testing.T) {
 	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
 	for i := 0; i < 101; i++ {

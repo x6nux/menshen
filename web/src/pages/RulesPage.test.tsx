@@ -362,7 +362,7 @@ describe('RulesPage · 列表与新增', () => {
       if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
       if (body.action === 'test') {
         return HttpResponse.json(
-          { error: '测试失败：规则不能匹配空文本（会命中所有消息）' },
+          { error: '测试失败：error parsing regexp: missing closing ]' },
           { status: 400 },
         )
       }
@@ -372,13 +372,13 @@ describe('RulesPage · 列表与新增', () => {
     await screen.findByText('还没有规则')
 
     fireEvent.click(screen.getByRole('button', { name: '测试正则' }))
-    fireEvent.change(await screen.findByLabelText('正则（RE2）'), { target: { value: 'a*' } })
+    fireEvent.change(await screen.findByLabelText('正则（RE2）'), { target: { value: '[' } })
     fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
 
     expect(
-      await screen.findByText('测试失败：规则不能匹配空文本（会命中所有消息）'),
+      await screen.findByText('测试失败：error parsing regexp: missing closing ]'),
     ).toBeInTheDocument()
-    expect(screen.getByLabelText('正则（RE2）')).toHaveValue('a*')
+    expect(screen.getByLabelText('正则（RE2）')).toHaveValue('[')
   })
 
   it('列表行展示最近测试覆盖率', async () => {

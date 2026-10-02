@@ -392,7 +392,9 @@ export function RulesPage() {
   const [note, setNote] = useState('')
   const [testOpen, setTestOpen] = useState(false)
   const [testPattern, setTestPattern] = useState('')
-  const [testResult, setTestResult] = useState<RuleTest | null>(null)
+  // testResult 绑定提交时的 pattern：请求在途时改了输入，迟到的响应不能当
+  // 当前输入的结果展示（否则会用旧统计误导「用此正则新建规则」）。
+  const [testResult, setTestResult] = useState<{ test: RuleTest; pattern: string } | null>(null)
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {
@@ -497,15 +499,16 @@ export function RulesPage() {
         pending={testMut.isPending}
         submitText="开始测试"
         submitDisabled={testPattern.trim() === ''}
-        onSubmit={() =>
+        onSubmit={() => {
+          const submitted = testPattern.trim()
           testMut.mutate(
-            { action: 'test', pattern: testPattern.trim() },
+            { action: 'test', pattern: submitted },
             {
-              onSuccess: (resp) => setTestResult(resp.test),
+              onSuccess: (resp) => setTestResult({ test: resp.test, pattern: submitted }),
               onError: (err) => toast(err.message),
             },
           )
-        }
+        }}
       >
         <TextField
           fullWidth
@@ -525,9 +528,9 @@ export function RulesPage() {
         <Typography sx={{ mt: 1, fontSize: 12, color: 'text.secondary', lineHeight: 1.6 }}>
           只试跑不落库；保存时服务端仍会跑一次同样的全库测试。
         </Typography>
-        {testResult !== null && (
+        {testResult !== null && testResult.pattern === testPattern.trim() && (
           <>
-            <RuleTestPanel test={testResult} tz={tz} />
+            <RuleTestPanel test={testResult.test} tz={tz} />
             <Button
               fullWidth
               variant="outlined"
