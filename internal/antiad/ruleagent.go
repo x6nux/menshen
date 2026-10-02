@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,12 @@ const (
 	// ruleAgentEvidenceInputMax 是单次校验处理的输入 id 上限：模型偶尔
 	// 会塞一长串 id，逐个查库之前先截断，别让一个工具调用打出一串查询。
 	ruleAgentEvidenceInputMax = 50
+	// ruleAgentListBannedDefault/Max：list_banned 的默认与上限条数。
+	ruleAgentListBannedDefault = 50
+	ruleAgentListBannedMax     = 200
+	// ruleAgentFindDefault/Max：find 的默认与上限样本条数。
+	ruleAgentFindDefault = 50
+	ruleAgentFindMax     = 200
 )
 
 // ruleAgentToolNames 是暴露给模型的工具名。两处要用：UnknownToolsHandler
@@ -550,7 +557,7 @@ func wrapRuleTool(run *ruleAgentRun, name string, t tool.BaseTool) tool.BaseTool
 
 // listBannedArgs 是 list_banned 的参数。
 type listBannedArgs struct {
-	Limit  int    `json:"limit" jsonschema:"description=返回条数，默认 20，最大 50"`
+	Limit  int    `json:"limit" jsonschema:"description=返回条数，默认 50，最大 200"`
 	Offset int    `json:"offset" jsonschema:"description=OFFSET 分页偏移，默认 0"`
 	Kind   string `json:"kind" jsonschema:"description=只看某个广告类型（如 scam/porn），空串表示全部"`
 }
@@ -564,7 +571,7 @@ type readRecordArgs struct {
 type findArgs struct {
 	Pattern string `json:"pattern" jsonschema:"required,description=RE2 正则草稿（宽进：只要能编译就能试跑）"`
 	Scope   string `json:"scope" jsonschema:"description=banned（默认）样本优先展示已确认广告并附正常消息参照；all 按时间倒序展示全部命中"`
-	Limit   int    `json:"limit" jsonschema:"description=样本条数，默认 20，最大 50"`
+	Limit   int    `json:"limit" jsonschema:"description=样本条数，默认 50，最大 200"`
 }
 
 // testRuleArgs 是 test_rule 的参数。
@@ -622,8 +629,8 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 
 	test, err := toolutils.InferTool("test_rule",
 		"用与保存入口完全一致的口径全库测试一条正则：返回 tp（命中广告）、"+
-			"fp（命中正常消息/被撤销的误判）、undone、neutral 与误封样本。"+
-			"fp 或 undone 大于 0 时绝对不能创建规则。",
+			"fp（命中正常消息/被撤销的误判）、undone、neutral、覆盖率（总体与"+
+			"按 ad_kind 细分）与误封样本。fp 或 undone 大于 0 时绝对不能创建规则。",
 		func(ctx context.Context, in testRuleArgs) (string, error) {
 			out := run.testRule(ctx, in.Pattern)
 			run.toolStep("test_rule", in, out)
@@ -663,10 +670,10 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 func (r *ruleAgentRun) listBanned(in listBannedArgs) string {
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 20
+		limit = ruleAgentListBannedDefault
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > ruleAgentListBannedMax {
+		limit = ruleAgentListBannedMax
 	}
 	offset := in.Offset
 	if offset < 0 {
@@ -753,6 +760,30 @@ type ruleAgentSample struct {
 	Text    string `json:"text"`
 }
 
+// round4 把覆盖率四舍五入到 4 位小数：给模型的 JSON 省 token。
+func round4(v float64) float64 { return math.Round(v*10000) / 10000 }
+
+// ruleCoverage 计算覆盖率；分母为 0 时 0。口径与 RuleTestResult.Coverage()
+// 相同（verdict='ad' 且 action<>'undone' 为分母），改动时两处要一起改。
+func ruleCoverage(matched, total int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(matched) / float64(total)
+}
+
+// ruleKindsAgentJSON 把类型细分转成工具 JSON：带每类覆盖率（4 位小数）。
+func ruleKindsAgentJSON(kinds []RuleKindStat) []map[string]any {
+	out := make([]map[string]any, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, map[string]any{
+			"kind": k.Kind, "total": k.Total, "matched": k.Matched,
+			"coverage": round4(k.Coverage()),
+		})
+	}
+	return out
+}
+
 // findMatches 用宽松编译扫描全库，返回命中统计与样本。
 //
 // 计数分类与 TestRulePattern 完全同口径（action='undone' 计入 fp/undone，
@@ -776,12 +807,13 @@ func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 	}
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 20
+		limit = ruleAgentFindDefault
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > ruleAgentFindMax {
+		limit = ruleAgentFindMax
 	}
 
+	acc := newRuleKindAcc()
 	rows, err := r.sh.Store.Read.Query(`SELECT id,verdict,action,ad_kind,
 		chat_id,created_at,text FROM antiad_log
 		ORDER BY id DESC LIMIT ?`, ruleAgentFindScanLimit)
@@ -811,6 +843,10 @@ func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 		if scanned%ruleScanCtxCheckEvery == 0 && ctx.Err() != nil {
 			return "已停止：本轮扫描被取消，未统计完整结果。"
 		}
+		// 已确认广告：覆盖率分母与类型分母（与 TestRulePattern 同口径）。
+		if verdict == "ad" && action != "undone" {
+			acc.ad(s.Kind)
+		}
 		if !re.MatchString(text) {
 			continue
 		}
@@ -826,6 +862,7 @@ func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 			fp++
 		case verdict == "ad":
 			tp++
+			acc.hit(s.Kind)
 		case verdict == "clean" || verdict == "none":
 			fp++
 		case verdict == "skipped" || verdict == "error":
@@ -857,9 +894,12 @@ func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 			samples = append(samples, s)
 		}
 	}
+	adsTotal, kinds := acc.result()
 	out, _ := json.Marshal(map[string]any{
 		"scanned": scanned, "matched": matched,
 		"tp": tp, "fp": fp, "undone": undone, "neutral": neutral,
+		"ads_total": adsTotal, "coverage": round4(ruleCoverage(tp, adsTotal)),
+		"kinds":      ruleKindsAgentJSON(kinds),
 		"by_verdict": byVerdict, "scope": scope, "samples": samples,
 	})
 	return string(out)
@@ -878,6 +918,8 @@ func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
 	out := map[string]any{
 		"scanned": res.Scanned, "matched": res.Matched,
 		"tp": res.TP, "fp": res.FP, "undone": res.Undone, "neutral": res.Neutral,
+		"ads_total": res.AdsTotal, "coverage": round4(res.Coverage()),
+		"kinds":          ruleKindsAgentJSON(res.Kinds),
 		"fp_samples":     ruleSamplesJSON(res.FPSamples, 10),
 		"undone_samples": ruleSamplesJSON(res.UndoneSamples, 5),
 	}
@@ -895,7 +937,8 @@ func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
 	default:
 		out["can_create"] = true
 		out["message"] = fmt.Sprintf(
-			"通过：命中 %d 条已确认广告、0 条正常消息，可以创建。", res.TP)
+			"通过：命中 %d 条已确认广告（覆盖率 %.1f%%）、0 条正常消息，可以创建。",
+			res.TP, res.Coverage()*100)
 	}
 	b, _ := json.Marshal(out)
 	return string(b)

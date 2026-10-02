@@ -632,6 +632,9 @@ func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 		FP        int64             `json:"fp"`
 		Undone    int64             `json:"undone"`
 		Neutral   int64             `json:"neutral"`
+		AdsTotal  int64             `json:"ads_total"`
+		Coverage  float64           `json:"coverage"`
+		Kinds     []RuleKindStat    `json:"kinds"`
 		ByVerdict map[string]int64  `json:"by_verdict"`
 		Scope     string            `json:"scope"`
 		Samples   []ruleAgentSample `json:"samples"`
@@ -653,6 +656,17 @@ func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 	if got.Scanned != 7 || got.Matched != 6 || got.TP != 1 ||
 		got.FP != 3 || got.Undone != 1 || got.Neutral != 2 {
 		t.Errorf("计数不对：%+v", got)
+	}
+	// 覆盖率口径与 TestRulePattern 一致：已确认广告 2 条、命中 1 条 → 0.5。
+	if got.AdsTotal != ref.AdsTotal || got.Coverage != round4(ref.Coverage()) {
+		t.Errorf("find 覆盖率与 TestRulePattern 不一致：find=%d/%v ref=%d/%v",
+			got.AdsTotal, got.Coverage, ref.AdsTotal, ref.Coverage())
+	}
+	if got.AdsTotal != 2 || got.Coverage != 0.5 {
+		t.Errorf("覆盖率不对：ads=%d cov=%v", got.AdsTotal, got.Coverage)
+	}
+	if len(got.Kinds) != len(ref.Kinds) {
+		t.Errorf("find kinds 数量不一致：%v vs %+v", got.Kinds, ref.Kinds)
 	}
 	wantByVer := map[string]int64{
 		"ad": 2, "clean": 1, "none": 1, "skipped": 1, "error": 1}
@@ -689,6 +703,36 @@ func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 	if s := run.findMatches(context.Background(),
 		findArgs{Pattern: "["}); !strings.Contains(s, "错误") {
 		t.Errorf("坏正则应返回错误文本，得到 %q", s)
+	}
+}
+
+// TestRuleAgentTestRuleOutputsCoverage：test_rule 返回 ads_total/coverage/kinds，
+// 且低覆盖率不阻断 can_create 与创建（覆盖率只展示）。
+func TestRuleAgentTestRuleOutputsCoverage(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRuleAgentLog(t, b, "办理贷款加微信", "ad", "deleted", "scam")
+	for i := 0; i < 50; i++ {
+		insertRuleAgentLog(t, b, "正常聊天", "ad", "deleted", "promo")
+	}
+	run := &ruleAgentRun{sh: b.Shared, ctx: context.Background()}
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(run.testRule(context.Background(), "办理贷款")), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ads_total"].(float64) != 51 || out["can_create"] != true {
+		t.Fatalf("低覆盖也应可创建：%v", out)
+	}
+	if got := out["coverage"].(float64); got < 0.019 || got > 0.020 {
+		t.Errorf("覆盖率应为 1/51≈0.0196，得到 %v", got)
+	}
+	if len(out["kinds"].([]any)) != 2 {
+		t.Errorf("kinds 应含 scam 与 promo：%v", out["kinds"])
+	}
+	// 创建入口也不看覆盖率：低覆盖 + fp=0 仍能创建。
+	if got := run.createRule(context.Background(), createRuleArgs{
+		Name: "低覆盖", Pattern: "办理贷款"}); !strings.Contains(got, "创建成功") {
+		t.Errorf("低覆盖不应阻断创建：%q", got)
 	}
 }
 
