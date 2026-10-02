@@ -105,6 +105,9 @@ Agent 工具（`find` / `test_rule`）新增：
 - `test_rule` 的 `message` 文案追加覆盖率：通过时
   「通过：命中 X 条已确认广告（覆盖率 Y%）、0 条正常消息，可以创建。」
 - 覆盖率不影响 `can_create` 判定。
+- **人类可读文案里的百分比统一格式**：一位小数，如 `10.9%`
+  （`fmt.Sprintf("%.1f%%", v*100)`），用于工具 `message`、`create_rule`
+  返回与 `finish` 结果；JSON 数值保持 §1.4 的精度约定。
 
 Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
@@ -130,7 +133,14 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 - `miniRuleWriteTest` 的 UPDATE 带上这两列；`last_kinds` 由
   `json.Marshal` 生成，失败时写空串（不阻断测试写回）。
-- `miniRuleList` SELECT 带上两列；`last_kinds` 解析失败按空数组处理。
+- **AI 创建路径同样落这两列**：`createRule` 的 INSERT 直接写
+  `last_ads_total`/`last_kinds`（它创建前刚跑完测试），不能只改
+  `miniRuleWriteTest`，否则 AI 刚创建的规则在列表里覆盖率显示「—」。
+- `miniRuleList` SELECT 带上两列，返回键固定为：
+  - `last_ads_total`：int；
+  - `last_kinds`：数组 `[{"kind","total","matched"}]`（解析失败按空数组），
+    与 Agent 工具 `kinds` 的 `{kind,total,matched}` 形状一致（工具侧另带
+    `coverage`，Mini App 侧由前端按 `matched/total` 现算，避免舍入漂移）。
 - 新库：`schemaSQL` 的 `ad_rules` 直接带上两列；老库：`migrate()` 的列清单
   追加两条，启动自动 ALTER。
 - 旧数据 `last_ads_total=0`：前端覆盖率显示「—」，不影响任何门。
@@ -140,11 +150,15 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 ### 2.1 创建不再收尾
 
 - `createRule` 成功后**删除** `react.SetReturnDirectly(ctx)`，只把 id 记进本轮。
+- **同时删除同轮拦截**：`createRule` 开头「本轮已创建规则 #N，不再重复创建；请直接
+  总结收尾」那段守卫必须移除，否则「一轮多条」名存实亡。对应测试
+  `TestRuleAgentCreateRuleSinglePerRun` 替换为多创建测试（见 §7）。
+- `createFails` 改为真正的「连续」语义：**创建成功时清零**；失败累加，连续 3 次
+  失败才 `SetReturnDirectly` 提前收尾（防死循环）。
 - 返回文案改为：「创建成功：候选规则 #N《…》（enabled=0、enforce=0）。本轮测试：
   命中广告 X 条、正常消息 0 条、覆盖率 Y%。请继续用 list_kinds / list_rules
-  找下一个未覆盖形态；没有新形态时用中文总结收尾。」
+  找下一个未覆盖形态；没有新形态时用中文总结收尾。」（Y% 见 §1.4 的百分比格式）
 - 完全相同 pattern 的查重不变；已创建过的规则在库里，重复创建会被查重拒绝。
-- 连续 3 次创建失败仍会 `SetReturnDirectly` 提前收尾（防死循环，保留）。
 
 ### 2.2 运行态与状态契约
 
@@ -206,13 +220,14 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 ### 3.3 list_rules
 
-无参数（上限 100 条，按 id 升序）。返回现有规则与最近测试的覆盖率：
+无参数。返回现有规则与最近测试的覆盖率，**按 id 升序取前 100 条**（确定性，
+本轮新建的 id 最大、一定在返回里）：
 
 ```json
 {
   "rules": [
     {"id": 1, "name": "兼职押金话术", "pattern": "…", "category": "scam",
-     "enabled": true, "enforce": false,
+     "enabled": true, "enforce": false, "last_tested_at": 1700000000,
      "last_tp": 40, "last_fp": 0, "last_ads_total": 366, "coverage": 0.1093}
   ],
   "hint": "pattern 已存在的形态不要重复创建；优先补覆盖率为 0 或偏低的类型。"
@@ -220,15 +235,20 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 ```
 
 - 直接读库（不读快照），本轮刚创建的规则立即可见。
+- 从未测试过的规则 `last_tested_at=0`、`coverage` 缺省（不写或写 0），模型据此
+  区分「没测过」与「真的 0%」；`enabled=false` 的候选同样返回。
 
 ### 3.4 read_records
 
 参数 `{"ids": [9812, 9801, ...]}`：
 
-- 超过 10 个截断到前 10 个并在返回里说明；空数组返回错误提示。
-- 返回 `{"records":[完整记录…], "ignored": N}`；单条不存在时该条给
-  `{"id":N,"error":"没有 id=N 的判定记录"}`，不影响其他条。
-- 每条正文与 `read_record` 一致（库内全文，上限 2000 字）。
+- `ids` 缺失、不是数组或为空：返回错误提示「ids 必须是非空数组」，不执行查询。
+- 先按出现顺序去重，再截断到前 10 个；被截断与重复的 id 计入返回里的
+  `ignored`（只统计这两类）。
+- 不存在或 id<=0 的 id **不算 ignored**，在 `records` 里给
+  `{"id":N,"error":"没有 id=N 的判定记录"}` 条目，不影响其他条。
+- 返回 `{"records":[…], "ignored": N}`；每条正文与 `read_record` 一致
+  （库内全文，上限 2000 字）。
 
 ### 3.5 提示词重写
 
@@ -262,12 +282,14 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 ### 4.2 覆盖率展示
 
-- `RuleTestPanel` 数字格从 6 个变 7 个：新增「覆盖率」格（`(coverage*100).toFixed(1)%`，
+- `RuleTestPanel` 数字格从 6 个变 7 个：新增「覆盖率」格（一位小数百分比，
   `ads_total=0` 显示「—」）；下方新增「按类型覆盖」小节：每行
   `kind  matched/total  xx.x%`，`matched=0` 的类型用灰字，避免像误封一样红。
 - 规则列表行：`TP 40 · FP 0 · 覆盖 10.9%`（`last_tested_at=0` 仍显示「未测试」；
   `last_ads_total=0` 不显示覆盖率段）。
-- 规则详情「最近测试」行追加 `覆盖率 10.9%`。
+- 规则详情「最近测试」行追加 `覆盖率 10.9%`；同一卡片下方渲染**落库的**
+  `last_kinds`（无样本，只列 `kind  matched/total  xx.x%`），这样离开页面再回来
+  也能看到上一轮的按类型覆盖，不必重跑测试。实时测试面板仍展示带样本的完整版。
 - 测试结果面板同时被详情页与测试抽屉复用。
 
 ### 4.3 Agent 卡
@@ -313,15 +335,22 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 - **覆盖率**：造 scam/promo/undone/clean 四类流水，断言 `AdsTotal`、`Kinds`
   排序与数值、`Coverage()`；`undone` 只进 FP 不进分母；空库 coverage=0。
 - **口径一致**：`find` 与 `test_rule` 在同一份语料上的 `ads_total/tp/coverage`
-  完全相等（沿用现有 find/test 对齐测试的写法）。
-- **多创建**：假上游按 `create A → list_rules → create B → 文本收尾` 驱动，断言
-  两条规则落库、`created_rule_ids=[A,B]`、result 提到两条、运行态归位。
-- **新工具**：`list_kinds` 的类型计数与 recent_ids；`read_records` 批量、截断、
-  无效 id 容错；`list_rules` 返回本轮刚创建的规则与 coverage。
-- **落库**：保存/测试后 `last_ads_total`、`last_kinds` 写回；列表 JSON 能解析；
-  老库启动后两列存在且默认值正确。
+  完全相等（沿用现有 find/test 对齐测试的写法）；`list_kinds` 的类型计数同样
+  排除 `undone`（不只是 `RuleTestResult` 的分母）。
+- **多创建**：替换现有 `TestRuleAgentCreateRuleSinglePerRun`：假上游按
+  `create A → list_rules → create B → 文本收尾` 驱动，断言两条规则落库、
+  `created_rule_ids=[A,B]`、result 提到两条、运行态归位；另测
+  `失败→成功→失败→失败` 不会触发连续失败收尾（成功清零）。
+- **新工具**：`list_kinds` 的类型计数与 recent_ids；`read_records` 批量、去重
+  截断、`ignored` 语义、无效 id 容错、空/缺 ids 报错；`list_rules` 返回本轮
+  刚创建的规则、未测试规则的 `last_tested_at=0`。
+- **落库**：保存/测试/AI 创建三条路径后 `last_ads_total`、`last_kinds` 都写回；
+  列表 JSON 能解析且键名固定；老库启动后两列存在且默认值正确。
+- **覆盖率不设门槛**：覆盖率极低（如 TP=1/AdsTotal=10000）但 fp=0 的规则仍能
+  通过 `create_rule` 与保存；覆盖率不影响 `can_create`。
 - **前端**：测试抽屉试跑（mock 返回带覆盖率）→ 展示覆盖率与按类型；列表行
-  覆盖率；详情最近测试覆盖率；Agent 多条创建 id 展示；400 保留输入。
+  覆盖率；详情「最近测试」覆盖率与落库按类型；Agent 多条创建 id 展示；
+  400 保留输入。
 - **质量门**：`go test ./...`、`npm --prefix web run build`（tsc）、
   `npm --prefix web test`、`npm --prefix web run lint`。
 
@@ -329,9 +358,11 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 - **成本**：一轮可能创建多条并大量读样本，token 消耗显著高于现状；由用户明确
   选择「不限条数、跑满预算」，总兜底仍是 1000 步 / 30 分钟。
-- **长上下文**：`list_banned` 上限 200 条 × 200 字，单次约 4 万字符；模型可能
-  接近上下文上限，提示词要求它分批读、不要一次拉满。
+- **长上下文**：`list_banned` 上限 200 条 × 200 字、`find` 上限 200 条样本，
+  单次可达约 4 万字符；模型可能接近上下文上限，提示词要求分批读、不要一次拉满。
 - **覆盖率口径盲区**：与现有测试一致——只看库内截断后的正文（1000 rune），
   长消息尾部特征不可见；文案与现有测试页保持同一说明口径。
 - **旧前端兼容**：状态保留 `created_rule_id`；新字段都是追加，旧 bundle 不会
   因为缺字段崩（TS 类型同步更新，产物与后端同版本部署）。
+- **实施分两阶段**：后端（规则引擎 + Agent + 表 + 面板契约）先行并可独立
+  测试，前端随后；计划按这两个阶段拆分，便于分段评审与回滚。
