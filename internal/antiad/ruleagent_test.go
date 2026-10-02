@@ -977,28 +977,141 @@ func TestRuleAgentEvidenceFilter(t *testing.T) {
 	}
 }
 
-// TestRuleAgentCreateRuleSinglePerRun：同一轮里已经创建过规则后，
-// 再次 create_rule 直接拒绝，不再写库。
-func TestRuleAgentCreateRuleSinglePerRun(t *testing.T) {
+// TestRuleAgentCreateRuleAllowsMultiplePerRun：同一轮连续创建不同 pattern
+// 都写库，createdRuleIDs 累计，成功不增加失败计数。
+func TestRuleAgentCreateRuleAllowsMultiplePerRun(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
-	insertRuleAgentLog(t, b, "广告文案", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "广告文案一", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "广告文案二", "ad", "deleted", "promo")
 
 	run := &ruleAgentRun{sh: b.Shared, ctx: context.Background()}
-	run.createdRuleID = 5
-	got := run.createRule(context.Background(), createRuleArgs{
-		Name: "重复创建", Pattern: "广告文案"})
-	if !strings.Contains(got, "本轮已创建规则") {
-		t.Errorf("重复创建应被拒绝，得到 %q", got)
+	if got := run.createRule(context.Background(), createRuleArgs{
+		Name: "规则一", Pattern: "广告文案一"}); !strings.Contains(got, "创建成功") {
+		t.Fatalf("第一条应创建成功，得到 %q", got)
 	}
-	if run.createFails != 0 {
-		t.Errorf("重复创建不是一次失败尝试，不应计数，得到 %d", run.createFails)
+	if got := run.createRule(context.Background(), createRuleArgs{
+		Name: "规则二", Pattern: "广告文案二"}); !strings.Contains(got, "创建成功") {
+		t.Fatalf("第二条也应创建成功，得到 %q", got)
+	}
+	if len(run.createdRuleIDs) != 2 || run.createFails != 0 {
+		t.Errorf("createdRuleIDs=%v createFails=%d", run.createdRuleIDs, run.createFails)
 	}
 	var n int
 	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM ad_rules`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("重复创建不应写库，ad_rules 有 %d 条", n)
+	if n != 2 {
+		t.Errorf("库里应有 2 条规则，得到 %d", n)
+	}
+}
+
+// TestRuleAgentCreatesMultipleRules：一轮内可以连续创建多条规则，
+// 状态带 created_rule_ids，结果文案列出全部。
+func TestRuleAgentCreatesMultipleRules(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 1:
+			w.Write([]byte(oaToolCallReply("c1", "create_rule", map[string]any{
+				"name": "规则一", "pattern": "办理贷款", "category": "promo"})))
+		case 2:
+			w.Write([]byte(oaToolCallReply("c2", "list_rules", map[string]any{})))
+		case 3:
+			w.Write([]byte(oaToolCallReply("c3", "create_rule", map[string]any{
+				"name": "规则二", "pattern": "博彩娱乐", "category": "gambling"})))
+		default:
+			w.Write([]byte(oaTextReply("本轮完成，共两条。")))
+		}
+	})
+	insertRuleAgentLog(t, b, "办理贷款加微信 vx123", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "博彩娱乐平台开户", "ad", "deleted", "gambling")
+
+	if err := StartRuleDiscovery(b.Shared, 7); err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+	ids, _ := st["created_rule_ids"].([]int64)
+	if len(ids) != 2 {
+		t.Fatalf("应创建两条规则，状态 %v", st)
+	}
+	if st["created_rule_id"] != ids[0] {
+		t.Errorf("created_rule_id 应保留为第一条：%v", st)
+	}
+	var n int64
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM ad_rules`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("库里应有 2 条规则，得到 %d", n)
+	}
+	var adsTotal int64
+	var kinds string
+	if err := b.Store.Read.QueryRow(`SELECT last_ads_total,last_kinds FROM ad_rules
+		WHERE id=?`, ids[0]).Scan(&adsTotal, &kinds); err != nil {
+		t.Fatal(err)
+	}
+	if adsTotal != 2 || !strings.Contains(kinds, `"kind":"scam"`) {
+		// 两条广告都在开始前入库：第一条规则的扫描窗口里 AdsTotal=2。
+		t.Errorf("AI 创建也要落覆盖率：ads=%d kinds=%s", adsTotal, kinds)
+	}
+	if result, _ := st["result"].(string); !strings.Contains(result, "2 条") {
+		t.Errorf("结果应说明两条：%q", result)
+	}
+}
+
+// TestRuleAgentCreatedRuleIDsEmpty：未创建/失败时是 [] 而不是 null。
+func TestRuleAgentCreatedRuleIDsEmpty(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(oaTextReply("没有发现。")))
+	})
+	if err := StartRuleDiscovery(b.Shared, 7); err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+	ids, ok := st["created_rule_ids"].([]int64)
+	if !ok || ids == nil || len(ids) != 0 {
+		t.Errorf("created_rule_ids 应为空切片，得到 %#v", st["created_rule_ids"])
+	}
+}
+
+// TestRuleAgentCreateFailsResetOnSuccess：连续失败计数在成功创建后清零。
+// 观察点：模型调用次数——若成功后不清零，第 4 次失败就累计到 3，
+// SetReturnDirectly 会提前收尾，第 6 次模型调用不会发生。
+func TestRuleAgentCreateFailsResetOnSuccess(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 1, 2, 4, 5:
+			// 坏 pattern `[` 走严格编译失败，每次都算一次创建失败。
+			w.Write([]byte(oaToolCallReply(fmt.Sprintf("c%d", n), "create_rule",
+				map[string]any{"name": "坏规则", "pattern": "["})))
+		case 3:
+			w.Write([]byte(oaToolCallReply("c3", "create_rule", map[string]any{
+				"name": "好规则", "pattern": "办理贷款"})))
+		default:
+			w.Write([]byte(oaTextReply("收尾。")))
+		}
+	})
+	insertRuleAgentLog(t, b, "办理贷款加微信", "ad", "deleted", "scam")
+
+	if err := StartRuleDiscovery(b.Shared, 7); err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+	if got := calls.Load(); got < 6 {
+		t.Errorf("成功后失败计数应清零、跑满 6 次模型调用，实际 %d 次（状态 %v）", got, st)
+	}
+	ids, _ := st["created_rule_ids"].([]int64)
+	if len(ids) != 1 {
+		t.Errorf("应只成功创建 1 条，得到 %v（状态 %v）", ids, st)
+	}
+	if errText, _ := st["error"].(string); strings.Contains(errText, "连续") {
+		t.Errorf("不该触发连续失败收尾：%q", errText)
 	}
 }
 

@@ -64,7 +64,7 @@ func TestMiniRulesAgentOps(t *testing.T) {
 	// 空态：契约字段齐全、steps 是数组、running=false。
 	agent := agentOf(mainDo(map[string]any{"action": "agent_status"}))
 	for _, k := range []string{"running", "started_at", "finished_at", "result",
-		"error", "created_rule_id", "steps"} {
+		"error", "created_rule_id", "created_rule_ids", "steps"} {
 		if _, ok := agent[k]; !ok {
 			t.Errorf("agent 状态缺少字段 %s：%v", k, agent)
 		}

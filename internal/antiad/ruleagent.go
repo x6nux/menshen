@@ -130,15 +130,15 @@ type RuleAgentStep struct {
 // 只允许存在一轮：规则是全局一份，两轮并发会重复调模型、竞态写 ad_rules，
 // 面板上的「运行中/已完成」也会互相覆盖。
 type ruleAgentRuntime struct {
-	mu            sync.Mutex
-	running       bool
-	startedAt     int64
-	finishedAt    int64
-	result        string
-	errText       string
-	createdRuleID int64
-	steps         []RuleAgentStep
-	seq           int
+	mu             sync.Mutex
+	running        bool
+	startedAt      int64
+	finishedAt     int64
+	result         string
+	errText        string
+	createdRuleIDs []int64
+	steps          []RuleAgentStep
+	seq            int
 	// cancel 只在 running 期间非空，StopRuleDiscovery 用它中止本轮。
 	cancel context.CancelFunc
 }
@@ -178,7 +178,7 @@ func StartRuleDiscovery(sh *core.Shared, uid int64) error {
 	ruleAgentRT.finishedAt = 0
 	ruleAgentRT.result = ""
 	ruleAgentRT.errText = ""
-	ruleAgentRT.createdRuleID = 0
+	ruleAgentRT.createdRuleIDs = nil
 	ruleAgentRT.steps = nil
 	ruleAgentRT.seq = 0
 	ruleAgentRT.cancel = cancel
@@ -191,8 +191,11 @@ func StartRuleDiscovery(sh *core.Shared, uid int64) error {
 // RuleAgentStatus 返回 Mini App 的序列化状态。契约（T-C 前端依赖）：
 //
 //	{"running":bool,"started_at":int,"finished_at":int,"result":string,
-//	 "error":string,"created_rule_id":int,
+//	 "error":string,"created_rule_id":int,"created_rule_ids":[int],
 //	 "steps":[{"n":int,"at":int,"kind":string,"name":string,"summary":string}]}
+//
+// created_rule_id 是本轮第一条（旧前端兼容），created_rule_ids 是全部；
+// 无创建时返回空切片而不是 null。
 func RuleAgentStatus(sh *core.Shared) map[string]any {
 	ruleAgentRT.mu.Lock()
 	defer ruleAgentRT.mu.Unlock()
@@ -208,14 +211,20 @@ func RuleAgentStatus(sh *core.Shared) map[string]any {
 		// 运行中不暴露上一轮的旧错误，前端只看 running 与实时步骤。
 		errText = ""
 	}
+	ids := append([]int64{}, ruleAgentRT.createdRuleIDs...)
+	var first int64
+	if len(ids) > 0 {
+		first = ids[0]
+	}
 	return map[string]any{
-		"running":         ruleAgentRT.running,
-		"started_at":      ruleAgentRT.startedAt,
-		"finished_at":     ruleAgentRT.finishedAt,
-		"result":          ruleAgentRT.result,
-		"error":           errText,
-		"created_rule_id": ruleAgentRT.createdRuleID,
-		"steps":           steps,
+		"running":          ruleAgentRT.running,
+		"started_at":       ruleAgentRT.startedAt,
+		"finished_at":      ruleAgentRT.finishedAt,
+		"result":           ruleAgentRT.result,
+		"error":            errText,
+		"created_rule_id":  first,
+		"created_rule_ids": ids,
+		"steps":            steps,
 	}
 }
 
@@ -376,10 +385,10 @@ type ruleAgentRun struct {
 	// 包装后，单看 error 链未必能分辨是哪种结束，ctx 状态最可靠。
 	ctx context.Context
 
-	mu            sync.Mutex
-	createdRuleID int64
-	createFails   int
-	lastCreateErr string
+	mu             sync.Mutex
+	createdRuleIDs []int64
+	createFails    int
+	lastCreateErr  string
 }
 
 // runRuleDiscovery 在后台跑完一轮，并负责把结束状态写回全局运行态。
@@ -445,15 +454,21 @@ func runRuleDiscovery(ctx context.Context, sh *core.Shared, uid int64,
 // 成功/失败/超时/步数耗尽/手动停止都必须经过这里。
 func (r *ruleAgentRun) finish(genErr, setupErr error) {
 	r.mu.Lock()
-	created, fails, lastErr := r.createdRuleID, r.createFails, r.lastCreateErr
+	created := append([]int64{}, r.createdRuleIDs...)
+	fails, lastErr := r.createFails, r.lastCreateErr
 	r.mu.Unlock()
 
 	ctxErr := r.ctx.Err()
 	var result, errText string
 	switch {
-	case created != 0:
-		result = fmt.Sprintf("发现完成：已写入候选规则 #%d（默认未启用、未强制），"+
-			"请在必封规则列表里复核测试后决定是否启用。", created)
+	case len(created) > 0:
+		ids := make([]string, 0, len(created))
+		for _, id := range created {
+			ids = append(ids, fmt.Sprintf("#%d", id))
+		}
+		result = fmt.Sprintf("发现完成：本轮写入 %d 条候选规则（%s），均未启用、未强制；"+
+			"请在必封规则列表里逐条复核测试后决定是否启用。",
+			len(created), strings.Join(ids, "、"))
 	case fails >= ruleAgentMaxCreateFails:
 		errText = fmt.Sprintf("连续 %d 次创建候选规则被拒绝，已提前结束", fails)
 		result = fmt.Sprintf("已停止：连续 %d 次调用 create_rule 都被拒绝（规则会命中正常消息），"+
@@ -484,9 +499,7 @@ func (r *ruleAgentRun) finish(genErr, setupErr error) {
 	ruleAgentRT.finishedAt = time.Now().Unix()
 	ruleAgentRT.result = result
 	ruleAgentRT.errText = errText
-	if created != 0 {
-		ruleAgentRT.createdRuleID = created
-	}
+	ruleAgentRT.createdRuleIDs = append([]int64{}, created...)
 	ruleAgentRT.cancel = nil
 	ruleAgentRT.mu.Unlock()
 
@@ -1141,15 +1154,6 @@ func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
 // 不可编译/匹配空文本；TestRulePattern 检出 fp/undone 一律不写库。
 // 连续失败达到上限时调用 SetReturnDirectly 让 ReAct 图立即收尾。
 func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string {
-	// 本轮已经创建过规则：直接拒绝。SetReturnDirectly 正常生效时模型
-	// 不会再有机会调用，但兜底要有，避免极端情况下一次运行写多条。
-	r.mu.Lock()
-	createdID := r.createdRuleID
-	r.mu.Unlock()
-	if createdID != 0 {
-		return fmt.Sprintf("本轮已创建规则 #%d，不再重复创建；请直接总结收尾。", createdID)
-	}
-
 	fail := func(msg string) string {
 		r.mu.Lock()
 		r.createFails++
@@ -1232,21 +1236,24 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 	result, err := r.sh.Store.Write.Exec(`INSERT INTO ad_rules
 		(name,pattern,category,note,source,enabled,enforce,
 		 last_tp,last_fp,last_undone,last_scanned,last_tested_at,
+		 last_ads_total,last_kinds,
 		 created_at,created_by)
-		VALUES (?,?,?,?, 'ai', 0, 0, ?,?,?,?,?, ?,?)`,
+		VALUES (?,?,?,?, 'ai', 0, 0, ?,?,?,?,?, ?,?, ?,?)`,
 		name, in.Pattern, category, note,
-		res.TP, res.FP, res.Undone, res.Scanned, now, now, r.uid)
+		res.TP, res.FP, res.Undone, res.Scanned, now,
+		res.AdsTotal, RuleKindsJSON(res.Kinds), now, r.uid)
 	if err != nil {
 		return fail("创建失败：写库失败（" + err.Error() + "）。")
 	}
 	id, _ := result.LastInsertId()
 
 	r.mu.Lock()
-	r.createdRuleID = id
+	r.createdRuleIDs = append(r.createdRuleIDs, id)
+	r.createFails = 0 // 连续失败计数：成功即清零
 	r.mu.Unlock()
-	// 实时反映到状态里，面板轮询能看到 created_rule_id。
+	// 实时反映到状态里，面板轮询能看到 created_rule_ids。
 	ruleAgentRT.mu.Lock()
-	ruleAgentRT.createdRuleID = id
+	ruleAgentRT.createdRuleIDs = append(ruleAgentRT.createdRuleIDs, id)
 	ruleAgentRT.mu.Unlock()
 
 	// 写库后重建快照：虽然候选规则不参与判定（enabled=0），但面板的
@@ -1254,12 +1261,11 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 	if err := r.sh.Cache.Reload(); err != nil {
 		slog.Error("规则发现：候选规则写库后刷新缓存失败", "规则", id, "err", err)
 	}
-	// 成功即结束本轮，不再让模型继续调工具烧钱。
-	_ = react.SetReturnDirectly(ctx)
-
+	// 成功不结束本轮：模型继续用 list_kinds / list_rules 找下一个未覆盖形态。
 	msg := fmt.Sprintf("创建成功：候选规则 #%d《%s》已写入（enabled=0、enforce=0，等待主管理员复核）。"+
-		"本轮测试：命中广告 %d 条、正常消息 0 条、全库扫描 %d 条。",
-		id, name, res.TP, res.Scanned)
+		"本轮测试：命中广告 %d 条、正常消息 0 条、覆盖率 %.1f%%（全库扫描 %d 条）。"+
+		"请继续用 list_kinds / list_rules 找下一个未覆盖形态；没有新形态时用中文总结收尾。",
+		id, name, res.TP, res.Coverage()*100, res.Scanned)
 	if ignoredEvidence > 0 {
 		msg += fmt.Sprintf("已忽略 %d 个无效、重复或非广告的证据 id。", ignoredEvidence)
 	}
