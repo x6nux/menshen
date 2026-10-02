@@ -195,7 +195,8 @@ func TestActionLabel(t *testing.T) {
 	cases := map[string]string{
 		"none": "未处置", "alerted": "仅告警", "deleted": "已删除",
 		"muted": "已禁言", "deleted_muted": "已删除+禁言", "deleted_banned": "已删除+封禁",
-		"banned": "已封禁", "join_muted": "进群限制发言", "undone": "已标记误判",
+		"banned": "已封禁", "join_muted": "进群限制发言", "join_checked": "入群检查",
+		"undone":               "已标记误判",
 		"dryrun:deleted_muted": "演练（本应已删除+禁言）",
 	}
 	for in, want := range cases {

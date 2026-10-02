@@ -259,6 +259,45 @@ func TestJoinHandledOnce(t *testing.T) {
 	}
 }
 
+// TestColdJudgeLogsJoinChecked：入群检查判正常也要落一条流水，否则管理员
+// 查用户页对大多数新成员是一片空白（线上真实反馈「看不见入群检查」）。
+// action 用 join_checked：它不是处置，用户页的「被处置过」与私聊汇总都要排除。
+func TestColdJudgeLogsJoinChecked(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake := b.TG.(*testutil.FakeTG)
+	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":9001,"type":"private",` +
+				`"first_name":"普通人","username":"normalguy","bio":"喜欢摄影，住在杭州"}}`, true
+		}
+		return "", false
+	}
+	fakeAIWith(t, b, soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	conf := testutil.ChatConfOf(t, b, -100)
+	coldJudge(b, conf, &tg.TGUser{ID: 9001, FirstName: "普通人", Username: "normalguy"})
+
+	var verdict, action, text string
+	if err := b.Store.Read.QueryRow(`SELECT verdict,action,text FROM antiad_log
+		WHERE user_id=9001 ORDER BY id DESC LIMIT 1`).Scan(&verdict, &action, &text); err != nil {
+		t.Fatalf("判正常也要落入群检查流水: %v", err)
+	}
+	if verdict != "clean" || action != "join_checked" {
+		t.Errorf("verdict=%q action=%q，期望 clean/join_checked", verdict, action)
+	}
+	if !strings.Contains(text, "［入群资料检查］") {
+		t.Errorf("正文要能看出是入群资料检查：%q", text)
+	}
+	// 不是处置：用户页的计数与私聊汇总都不该把它算进去。
+	if n := countRows(t, b, `SELECT COUNT(*) FROM antiad_log WHERE user_id=9001 AND `+ProcessedCond); n != 0 {
+		t.Errorf("入群检查不是处置，不该计入被处置过，得到 %d", n)
+	}
+	if _, _, ok := renderAdSummary(b, 0, 1<<62); ok {
+		t.Error("入群检查不该触发管理员私聊汇总")
+	}
+}
+
 // TestJoinMuteNoticeOneLine：群内限制通知一行化——uid + 原因，昵称与
 // 用户名照旧不贴；它受「群内展示」开关控制，发了就安排到点自动撤回。
 func TestJoinMuteNoticeOneLine(t *testing.T) {

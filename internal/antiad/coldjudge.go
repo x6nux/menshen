@@ -266,6 +266,15 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	// 证据比一条具体消息少得多，而这一步是在人刚进门时就限制他发言。
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
+		// 每次检查都落一条流水：只记命中时，用户页对大多数新成员是一片空白，
+		// 管理员看不出「检查过、正常」。action 取 join_checked —— 它不是处置，
+		// 用户页的「被处置过」计数与私聊汇总都要排除它。
+		note := "进群冷判定"
+		if v.IsAd {
+			note = "进群冷判定（低于采信线，未处置）"
+		}
+		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
+			From: u, Text: joinProfileText(u, bio, v)}, v, "join_checked", note)
 		// 复判确认资料没问题、而且给了放行时长：记下来，让后续的消息判定
 		// 与下次进群不再被同一份资料拖住。
 		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {

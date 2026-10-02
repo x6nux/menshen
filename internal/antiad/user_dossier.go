@@ -102,9 +102,9 @@ func logScope(snap *store.Snapshot, botID int64) (string, []any) {
 	return " AND bot_id=?", []any{botID}
 }
 
-// processedCond 是「被真正处置过」的判据：动作不是「未处置/未送检」，也不是
-// 演练前缀（演练什么都没做）。默认列表按它过滤，噪音少。
-const processedCond = `action NOT IN ('none','skipped') AND action NOT LIKE 'dryrun:%'`
+// processedCond 是「被真正处置过」的判据：动作不是「未处置/未送检/入群检查」，
+// 也不是演练前缀（演练什么都没做）。默认列表按它过滤，噪音少。
+const processedCond = `action NOT IN ('none','skipped','join_checked') AND action NOT LIKE 'dryrun:%'`
 
 // ProcessedCond 是 processedCond 的导出版，面板与 Mini App 的 SQL 直接用。
 const ProcessedCond = processedCond

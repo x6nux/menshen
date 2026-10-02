@@ -82,6 +82,8 @@ const ACTION_LABELS: Record<string, string> = {
   deleted: '删除',
   deleted_muted: '删除+禁言',
   deleted_banned: '删除+封禁',
+  join_muted: '进群限制发言',
+  join_checked: '入群检查',
   undone: '已撤销',
 }
 
