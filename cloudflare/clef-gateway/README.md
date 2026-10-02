@@ -1,15 +1,42 @@
 # clef-gateway
 
-把 Cloudflare Workers AI 上的 [Clef](https://developers.cloudflare.com/workers-ai/models/clef/)
-决策模型（`@cf/cloudflare/clef` / `clef-flash`）包成 **System One 兼容**端点
-（`POST /v1/systemone`），让 menshen（或任何 Jev / SystemOne 客户端）把它当作
-一个普通的 systemone 判定上游接入。
+**Cloudflare API v4 兼容层**：用本 Worker 的 AI binding 执行 Workers AI 模型，
+对外模拟 `api.cloudflare.com` 的调用形态。任何按 Cloudflare REST API 写的客户端、
+SDK 或中转服务，把 base URL 指到本 Worker、token 填这里的 `API_TOKEN`，就能调用
+本账号的 Workers AI —— **真实 Cloudflare 凭据不出 Worker**。模型不限，Clef 只是
+其中之一，README 里的示例以它为主。
 
-- 单文件 Worker（`worker.js`），零依赖，只做鉴权 + 模型名归一化 + 透传
-- 走 `AI` binding 调模型，**代码与配置里都不出现 Cloudflare API Token**
-- 上游返回的 `answers` / `usage` 原样透出，menshen 的判定与计费解析不用改
+```text
+调用方（CF API 客户端） ──Bearer API_TOKEN──▶ Worker ──AI binding──▶ Workers AI
+```
 
-接入 menshen 的完整步骤见 [docs/clef-gateway.md](../../docs/clef-gateway.md)。
+## 接口
+
+```http
+POST [/client/v4]/accounts/{account_id}/ai/run/{model}
+Authorization: Bearer <API_TOKEN>
+Content-Type: application/json
+```
+
+成功（与 Cloudflare 一致）：
+
+```json
+{ "result": { "...": "模型输出" }, "success": true, "errors": [], "messages": [] }
+```
+
+失败：
+
+```json
+{
+  "result": null,
+  "success": false,
+  "errors": [{ "code": 10000, "message": "Authentication error" }],
+  "messages": []
+}
+```
+
+路由细节：`/client/v4` 前缀可省略；`model` 可含 `/`，也可 URL 编码
+（`%40cf%2Fcloudflare%2Fclef`）；结尾斜杠容忍。
 
 ## 文件
 
@@ -28,59 +55,74 @@
 ```bash
 cd cloudflare/clef-gateway
 npm install
-npx wrangler secret put API_TOKEN   # 自定义一个长随机串，就是 menshen 要填的 api_key
+npx wrangler secret put API_TOKEN   # 自定义一个长随机串，就是调用方要填的 token
 npm run deploy
 ```
 
-部署输出里的 `https://clef-gateway.<你的子域>.workers.dev` 就是 menshen 的
-`base_url`。
+部署输出里的 `https://clef-gateway.<你的子域>.workers.dev` 就是新的 API 入口。
 
-环境变量（secret 或 `wrangler.jsonc` 的 `vars`）：
-
-| 名称 | 必填 | 说明 |
-|---|---|---|
-| `API_TOKEN` | ✅ | 调用方 Bearer token，务必用 `wrangler secret` 存；不配则全部请求 401（fail closed） |
-| `DEFAULT_MODEL` | | 请求里的模型名认不出时用哪个：`clef`（默认）或 `clef-flash` |
-| `GATEWAY_ID` | | 配了就经 AI Gateway 转发，获得日志 / 限流 / 缓存 |
-
-## 验证
+## 用法
 
 ```bash
-# 探针：能通说明 Worker 已部署
-curl -sS https://clef-gateway.<子域>.workers.dev/
+TOKEN=<API_TOKEN>
+BASE=https://clef-gateway.<子域>.workers.dev/client/v4
+ACCOUNT=<你的 Cloudflare 账号 ID>   # 未配置 ACCOUNT_ID 变量时任意占位即可
 
-# 直接问 Clef 一个决策问题
-curl -sS https://clef-gateway.<子域>.workers.dev/v1/systemone \
+# Clef 决策模型
+curl -sS "$BASE/accounts/$ACCOUNT/ai/run/@cf/cloudflare/clef" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "clef-flash",
+    "model": "clef",
     "state": "Checkout has been failing for every customer for the last hour.",
     "questions": {
       "urgent": { "type": "noul", "instructions": "Is this request urgent?" },
       "team": {
         "type": "choice",
         "instructions": "Which team should handle it?",
-        "criteria": { "billing": "Payments", "technical": "Outages", "sales": "Plans" }
+        "criteria": { "billing": "Payments", "invoice": "Invoices", "tech": "Outages" }
       }
     }
   }'
+
+# 任意 Workers AI 模型
+curl -sS "$BASE/accounts/$ACCOUNT/ai/run/@cf/meta/llama-3.1-8b-instruct" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{ "prompt": "Where did Hello World come from?" }'
 ```
 
-## 接口
+支持自定义 base URL 的 Cloudflare SDK / 中转程序：base 填
+`https://clef-gateway.<子域>.workers.dev/client/v4`，API token 填 `API_TOKEN`。
 
-`POST /v1/systemone`，其余路径 / 方法一律 404。
+## 环境变量
 
-- 请求：`{ model, state, questions, images? }`，与 Clef 原生 schema 一致。
-  `model` 接受 `clef` / `clef-flash`，也容错 `@cf/cloudflare/clef`、
-  `cf/@cf/cloudflare/clef-flash` 这类写法。
-- 响应：Clef 原始的 `{ model, answers, usage }`，不套 Workers AI REST 的
-  `result` 外壳。
-- 状态码：401 未鉴权；400 非法 JSON；413 超过 13 MiB；422 缺 `state`/`questions`；
-  上游 4xx 原样透出；其余（含网络错误）统一 502。
+| 名称 | 必填 | 说明 |
+|---|---|---|
+| `API_TOKEN` | ✅ | 调用方 Bearer token，务必用 `wrangler secret` 存；不配则所有请求 401（fail closed） |
+| `ACCOUNT_ID` | | 配了就把 URL 里的 account 段钉死到该值，填错按路由不存在处理；不配则任意段都接受 |
+| `GATEWAY_ID` | | 配了就经 AI Gateway 转发，获得日志 / 限流 / 缓存 |
+
+## 兼容性与限制
+
+- 只实现 `POST .../ai/run/{model}` 一个端点；`models/search`、`tasks/search`
+  等其他 Cloudflare 端点未实现。
+- 仅接受 JSON 请求体；二进制 / multipart 上传不支持。
+- **不支持 `"stream": true`**：AI binding 只能一次性返回完整结果，无法输出 SSE；
+  带 `stream: true` 的请求会得到明确的 400 而不是一段解析不了的响应。
+- 错误码：绑定抛出的 `code` 按官方
+  [Workers AI Errors 表](https://developers.cloudflare.com/workers-ai/platform/errors/)
+  映射到 HTTP 状态码；兼容层自身沿用 10000（鉴权）/ 7003（路由）/ 3003（空 body）/
+  1000（其他请求错误）。
+- 鉴权同时接受 `Authorization: Bearer` 与老式 `X-Auth-Key` 头。
+
+## 安全
+
+- `API_TOKEN` 持有者等于拥有本账号 Workers AI 的调用权（费用记在本账号），
+  只发给可信调用方；建议叠加 Cloudflare WAF Rate Limiting 防刷。
+- Worker 代码与配置里没有任何 Cloudflare 凭据，绑定权限由平台注入。
 
 ## 测试
 
 ```bash
-npm test        # node --test，11 个用例
+npm test        # node --test，13 个用例
 ```

@@ -1,44 +1,86 @@
 /**
- * clef-gateway —— 把 Cloudflare Workers AI 上的 Clef 决策模型
- * （@cf/cloudflare/clef / clef-flash）包装成 System One 兼容端点，
- * 供 menshen 作为 systemone 判定上游直接接入。
+ * clef-gateway —— Cloudflare API v4 兼容层。
  *
- * 调用方（menshen）的契约：
- *   POST {base_url}/v1/systemone
- *   Authorization: Bearer <api_key>
- *   { "model": "clef", "state": ..., "questions": {...}, "images": [...]? }
- *   响应：{ "model": ..., "answers": {...}, "usage": {...} }
+ * 用本 Worker 的 AI binding 执行 Workers AI 模型，对外模拟
+ * api.cloudflare.com 的调用形态：
  *
- * Workers AI 的 REST 形态是 /accounts/{id}/ai/run/@cf/cloudflare/clef，
- * 且请求体里的 model 只能是 "clef" / "clef-flash"。这个 Worker 用 AI
- * binding 抹掉这些差异：鉴权、模型名归一化、其余字段原样进、原样出。
+ *   POST [/client/v4]/accounts/{account_id}/ai/run/{model}
+ *   Authorization: Bearer <API_TOKEN>
  *
- * 单文件、零依赖。部署与接入说明见同目录 README.md 与 docs/clef-gateway.md。
+ *   成功：{ "result": ..., "success": true,  "errors": [], "messages": [] }
+ *   失败：{ "result": null, "success": false, "errors": [{ code, message }], "messages": [] }
+ *
+ * 任何按 Cloudflare REST API 写的客户端 / SDK / 中转服务，把 base URL 指到
+ * 本 Worker、token 填 API_TOKEN，即可调用本账号的 Workers AI —— 真实
+ * Cloudflare 凭据不出 Worker，调用方也拿不到。模型不限，clef 只是其中之一。
+ *
+ * 单文件、零依赖。部署与用法见同目录 README.md 与 docs/clef-gateway.md。
  */
 
-const TARGETS = {
-  clef: "@cf/cloudflare/clef",
-  "clef-flash": "@cf/cloudflare/clef-flash",
+// Workers AI 内部错误码 → HTTP 状态码（官方 Errors 表）。
+// 绑定抛出的 AiError 带 code 时用它，比 err.status 更忠实。
+const AI_CODE_STATUS = {
+  3003: 400, // 请求缺头或缺 body
+  3006: 413, // 请求过大
+  3007: 408, // 超时
+  3008: 408, // 被中止
+  3023: 403, // 账号被限制
+  3036: 429, // 免费额度用尽
+  3039: 400, // 微调缺文件
+  3040: 429, // 容量暂时超限
+  3041: 403, // 私有模型未授权
+  3042: 404, // 模型名非法
+  5004: 400, // 输入类型错误
+  5005: 405, // 不支持 LoRa
+  5007: 400, // 没有这个模型
+  5016: 403, // 未同意模型条款
+  5018: 403, // 私有模型未授权
+  5019: 405, // SDK 版本过旧
+  5035: 403, // 模型需要付费计划
 };
 
-// Clef 单请求上限 13 MiB（图片 base64 决定了请求体可能远大于普通 JSON）。
-const MAX_BODY_BYTES = 13 * 1024 * 1024;
+// 兼容层自身的错误沿用 Cloudflare 公共错误码。
+const ERR_AUTH = { status: 401, code: 10000, message: "Authentication error" };
+const ERR_ROUTE = 7003;
+const ERR_GENERIC = 1000;
 
-/**
- * 从任意模型写法里认回 clef / clef-flash：
- * "clef"、"clef-flash"、"@cf/cloudflare/clef"、"cf/@cf/cloudflare/clef-flash"
- * 都能认，认不出就用 DEFAULT_MODEL，默认 clef。
- */
-function pickModel(raw, fallback) {
-  const s = String(raw ?? "").toLowerCase();
-  if (s.includes("clef-flash")) return "clef-flash";
-  if (s.includes("clef")) return "clef";
-  return fallback === "clef-flash" ? "clef-flash" : "clef";
+// Cloudflare API 的请求体上限。
+const MAX_BODY_BYTES = 100 * 1024 * 1024;
+
+// 路由：/client/v4 前缀可选；account_id 段必填；model 可含 "/" 且可能被编码。
+const RUN_RE = /^(?:\/client\/v4)?\/accounts\/([^/]+)\/ai\/run\/(.+)$/;
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
-function bearerToken(request) {
-  const h = request.headers.get("authorization") ?? "";
-  return h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+function ok(result) {
+  return json({ result, success: true, errors: [], messages: [] });
+}
+
+function fail(status, code, message) {
+  return json(
+    { result: null, success: false, errors: [{ code, message }], messages: [] },
+    status,
+  );
+}
+
+function routeNotFound(pathname) {
+  return fail(
+    404,
+    ERR_ROUTE,
+    `Could not route to ${pathname}, perhaps your object identifier is invalid?`,
+  );
+}
+
+/** Bearer token；兼容老式 X-Auth-Key 头。 */
+function tokenOf(request) {
+  const auth = request.headers.get("authorization") ?? "";
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  return (request.headers.get("x-auth-key") ?? "").trim();
 }
 
 /** 定长逐字节比较：避免 token 被响应时间逐字符试探。长度不同直接失败。 */
@@ -49,70 +91,84 @@ function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
-}
-
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
 
-    // 无副作用探针：部署完 GET 一下即可确认路由与 Worker 名称。
+    // 探针：CF 风格信封，不泄露凭据与账号信息。
     if (request.method === "GET" && (pathname === "/" || pathname === "/healthz")) {
-      return json({ service: "clef-gateway", endpoint: "POST /v1/systemone" });
+      return ok({
+        service: "clef-gateway",
+        api: "Cloudflare API v4 compatible",
+        endpoint: "POST /client/v4/accounts/{account_id}/ai/run/{model}",
+      });
     }
 
-    if (request.method !== "POST" || pathname !== "/v1/systemone") {
-      return json({ error: "not_found" }, 404);
+    const match = RUN_RE.exec(pathname.replace(/\/+$/, ""));
+    if (!match || request.method !== "POST") {
+      return routeNotFound(pathname);
     }
 
     // 没配 API_TOKEN 就整体拒绝（fail closed），避免垫片裸奔在公网上。
-    if (!env.API_TOKEN || !timingSafeEqual(bearerToken(request), env.API_TOKEN)) {
-      return json({ error: "unauthorized" }, 401);
+    if (!env.API_TOKEN || !timingSafeEqual(tokenOf(request), env.API_TOKEN)) {
+      return fail(ERR_AUTH.status, ERR_AUTH.code, ERR_AUTH.message);
     }
+
+    // 可选：把 URL 里的 account_id 钉死到真实账号，填错即按路由不存在处理。
+    if (env.ACCOUNT_ID && match[1] !== env.ACCOUNT_ID) {
+      return routeNotFound(pathname);
+    }
+
+    let model;
+    try {
+      model = decodeURIComponent(match[2]);
+    } catch {
+      return routeNotFound(pathname);
+    }
+    if (!model) return routeNotFound(pathname);
 
     const declared = Number(request.headers.get("content-length") ?? 0);
     if (declared > MAX_BODY_BYTES) {
-      return json({ error: "payload_too_large", limit_bytes: MAX_BODY_BYTES }, 413);
+      return fail(413, 3006, "Request is too large");
     }
 
     const raw = await request.text();
-    if (raw.length > MAX_BODY_BYTES) {
-      return json({ error: "payload_too_large", limit_bytes: MAX_BODY_BYTES }, 413);
+    if (raw.trim() === "") {
+      return fail(400, 3003, "Request is missing headers or body: body");
     }
 
-    let body;
+    let input;
     try {
-      body = JSON.parse(raw);
+      input = JSON.parse(raw);
     } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
-    if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      return json({ error: "invalid_json" }, 400);
-    }
-    // state / questions 交给 Clef 校验细节；这里只挡下必然失败的请求，
-    // 免得白花一次模型调用。
-    if (!body.state || !body.questions || typeof body.questions !== "object") {
-      return json({ error: "state_and_questions_required" }, 422);
+      return fail(400, ERR_GENERIC, "Invalid JSON body");
     }
 
-    const model = pickModel(body.model, env.DEFAULT_MODEL);
-    const input = { ...body, model };
+    // AI binding 只能一次性返回完整结果，给不了 SSE。
+    // 明确报错好过让流式客户端拿到一段解析不了的 JSON。
+    if (input && typeof input === "object" && input.stream === true) {
+      return fail(
+        400,
+        ERR_GENERIC,
+        'Streaming is not supported by this gateway; remove "stream": true',
+      );
+    }
+
     const options = env.GATEWAY_ID ? { gateway: { id: env.GATEWAY_ID } } : undefined;
 
     try {
-      const out = await env.AI.run(TARGETS[model], input, options);
-      // binding 直接返回 { model, answers, usage }，不套 REST 的 result 外壳，
-      // menshen 的 judgeSystemOne / ExtractUsage 正是按这个形状解析。
-      return json(out);
+      const result = await env.AI.run(model, input, options);
+      return ok(result);
     } catch (err) {
-      // 模型校验类 4xx 原样透出（调用方不该重试），其余统一 502（可重试）。
-      const status = Number(err?.status);
-      const out = status >= 400 && status < 600 ? status : 502;
-      return json({ error: "upstream_error", detail: String(err?.message ?? err) }, out);
+      const rawCode = err?.code;
+      const code =
+        rawCode != null && Number.isFinite(Number(rawCode)) ? Number(rawCode) : ERR_GENERIC;
+      const status =
+        AI_CODE_STATUS[code] ??
+        (typeof err?.status === "number" && err.status >= 400 && err.status < 600
+          ? err.status
+          : 500);
+      return fail(status, code, String(err?.message ?? err));
     }
   },
 };
