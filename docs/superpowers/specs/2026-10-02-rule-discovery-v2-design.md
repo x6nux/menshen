@@ -100,7 +100,8 @@ Agent 工具（`find` / `test_rule`）新增：
 }
 ```
 
-- `coverage` 四舍五入到 4 位小数（省 token，避免长浮点）。
+- `coverage` 四舍五入到 4 位小数（省 token，避免长浮点）；`kinds[].coverage`
+  同样四舍五入到 4 位小数。
 - `kinds` 全量返回（类型只有个位数），按 Total 降序。
 - `test_rule` 的 `message` 文案追加覆盖率：通过时
   「通过：命中 X 条已确认广告（覆盖率 Y%）、0 条正常消息，可以创建。」
@@ -141,9 +142,12 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
   - `last_kinds`：数组 `[{"kind","total","matched"}]`（解析失败按空数组），
     与 Agent 工具 `kinds` 的 `{kind,total,matched}` 形状一致（工具侧另带
     `coverage`，Mini App 侧由前端按 `matched/total` 现算，避免舍入漂移）。
+- **Mini App 不新增服务端 `coverage` 键**：列表/详情的总体覆盖率由前端用
+  `last_tp / last_ads_total` 现算（与 kinds 同一条防漂移理由）。
 - 新库：`schemaSQL` 的 `ad_rules` 直接带上两列；老库：`migrate()` 的列清单
   追加两条，启动自动 ALTER。
-- 旧数据 `last_ads_total=0`：前端覆盖率显示「—」，不影响任何门。
+- 旧数据 `last_ads_total=0` 不影响任何门；覆盖率展示按 §4.2 的分面约定
+  （列表行省略该段、详情与测试面板显示「—」）。
 
 ## 2. Agent：一轮多条
 
@@ -252,7 +256,7 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 参数 `{"ids": [9812, 9801, ...]}`：
 
-- `ids` 缺失、为 null、不是数组或为空：返回错误提示「ids 必须是非空数组」。
+- `ids` 缺失 / 为 null / 解析后为空数组：返回错误提示「ids 必须是非空数组」。
   注：`ids` 是 `[]int64`，JSON 类型不对（如字符串）时会在 Eino 参数解析层被
   `wrapRuleTool` 拦成通用的「工具 read_records 调用失败：参数或执行出错…」，
   这条路径不作为契约要求，测试只覆盖空/缺失数组。
@@ -357,7 +361,8 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 - **多创建**：替换现有 `TestRuleAgentCreateRuleSinglePerRun`：假上游按
   `create A → list_rules → create B → 文本收尾` 驱动，断言两条规则落库、
   `created_rule_ids=[A,B]`、result 提到两条、运行态归位；另测
-  `失败→成功→失败→失败` 不会触发连续失败收尾（成功清零）。
+  `失败→成功→失败→失败` 不会触发连续失败收尾（成功清零）；再测未创建/
+  失败的运行 `created_rule_ids` 是 `[]` 而不是 `null`。
 - **新工具**：`list_kinds` 的类型计数与 recent_ids；`read_records` 批量、去重
   截断、`ignored` 语义、无效 id 容错、空/缺失 ids 报错；`list_rules` 返回本轮
   刚创建的规则、未测试规则的 `last_tested_at=0`/`coverage=0`、`last_kinds`
@@ -376,8 +381,10 @@ Mini App 测试 JSON（`miniRuleTestJSON`）新增：
 
 - **成本**：一轮可能创建多条并大量读样本，token 消耗显著高于现状；由用户明确
   选择「不限条数、跑满预算」，总兜底仍是 1000 步 / 30 分钟。
-- **长上下文**：`list_banned` 上限 200 条 × 200 字、`find` 上限 200 条样本，
-  单次可达约 4 万字符；模型可能接近上下文上限，提示词要求分批读、不要一次拉满。
+- **长上下文**：`list_banned` 上限 200 条 × 200 字、`find` 上限 200 条样本、
+  `list_rules` 最多 100 条 × pattern 最多 500 字符，单次可达约 4 万字符以上；
+  模型可能接近上下文上限，提示词要求分批读、不要一次拉满（pattern 原样返回，
+  如需截断在计划阶段定，默认不截断以保查重准确）。
 - **覆盖率口径盲区**：与现有测试一致——只看库内截断后的正文（1000 rune），
   长消息尾部特征不可见；文案与现有测试页保持同一说明口径。
 - **旧前端兼容**：状态保留 `created_rule_id`；新字段都是追加，旧 bundle 不会
