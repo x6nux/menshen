@@ -1,0 +1,519 @@
+package antiad
+
+// 规则发现 Agent 的测试。假上游回的是 OpenAI 兼容的 chat/completions
+// JSON：用 tool_calls 驱动多轮工具循环，全部走真实的 Eino ReAct 图与
+// 真实的 HTTP 往返（选路、解析、工具执行都是被测对象）。
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"menshen/internal/core"
+	"menshen/internal/testutil"
+)
+
+// ruleAgentTestBot 建一个带 OpenAI 兼容假上游与已启用模型的测试 bot：
+// fakeAI 负责写 upstreams 与 antiad_llm_model，这里再补一条 models 记录。
+func ruleAgentTestBot(t *testing.T, h http.HandlerFunc) *core.Bot {
+	t.Helper()
+	b, _ := testutil.NewTestBot(t, 1)
+	fakeAI(t, b, h)
+	if _, err := b.Store.Write.Exec(`INSERT INTO models
+		(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES ('llm-model',0,0,0,0,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// mustJSON 把 map 序列化成字符串，测试里拼假上游响应体用。
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// oaToolCallReply 造一条 OpenAI 形状的「模型请求调用工具」响应。
+func oaToolCallReply(id, name string, args map[string]any) string {
+	rawArgs, _ := json.Marshal(args)
+	call := map[string]any{
+		"index": 0, "id": id, "type": "function",
+		"function": map[string]any{"name": name, "arguments": string(rawArgs)},
+	}
+	msg := map[string]any{"role": "assistant", "content": "",
+		"tool_calls": []any{call}}
+	return mustJSON(map[string]any{
+		"choices": []any{map[string]any{"message": msg}}})
+}
+
+// oaTextReply 造一条普通的文本回复（无工具调用）。
+func oaTextReply(text string) string {
+	msg := map[string]any{"role": "assistant", "content": text}
+	return mustJSON(map[string]any{
+		"choices": []any{map[string]any{"message": msg}}})
+}
+
+// insertRuleAgentLog 往 antiad_log 写一条判定流水。
+func insertRuleAgentLog(t *testing.T, b *core.Bot, text, verdict, action, kind string) int64 {
+	t.Helper()
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,555,1,?,?,0.9,'so',?,?,?,?,?)`,
+		text, verdict, kind, action, "", time.Now().Unix(), b.BotID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// waitRuleAgentDone 轮询到本轮结束，返回结束时的状态。
+func waitRuleAgentDone(t *testing.T, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		st := RuleAgentStatus(nil)
+		if st["running"] == false {
+			return st
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("规则发现 %v 内没有结束，当前状态：%v", timeout, st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRuleAgentHappyPath：假上游依次驱动 find → test_rule → create_rule，
+// 规则真正落库为候选（enabled=0 / enforce=0，last_* 写本轮结果），
+// 运行态归位且步骤日志能看到三次工具调用。
+func TestRuleAgentHappyPath(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 1:
+			w.Write([]byte(oaToolCallReply("c1", "find", map[string]any{
+				"pattern": "办理贷款", "scope": "banned"})))
+		case 2:
+			w.Write([]byte(oaToolCallReply("c2", "test_rule", map[string]any{
+				"pattern": "办理贷款"})))
+		case 3:
+			w.Write([]byte(oaToolCallReply("c3", "create_rule", map[string]any{
+				"name": "贷款引流", "category": "promo", "pattern": "办理贷款",
+				"note":         "命中已确认广告，未误伤正常消息",
+				"evidence_ids": []int64{1}})))
+		default:
+			// create 成功会直接收尾，这一轮通常不会发生；留作兜底。
+			w.Write([]byte(oaTextReply("已完成规则创建。")))
+		}
+	})
+	insertRuleAgentLog(t, b, "办理贷款加微信 vx123", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "今天天气不错", "clean", "none", "")
+
+	if err := StartRuleDiscovery(b.Shared, 7); err != nil {
+		t.Fatalf("启动规则发现失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+
+	if st["running"] != false {
+		t.Errorf("结束后 running 应为 false：%v", st)
+	}
+	if st["error"] != "" {
+		t.Errorf("happy path 不应有错误：%v", st["error"])
+	}
+	result, _ := st["result"].(string)
+	if !strings.Contains(result, "候选规则") || !strings.Contains(result, "发现完成") {
+		t.Errorf("Result 应说明已创建候选规则，得到 %q", result)
+	}
+
+	// 落库检查：enabled/enforce 归零，last_* 写的是本次测试结果。
+	var (
+		id                                     int64
+		name, pattern, source, category, note  string
+		enabled, enforce, tp, fp, undone, scan int64
+		tested, by, created                    int64
+	)
+	if err := b.Store.Read.QueryRow(`SELECT id,name,pattern,category,note,source,
+		enabled,enforce,last_tp,last_fp,last_undone,last_scanned,
+		last_tested_at,created_by,created_at FROM ad_rules`).Scan(
+		&id, &name, &pattern, &category, &note, &source, &enabled, &enforce,
+		&tp, &fp, &undone, &scan, &tested, &by, &created); err != nil {
+		t.Fatalf("候选规则没有落库: %v", err)
+	}
+	if name != "贷款引流" || pattern != "办理贷款" || source != "ai" {
+		t.Errorf("规则内容不对：name=%q pattern=%q source=%q", name, pattern, source)
+	}
+	if enabled != 0 || enforce != 0 {
+		t.Errorf("候选规则必须 enabled=0/enforce=0，得到 %d/%d", enabled, enforce)
+	}
+	if tp != 1 || fp != 0 || undone != 0 || scan != 2 || tested == 0 {
+		t.Errorf("last_* 测试结果不对：tp=%d fp=%d undone=%d scan=%d tested=%d",
+			tp, fp, undone, scan, tested)
+	}
+	if by != 7 {
+		t.Errorf("created_by 应记录操作者 7，得到 %d", by)
+	}
+	if got, _ := st["created_rule_id"].(int64); got != id {
+		t.Errorf("状态里的 created_rule_id=%v，落库 id=%d", st["created_rule_id"], id)
+	}
+	// 快照里也要能看到候选规则（面板列表走快照）。
+	found := false
+	for _, r := range b.Cache.Snap().AdRules {
+		if r.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("候选规则没有进入配置快照")
+	}
+
+	// 步骤日志：三条工具调用各一条，且摘要都不超过 300 字符。
+	steps, _ := st["steps"].([]map[string]any)
+	toolCalls := map[string]int{}
+	for _, s := range steps {
+		if sum, _ := s["summary"].(string); len([]rune(sum)) > ruleAgentSummaryMax {
+			t.Errorf("步骤摘要超过 %d 字符：%q", ruleAgentSummaryMax, sum)
+		}
+		if s["kind"] == "tool" {
+			toolCalls[s["name"].(string)]++
+		}
+	}
+	for _, name := range []string{"find", "test_rule", "create_rule"} {
+		if toolCalls[name] != 1 {
+			t.Errorf("步骤日志里 %s 应出现 1 次，得到 %d（全部：%v）",
+				name, toolCalls[name], toolCalls)
+		}
+	}
+	if len(steps) == 0 {
+		t.Error("步骤日志不应为空")
+	}
+}
+
+// TestRuleAgentRejectsFPAndStopsAfterThree：create_rule 的 pattern 命中了
+// 正常流水时拒绝创建，连续 3 次后本轮提前结束，不留下任何规则。
+func TestRuleAgentRejectsFPAndStopsAfterThree(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		if n <= 3 {
+			w.Write([]byte(oaToolCallReply(
+				"c"+itoa(int64(n)), "create_rule", map[string]any{
+					"name": "误封规则", "category": "test", "pattern": "正常聊天",
+					"note": "证据不足"})))
+			return
+		}
+		w.Write([]byte(oaTextReply("放弃创建。")))
+	})
+	insertRuleAgentLog(t, b, "正常聊天记录一", "clean", "none", "")
+	insertRuleAgentLog(t, b, "正常聊天记录二", "none", "none", "")
+
+	if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+		t.Fatalf("启动规则发现失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+
+	if st["error"] == "" {
+		t.Errorf("连续失败结束应写 error：%v", st)
+	}
+	result, _ := st["result"].(string)
+	if !strings.Contains(result, "连续 3 次") {
+		t.Errorf("Result 应说明连续 3 次创建被拒，得到 %q", result)
+	}
+
+	var n int
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM ad_rules`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("创建被拒时不应写库，ad_rules 有 %d 条", n)
+	}
+
+	steps, _ := st["steps"].([]map[string]any)
+	rejects := 0
+	for _, s := range steps {
+		if s["kind"] == "tool" && s["name"] == "create_rule" {
+			rejects++
+			if sum, _ := s["summary"].(string); !strings.Contains(sum, "创建被拒绝") {
+				t.Errorf("步骤摘要应含拒绝原因，得到 %q", sum)
+			}
+		}
+	}
+	if rejects != 3 {
+		t.Errorf("应有 3 次 create_rule 步骤，得到 %d", rejects)
+	}
+}
+
+// TestRuleAgentSingleFlightAndStop：运行中重复 start 必须被挡下，
+// stop 后本轮结束且 Running 归位。
+func TestRuleAgentSingleFlightAndStop(t *testing.T) {
+	release := make(chan struct{})
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Write([]byte(oaTextReply("完成")))
+	})
+	defer close(release)
+
+	if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+		t.Fatalf("第一次启动失败: %v", err)
+	}
+	if err := StartRuleDiscovery(b.Shared, 1); err == nil ||
+		!strings.Contains(err.Error(), "已在运行") {
+		t.Fatalf("运行中重复启动应报「已在运行」，得到 %v", err)
+	}
+	if st := RuleAgentStatus(b.Shared); st["running"] != true {
+		t.Fatalf("第一次启动后应处于运行中：%v", st)
+	}
+
+	if !StopRuleDiscovery(b.Shared) {
+		t.Fatal("运行中 stop 应返回 true")
+	}
+	st := waitRuleAgentDone(t, 5*time.Second)
+	if st["running"] != false {
+		t.Errorf("stop 后 running 应归位：%v", st)
+	}
+	if st["error"] == "" {
+		t.Errorf("手动停止应写 error：%v", st)
+	}
+	if StopRuleDiscovery(b.Shared) {
+		t.Error("已经结束后 stop 应返回 false")
+	}
+}
+
+// TestStartRuleDiscoveryRequiresOpenAICompat：没有可用的 OpenAI 兼容
+// 模型时，start 直接返回明确的中文错误，且不进入运行态。
+func TestStartRuleDiscoveryRequiresOpenAICompat(t *testing.T) {
+	const wantPrefix = "规则发现需要 OpenAI 兼容渠道的上游"
+
+	t.Run("没有配置复判模型", func(t *testing.T) {
+		b, _ := testutil.NewTestBot(t, 1)
+		err := StartRuleDiscovery(b.Shared, 1)
+		if err == nil || !strings.Contains(err.Error(), wantPrefix) {
+			t.Fatalf("应报明确错误，得到 %v", err)
+		}
+		if RuleAgentStatus(nil)["running"] == true {
+			t.Error("启动失败不应进入运行态")
+		}
+	})
+
+	t.Run("只有非兼容渠道", func(t *testing.T) {
+		b, _ := testutil.NewTestBot(t, 1)
+		if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
+			(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
+			VALUES ('gem','http://x','k',1,1,1,0,'anthropic')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Store.Write.Exec(`INSERT INTO models
+			(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+			VALUES ('gem/claude-x',0,0,0,0,1)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.PutSetting("antiad_llm_model", "gem/claude-x"); err != nil {
+			t.Fatal(err)
+		}
+		err := StartRuleDiscovery(b.Shared, 1)
+		if err == nil || !strings.Contains(err.Error(), wantPrefix) ||
+			!strings.Contains(err.Error(), "暂不支持") {
+			t.Fatalf("非兼容渠道应报明确错误，得到 %v", err)
+		}
+	})
+
+	t.Run("模型已停用", func(t *testing.T) {
+		b, _ := testutil.NewTestBot(t, 1)
+		if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
+			(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
+			VALUES ('oa','http://x','k',1,1,1,0,'openai')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Store.Write.Exec(`INSERT INTO models
+			(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+			VALUES ('oa/m1',0,0,0,0,0)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.PutSetting("antiad_llm_model", "oa/m1"); err != nil {
+			t.Fatal(err)
+		}
+		err := StartRuleDiscovery(b.Shared, 1)
+		if err == nil || !strings.Contains(err.Error(), wantPrefix) {
+			t.Fatalf("停用模型应报明确错误，得到 %v", err)
+		}
+	})
+}
+
+// TestRuleAgentTimeoutAndStepExhaustion：超时与步数耗尽也必须把
+// Running 置回 false 并在 Result/Error 里说明原因（测试用可覆盖的
+// 超时/步数变量缩短，不真等 180 秒）。
+func TestRuleAgentTimeoutAndStepExhaustion(t *testing.T) {
+	t.Run("超时", func(t *testing.T) {
+		old := ruleAgentTimeout
+		ruleAgentTimeout = 150 * time.Millisecond
+		// release 保证假上游在测试结束前退出：httptest.Server.Close()
+		// 会等在途请求跑完，卡死的 handler 会让清理挂住。
+		release := make(chan struct{})
+		defer func() {
+			ruleAgentTimeout = old
+			close(release)
+		}()
+
+		b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+			// 卡到客户端取消（或测试收尾）：模拟上游无响应。
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		})
+		if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+			t.Fatalf("启动失败: %v", err)
+		}
+		st := waitRuleAgentDone(t, 5*time.Second)
+		if result, _ := st["result"].(string); !strings.Contains(result, "超时") {
+			t.Errorf("超时结束的 Result 应说明超时，得到 %q", result)
+		}
+		if st["error"] == "" {
+			t.Error("超时结束应写 error")
+		}
+	})
+
+	t.Run("步数耗尽", func(t *testing.T) {
+		old := ruleAgentMaxStep
+		ruleAgentMaxStep = 3
+		defer func() { ruleAgentMaxStep = old }()
+
+		b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(oaToolCallReply("c1", "list_banned",
+				map[string]any{"limit": 5})))
+		})
+		if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+			t.Fatalf("启动失败: %v", err)
+		}
+		st := waitRuleAgentDone(t, 10*time.Second)
+		if result, _ := st["result"].(string); !strings.Contains(result, "步数耗尽") {
+			t.Errorf("步数耗尽的 Result 应说明原因，得到 %q（error=%v）",
+				result, st["error"])
+		}
+		if st["running"] != false {
+			t.Errorf("结束后 running 应为 false：%v", st)
+		}
+	})
+}
+
+// TestRuleAgentFindAlignsWithTestPattern：find 是宽松试跑工具，但它的
+// 计数口径必须与正式测试（TestRulePattern）一致，否则模型会被两套数字
+// 带偏。by_verdict 是命中行的原始 verdict 分布。
+func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRuleAgentLog(t, b, "贷款刷单加微信 aaa", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "贷款刷单加微信 bbb", "ad", "undone", "scam")
+	insertRuleAgentLog(t, b, "贷款刷单是什么意思", "clean", "none", "")
+	insertRuleAgentLog(t, b, "贷款刷单讨论", "none", "none", "")
+	insertRuleAgentLog(t, b, "贷款刷单？", "skipped", "none", "")
+	insertRuleAgentLog(t, b, "贷款刷单失败", "error", "none", "")
+	insertRuleAgentLog(t, b, "今天天气不错", "ad", "deleted", "scam")
+
+	run := &ruleAgentRun{sh: b.Shared}
+	raw := run.findMatches(findArgs{Pattern: "贷款刷单", Scope: "banned", Limit: 20})
+
+	var got struct {
+		Scanned   int64             `json:"scanned"`
+		Matched   int64             `json:"matched"`
+		TP        int64             `json:"tp"`
+		FP        int64             `json:"fp"`
+		Undone    int64             `json:"undone"`
+		Neutral   int64             `json:"neutral"`
+		ByVerdict map[string]int64  `json:"by_verdict"`
+		Scope     string            `json:"scope"`
+		Samples   []ruleAgentSample `json:"samples"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("find 返回不是 JSON：%v\n%s", err, raw)
+	}
+	ref, err := TestRulePattern(b.Shared, "贷款刷单")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Scanned != ref.Scanned || got.Matched != ref.Matched ||
+		got.TP != ref.TP || got.FP != ref.FP || got.Undone != ref.Undone ||
+		got.Neutral != ref.Neutral {
+		t.Errorf("find 口径与 TestRulePattern 不一致：find=%+v ref=%+v", got, ref)
+	}
+	// action='undone' 优先归入 undone/FP：那条 verdict=ad 的撤销记录
+	// 不算 TP。口径与 TestRulePattern 一致。
+	if got.Scanned != 7 || got.Matched != 6 || got.TP != 1 ||
+		got.FP != 3 || got.Undone != 1 || got.Neutral != 2 {
+		t.Errorf("计数不对：%+v", got)
+	}
+	wantByVer := map[string]int64{
+		"ad": 2, "clean": 1, "none": 1, "skipped": 1, "error": 1}
+	for k, want := range wantByVer {
+		if got.ByVerdict[k] != want {
+			t.Errorf("by_verdict[%s]=%d，期望 %d（%v）",
+				k, got.ByVerdict[k], want, got.ByVerdict)
+		}
+	}
+	// scope=banned：样本优先给已确认广告（action=undone 的不算正例），
+	// 附正常消息作参照。
+	if len(got.Samples) == 0 || got.Samples[0].Verdict != "ad" ||
+		got.Samples[0].Action == "undone" {
+		t.Errorf("banned 样本应先给已确认广告：%+v", got.Samples)
+	}
+	if len(got.Samples) < 3 {
+		t.Errorf("样本里应同时有广告与参照消息：%+v", got.Samples)
+	}
+	hasRef := false
+	for _, s := range got.Samples {
+		if s.Verdict != "ad" {
+			hasRef = true
+		}
+	}
+	if !hasRef {
+		t.Errorf("banned 样本应附正常消息作参照：%+v", got.Samples)
+	}
+
+	// 非法 scope 与编译不过的正则都返回可读错误，而不是崩掉工具。
+	if s := run.findMatches(findArgs{Pattern: "贷款", Scope: "wat"}); !strings.Contains(s, "scope") {
+		t.Errorf("非法 scope 应返回错误文本，得到 %q", s)
+	}
+	if s := run.findMatches(findArgs{Pattern: "["}); !strings.Contains(s, "错误") {
+		t.Errorf("坏正则应返回错误文本，得到 %q", s)
+	}
+}
+
+// TestRuleAgentTestRuleBlocksFP：test_rule 对命中正常消息的正则必须给出
+// 明确的「不可创建」结论与误封样本。
+func TestRuleAgentTestRuleBlocksFP(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRuleAgentLog(t, b, "正常聊天记录", "clean", "none", "")
+
+	run := &ruleAgentRun{sh: b.Shared}
+	raw := run.testRule("正常聊天")
+	var got struct {
+		CanCreate bool              `json:"can_create"`
+		Message   string            `json:"message"`
+		FPSamples []ruleAgentSample `json:"fp_samples"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("test_rule 返回不是 JSON：%v\n%s", err, raw)
+	}
+	if got.CanCreate || !strings.Contains(got.Message, "不可创建") {
+		t.Errorf("命中正常消息应不可创建：%+v", got)
+	}
+	if len(got.FPSamples) != 1 || got.FPSamples[0].Verdict != "clean" {
+		t.Errorf("应带误封样本：%+v", got.FPSamples)
+	}
+}

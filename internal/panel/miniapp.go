@@ -1669,6 +1669,20 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		}
 		miniRuleReload(sh)
 		miniOK(w, map[string]any{"ok": true})
+	case "agent_start":
+		// 启动一轮 AI 规则发现（单飞、后台跑）。失败原因（没有 OpenAI
+		// 兼容上游、已在运行等）直接回给前端。
+		if err := antiad.StartRuleDiscovery(sh, uid); err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		miniOK(w, map[string]any{"ok": true, "agent": antiad.RuleAgentStatus(sh)})
+	case "agent_status":
+		// 冻结契约：T-C 前端按 agent 对象轮询运行态与步骤日志。
+		miniOK(w, map[string]any{"agent": antiad.RuleAgentStatus(sh)})
+	case "agent_stop":
+		miniOK(w, map[string]any{
+			"ok": true, "stopped": antiad.StopRuleDiscovery(sh)})
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 	}
