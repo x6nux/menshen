@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -85,12 +87,19 @@ const (
 	// ruleAgentFindDefault/Max：find 的默认与上限样本条数。
 	ruleAgentFindDefault = 50
 	ruleAgentFindMax     = 200
+	// ruleAgentReadRecordsMax 是 read_records 单次最多读的条数。
+	ruleAgentReadRecordsMax = 10
+	// ruleAgentListKindsRecent 是 list_kinds 每类附带的最近流水 id 数。
+	ruleAgentListKindsRecent = 5
+	// ruleAgentListRulesMax 是 list_rules 最多返回的规则数（取最近创建的）。
+	ruleAgentListRulesMax = 100
 )
 
 // ruleAgentToolNames 是暴露给模型的工具名。两处要用：UnknownToolsHandler
 // 的可用清单提示，以及测试断言。
 var ruleAgentToolNames = []string{
-	"list_banned", "read_record", "find", "test_rule", "create_rule",
+	"list_kinds", "list_banned", "read_record", "read_records",
+	"find", "test_rule", "list_rules", "create_rule",
 }
 
 // 规则发现不可用的错误。文案直接回给 Mini App，保持中文。
@@ -567,6 +576,15 @@ type readRecordArgs struct {
 	ID int64 `json:"id" jsonschema:"required,description=判定流水的 id（来自 list_banned / find 的结果）"`
 }
 
+// readRecordsArgs 是 read_records 的参数。
+type readRecordsArgs struct {
+	IDs []int64 `json:"ids" jsonschema:"required,description=要读取的判定流水 id 列表（最多 10 个，去重后截断）"`
+}
+
+// listKindsArgs / listRulesArgs 无参数；InferTool 需要占位类型。
+type listKindsArgs struct{}
+type listRulesArgs struct{}
+
 // findArgs 是 find 的参数。
 type findArgs struct {
 	Pattern string `json:"pattern" jsonschema:"required,description=RE2 正则草稿（宽进：只要能编译就能试跑）"`
@@ -588,9 +606,21 @@ type createRuleArgs struct {
 	EvidenceIDs []int64 `json:"evidence_ids" jsonschema:"description=支持该规则的判定流水 id 列表，来自 list_banned / read_record / find"`
 }
 
-// buildRuleAgentTools 构造五个只读/候选写入工具。工具返回字符串而不是
+// buildRuleAgentTools 构造八个只读/候选写入工具。工具返回字符串而不是
 // Go error：失败信息要留给模型自我纠正，不该让整个图崩掉。
 func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, error) {
+	kindsTool, err := toolutils.InferTool("list_kinds",
+		"按广告类型（ad_kind）查看历史已确认广告的分布：每类总数与最近流水 id。"+
+			"开始发现前先用它决定先覆盖哪些类型，再用 read_records 批量读样本。",
+		func(ctx context.Context, _ listKindsArgs) (string, error) {
+			out := run.listKinds()
+			run.toolStep("list_kinds", map[string]any{}, out)
+			return out, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
 	list, err := toolutils.InferTool("list_banned",
 		"查看最近的已确认广告判定流水（verdict='ad'）：id、广告类型、处置、群号与正文摘要。"+
 			"挑选值得总结的形态；可用 offset 翻更早的流水。",
@@ -609,6 +639,18 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		func(ctx context.Context, in readRecordArgs) (string, error) {
 			out := run.readRecord(in.ID)
 			run.toolStep("read_record", in, out)
+			return out, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	readMany, err := toolutils.InferTool("read_records",
+		"一次读取多条判定流水的完整正文（最多 10 个 id，去重截断）。"+
+			"id 来自 list_kinds 的 recent_ids、list_banned 或 find 的命中样本。",
+		func(ctx context.Context, in readRecordsArgs) (string, error) {
+			out := run.readRecords(in.IDs)
+			run.toolStep("read_records", in, out)
 			return out, nil
 		})
 	if err != nil {
@@ -640,10 +682,22 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		return nil, err
 	}
 
+	listRulesTool, err := toolutils.InferTool("list_rules",
+		"查看现有必封规则（最近 100 条）：pattern、启用/强制状态与最近覆盖率。"+
+			"用来避免重复创建，并找还没有规则覆盖的广告类型。",
+		func(ctx context.Context, _ listRulesArgs) (string, error) {
+			out := run.listRules()
+			run.toolStep("list_rules", map[string]any{}, out)
+			return out, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
 	create, err := toolutils.InferTool("create_rule",
 		"创建一条候选必封规则（enabled=0、enforce=0，等主管理员复核）。"+
 			"会做严格校验与全库测试；命中任何正常消息（fp>0 或 undone>0）或已存在相同正则都会被拒绝。"+
-			"创建成功即结束本轮。",
+			"创建成功后继续找下一个未覆盖形态，没有新形态时再总结收尾。",
 		func(ctx context.Context, in createRuleArgs) (string, error) {
 			out := run.createRule(ctx, in)
 			run.toolStep("create_rule", in, out)
@@ -656,10 +710,13 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 	// 每个工具都套错误兜底：参数畸形、执行出错都转成工具结果串回给模型，
 	// 而不是让 ToolsNode 掐死整张图。
 	return []tool.BaseTool{
+		wrapRuleTool(run, "list_kinds", kindsTool),
 		wrapRuleTool(run, "list_banned", list),
 		wrapRuleTool(run, "read_record", read),
+		wrapRuleTool(run, "read_records", readMany),
 		wrapRuleTool(run, "find", find),
 		wrapRuleTool(run, "test_rule", test),
+		wrapRuleTool(run, "list_rules", listRulesTool),
 		wrapRuleTool(run, "create_rule", create),
 	}, nil
 }
@@ -725,16 +782,16 @@ func (r *ruleAgentRun) listBanned(in listBannedArgs) string {
 	return string(out)
 }
 
-// readRecord 返回一条流水的完整信息（正文截断 2000 字）。
-func (r *ruleAgentRun) readRecord(id int64) string {
+// readRecordPayload 读一条流水的完整载荷；失败返回错误文案。
+func (r *ruleAgentRun) readRecordPayload(id int64) (map[string]any, string) {
 	if id <= 0 {
-		return "错误：id 必须为正整数"
+		return nil, "id 必须为正整数"
 	}
 	row, ok := LoadAdLog(r.sh.Store, id)
 	if !ok {
-		return fmt.Sprintf("错误：没有 id=%d 的判定记录", id)
+		return nil, fmt.Sprintf("没有 id=%d 的判定记录", id)
 	}
-	out, err := json.Marshal(map[string]any{
+	return map[string]any{
 		"id": row.ID, "bot_id": row.BotID, "chat_id": row.ChatID,
 		"user_id": row.UserID, "user_name": row.UserName,
 		"message_id": row.MessageID, "verdict": row.Verdict,
@@ -742,10 +799,144 @@ func (r *ruleAgentRun) readRecord(id int64) string {
 		"kind": row.Kind, "action": row.Action, "reason": row.Reason,
 		"created_at": row.CreatedAt,
 		"text":       core.TruncateRunes(row.Text, ruleAgentReadTextMax),
-	})
+	}, ""
+}
+
+// readRecord 返回一条流水的完整信息（正文截断 2000 字）。
+func (r *ruleAgentRun) readRecord(id int64) string {
+	payload, errMsg := r.readRecordPayload(id)
+	if errMsg != "" {
+		return "错误：" + errMsg
+	}
+	out, err := json.Marshal(payload)
 	if err != nil {
 		return "错误：记录序列化失败：" + err.Error()
 	}
+	return string(out)
+}
+
+// readRecords 批量读：去重后截断到 10 条；被截断与重复计入 ignored；
+// 无效/不存在的 id 以 error 条目返回，不算 ignored。
+func (r *ruleAgentRun) readRecords(ids []int64) string {
+	if len(ids) == 0 {
+		return "错误：ids 必须是非空数组"
+	}
+	seen := make(map[int64]bool, len(ids))
+	uniq := make([]int64, 0, len(ids))
+	ignored := 0
+	for _, id := range ids {
+		if seen[id] {
+			ignored++
+			continue
+		}
+		seen[id] = true
+		if len(uniq) >= ruleAgentReadRecordsMax {
+			ignored++
+			continue
+		}
+		uniq = append(uniq, id)
+	}
+	records := make([]map[string]any, 0, len(uniq))
+	for _, id := range uniq {
+		if payload, errMsg := r.readRecordPayload(id); errMsg != "" {
+			records = append(records, map[string]any{"id": id, "error": errMsg})
+		} else {
+			records = append(records, payload)
+		}
+	}
+	out, _ := json.Marshal(map[string]any{"records": records, "ignored": ignored})
+	return string(out)
+}
+
+// listKinds 按 ad_kind 聚合已确认广告：总数 + 每类最近 5 个流水 id。
+func (r *ruleAgentRun) listKinds() string {
+	rows, err := r.sh.Store.Read.Query(`SELECT id,verdict,action,ad_kind
+		FROM antiad_log ORDER BY id DESC LIMIT ?`, ruleAgentFindScanLimit)
+	if err != nil {
+		return "错误：读取判定流水失败：" + err.Error()
+	}
+	defer rows.Close()
+
+	var scanned int64
+	totals := map[string]int64{}
+	recent := map[string][]int64{}
+	for rows.Next() {
+		var id int64
+		var verdict, action, kind string
+		if err := rows.Scan(&id, &verdict, &action, &kind); err != nil {
+			return "错误：解析判定流水失败：" + err.Error()
+		}
+		scanned++
+		if verdict != "ad" || action == "undone" {
+			continue
+		}
+		totals[kind]++
+		if len(recent[kind]) < ruleAgentListKindsRecent {
+			recent[kind] = append(recent[kind], id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "错误：读取判定流水失败：" + err.Error()
+	}
+
+	kinds := make([]map[string]any, 0, len(totals))
+	var adsTotal int64
+	for kind, total := range totals {
+		adsTotal += total
+		kinds = append(kinds, map[string]any{
+			"kind": kind, "total": total, "recent_ids": recent[kind]})
+	}
+	sort.Slice(kinds, func(i, j int) bool {
+		ti, tj := kinds[i]["total"].(int64), kinds[j]["total"].(int64)
+		if ti != tj {
+			return ti > tj
+		}
+		return kinds[i]["kind"].(string) < kinds[j]["kind"].(string)
+	})
+	out, _ := json.Marshal(map[string]any{
+		"scanned": scanned, "ads_total": adsTotal, "kinds": kinds,
+		"hint": "先按 total 从大到小覆盖；recent_ids 可用 read_records 批量读全文。",
+	})
+	return string(out)
+}
+
+// listRules 返回最近 100 条规则（id 降序取、升序返回）与最近覆盖率。
+func (r *ruleAgentRun) listRules() string {
+	rows, err := r.sh.Store.Read.Query(`SELECT id,name,pattern,category,enabled,
+		enforce,last_tested_at,last_tp,last_fp,last_ads_total,last_kinds
+		FROM ad_rules ORDER BY id DESC LIMIT ?`, ruleAgentListRulesMax)
+	if err != nil {
+		return "错误：读取必封规则失败：" + err.Error()
+	}
+	defer rows.Close()
+
+	rules := []map[string]any{}
+	for rows.Next() {
+		var (
+			id, en, enf, tested, tp, fp, adsTotal int64
+			name, pattern, category, kindsRaw    string
+		)
+		if err := rows.Scan(&id, &name, &pattern, &category, &en, &enf,
+			&tested, &tp, &fp, &adsTotal, &kindsRaw); err != nil {
+			return "错误：解析必封规则失败：" + err.Error()
+		}
+		rules = append(rules, map[string]any{
+			"id": id, "name": name, "pattern": pattern, "category": category,
+			"enabled": en == 1, "enforce": enf == 1, "last_tested_at": tested,
+			"last_tp": tp, "last_fp": fp, "last_ads_total": adsTotal,
+			"coverage":   round4(ruleCoverage(tp, adsTotal)),
+			"last_kinds": ParseRuleKindsJSON(kindsRaw),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return "错误：读取必封规则失败：" + err.Error()
+	}
+	// 降序取最近 100 条，反转为升序返回，保证确定性。
+	slices.Reverse(rules)
+	out, _ := json.Marshal(map[string]any{
+		"rules": rules,
+		"hint":  "pattern 已存在的形态不要重复创建；优先补覆盖率为 0 或偏低的类型。",
+	})
 	return string(out)
 }
 

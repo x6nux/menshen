@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -733,6 +734,108 @@ func TestRuleAgentTestRuleOutputsCoverage(t *testing.T) {
 	if got := run.createRule(context.Background(), createRuleArgs{
 		Name: "低覆盖", Pattern: "办理贷款"}); !strings.Contains(got, "创建成功") {
 		t.Errorf("低覆盖不应阻断创建：%q", got)
+	}
+}
+
+// TestRuleAgentListKinds：类型计数只算已确认广告，recent_ids 最多 5 个、降序。
+func TestRuleAgentListKinds(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	var lastScam int64
+	for i := 0; i < 6; i++ {
+		lastScam = insertRuleAgentLog(t, b, "诈骗广告", "ad", "deleted", "scam")
+	}
+	insertRuleAgentLog(t, b, "正常", "clean", "none", "scam")
+	insertRuleAgentLog(t, b, "被撤销", "ad", "undone", "scam")
+	insertRuleAgentLog(t, b, "促销", "ad", "deleted", "promo")
+
+	run := &ruleAgentRun{sh: b.Shared}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.listKinds()), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["ads_total"].(float64) != 7 {
+		t.Errorf("ads_total 应为 7（6 scam + 1 promo），得到 %v", got["ads_total"])
+	}
+	kinds := got["kinds"].([]any)
+	scam := kinds[0].(map[string]any)
+	if scam["kind"] != "scam" || scam["total"].(float64) != 6 {
+		t.Errorf("scam 统计不对：%v", scam)
+	}
+	if n := len(scam["recent_ids"].([]any)); n != 5 {
+		t.Errorf("recent_ids 应截到 5 个，得到 %d", n)
+	}
+	// 降序：最新一条在最前。
+	if got := scam["recent_ids"].([]any)[0].(float64); int64(got) != lastScam {
+		t.Errorf("recent_ids 应最新在前（%d），得到 %v", lastScam, got)
+	}
+}
+
+// TestRuleAgentReadRecords：批量、去重截断、无效 id 容错。
+func TestRuleAgentReadRecords(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	id1 := insertRuleAgentLog(t, b, "广告一", "ad", "deleted", "scam")
+	id2 := insertRuleAgentLog(t, b, "广告二", "ad", "deleted", "scam")
+	run := &ruleAgentRun{sh: b.Shared}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.readRecords([]int64{id1, id1, id2, 9999, 0})), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["ignored"].(float64) != 1 { // 重复的 id1
+		t.Errorf("ignored 应只统计重复/截断，得到 %v", got["ignored"])
+	}
+	recs := got["records"].([]any)
+	if len(recs) != 4 { // id1/id2 正常 + 9999/0 各一条 error
+		t.Fatalf("records 应有 4 条，得到 %d", len(recs))
+	}
+	if run.readRecords(nil) != "错误：ids 必须是非空数组" {
+		t.Errorf("空 ids 文案不对：%s", run.readRecords(nil))
+	}
+}
+
+// TestRuleAgentListRules：返回现有规则、未测试的 last_tested_at=0/coverage=0。
+func TestRuleAgentListRules(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	id := insertRule(t, b, "旧规则", "旧正则", "promo", true, false)
+	run := &ruleAgentRun{sh: b.Shared}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.listRules()), &got); err != nil {
+		t.Fatal(err)
+	}
+	rules := got["rules"].([]any)
+	if len(rules) != 1 || rules[0].(map[string]any)["id"].(float64) != float64(id) {
+		t.Fatalf("list_rules 不对：%v", got)
+	}
+	if rules[0].(map[string]any)["coverage"].(float64) != 0 {
+		t.Errorf("未测试规则 coverage 应为 0：%v", rules[0])
+	}
+	if rules[0].(map[string]any)["last_tested_at"].(float64) != 0 {
+		t.Errorf("未测试规则 last_tested_at 应为 0：%v", rules[0])
+	}
+}
+
+// TestRuleAgentListRulesKeepsNewest：规则超过 100 条时仍返回最新创建的那条
+//（ORDER BY id DESC LIMIT 100 再反转为升序）。
+func TestRuleAgentListRulesKeepsNewest(t *testing.T) {
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {})
+	for i := 0; i < 101; i++ {
+		if _, err := b.Store.Write.Exec(`INSERT INTO ad_rules
+			(name,pattern,source,created_at,created_by)
+			VALUES (?,?,'ai',0,1)`, fmt.Sprintf("规则%d", i), fmt.Sprintf("p%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &ruleAgentRun{sh: b.Shared}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(run.listRules()), &got); err != nil {
+		t.Fatal(err)
+	}
+	rules := got["rules"].([]any)
+	if len(rules) != 100 {
+		t.Fatalf("应返回 100 条，得到 %d", len(rules))
+	}
+	if last := rules[len(rules)-1].(map[string]any); last["name"].(string) != "规则100" {
+		t.Errorf("最新规则应保留在返回里：%v", last)
 	}
 }
 
