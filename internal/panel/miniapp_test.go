@@ -1558,9 +1558,10 @@ func TestMiniAppUpstreamTestCloudflare(t *testing.T) {
 	}
 }
 
-// TestMiniRulesCRUD：AI 必封规则只有主管理员能维护；保存自动跑全库测试，
-// 检出误封（last_fp>0）时 enforce 被服务端挡下，重跑测试干净后才允许；
-// 列表字段齐全；停用会同时清掉 enforce；最后可删除。
+// TestMiniRulesCRUD：AI 必封规则只有主管理员能维护；保存自动跑全库测试；
+// 从未测过与检出误封（last_fp>0）的规则都不允许开强制，重跑测试干净后
+// 才允许；改 pattern 会把 enforce 归零；列表字段齐全；写操作后快照
+// 立即生效；停用同时清 enforce；匹配空文本的 pattern 写入口拒绝。
 func TestMiniRulesCRUD(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -1591,6 +1592,15 @@ func TestMiniRulesCRUD(t *testing.T) {
 			t.Fatalf("响应不是 JSON：%v（%s）", err, w.Body.String())
 		}
 		return out
+	}
+	snapRule := func(pattern string) (store.AdRuleRec, bool) {
+		t.Helper()
+		for _, r := range sh.Cache.Snap().AdRules {
+			if r.Pattern == pattern {
+				return r, true
+			}
+		}
+		return store.AdRuleRec{}, false
 	}
 
 	// 造一条命中该正则的「正常」流水：保存后的自动测试必须把它算成误封。
@@ -1628,11 +1638,38 @@ func TestMiniRulesCRUD(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("非法正则应 400，得到 %d：%s", w.Code, w.Body.String())
 	}
+	// 能匹配空文本的 pattern（`a*`）编译得过，但会命中所有消息，写入口拒绝。
+	w = mainDo(map[string]any{"action": "save", "name": "空文本", "pattern": "a*"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("匹配空文本的规则应 400，得到 %d：%s", w.Code, w.Body.String())
+	} else if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "空文本") {
+		t.Errorf("错误文案应说明空文本：%q", msg)
+	}
 
-	// 启用。
+	// 启用后快照立即生效。
 	if w = mainDo(map[string]any{"action": "toggle", "id": id,
 		"enabled": true}); w.Code != http.StatusOK {
 		t.Fatalf("启用应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if r, ok := snapRule("minirule测试词"); !ok || !r.Enabled || r.Enforce {
+		t.Errorf("启用后快照应立即变为 enabled 且未 enforce：%+v ok=%v", r, ok)
+	}
+
+	// 从未测过的规则不允许开强制：把测试时间戳清零模拟 AI 直写的候选。
+	if _, err := sh.Store.Write.Exec(
+		`UPDATE ad_rules SET last_tested_at=0 WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	w = mainDo(map[string]any{"action": "enforce", "id": id, "enforce": true})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("未测过的规则开强制应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "全库测试") {
+		t.Errorf("未测过的错误文案应提到全库测试：%q", msg)
+	}
+	// 重跑一次测试（fp 仍为 1），恢复「测过」状态。
+	if w = mainDo(map[string]any{"action": "test", "id": id}); w.Code != http.StatusOK {
+		t.Fatalf("重跑测试应 200，得到 %d：%s", w.Code, w.Body.String())
 	}
 
 	// 有误封时不允许开强制。
@@ -1673,6 +1710,9 @@ func TestMiniRulesCRUD(t *testing.T) {
 		t.Errorf("落库状态不对：enabled=%d enforce=%d scanned=%d",
 			en, enf, scanned)
 	}
+	if r, ok := snapRule("minirule测试词"); !ok || !r.Enabled || !r.Enforce {
+		t.Errorf("Reload 后快照应为启用+强制：%+v ok=%v", r, ok)
+	}
 
 	// 列表字段齐全。
 	w = mainDo(map[string]any{"action": "list"})
@@ -1696,6 +1736,35 @@ func TestMiniRulesCRUD(t *testing.T) {
 		t.Errorf("列表内容不对：%v", row)
 	}
 
+	// 改 pattern 必须把 enforce 归零：新 pattern 的全库测试还没跑，
+	// 旧 pattern 的 fp=0 不能沿用。先造一条会被新 pattern 命中的正常流水。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,556,2,'mini改版测试词正常','clean',0.9,'so','none','none','',?,?)`,
+		env.now, testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+	w = mainDo(map[string]any{"action": "save", "id": id, "name": "Mini 规则",
+		"pattern": "mini改版测试词", "category": "promo", "note": "说明"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("改 pattern 保存应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	test, _ = decode(w)["test"].(map[string]any)
+	if test["fp"].(float64) != 1 {
+		t.Fatalf("新 pattern 应测出 1 条误封：%v", test)
+	}
+	if err := sh.Store.Read.QueryRow(
+		`SELECT enforce FROM ad_rules WHERE id=?`, id).Scan(&enf); err != nil {
+		t.Fatal(err)
+	}
+	if enf != 0 {
+		t.Errorf("改 pattern 后 enforce 应归零，得到 %d", enf)
+	}
+	if r, ok := snapRule("mini改版测试词"); !ok || r.Enforce {
+		t.Errorf("Reload 后快照里 enforce 应为 0：%+v ok=%v", r, ok)
+	}
+
 	// 停用同时清掉 enforce。
 	if w = mainDo(map[string]any{"action": "toggle", "id": id,
 		"enabled": false}); w.Code != http.StatusOK {
@@ -1707,6 +1776,9 @@ func TestMiniRulesCRUD(t *testing.T) {
 	}
 	if en != 0 || enf != 0 {
 		t.Errorf("停用应同时清掉 enforce，得到 enabled=%d enforce=%d", en, enf)
+	}
+	if r, ok := snapRule("mini改版测试词"); !ok || r.Enabled || r.Enforce {
+		t.Errorf("停用后快照应为未启用未强制：%+v ok=%v", r, ok)
 	}
 
 	// 删除。
@@ -1720,5 +1792,8 @@ func TestMiniRulesCRUD(t *testing.T) {
 	}
 	if n != 0 {
 		t.Error("规则没有被删除")
+	}
+	if _, ok := snapRule("mini改版测试词"); ok {
+		t.Error("删除后快照里不应还有这条规则")
 	}
 }

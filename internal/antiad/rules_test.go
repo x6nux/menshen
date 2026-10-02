@@ -75,13 +75,16 @@ func TestRuleTestPatternClassification(t *testing.T) {
 	insertLog(t, b, "error", "none", "买号加微信但判定失败")
 	// 不命中。
 	insertLog(t, b, "clean", "none", "今天天气不错")
+	// 空文本（纯图/贴纸）也在判定门的输入域里：语料不做 text != '' 过滤。
+	insertLog(t, b, "ad", "deleted", "")
+	insertLog(t, b, "clean", "none", "")
 
 	res, err := TestRulePattern(b.Shared, "买号加微信")
 	if err != nil {
 		t.Fatalf("全库测试失败: %v", err)
 	}
-	if res.Scanned != 82 || res.Matched != 81 {
-		t.Errorf("scanned/matched = %d/%d，期望 82/81", res.Scanned, res.Matched)
+	if res.Scanned != 84 || res.Matched != 81 {
+		t.Errorf("scanned/matched = %d/%d，期望 84/81", res.Scanned, res.Matched)
 	}
 	if res.TP != 35 {
 		t.Errorf("tp = %d，期望 35", res.TP)
@@ -106,6 +109,39 @@ func TestRuleTestPatternClassification(t *testing.T) {
 		}
 	}
 
+	// 空文本行参与分类与样本：`^$` 只匹配空文本，能把它显式测出来。
+	// （test action 走宽松校验，这类草稿允许试跑。）
+	empty, err := TestRulePattern(b.Shared, "^$")
+	if err != nil {
+		t.Fatalf("空文本测试失败: %v", err)
+	}
+	if empty.Matched != 2 || empty.TP != 1 || empty.FP != 1 {
+		t.Errorf("空文本统计 = matched:%d tp:%d fp:%d，期望 2/1/1",
+			empty.Matched, empty.TP, empty.FP)
+	}
+	if len(empty.TPSamples) != 1 || empty.TPSamples[0].Text != "" {
+		t.Errorf("空文本应作为样本出现（Text 为空串）：%+v", empty.TPSamples)
+	}
+
+	// 宽严两档：TestRulePattern 只要求可编译；写入口的 CompileRulePattern
+	// 还要拒绝能匹配空文本的规则（`a*` 编译得过，但命中一切）。
+	if _, err := TestRulePattern(b.Shared, "a*"); err != nil {
+		t.Errorf("test 试跑应允许匹配空文本的草稿，得到 %v", err)
+	}
+	if _, err := CompileRulePattern("a*"); err == nil ||
+		!strings.Contains(err.Error(), "空文本") {
+		t.Errorf("CompileRulePattern(a*) 应拒绝并说明空文本，得到 %v", err)
+	}
+	if _, err := CompileRulePattern(""); err == nil {
+		t.Error("CompileRulePattern 应拒绝空规则")
+	}
+	if _, err := CompileRulePattern("["); err == nil {
+		t.Error("CompileRulePattern 应拒绝无法编译的正则")
+	}
+	if _, err := CompileRulePattern(strings.Repeat("a", 501)); err == nil {
+		t.Error("CompileRulePattern 应拒绝超过 500 字符的规则")
+	}
+
 	// 校验：空串、编译失败、超长都要拒绝。
 	if _, err := TestRulePattern(b.Shared, ""); err == nil {
 		t.Error("空规则应被拒绝")
@@ -115,6 +151,94 @@ func TestRuleTestPatternClassification(t *testing.T) {
 	}
 	if _, err := TestRulePattern(b.Shared, strings.Repeat("a", 501)); err == nil {
 		t.Error("超过 500 字符的规则应被拒绝")
+	}
+}
+
+// TestRuleDisabledIgnored：禁用规则命中既不处置也不进 prompt ——
+// 即便库里 enforce=1（候选态被手改），enabled=0 也必须压住它。
+func TestRuleDisabledIgnored(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	insertRule(t, b, "禁用规则名", "禁用命中词", "promo", false, true)
+
+	var req atomic.Value
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			raw, _ := io.ReadAll(r.Body)
+			req.Store(string(raw))
+			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
+			return
+		}
+		w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+	})
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含禁用命中词"))
+	waitIdle(t, b)
+
+	for _, method := range []string{"deleteMessage", "restrictChatMember", "banChatMember"} {
+		if n := fake.CountCalls(method); n != 0 {
+			t.Errorf("禁用规则不该调用 %s，得到 %d 次", method, n)
+		}
+	}
+	var n int
+	if err := b.Store.Read.QueryRow(
+		`SELECT COUNT(*) FROM antiad_log WHERE decider LIKE 'rule:%'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("禁用规则不该产生规则流水，得到 %d 条", n)
+	}
+	raw, _ := req.Load().(string)
+	if raw == "" {
+		t.Fatal("没有向 systemone 发请求")
+	}
+	if strings.Contains(raw, "禁用规则名") {
+		t.Errorf("禁用规则不该进 prompt：%s", raw)
+	}
+}
+
+// TestRuleEnforceExcludedFromHint：enforce 规则命中时处置优先（不进 AI），
+// 即便有人直接调 RuleHintText，也不该把 enforce 规则拼进 prompt 提示。
+func TestRuleEnforceExcludedFromHint(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRule(t, b, "强制规则名", "强制命中词", "", true, true)
+
+	if hits := MatchRules(b.Cache.Snap(), "强制命中词"); len(hits) != 1 {
+		t.Fatalf("MatchRules 应命中 enforce 规则，得到 %d 条", len(hits))
+	}
+	if got := RuleHintText(b.Cache.Snap(), "强制命中词"); got != "" {
+		t.Errorf("enforce 规则不该进 hint，得到 %q", got)
+	}
+}
+
+// TestLoadAdRulesSkipsBadPattern：绕过写入口直写的坏正则，在 Reload 时
+// 被 Warn 跳过；行本身保留，且不影响同表其它规则参与匹配。
+func TestLoadAdRulesSkipsBadPattern(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRule(t, b, "好规则", "好规则命中", "", true, false)
+	if _, err := b.Store.Write.Exec(`INSERT INTO ad_rules
+		(name,pattern,category,note,source,enabled,enforce,created_at,created_by)
+		VALUES ('坏规则','[','','','ai',1,1,?,1)`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatalf("坏规则不该让 Reload 失败: %v", err)
+	}
+	snap := b.Cache.Snap()
+	if len(snap.AdRules) != 1 || snap.AdRules[0].Name != "好规则" {
+		t.Fatalf("坏规则应被跳过且不影响好规则，得到 %+v", snap.AdRules)
+	}
+	if hits := MatchRules(snap, "好规则命中"); len(hits) != 1 {
+		t.Errorf("好规则仍应参与匹配，得到 %d 条", len(hits))
+	}
+	var n int
+	if err := b.Store.Read.QueryRow(
+		`SELECT COUNT(*) FROM ad_rules WHERE name='坏规则'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("坏规则行不应被删除（面板还要能改它），得到 %d 行", n)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1754,16 +1753,10 @@ func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 		miniErr(w, http.StatusBadRequest, "名称需为 1~60 个字符")
 		return
 	}
-	if pattern == "" {
-		miniErr(w, http.StatusBadRequest, "规则不能为空")
-		return
-	}
-	if len([]rune(pattern)) > 500 {
-		miniErr(w, http.StatusBadRequest, "规则过长（最多 500 个字符）")
-		return
-	}
-	if _, err := regexp.Compile(pattern); err != nil {
-		miniErr(w, http.StatusBadRequest, "正则无法编译："+err.Error())
+	// 严格校验：空串、超长、编译失败、能匹配空文本的规则都在这里拒掉。
+	// test action 不要求过这一关（人工试跑草稿是它的用途）。
+	if _, err := antiad.CompileRulePattern(pattern); err != nil {
+		miniErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len([]rune(category)) > 20 {
@@ -1800,9 +1793,15 @@ func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 		}
 		id, _ = res.LastInsertId()
 	} else {
+		// 改了 pattern 就同时把 enforce 置 0：enforce 的前提是「这一版
+		// pattern 的全库测试 fp=0」，新 pattern 的测试还没跑，旧结论不能
+		// 沿用（否则改规则绕过防误封不变量）。只改 name/note 时保留 enforce。
+		// SQLite 的 SET 表达式取旧行值，`pattern<>?` 比较的是库里的旧 pattern。
 		res, err := sh.Store.Write.Exec(`UPDATE ad_rules
-			SET name=?,pattern=?,category=?,note=? WHERE id=?`,
-			name, pattern, category, note, id)
+			SET name=?,pattern=?,category=?,note=?,
+			    enforce=CASE WHEN pattern<>? THEN 0 ELSE enforce END
+			WHERE id=?`,
+			name, pattern, category, note, pattern, id)
 		if err != nil {
 			miniErr(w, http.StatusInternalServerError, "保存失败")
 			return
@@ -1863,8 +1862,9 @@ func miniRuleToggle(sh *core.Shared, w http.ResponseWriter, body map[string]any)
 	miniOK(w, map[string]any{"ok": true})
 }
 
-// miniRuleEnforce 开关强制。打开前必须 enabled=1 且最近一轮全库测试
-// 没有误封（last_fp=0 且 last_undone=0）；关闭随时允许。
+// miniRuleEnforce 开关强制。打开前必须 enabled=1、跑过全库测试
+// （last_tested_at>0），且那一轮没有误封（last_fp=0 且 last_undone=0）；
+// 关闭随时允许。
 func miniRuleEnforce(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
 	id := miniInt(body, "id")
 	if id == 0 {
@@ -1873,10 +1873,10 @@ func miniRuleEnforce(sh *core.Shared, w http.ResponseWriter, body map[string]any
 	}
 	on := miniBool(body, "enforce")
 	if on {
-		var en, fp, undone int64
+		var en, fp, undone, tested int64
 		err := sh.Store.Read.QueryRow(
-			`SELECT enabled,last_fp,last_undone FROM ad_rules WHERE id=?`,
-			id).Scan(&en, &fp, &undone)
+			`SELECT enabled,last_fp,last_undone,last_tested_at FROM ad_rules
+			WHERE id=?`, id).Scan(&en, &fp, &undone, &tested)
 		if errors.Is(err, sql.ErrNoRows) {
 			miniErr(w, http.StatusBadRequest, "规则不存在")
 			return
@@ -1887,6 +1887,12 @@ func miniRuleEnforce(sh *core.Shared, w http.ResponseWriter, body map[string]any
 		}
 		if en != 1 {
 			miniErr(w, http.StatusBadRequest, "规则未启用，不能开启强制")
+			return
+		}
+		// 从未跑过全库测试（含 AI 直接写库的候选）不允许打开强制：
+		// last_fp 的默认 0 只代表「没测出误封」，不代表「测过且干净」。
+		if tested == 0 {
+			miniErr(w, http.StatusBadRequest, "规则还没跑过全库测试，请先跑一次测试再开启强制")
 			return
 		}
 		if fp != 0 || undone != 0 {

@@ -15,8 +15,9 @@ import (
 
 // 规则校验错误。文案直接回给 Mini App，保持中文。
 var (
-	errRuleEmpty   = errors.New("规则不能为空")
-	errRuleTooLong = fmt.Errorf("规则过长（最多 %d 个字符）", rulePatternMax)
+	errRuleEmpty        = errors.New("规则不能为空")
+	errRuleTooLong      = fmt.Errorf("规则过长（最多 %d 个字符）", rulePatternMax)
+	errRuleMatchesEmpty = errors.New("规则不能匹配空文本（会命中所有消息）")
 )
 
 // ---- AI 必封规则：全局候选正则 ----
@@ -145,26 +146,55 @@ type RuleTestResult struct {
 	UndoneSamples []RuleSample
 }
 
+// CompileRulePattern 是**写入口**的严格校验：空串、超长、编译失败，
+// 以及能匹配空文本的规则一律拒绝。
+//
+// 最后一类是致命的：群里的纯图/贴纸消息正文为空，一个 `a*` 这样的规则
+// 会命中所有消息，enforce 打开后整群被最高档处置。`test` 试跑仍走宽松的
+// compileRuleLenient —— 人工试跑这类草稿正是它的用途。
+//
+// T-B 的 create_rule 也复用这个函数，保证 AI 写库的规则同样过这道闸。
+func CompileRulePattern(pattern string) (*regexp.Regexp, error) {
+	re, err := compileRuleLenient(pattern)
+	if err != nil {
+		return nil, err
+	}
+	if re.MatchString("") {
+		return nil, errRuleMatchesEmpty
+	}
+	return re, nil
+}
+
+// compileRuleLenient 只做全库测试需要的基础校验：空串、超长、可编译。
+// 刻意不拒绝「匹配空文本」——人工试跑一条 `a*` 看它命中什么是合理需求。
+func compileRuleLenient(pattern string) (*regexp.Regexp, error) {
+	if strings.TrimSpace(pattern) == "" {
+		return nil, errRuleEmpty
+	}
+	if len([]rune(pattern)) > rulePatternMax {
+		return nil, errRuleTooLong
+	}
+	return regexp.Compile(pattern)
+}
+
 // TestRulePattern 在 antiad_log 全量历史上试跑一条正则，统计它会命中
 // 多少已确认广告、多少正常消息（含被撤销的误判）。
 //
 // 这是防误封的唯一依据：保存规则与打开 enforce 之前都要跑它。
+//
+// 语料不再按 text 非空过滤：空文本（纯图/贴纸）同样会走到判定门，
+// 匹配空文本的规则造成的误封恰恰只能在这里看见 —— 让它在测试结果里
+// 显式暴露（FP/样本），而不是悄悄漏出测试口径之外。
 func TestRulePattern(sh *core.Shared, pattern string) (RuleTestResult, error) {
 	res := RuleTestResult{Pattern: pattern}
-	if strings.TrimSpace(pattern) == "" {
-		return res, errRuleEmpty
-	}
-	if len([]rune(pattern)) > rulePatternMax {
-		return res, errRuleTooLong
-	}
-	re, err := regexp.Compile(pattern)
+	re, err := compileRuleLenient(pattern)
 	if err != nil {
 		return res, err
 	}
 
 	rows, err := sh.Store.Read.Query(`SELECT id,verdict,action,ad_kind,user_id,
 		chat_id,created_at,text FROM antiad_log
-		WHERE text != '' ORDER BY id DESC LIMIT ?`, ruleScanLimit)
+		ORDER BY id DESC LIMIT ?`, ruleScanLimit)
 	if err != nil {
 		return res, err
 	}
