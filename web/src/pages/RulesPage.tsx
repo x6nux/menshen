@@ -363,9 +363,10 @@ function AgentCard({ tz }: { tz?: string }) {
               <Typography sx={{ fontSize: 13, lineHeight: 1.6 }}>{agent.result}</Typography>
             )
           )}
-          {agent.created_rule_id > 0 && (
+          {(agent.created_rule_ids ?? []).length > 0 && (
             <Typography sx={{ mt: 0.5, fontSize: 13, color: 'text.secondary' }}>
-              已创建规则 #{agent.created_rule_id}，可在下方列表查看与测试
+              本轮创建规则：{(agent.created_rule_ids ?? []).map((id) => `#${id}`).join('、')}
+              ，可在下方列表查看与测试
             </Typography>
           )}
         </Box>

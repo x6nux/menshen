@@ -116,12 +116,13 @@ describe('RulesPage · Agent', () => {
       finished_at: 1700000603,
       result: '发现 1 条候选规则',
       created_rule_id: 7,
+      created_rule_ids: [7],
     }
     await act(async () => {
       await client.refetchQueries({ queryKey: miniQueryKeys.rulesAgent })
     })
     expect(await screen.findByText('发现 1 条候选规则')).toBeInTheDocument()
-    expect(screen.getByText(/已创建规则 #7/)).toBeInTheDocument()
+    expect(screen.getByText(/本轮创建规则：#7/)).toBeInTheDocument()
     expect(screen.getByText('已完成')).toBeInTheDocument()
     await waitFor(() => expect(listCalls).toBeGreaterThan(before))
   })
@@ -228,6 +229,26 @@ describe('RulesPage · Agent', () => {
     expect(await screen.findByText(/让 AI 扫描历史封禁生成候选/)).toBeInTheDocument()
     expect(screen.queryByText('状态读取失败')).not.toBeInTheDocument()
   }, 15000)
+
+  it('Agent 结束展示本轮创建的多条规则', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [] })
+      if (body.action === 'agent_status') {
+        return HttpResponse.json({
+          agent: {
+            ...mockRuleAgent,
+            finished_at: 1700000700,
+            result: '发现完成：本轮写入 2 条候选规则',
+            created_rule_id: 1,
+            created_rule_ids: [1, 2],
+          },
+        })
+      }
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    expect(await screen.findByText(/本轮创建规则：#1、#2/)).toBeInTheDocument()
+  })
 })
 
 describe('RulesPage · 列表与新增', () => {
