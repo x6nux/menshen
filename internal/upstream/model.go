@@ -1,9 +1,88 @@
 package upstream
 
 import (
+	"fmt"
 	"hash/fnv"
 	"strings"
 )
+
+// Kind 是渠道类型：决定「怎么和这个上游说话」——端点路径、鉴权头、
+// 请求体与响应信封的形态。supports_chat / supports_systemone 决定该渠道
+// 用在哪条链路上，与 kind 正交。
+type Kind string
+
+const (
+	// KindOpenAI：OpenAI 兼容 chat/completions；systemone 走 TypeSafe 原生
+	// /v1/systemone（newapi 这类同时代理两条路径的网关）。
+	KindOpenAI Kind = "openai"
+	// KindOpenAIResp：OpenAI Responses API（/v1/responses）。只有对话
+	// 能力，请求/响应由协议适配层与 chat/completions 互转（非流式）。
+	KindOpenAIResp Kind = "openai-responses"
+	// KindAnthropic：Anthropic Messages API（/v1/messages）。只有对话
+	// 能力，非流式互转。
+	KindAnthropic Kind = "anthropic"
+	// KindGemini：Google Gemini generateContent。只有对话能力，
+	// 非流式互转。
+	KindGemini Kind = "gemini"
+	// KindCloudflare：Cloudflare Workers AI（/ai/run/{模型ID}）。主判定
+	// 直调 Clef；开启 chat 时同样走 ai/run，非流式互转。
+	KindCloudflare Kind = "cloudflare"
+)
+
+var kindLabels = map[Kind]string{
+	KindOpenAI:     "OpenAI Completions",
+	KindOpenAIResp: "OpenAI Responses",
+	KindAnthropic:  "Anthropic Messages",
+	KindGemini:     "Google Gemini",
+	KindCloudflare: "Cloudflare Workers AI",
+}
+
+// ParseKind 解析渠道类型；空串按 openai 处理（老库默认值与旧数据）。
+func ParseKind(s string) (Kind, error) {
+	k := Kind(strings.TrimSpace(strings.ToLower(s)))
+	if k == "" {
+		return KindOpenAI, nil
+	}
+	if _, ok := kindLabels[k]; ok {
+		return k, nil
+	}
+	return "", fmt.Errorf("未知渠道类型 %q", s)
+}
+
+// Label 是面板上的显示名。
+func (k Kind) Label() string {
+	if l, ok := kindLabels[k]; ok {
+		return l
+	}
+	return kindLabels[KindOpenAI]
+}
+
+// ChatOnly 报告该类型能否用于主判定（systemone）。只有 OpenAI Completions
+// 与 Cloudflare 能承载「state + questions」的决策请求，其余都是对话协议，
+// 只能做复判与形态总结。
+func (k Kind) ChatOnly() bool {
+	return k != KindOpenAI && k != KindCloudflare
+}
+
+// DefaultCaps 是该类型新增渠道时的默认能力开关。
+func (k Kind) DefaultCaps() (chat, systemone bool) {
+	if k == KindCloudflare {
+		return false, true
+	}
+	return true, false
+}
+
+// ResolveCaps 统一能力开关：chat-only 类型强制只开 chat；explicit=false
+// （调用方没提供开关）时用类型默认值。
+func (k Kind) ResolveCaps(chat, systemone, explicit bool) (bool, bool) {
+	if k.ChatOnly() {
+		return true, false
+	}
+	if !explicit {
+		return k.DefaultCaps()
+	}
+	return chat, systemone
+}
 
 type Model struct {
 	Name            string
@@ -38,6 +117,9 @@ type Upstream struct {
 	APIKey  string
 	Weight  int64
 	Status  int64
+	// Kind 是渠道类型。零值按 KindOpenAI 处理（见 EffectiveKind），
+	// 老数据与手工构造的测试对象不用显式赋值。
+	Kind Kind
 	// 两个端点各自独立开关。少一个开关就会把请求发给不认这条路径的渠道，
 	// 拿回 404 —— 而 404 在反广告侧只表现为「判定失败 → 放行」，
 	// 功能静默失效，运维完全看不见。
@@ -45,9 +127,20 @@ type Upstream struct {
 	SupportsSystemOne bool
 }
 
+// EffectiveKind 把未知/零值的 kind 归一成 openai。
+func (u *Upstream) EffectiveKind() Kind {
+	if k, err := ParseKind(string(u.Kind)); err == nil {
+		return k
+	}
+	return KindOpenAI
+}
+
 // Supports 报告这个上游是否提供某个端点。绑定模型（<上游名>/<模型ID>）
 // 选路时也要用它，所以导出。
 func (u *Upstream) Supports(ep Endpoint) bool {
+	if u.EffectiveKind().ChatOnly() && ep == EPSystemOne {
+		return false
+	}
 	switch ep {
 	case EPChat:
 		return u.SupportsChat
@@ -55,6 +148,55 @@ func (u *Upstream) Supports(ep Endpoint) bool {
 		return u.SupportsSystemOne
 	}
 	return false
+}
+
+// URL 返回该端点在给定上游上的请求地址。model 是模型全名
+// <上游名>/<模型ID>。
+//
+// 各类型的 base_url 约定：
+//   - OpenAI Completions / Responses：到域名（或网关前缀），如
+//     https://api.openai.com；路径自动接 /v1/chat/completions 或 /v1/responses。
+//   - Anthropic：https://api.anthropic.com，路径自动接 /v1/messages。
+//   - Gemini：https://generativelanguage.googleapis.com/v1beta，
+//     路径自动接 /models/<模型ID>:generateContent。
+//   - Cloudflare：到 /client/v4/accounts/<账号ID>（直连官方或兼容网关），
+//     模型 ID 填完整 CF 模型名 @cf/cloudflare/clef，路径自动接 /ai/run/<模型ID>。
+func (u *Upstream) URL(ep Endpoint, model string) (string, error) {
+	base := strings.TrimRight(u.BaseURL, "/")
+	if base == "" {
+		return "", fmt.Errorf("上游 %s 未配置 base_url", u.Name)
+	}
+	_, id := SplitModelName(model)
+	switch u.EffectiveKind() {
+	case KindCloudflare:
+		if id == "" {
+			return "", fmt.Errorf("模型 %q 缺少模型 ID", model)
+		}
+		return base + "/ai/run/" + id, nil
+	case KindOpenAIResp:
+		if ep != EPChat {
+			return "", fmt.Errorf("上游 %s（OpenAI Responses）不支持 %s 端点", u.Name, ep)
+		}
+		return base + "/v1/responses", nil
+	case KindAnthropic:
+		if ep != EPChat {
+			return "", fmt.Errorf("上游 %s（Anthropic）不支持 %s 端点", u.Name, ep)
+		}
+		return base + "/v1/messages", nil
+	case KindGemini:
+		if ep != EPChat {
+			return "", fmt.Errorf("上游 %s（Gemini）不支持 %s 端点", u.Name, ep)
+		}
+		if id == "" {
+			return "", fmt.Errorf("模型 %q 缺少模型 ID", model)
+		}
+		return base + "/models/" + id + ":generateContent", nil
+	}
+	p, ok := Paths[ep]
+	if !ok {
+		return "", fmt.Errorf("未知端点 %s", ep)
+	}
+	return base + p, nil
 }
 
 type Endpoint int
@@ -77,7 +219,7 @@ func (e Endpoint) String() string {
 	return "unknown"
 }
 
-// Paths 是各端点在上游侧的路径。
+// Paths 是各端点在上游侧的路径（仅 OpenAI Completions 渠道使用）。
 // systemone 固定走 TypeSafe 原生形态 /v1/systemone。
 var Paths = map[Endpoint]string{
 	EPChat:      "/v1/chat/completions",

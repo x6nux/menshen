@@ -562,7 +562,7 @@ func (c *Cache) loadModels(snap *Snapshot, q rowQueryer) error {
 
 func (c *Cache) loadUpstreams(snap *Snapshot, q rowQueryer) error {
 	rows, err := q.Query(`SELECT id,name,base_url,api_key,weight,status,
-		supports_chat,supports_systemone FROM upstreams ORDER BY id`)
+		supports_chat,supports_systemone,kind FROM upstreams ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -570,11 +570,18 @@ func (c *Cache) loadUpstreams(snap *Snapshot, q rowQueryer) error {
 	for rows.Next() {
 		u := &upstream.Upstream{}
 		var sc, so int64
+		var kind string
 		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Weight,
-			&u.Status, &sc, &so); err != nil {
+			&u.Status, &sc, &so, &kind); err != nil {
 			return err
 		}
 		u.SupportsChat, u.SupportsSystemOne = sc == 1, so == 1
+		// 解析失败按 openai 处理：老库与手改的脏值不该让整份快照加载失败。
+		k, err := upstream.ParseKind(kind)
+		if err != nil {
+			k = upstream.KindOpenAI
+		}
+		u.Kind = k
 		snap.Upstreams = append(snap.Upstreams, u)
 	}
 	return rows.Err()

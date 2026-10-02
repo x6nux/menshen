@@ -30,6 +30,11 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 			handleUpstreamNewType(b, q)
 			return
 		}
+		if len(parts) >= 4 && parts[3] == "k" {
+			// a:up:new:k:<uid>:<kind> — 渠道类型选择
+			handleUpstreamNewKind(b, q)
+			return
+		}
 		b.AskInput(chatID, q.From.ID, "up_new_name", "", "请输入上游名称：")
 		return
 	}
@@ -57,7 +62,20 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		if err := toggleUpstreamSupports(b, id, parts[4]); err != nil {
-			b.AnswerCallback(q.ID, "切换失败")
+			b.AnswerCallback(q.ID, err.Error())
+			return
+		}
+		b.AnswerCallback(q.ID, "已切换")
+		showUpstreamDetail(b, chatID, msgID, id)
+
+	case "k": // a:up:<id>:k[:<kind>] - 查看/切换渠道类型
+		if len(parts) < 5 {
+			b.AnswerCallback(q.ID, "")
+			showUpstreamKindPicker(b, chatID, msgID, 0, id)
+			return
+		}
+		if err := setUpstreamKind(b, id, parts[4]); err != nil {
+			b.AnswerCallback(q.ID, err.Error())
 			return
 		}
 		b.AnswerCallback(q.ID, "已切换")
@@ -140,6 +158,9 @@ func showUpstreamList(b *core.Bot, chatID, msgID int64) {
 
 	if len(snap.Upstreams) == 0 {
 		sb.WriteString("暂无上游。判定链路需要至少一个上游才能工作。\n\n" +
+			"渠道类型决定协议：<b>OpenAI 兼容</b>走 /v1/chat/completions 与 " +
+			"/v1/systemone；<b>Cloudflare Workers AI</b>走 /ai/run，主判定直接调 " +
+			"Clef。\n" +
 			"<b>systemone</b> 是主判定端点（TypeSafe jev，返回带置信度的" +
 			"结构化答案），<b>chat</b> 用于大模型复判与形态总结。\n" +
 			"只配 chat 也能跑：主判定不可用时会自动退化成只用大模型。")
@@ -167,19 +188,27 @@ func showUpstreamList(b *core.Bot, chatID, msgID int64) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
-// upstreamCaps 把端点开关渲染成一行人话。
+// upstreamCaps 把渠道类型与端点开关渲染成一行人话。
 func upstreamCaps(u *upstream.Upstream) string {
+	kind := u.EffectiveKind()
+	if kind.ChatOnly() {
+		return kind.Label() + " ｜ chat（复判/总结）"
+	}
 	var caps []string
 	if u.SupportsChat {
 		caps = append(caps, "chat")
 	}
 	if u.SupportsSystemOne {
-		caps = append(caps, "systemone")
+		if kind == upstream.KindCloudflare {
+			caps = append(caps, "主判定（Clef）")
+		} else {
+			caps = append(caps, "systemone")
+		}
 	}
 	if len(caps) == 0 {
-		return "无（该上游不会被选中）"
+		return kind.Label() + " ｜ 无（该上游不会被选中）"
 	}
-	return strings.Join(caps, ", ")
+	return kind.Label() + " ｜ " + strings.Join(caps, ", ")
 }
 
 func showUpstreamDetail(b *core.Bot, chatID, msgID, id int64) {
@@ -209,31 +238,48 @@ func showUpstreamDetail(b *core.Bot, chatID, msgID, id int64) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🔌 <b>上游详情</b>\n\nID: %d\n", up.ID)
 	sb.WriteString("名称: " + html.EscapeString(up.Name) + "\n")
+	fmt.Fprintf(&sb, "类型: %s\n", up.EffectiveKind().Label())
 	sb.WriteString("Base URL: " + html.EscapeString(up.BaseURL) + "\n")
 	sb.WriteString("API Key: <code>" + upstream.MaskKey(up.APIKey) + "</code>\n")
 	fmt.Fprintf(&sb, "权重: %d\n状态: %s\n\n", up.Weight, status)
-	fmt.Fprintf(&sb, "supports_chat: %s\n", mark(up.SupportsChat))
-	fmt.Fprintf(&sb, "supports_systemone: %s\n", mark(up.SupportsSystemOne))
+	kind := up.EffectiveKind()
+	switch {
+	case kind.ChatOnly():
+		fmt.Fprintf(&sb, "能力: 固定 chat（复判/形态总结），%s 是对话协议，不能做主判定。\n",
+			kind.Label())
+	case kind == upstream.KindCloudflare:
+		fmt.Fprintf(&sb, "supports_chat: %s\n", mark(up.SupportsChat))
+		fmt.Fprintf(&sb, "supports_systemone: %s\n", mark(up.SupportsSystemOne))
+		sb.WriteString("主判定走 /ai/run/&lt;模型ID&gt;（Clef）：base_url 需含 " +
+			"/client/v4/accounts/&lt;账号ID&gt;，模型 ID 填 <code>@cf/cloudflare/clef</code>。\n")
+	default:
+		fmt.Fprintf(&sb, "supports_chat: %s\n", mark(up.SupportsChat))
+		fmt.Fprintf(&sb, "supports_systemone: %s\n", mark(up.SupportsSystemOne))
+	}
 
-	rows := [][][2]string{
-		{
+	var rows [][][2]string
+	if !kind.ChatOnly() {
+		rows = append(rows, [][2]string{
 			{"🔄 Chat", fmt.Sprintf("a:up:%d:t:chat", id)},
 			{"🔄 SystemOne", fmt.Sprintf("a:up:%d:t:so", id)},
-		},
-		{
+		})
+	}
+	rows = append(rows,
+		[][2]string{
 			{"📝 改名称", fmt.Sprintf("a:up:%d:e:name", id)},
 			{"📝 改 URL", fmt.Sprintf("a:up:%d:e:url", id)},
 		},
-		{
+		[][2]string{
 			{"🔑 改 Key", fmt.Sprintf("a:up:%d:e:key", id)},
 			{"⚖️ 改权重", fmt.Sprintf("a:up:%d:e:w", id)},
 		},
-		{
+		[][2]string{
+			{"🔀 切换类型", fmt.Sprintf("a:up:%d:k", id)},
 			{"🔄 启停", fmt.Sprintf("a:up:%d:s", id)},
-			{"🗑 删除", fmt.Sprintf("a:up:%d:d", id)},
 		},
-		{{"◀️ 返回", "a:up"}},
-	}
+		[][2]string{{"🗑 删除", fmt.Sprintf("a:up:%d:d", id)}},
+		[][2]string{{"◀️ 返回", "a:up"}},
+	)
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
@@ -271,10 +317,117 @@ func handleUpstreamNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, tex
 			return
 		}
 		b.UpstreamNewDraft.Store(m.From.ID, parts[0]+"\x00"+parts[1]+"\x00"+text)
-		// 默认只勾 chat：多数渠道认这条路径，而 systemone 是 TypeSafe
-		// 特有的，默认勾上只会换来一堆 404。
-		showUpstreamTypePicker(b, chatID, 0, m.From.ID, 0b01)
+		// 先选渠道类型：类型决定协议与可选端点，选错类型的话端点勾选
+		// 全都没有意义。
+		showUpstreamKindPicker(b, chatID, 0, m.From.ID, 0)
 	}
+}
+
+// showUpstreamKindPicker 展示渠道类型选择面板。
+// id > 0 时是给已有上游「切换类型」；否则是新增流程（uid 对应草稿）。
+func showUpstreamKindPicker(b *core.Bot, chatID, msgID, uid, id int64) {
+	text := "🔌 <b>选择渠道类型</b>\n\n" +
+		"• <b>OpenAI Completions</b>：/v1/chat/completions；勾选 systemone 时走 /v1/systemone\n" +
+		"• <b>OpenAI Responses</b>：/v1/responses（仅复判）\n" +
+		"• <b>Anthropic Messages</b>：/v1/messages（仅复判）\n" +
+		"• <b>Google Gemini</b>：generateContent（仅复判）\n" +
+		"• <b>Cloudflare Workers AI</b>：/ai/run，主判定直调 Clef（可再开 chat）\n\n" +
+		"base_url 约定：Gemini 填 https://generativelanguage.googleapis.com/v1beta；" +
+		"Cloudflare 需含 /client/v4/accounts/&lt;账号ID&gt;，模型 ID 填 " +
+		"<code>@cf/cloudflare/clef</code>；其余填到域名。\n"
+	if id > 0 {
+		text += "\n切换类型会按类型重置能力开关。"
+	} else {
+		text += "\nResponses / Anthropic / Gemini 是对话协议，只能用于复判与形态总结。"
+	}
+
+	cb := func(kind upstream.Kind) string {
+		if id > 0 {
+			return fmt.Sprintf("a:up:%d:k:%s", id, kind)
+		}
+		return fmt.Sprintf("a:up:new:k:%d:%s", uid, kind)
+	}
+	rows := [][][2]string{
+		{
+			{"OpenAI Completions", cb(upstream.KindOpenAI)},
+			{"OpenAI Responses", cb(upstream.KindOpenAIResp)},
+		},
+		{
+			{"Anthropic", cb(upstream.KindAnthropic)},
+			{"Gemini", cb(upstream.KindGemini)},
+		},
+		{
+			{"Cloudflare", cb(upstream.KindCloudflare)},
+			{"❌ 取消", "a:up"},
+		},
+	}
+	b.EditOrSend(chatID, msgID, text, tg.InlineKB(rows...))
+}
+
+// handleUpstreamNewKind 处理新增流程的渠道类型回调：
+// a:up:new:k:<uid>:<kind>
+func handleUpstreamNewKind(b *core.Bot, q *tg.CallbackQuery) {
+	chatID, msgID := q.Message.Chat.ID, q.Message.MessageID
+	parts := strings.Split(q.Data, ":")
+	if len(parts) < 6 {
+		b.AnswerCallback(q.ID, "参数缺失")
+		return
+	}
+	uid, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
+		b.AnswerCallback(q.ID, "参数无效")
+		return
+	}
+	kind, err := upstream.ParseKind(parts[5])
+	if err != nil {
+		b.AnswerCallback(q.ID, "参数无效")
+		return
+	}
+
+	// OpenAI Completions 继续走端点勾选（chat/systemone 都可选）；
+	// 其余类型的能力由类型决定，直接创建。
+	if kind == upstream.KindOpenAI {
+		b.AnswerCallback(q.ID, "")
+		showUpstreamTypePicker(b, chatID, msgID, uid, 0b01)
+		return
+	}
+	chat, so := kind.ResolveCaps(false, false, false)
+	createUpstreamFromDraft(b, q, chatID, msgID, uid, kind, chat, so)
+}
+
+// createUpstreamFromDraft 把当前新增草稿按给定类型与能力落库。
+func createUpstreamFromDraft(b *core.Bot, q *tg.CallbackQuery, chatID, msgID, uid int64,
+	kind upstream.Kind, chat, so bool) bool {
+
+	raw, ok := b.UpstreamNewDraft.Load(uid)
+	if !ok {
+		b.AnswerCallback(q.ID, "会话已过期，请重新添加")
+		b.Edit(chatID, msgID, "会话已过期，请重新点击「新增上游」。",
+			tg.InlineKB([][2]string{{"◀️ 返回", "a:up"}}))
+		return false
+	}
+	b.UpstreamNewDraft.Delete(uid)
+	dp := strings.Split(raw.(string), "\x00")
+	if len(dp) != 3 {
+		b.AnswerCallback(q.ID, "数据异常")
+		return false
+	}
+	if _, err := b.Store.Write.Exec(
+		`INSERT INTO upstreams (name,base_url,api_key,weight,status,
+		 supports_chat,supports_systemone,kind) VALUES (?,?,?,1,1,?,?,?)`,
+		dp[0], dp[1], dp[2], boolToInt(chat), boolToInt(so), string(kind)); err != nil {
+		slog.Error("新增上游失败", "err", err, "kind", kind)
+		b.AnswerCallback(q.ID, "新增失败")
+		b.Edit(chatID, msgID, "新增失败："+html.EscapeString(err.Error()),
+			tg.InlineKB([][2]string{{"◀️ 返回", "a:up"}}))
+		return false
+	}
+	if err := b.Cache.Reload(); err != nil {
+		slog.Error("新增上游后 reload 失败", "err", err)
+	}
+	b.AnswerCallback(q.ID, "✅ 已添加")
+	showUpstreamList(b, chatID, msgID)
+	return true
 }
 
 // showUpstreamTypePicker 展示端点类型选择面板。
@@ -292,7 +445,7 @@ func showUpstreamTypePicker(b *core.Bot, chatID, msgID, uid int64, mask int) {
 		}
 		return "未选"
 	}
-	text := "🔌 <b>新增上游 — 选择支持的端点</b>\n\n" +
+	text := "🔌 <b>新增上游（OpenAI 兼容）— 选择支持的端点</b>\n\n" +
 		"点击按钮切换勾选，至少选一项后点「✅ 确认添加」。\n\n" +
 		fmt.Sprintf("Chat Completions（复判/形态总结）：%s\n", picked(1)) +
 		fmt.Sprintf("System One（TypeSafe jev，主判定）：%s\n", picked(2))
@@ -346,8 +499,9 @@ func handleUpstreamNewType(b *core.Bot, q *tg.CallbackQuery) {
 		}
 		_, err := b.Store.Write.Exec(
 			`INSERT INTO upstreams (name,base_url,api_key,weight,status,
-			 supports_chat,supports_systemone) VALUES (?,?,?,1,1,?,?)`,
-			dp[0], dp[1], dp[2], boolToInt(mask&1 != 0), boolToInt(mask&2 != 0))
+			 supports_chat,supports_systemone,kind) VALUES (?,?,?,1,1,?,?,?)`,
+			dp[0], dp[1], dp[2], boolToInt(mask&1 != 0), boolToInt(mask&2 != 0),
+			string(upstream.KindOpenAI))
 		if err != nil {
 			slog.Error("新增上游失败", "err", err)
 			b.AnswerCallback(q.ID, "新增失败")
@@ -476,6 +630,13 @@ func modelsOfUpstream(snap *store.Snapshot, id int64) []string {
 }
 
 func toggleUpstreamSupports(b *core.Bot, id int64, which string) error {
+	// chat-only 渠道的能力是类型决定的，开关按钮在详情里也不显示；
+	// 这里再挡一道，防止旧消息里的按钮回调绕过 UI。
+	if kind, err := upstreamKindByID(b, id); err != nil {
+		return err
+	} else if kind.ChatOnly() {
+		return fmt.Errorf("%s 只能用于复判（chat），没有可切换的端点", kind.Label())
+	}
 	var field string
 	switch which {
 	case "chat":
@@ -486,6 +647,41 @@ func toggleUpstreamSupports(b *core.Bot, id int64, which string) error {
 		return fmt.Errorf("未知字段: %s", which)
 	}
 	return toggleUpstreamColumn(b, id, field)
+}
+
+// upstreamKindByID 读某个上游的渠道类型；脏值按 openai 处理。
+func upstreamKindByID(b *core.Bot, id int64) (upstream.Kind, error) {
+	var raw string
+	if err := b.Store.Read.QueryRow(
+		`SELECT kind FROM upstreams WHERE id=?`, id).Scan(&raw); err != nil {
+		return "", err
+	}
+	k, err := upstream.ParseKind(raw)
+	if err != nil {
+		return upstream.KindOpenAI, nil
+	}
+	return k, nil
+}
+
+// setUpstreamKind 切换渠道类型并按类型重置能力：Cloudflare 默认
+// chat=0 / systemone=1，其余类型默认 chat=1 / systemone=0；
+// OpenAI Completions 与 Cloudflare 之后可在详情里改开关。
+func setUpstreamKind(b *core.Bot, id int64, raw string) error {
+	kind, err := upstream.ParseKind(raw)
+	if err != nil {
+		return err
+	}
+	chat, so := kind.ResolveCaps(false, false, false)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE upstreams SET kind=?,supports_chat=?,supports_systemone=? WHERE id=?`,
+		string(kind), boolToInt(chat), boolToInt(so), id); err != nil {
+		return err
+	}
+	if err := b.Cache.Reload(); err != nil {
+		slog.Error("切换渠道类型后 reload 失败", "id", id, "kind", kind, "err", err)
+		return err
+	}
+	return nil
 }
 
 func toggleUpstreamStatus(b *core.Bot, id int64) error {

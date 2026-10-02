@@ -129,6 +129,8 @@ CREATE INDEX IF NOT EXISTS idx_jmute_user ON join_mutes(user_id);
 
 -- 判定用的 AI 上游。反广告只发两种请求：systemone 决策端点做主判，
 -- chat/completions 做复判与形态总结，因此只有这两个开关。
+-- kind 是渠道类型（openai / cloudflare），决定端点路径与响应信封；
+-- 两个 supports 开关仍决定该渠道用在哪条链路上（见 upstream 包）。
 CREATE TABLE IF NOT EXISTS upstreams (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   name               TEXT    NOT NULL,
@@ -137,7 +139,8 @@ CREATE TABLE IF NOT EXISTS upstreams (
   weight             INTEGER NOT NULL DEFAULT 1,
   status             INTEGER NOT NULL DEFAULT 1,
   supports_chat      INTEGER NOT NULL DEFAULT 1,
-  supports_systemone INTEGER NOT NULL DEFAULT 0
+  supports_systemone INTEGER NOT NULL DEFAULT 0,
+  kind               TEXT    NOT NULL DEFAULT 'openai'
 );
 
 -- 模型单价，仅用于把判定开销折算成钱摆到面板上。
@@ -388,6 +391,8 @@ func migrate(db *sql.DB) error {
 		// 永久禁言没有到期时间，靠时间窗推断「是否仍在限制中」会把
 		// 已解除的也一直列出来，所以解除时要落一个显式标记。
 		{"antiad_log", "lifted_at", "INTEGER NOT NULL DEFAULT 0"},
+		// kind：渠道类型。老库一律按 openai 处理，行为与升级前完全一致。
+		{"upstreams", "kind", "TEXT NOT NULL DEFAULT 'openai'"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

@@ -30,6 +30,29 @@
 模型列表在面板里用逗号分隔、按重试顺序排列。同一个上游想多试几次，把它
 写进列表多次即可。上游改名会连带改写所有引用；名下有模型时不能删除上游。
 
+### 渠道类型
+
+每个上游都要选一个渠道类型，它决定端点路径、鉴权头与请求/响应协议：
+
+| 类型 | 端点约定 | 可用于 |
+|---|---|---|
+| OpenAI Completions | `/v1/chat/completions`；勾选 systemone 时走 `/v1/systemone` | chat + 主判定 |
+| OpenAI Responses | `/v1/responses`（适配层转成 chat 形状，非流式） | chat |
+| Anthropic Messages | `/v1/messages`，`x-api-key` + `anthropic-version` | chat |
+| Google Gemini | `/models/<模型ID>:generateContent`，`x-goog-api-key` | chat |
+| Cloudflare Workers AI | `/ai/run/<模型ID>`，CF 信封自动解包；主判定直调 `@cf/cloudflare/clef` | chat + 主判定 |
+
+base_url 约定：前四种填到网关前缀（云厂商域名或自建网关，如
+`https://api.openai.com`、`https://api.anthropic.com`、
+`https://generativelanguage.googleapis.com/v1beta`）；Cloudflare 填到
+`/client/v4/accounts/<账号ID>`（直连官方或兼容网关都行），模型 ID 填完整
+CF 模型名（如 `@cf/cloudflare/clef`）。
+
+非 OpenAI 类型固定走非流式，响应由适配层翻译回 `chat/completions` 形状，
+判定解析、用量计提与面板开销显示都不变。chat-only 的类型（Responses /
+Anthropic / Gemini）只能用于复判与形态总结，不会出现在主判定选路里；
+给它们打开 systemone 会被服务端拒绝。
+
 只有一个上游时，启动会把旧格式模型自动补上前缀（无歧义）；有多个上游时
 不动数据，面板上会提示重新按前缀添加。
 

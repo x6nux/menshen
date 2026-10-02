@@ -100,9 +100,18 @@ export interface Upstream {
   api_key: string
   weight: number
   status: boolean
+  /** 渠道类型：决定端点路径、鉴权与请求/响应协议。 */
+  kind: UpstreamKind
   supports_chat: boolean
   supports_systemone: boolean
 }
+
+export type UpstreamKind =
+  | 'openai'
+  | 'openai-responses'
+  | 'anthropic'
+  | 'gemini'
+  | 'cloudflare'
 
 export interface Model {
   name: string

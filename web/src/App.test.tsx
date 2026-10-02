@@ -211,7 +211,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('上游渠道'))
     expect(await screen.findByText('demo')).toBeInTheDocument()
-    expect(screen.getByText('https://api.example.com')).toBeInTheDocument()
+    expect(screen.getByText(/https:\/\/api\.example\.com/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '返回' }))
     fireEvent.click(await screen.findByText('全局设置'))

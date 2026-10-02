@@ -48,6 +48,13 @@ func TestMigrateOldDB(t *testing.T) {
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
 			quota_cost INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
 		`CREATE INDEX idx_antiad_time ON antiad_log(created_at)`,
+		// 老形状的 upstreams：没有 kind（migrate 才补），老行要按 openai 处理。
+		`CREATE TABLE upstreams (id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL, base_url TEXT NOT NULL, api_key TEXT NOT NULL,
+			weight INTEGER NOT NULL DEFAULT 1, status INTEGER NOT NULL DEFAULT 1,
+			supports_chat INTEGER NOT NULL DEFAULT 1,
+			supports_systemone INTEGER NOT NULL DEFAULT 0)`,
+		`INSERT INTO upstreams (name,base_url,api_key) VALUES ('old','http://x','k')`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatalf("造老库失败: %v", err)
@@ -62,10 +69,18 @@ func TestMigrateOldDB(t *testing.T) {
 	defer s.Close()
 	for _, c := range [][2]string{{"bot_chats", "punish"},
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
-		{"bots", "is_main"}} {
+		{"bots", "is_main"}, {"upstreams", "kind"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
+	}
+	// 老上游没有类型：迁移默认 openai，行为与升级前一致。
+	var kind string
+	if err := s.Read.QueryRow(`SELECT kind FROM upstreams WHERE name='old'`).Scan(&kind); err != nil {
+		t.Fatalf("读老上游 kind 失败: %v", err)
+	}
+	if kind != "openai" {
+		t.Errorf("老上游的 kind 应为 openai，得到 %q", kind)
 	}
 	// 索引必须建在 migrate 补出来的 bot_id 上，且不能因为老库没有这一列
 	// 而让启动失败（Open 已经返回成功，这里再确认索引真的在）。

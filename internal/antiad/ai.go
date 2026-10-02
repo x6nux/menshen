@@ -409,18 +409,18 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	ep upstream.Endpoint, model string, up *upstream.Upstream,
 	payload map[string]any) aiResult {
 
-	_, modelID := upstream.SplitModelName(model)
-	p := make(map[string]any, len(payload)+1)
+	p := make(map[string]any, len(payload)+2)
 	for k, v := range payload {
 		p[k] = v
 	}
-	p["model"] = modelID
 	// 稳定会话标识（见 aiSessionID）。systemone 不加：实测会 400。
+	// 只有 OpenAI Completions 渠道会原样带上它；其余渠道的协议适配层
+	// 只挑自己认识的字段，多余字段不会漏给上游。
 	if ep == upstream.EPChat {
 		p["user"] = aiSessionID
 		p["session_id"] = aiSessionID
 	}
-	body, err := json.Marshal(p)
+	body, err := json.Marshal(up.BuildBody(ep, model, p))
 	if err != nil {
 		return aiResult{err: err} // 序列化都失败，重试多少次都一样
 	}
@@ -449,14 +449,22 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		return aiResult{err: err, stage: stage, elapsed: time.Since(start), retryable: true}
 	}
 
+	reqURL, uerr := up.URL(ep, model)
+	if uerr != nil {
+		// 渠道配置问题（base_url 缺失、端点不支持）：停留在这个模型上
+		// 没有意义，交给 aiCall 立即换列表里的下一个模型。
+		return aiResult{err: uerr, stage: "配置"}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(up.BaseURL, "/")+upstream.Paths[ep], bytes.NewReader(body))
+		reqURL, bytes.NewReader(body))
 	if err != nil {
 		// 请求都构造不出来（URL 非法），重试多少次都一样。
 		return aiResult{err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+	// 鉴权头按渠道类型设置：Anthropic 用 x-api-key，Gemini 用
+	// x-goog-api-key，其余用 Bearer。
+	up.SetAuth(req)
 
 	resp, err := sh.AIClient.Do(req)
 	if err != nil {
@@ -476,8 +484,16 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 			return aiResult{err: fmt.Errorf("上游 %s 限流 (429)", upName(up)),
 				stage: st, elapsed: time.Since(start), retryable: true}
 		}
+		// Cloudflare 的错误正文也是信封，errors[0].message 比整段
+		// JSON 可读得多；取不到就退回原文。
+		detail := core.TruncateRunes(string(msg), 200)
+		if up.EffectiveKind() == upstream.KindCloudflare {
+			if m := upstream.CFErrorMessage(msg); m != "" {
+				detail = core.TruncateRunes(m, 200)
+			}
+		}
 		return aiResult{err: fmt.Errorf("上游 %s 返回 %d: %s",
-			upName(up), resp.StatusCode, core.TruncateRunes(string(msg), 200)),
+			upName(up), resp.StatusCode, detail),
 			stage: st, elapsed: time.Since(start)}
 	}
 
@@ -520,6 +536,15 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		if err != nil {
 			return fail(err)
 		}
+	}
+
+	// 各渠道的响应在这里翻译回统一形状：chat → OpenAI 形状（供复判与
+	// 计费），systemone → SystemOne 答案形状（供主判定解析）。
+	if norm, nerr := up.NormalizeResponse(ep, raw); nerr != nil {
+		return aiResult{err: fmt.Errorf("上游 %s 响应异常: %w", upName(up), nerr),
+			stage: "解析", elapsed: time.Since(start)}
+	} else {
+		raw = norm
 	}
 
 	usage := billing.ExtractUsage(ep, raw)

@@ -25,15 +25,15 @@ function capturePost(op: string, bodies: Record<string, unknown>[]) {
 }
 
 describe('UpstreamsPage', () => {
-  it('列表渲染名称/base_url/状态，点行进详情', async () => {
+  it('列表渲染名称/类型/base_url/状态，点行进详情', async () => {
     renderPage(<UpstreamsPage />)
 
     expect(await screen.findByText('demo')).toBeInTheDocument()
-    expect(screen.getByText('https://api.example.com')).toBeInTheDocument()
+    expect(screen.getByText(/OpenAI Completions · https:\/\/api\.example\.com/)).toBeInTheDocument()
     expect(screen.getByText('启用')).toBeInTheDocument()
   })
 
-  it('添加渠道：提交名称/base_url/api_key/能力/启用', async () => {
+  it('添加渠道：提交名称/类型/base_url/api_key/能力/启用', async () => {
     const bodies: Record<string, unknown>[] = []
     capturePost('upstream', bodies)
     renderPage(<UpstreamsPage />)
@@ -52,9 +52,38 @@ describe('UpstreamsPage', () => {
     expect(bodies[0]).toEqual({
       action: 'add',
       name: 'demo2',
+      kind: 'openai',
       base_url: 'https://api2.example.com',
       api_key: 'sk-2',
       supports_chat: true,
+      supports_systemone: true,
+      disabled: false,
+    })
+  })
+
+  it('添加 Cloudflare 渠道：能力固定为主判定（chat 关、systemone 开）', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('upstream', bodies)
+    renderPage(<UpstreamsPage />)
+    await screen.findByText('demo')
+
+    fireEvent.click(screen.getByText('＋ 添加渠道'))
+    fireEvent.change(screen.getByLabelText('名称（模型名前缀）'), { target: { value: 'cf' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Cloudflare' }))
+    fireEvent.change(screen.getByLabelText('base_url'), {
+      target: { value: 'https://api.cloudflare.com/client/v4/accounts/acc' },
+    })
+    fireEvent.change(screen.getByLabelText('api_key'), { target: { value: 'cf-token' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({
+      action: 'add',
+      name: 'cf',
+      kind: 'cloudflare',
+      base_url: 'https://api.cloudflare.com/client/v4/accounts/acc',
+      api_key: 'cf-token',
+      supports_chat: false,
       supports_systemone: true,
       disabled: false,
     })
@@ -86,11 +115,35 @@ describe('UpstreamDetailPage', () => {
     expect(bodies[0]).toEqual({
       action: 'update',
       id: 1,
+      kind: 'openai',
       base_url: 'https://api.example.com',
       supports_chat: true,
       supports_systemone: false,
     })
     expect(bodies[0]).not.toHaveProperty('api_key')
+  })
+
+  it('渠道配置切到 Gemini：对话协议只能复判，提交 kind 与强制能力', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('upstream', bodies)
+    renderPage(<UpstreamDetailPage id={1} />)
+    await screen.findByText('https://api.example.com')
+
+    fireEvent.click(screen.getByText('渠道配置'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Gemini' }))
+    // Gemini 是 chat-only：能力开关消失，换成说明。
+    expect(screen.queryByRole('switch', { name: '支持 systemone（初判）' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({
+      action: 'update',
+      id: 1,
+      kind: 'gemini',
+      base_url: 'https://api.example.com',
+      supports_chat: true,
+      supports_systemone: false,
+    })
   })
 
   it('改名：提交 name', async () => {

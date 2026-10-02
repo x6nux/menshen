@@ -175,6 +175,7 @@ export const mockState: State = {
       api_key: 'sk-****',
       weight: 1,
       status: true,
+      kind: 'openai',
       supports_chat: true,
       supports_systemone: true,
     },

@@ -479,7 +479,8 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 			ups = append(ups, map[string]any{
 				"id": u.ID, "name": u.Name, "base_url": u.BaseURL,
 				"api_key": upstream.MaskKey(u.APIKey), "weight": u.Weight,
-				"status": u.Status, "supports_chat": u.SupportsChat,
+				"status": u.Status, "kind": string(u.EffectiveKind()),
+				"supports_chat":      u.SupportsChat,
 				"supports_systemone": u.SupportsSystemOne,
 			})
 		}
@@ -1144,13 +1145,23 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 			miniErr(w, http.StatusBadRequest, "base_url 必须以 http:// 或 https:// 开头")
 			return
 		}
+		kind, err := upstream.ParseKind(miniStr(body, "kind"))
+		if err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// 能力开关按类型收敛：chat-only 类型强制 chat；没传开关时用
+		// 类型默认值（Cloudflare 默认主判定，其余默认 chat）。
+		chat, so := miniBool(body, "supports_chat"), miniBool(body, "supports_systemone")
+		_, hasChat := body["supports_chat"]
+		_, hasSO := body["supports_systemone"]
+		chat, so = kind.ResolveCaps(chat, so, hasChat || hasSO)
 		if _, err := sh.Store.Write.Exec(`INSERT INTO upstreams
-			(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
-			VALUES (?,?,?,?,?,?,?)`, name, miniStr(body, "base_url"),
+			(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
+			VALUES (?,?,?,?,?,?,?,?)`, name, miniStr(body, "base_url"),
 			miniStr(body, "api_key"), maxInt64(miniInt(body, "weight"), 1),
 			boolToInt64(!miniBool(body, "disabled")),
-			boolToInt64(miniBool(body, "supports_chat")),
-			boolToInt64(miniBool(body, "supports_systemone"))); err != nil {
+			boolToInt64(chat), boolToInt64(so), string(kind)); err != nil {
 			miniErr(w, http.StatusInternalServerError, "添加失败")
 			return
 		}
@@ -1192,13 +1203,49 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 				return
 			}
 		}
-		for _, f := range []string{"supports_chat", "supports_systemone"} {
-			if _, ok := body[f]; ok {
-				if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET `+f+`=? WHERE id=?`,
-					boolToInt64(miniBool(body, f)), id); err != nil {
+		// 渠道类型：显式传了就更新，但只有**真的换了类型**才重置能力
+		// ——前端每次保存都会回传当前 kind，据此不能把用户的开关覆盖掉。
+		// chat-only 类型无论如何强制只开 chat；只改开关则按请求走。
+		kindChanged := false
+		kind := upstream.Kind("")
+		if cur, err := miniUpstreamKind(sh, id); err == nil {
+			kind = cur
+		}
+		if raw := miniStr(body, "kind"); raw != "" {
+			k, err := upstream.ParseKind(raw)
+			if err != nil {
+				miniErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if k != kind {
+				if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET kind=? WHERE id=?`,
+					string(k), id); err != nil {
 					miniErr(w, http.StatusInternalServerError, "保存失败")
 					return
 				}
+				kind, kindChanged = k, true
+			}
+		}
+		_, hasChat := body["supports_chat"]
+		_, hasSO := body["supports_systemone"]
+		applyCaps := false
+		chat, so := false, false
+		switch {
+		case kind.ChatOnly():
+			applyCaps, chat, so = true, true, false
+		case kindChanged:
+			chat, so = kind.ResolveCaps(false, false, false)
+			applyCaps = true
+		case hasChat || hasSO:
+			chat, so = miniBool(body, "supports_chat"), miniBool(body, "supports_systemone")
+			applyCaps = true
+		}
+		if applyCaps {
+			if _, err := sh.Store.Write.Exec(
+				`UPDATE upstreams SET supports_chat=?,supports_systemone=? WHERE id=?`,
+				boolToInt64(chat), boolToInt64(so), id); err != nil {
+				miniErr(w, http.StatusInternalServerError, "保存失败")
+				return
 			}
 		}
 	case "remove":
@@ -1240,6 +1287,20 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 		slog.Error("miniapp：刷新缓存失败", "err", err)
 	}
 	miniOK(w, map[string]any{"ok": true})
+}
+
+// miniUpstreamKind 读一个上游的渠道类型；脏值按 openai 处理。
+func miniUpstreamKind(sh *core.Shared, id int64) (upstream.Kind, error) {
+	var raw string
+	if err := sh.Store.Read.QueryRow(
+		`SELECT kind FROM upstreams WHERE id=?`, id).Scan(&raw); err != nil {
+		return "", err
+	}
+	k, err := upstream.ParseKind(raw)
+	if err != nil {
+		return upstream.KindOpenAI, nil
+	}
+	return k, nil
 }
 
 func miniModel(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {

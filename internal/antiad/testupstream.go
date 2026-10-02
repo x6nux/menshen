@@ -24,7 +24,7 @@ import (
 var (
 	ErrUpstreamNotFound = errors.New("上游不存在")
 	ErrUpstreamNoModel  = errors.New("该上游还没有登记可用模型")
-	ErrUpstreamNoChat   = errors.New("该上游未开启 chat 能力，无法测试")
+	ErrUpstreamNoChat   = errors.New("该上游没有可用的测试端点（chat / systemone 都未开启）")
 )
 
 // TestUpstream 用该上游名下一个已登记的启用模型发一次最小 chat 请求，
@@ -45,7 +45,15 @@ func TestUpstream(ctx context.Context, sh *core.Shared, upstreamID int64) (strin
 	if up == nil {
 		return "", 0, ErrUpstreamNotFound
 	}
-	if !up.Supports(upstream.EPChat) {
+	// 渠道类型决定测哪条链路：优先 chat（复判）；只有主判定的渠道
+	// （如未开 chat 的 Cloudflare）测 systemone；两者都没有就报配置错。
+	ep := upstream.EPChat
+	switch {
+	case up.Supports(upstream.EPChat):
+		ep = upstream.EPChat
+	case up.Supports(upstream.EPSystemOne):
+		ep = upstream.EPSystemOne
+	default:
 		return "", 0, ErrUpstreamNoChat
 	}
 
@@ -63,15 +71,30 @@ func TestUpstream(ctx context.Context, sh *core.Shared, upstreamID int64) (strin
 	sort.Strings(names)
 	model := names[0]
 
-	// 最小 chat 请求：一句话、最多 8 个 token（不用 1：个别网关对
-	// max_tokens=1 会误报参数错误，8 仍是最小请求量级）。判定链路用的
-	// session_id / 鉴权头由 aiAttempt 统一补上，这里不重复实现。
-	payload := map[string]any{
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 8,
+	// 请求两种形状各取最小：
+	// - chat：一句话、最多 8 个 token（不用 1：个别网关对 max_tokens=1
+	//   会误报参数错误，8 仍是最小请求量级）；
+	// - 主判定（CF 渠道）：一个必答的 noul 问题。
+	// 判定链路用的 session_id / 鉴权头由 aiAttempt 统一补上，这里不重复实现。
+	var payload map[string]any
+	if ep == upstream.EPSystemOne {
+		payload = map[string]any{
+			"state": "menshen upstream connectivity test",
+			"questions": map[string]any{
+				"ok": map[string]any{
+					"type":         "noul",
+					"instructions": "Is the state non-empty?",
+				},
+			},
+		}
+	} else {
+		payload = map[string]any{
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 8,
+		}
 	}
 	start := time.Now()
-	r := aiAttempt(ctx, sh, snap, upstream.EPChat, model, up, payload)
+	r := aiAttempt(ctx, sh, snap, ep, model, up, payload)
 	latency := time.Since(start)
 	if r.err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -81,7 +104,17 @@ func TestUpstream(ctx context.Context, sh *core.Shared, upstreamID int64) (strin
 	}
 
 	// HTTP 200 还不够：有的网关会把错误页或代理页按 200 返回。要求它是
-	// 形状正确的 chat completion —— 判定链路同样依赖 choices。
+	// 形状正确的响应 —— 判定链路同样依赖 answers / choices。
+	if ep == upstream.EPSystemOne {
+		var resp struct {
+			Answers map[string]json.RawMessage `json:"answers"`
+		}
+		if err := json.Unmarshal(r.reply.Raw, &resp); err != nil || len(resp.Answers) == 0 {
+			return model, latency, fmt.Errorf("上游返回的不是决策响应：%s",
+				core.TruncateRunes(string(r.reply.Raw), 200))
+		}
+		return model, latency, nil
+	}
 	var resp struct {
 		Choices []json.RawMessage `json:"choices"`
 	}

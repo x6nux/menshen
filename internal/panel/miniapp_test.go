@@ -1391,3 +1391,169 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 		t.Errorf("成功用例假上游应只收到 1 次请求（无重试），得到 %d", n)
 	}
 }
+
+// TestMiniUpstreamKinds：渠道类型走 MiniApp 的增改两条路径 —— 未知类型
+// 拒绝；chat-only 类型强制只开 chat；Cloudflare 默认主判定；state 下发 kind。
+func TestMiniUpstreamKinds(t *testing.T) {
+	env := newMiniEnv(t)
+	sh := env.sh
+	call := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return miniDo(t, env.h, testutil.TestToken, env.adminInit(),
+			testutil.TestBotID, "upstream", body)
+	}
+
+	// 未知类型直接拒绝，不能把协议层不认识的 kind 写进库。
+	if w := call(map[string]any{"action": "add", "name": "bad", "base_url": "http://x",
+		"api_key": "k", "kind": "cohere"}); w.Code != http.StatusBadRequest {
+		t.Errorf("未知渠道类型应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// Gemini 是 chat-only：客户端传 supports_systemone=true 也不作数。
+	if w := call(map[string]any{"action": "add", "name": "gem",
+		"base_url": "https://generativelanguage.googleapis.com/v1beta", "api_key": "gk",
+		"kind": "gemini", "supports_systemone": true}); w.Code != http.StatusOK {
+		t.Fatalf("新增 Gemini 上游应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var kind string
+	var chat, so int64
+	if err := sh.Store.Read.QueryRow(`SELECT kind,supports_chat,supports_systemone
+		FROM upstreams WHERE name='gem'`).Scan(&kind, &chat, &so); err != nil {
+		t.Fatalf("Gemini 上游没落库: %v", err)
+	}
+	if kind != "gemini" || chat != 1 || so != 0 {
+		t.Errorf("Gemini 能力应强制 1/0，得到 kind=%q chat=%d so=%d", kind, chat, so)
+	}
+
+	// Cloudflare 不传能力开关：按类型默认（主判定）。
+	if w := call(map[string]any{"action": "add", "name": "cfx",
+		"base_url": "https://api.cloudflare.com/client/v4/accounts/acc",
+		"api_key":  "cf", "kind": "cloudflare"}); w.Code != http.StatusOK {
+		t.Fatalf("新增 Cloudflare 上游应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if err := sh.Store.Read.QueryRow(`SELECT kind,supports_chat,supports_systemone
+		FROM upstreams WHERE name='cfx'`).Scan(&kind, &chat, &so); err != nil {
+		t.Fatalf("Cloudflare 上游没落库: %v", err)
+	}
+	if kind != "cloudflare" || chat != 0 || so != 1 {
+		t.Errorf("Cloudflare 默认能力应 0/1，得到 kind=%q chat=%d so=%d", kind, chat, so)
+	}
+
+	// 改类型：Gemini 切到 Cloudflare 时能力按类型重置为 0/1。
+	var id int64
+	if err := sh.Store.Read.QueryRow(
+		`SELECT id FROM upstreams WHERE name='gem'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(map[string]any{"action": "update", "id": id,
+		"kind": "cloudflare"}); w.Code != http.StatusOK {
+		t.Fatalf("切换类型应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if err := sh.Store.Read.QueryRow(`SELECT kind,supports_chat,supports_systemone
+		FROM upstreams WHERE id=?`, id).Scan(&kind, &chat, &so); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "cloudflare" || chat != 0 || so != 1 {
+		t.Errorf("切换后能力应重置 0/1，得到 kind=%q chat=%d so=%d", kind, chat, so)
+	}
+
+	// 只改 base_url（kind 原样回传）时能力开关必须保留：前端每次保存都会
+	// 回传当前 kind，服务端不能因此把它重置成默认值。
+	var cfxID int64
+	if err := sh.Store.Read.QueryRow(
+		`SELECT id FROM upstreams WHERE name='cfx'`).Scan(&cfxID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Store.Write.Exec(
+		`UPDATE upstreams SET supports_chat=1 WHERE id=?`, cfxID); err != nil {
+		t.Fatal(err)
+	}
+	if w := call(map[string]any{"action": "update", "id": cfxID, "kind": "cloudflare",
+		"base_url": "https://api.cloudflare.com/client/v4/accounts/acc2"}); w.Code != http.StatusOK {
+		t.Fatalf("更新 base_url 应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if err := sh.Store.Read.QueryRow(`SELECT kind,supports_chat,supports_systemone
+		FROM upstreams WHERE id=?`, cfxID).Scan(&kind, &chat, &so); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "cloudflare" || chat != 1 || so != 1 {
+		t.Errorf("原样回传 kind 不该重置能力，得到 kind=%q chat=%d so=%d", kind, chat, so)
+	}
+
+	// state 下发 kind，前端据此渲染类型与能力开关。
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), testutil.TestBotID, "state", nil)
+	var st struct {
+		Upstreams []struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"upstreams"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+		t.Fatalf("state 不是 JSON: %v", err)
+	}
+	kinds := map[string]string{}
+	for _, u := range st.Upstreams {
+		kinds[u.Name] = u.Kind
+	}
+	if kinds["cfx"] != "cloudflare" || kinds["gem"] != "cloudflare" {
+		t.Errorf("state 下发的 kind 不对: %v", kinds)
+	}
+}
+
+// TestMiniAppUpstreamTestCloudflare：CF 渠道的连通测试走 /ai/run？——
+// 未开 chat 时测主判定（Clef），请求体 model 只带最后一段。
+func TestMiniAppUpstreamTestCloudflare(t *testing.T) {
+	env := newMiniEnv(t)
+	sh := env.sh
+
+	type capturedReq struct{ path, auth, body string }
+	got := make(chan capturedReq, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got <- capturedReq{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(raw)}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"result":{"model":"clef","answers":{"ok":{"type":"noul","noul":0.99}},`+
+			`"usage":{"input_tokens":5,"output_tokens":1}},"success":true,"errors":[],"messages":[]}`)
+	}))
+	defer srv.Close()
+
+	res, err := sh.Store.Write.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
+		VALUES ('cfu',?,'cf-key',1,1,0,1,'cloudflare')`,
+		srv.URL+"/client/v4/accounts/acc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upID, _ := res.LastInsertId()
+	if _, err := sh.Store.Write.Exec(`INSERT INTO models
+		(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES ('cfu/@cf/cloudflare/clef',0.24,0,0,0,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), testutil.TestBotID,
+		"upstream", map[string]any{"action": "test", "id": upID})
+	if w.Code != http.StatusOK {
+		t.Fatalf("CF 连通测试应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("响应不是 JSON: %v", err)
+	}
+	if out["ok"] != true || out["model"] != "cfu/@cf/cloudflare/clef" {
+		t.Errorf("连通测试结果不对: %v（错误：%v）", out, out["error"])
+	}
+	req := <-got
+	if req.path != "/client/v4/accounts/acc123/ai/run/@cf/cloudflare/clef" {
+		t.Errorf("请求路径 = %q", req.path)
+	}
+	if req.auth != "Bearer cf-key" {
+		t.Errorf("鉴权头 = %q", req.auth)
+	}
+	if !strings.Contains(req.body, `"model":"clef"`) {
+		t.Errorf("请求体 model 应只带最后一段: %s", req.body)
+	}
+}
