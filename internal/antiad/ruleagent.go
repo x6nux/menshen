@@ -8,10 +8,12 @@ package antiad
 // 设计取舍：
 //   - 运行态是**进程内存**、单飞互斥（全局规则只有一份，同时跑两轮会
 //     竞态写库并重复烧钱），见 ruleAgentRT；
-//   - 模型只从已启用的复判模型列表里挑，且必须绑定 OpenAI 兼容渠道：
-//     Eino 的 OpenAI ChatModel 只会说 /chat/completions，Anthropic /
-//     Gemini / Cloudflare / Responses 的协议它不认，宁可在 start 时用
-//     中文错误说清楚，也不要在半路拿 404；
+//   - 模型优先用全局设置 antiad_rule_model 显式指定的那个；没指定时从
+//     已启用的复判模型列表里挑第一个。无论哪条路径都要求模型已登记且
+//     启用、上游已启用且支持 chat、渠道是 OpenAI 兼容：Eino 的 OpenAI
+//     ChatModel 只会说 /chat/completions，Anthropic / Gemini /
+//     Cloudflare / Responses 的协议它不认，宁可在 start 时用中文错误
+//     说清楚，也不要在半路拿 404；
 //   - 工具全部只读 DB 或复用 T-A 的 TestRulePattern / CompileRulePattern，
 //     create_rule 的写库防线与面板 miniRuleSave 完全同源（严格编译 +
 //     全库测试 fp=0/undone=0），AI 不能绕过防误封闸门；
@@ -46,14 +48,16 @@ import (
 
 // ---- 可调上限 ----
 //
-// 这两个是 var 而不是 const：测试要在不真等 180 秒、不真跑满 12 步的
+// 这两个是 var 而不是 const：测试要在不真等 30 分钟、不真跑满 1000 步的
 // 前提下覆盖超时与步数耗尽路径。
 var (
-	// ruleAgentTimeout 是单轮规则发现的总时限。
-	ruleAgentTimeout = 180 * time.Second
+	// ruleAgentTimeout 是单轮规则发现的总时限。放宽到 30 分钟：模型要
+	// 反复试跑正则，步数上限给了 1000，时间不够会先被这里掐断。
+	ruleAgentTimeout = 1800 * time.Second
 	// ruleAgentMaxStep 是 ReAct 图的最大执行步数（模型一次 + 工具一次
-	// 各算一步，12 步约等于 6 轮工具循环）。
-	ruleAgentMaxStep = 12
+	// 各算一步，1000 步约等于 500 轮工具循环）。给足试错空间，真正的
+	// 兜底是总时限与连续创建失败保护。
+	ruleAgentMaxStep = 1000
 )
 
 const (
@@ -215,10 +219,71 @@ func StopRuleDiscovery(sh *core.Shared) bool {
 
 // ---- 模型选择 ----
 
-// pickRuleAgentModel 从全局复判模型列表（snap.ModelsFor(0)）里挑第一个
-// 满足「模型已启用 + 有支持 chat 的上游 + 上游是 OpenAI Completions
-// 渠道」的模型。返回模型全名（含上游前缀）与命中的上游。
+// ruleAgentModelHint 是显式模型配置出错时给管理员的指路文案。
+const ruleAgentModelHint = "请在「全局设置 → 默认模型 → 规则发现模型」里改选，" +
+	"或清空它以回退到复判模型列表的第一个 OpenAI 兼容模型"
+
+// pickRuleAgentModel 选择本轮规则发现的模型。
+//
+// 优先读全局设置 antiad_rule_model（形如 <上游名>/<模型ID>）：非空时必须
+// 指向一个「已登记且启用、绑定上游已启用、支持 chat、渠道 OpenAI 兼容」
+// 的模型，任何一条不满足都在 start 阶段返回明确的中文错误；留空则回退到
+// 复判模型列表（snap.ModelsFor(0)）里第一个满足同样条件的模型。
 func pickRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
+	if name := strings.TrimSpace(snap.Setting("antiad_rule_model")); name != "" {
+		return pickConfiguredRuleAgentModel(snap, name)
+	}
+	return pickFallbackRuleAgentModel(snap)
+}
+
+// pickConfiguredRuleAgentModel 校验显式指定的规则发现模型。每条错误都
+// 带上 ruleAgentModelHint，管理员照着文案就能找到该改哪个设置项。
+func pickConfiguredRuleAgentModel(snap *store.Snapshot,
+	name string) (string, *upstream.Upstream, error) {
+
+	fail := func(reason string) (string, *upstream.Upstream, error) {
+		return "", nil, fmt.Errorf("规则发现模型配置无效：%s；%s", reason, ruleAgentModelHint)
+	}
+	// 模型必须登记且启用：设置里可能残留已删除/停用的名字。
+	m := snap.Models[name]
+	if m == nil {
+		return fail(fmt.Sprintf("模型 %s 不在「模型定价」里", name))
+	}
+	if !m.Enabled {
+		return fail(fmt.Sprintf("模型 %s 已被停用", name))
+	}
+	// 规则发现只认绑定了具体上游的模型：没有前缀就无法确定路由。
+	upName := m.UpstreamName()
+	if upName == "" {
+		return fail(fmt.Sprintf("模型 %s 缺少「上游名/」前缀，无法确定绑定上游", name))
+	}
+	var u *upstream.Upstream
+	for _, cand := range snap.Upstreams {
+		if cand.Name == upName {
+			u = cand
+			break
+		}
+	}
+	if u == nil {
+		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 不存在", name, upName))
+	}
+	if u.Status != 1 {
+		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 已停用", name, upName))
+	}
+	if !u.Supports(upstream.EPChat) {
+		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 未开启 chat 能力", name, upName))
+	}
+	if k := u.EffectiveKind(); k != upstream.KindOpenAI {
+		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 是 %s 渠道，规则发现只支持 OpenAI 兼容渠道",
+			name, upName, k.Label()))
+	}
+	return name, u, nil
+}
+
+// pickFallbackRuleAgentModel 从全局复判模型列表（snap.ModelsFor(0)）里挑
+// 第一个满足「模型已启用 + 有支持 chat 的上游 + 上游是 OpenAI Completions
+// 渠道」的模型。返回模型全名（含上游前缀）与命中的上游。
+func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
 	_, llmModels := snap.ModelsFor(0)
 	if len(llmModels) == 0 {
 		return "", nil, errRuleAgentNoModels

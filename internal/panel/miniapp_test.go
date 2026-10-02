@@ -231,6 +231,9 @@ func TestMiniStateGlobalDefaults(t *testing.T) {
 	if _, ok := gd["antiad_llm_models"]; !ok {
 		t.Error("复判模型的全局默认也要下发，供输入框回显")
 	}
+	if _, ok := gd["antiad_rule_model"]; !ok {
+		t.Error("规则发现模型的全局默认也要下发，供输入框回显")
+	}
 
 	// 主管理员也拿得到（前端统一从 global_defaults 取占位值）。
 	w = miniDo(t, env.h, testutil.TestToken, env.adminInit(), testutil.TestBotID, "state", nil)
@@ -431,6 +434,40 @@ func TestMiniGlobalDefaultsAndModels(t *testing.T) {
 		map[string]any{"scope": "global", "key": "antiad_vision_model", "value": "nope/m9"})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("未登记的识图模型应 400，得到 %d", w.Code)
+	}
+
+	// 规则发现模型：单项、可留空；未登记或已停用一律 400。
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_rule_model", "value": "up1/m1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("规则发现模型应可写，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().Setting("antiad_rule_model"); got != "up1/m1" {
+		t.Errorf("规则发现模型没落上，得到 %q", got)
+	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO models (name,prompt_price,
+		completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES ('up1/m3',0,0,0,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"未登记": "nope/m9", "已停用": "up1/m3"} {
+		w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+			map[string]any{"scope": "global", "key": "antiad_rule_model", "value": value})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s的规则发现模型应 400，得到 %d：%s", name, w.Code, w.Body.String())
+		}
+	}
+	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "set",
+		map[string]any{"scope": "global", "key": "antiad_rule_model", "value": ""})
+	if w.Code != http.StatusOK {
+		t.Fatalf("规则发现模型应可留空，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if got := sh.Cache.Snap().Setting("antiad_rule_model"); got != "" {
+		t.Errorf("留空应把规则发现模型清空，得到 %q", got)
 	}
 }
 

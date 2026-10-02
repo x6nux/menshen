@@ -362,6 +362,194 @@ func TestStartRuleDiscoveryRequiresOpenAICompat(t *testing.T) {
 	})
 }
 
+// insertRuleTestUpstream 登记一个测试上游（kind 显式给，避免默认值掩盖
+// 渠道不兼容的分支）并刷新快照。
+func insertRuleTestUpstream(t *testing.T, b *core.Bot, name string,
+	status, supportsChat int64, kind string) {
+	t.Helper()
+	if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
+		VALUES (?,?,?,1,?,?,0,?)`, name, "http://x", "k", status, supportsChat, kind); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// insertRuleTestModel 登记一个测试模型并刷新快照。
+func insertRuleTestModel(t *testing.T, b *core.Bot, name string, enabled int64) {
+	t.Helper()
+	if _, err := b.Store.Write.Exec(`INSERT INTO models (name,prompt_price,
+		completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES (?,0,0,0,0,?)`, name, enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRuleAgentUsesConfiguredModel：显式配置 antiad_rule_model 时必须走它；
+// 未配置时回退逻辑照常工作。两条路径都用假上游断言请求体里的 model 名。
+func TestRuleAgentUsesConfiguredModel(t *testing.T) {
+	// capture 返回一个只回文本的假上游 handler，把请求体里的 model 记进 got。
+	capture := func(got *atomic.Value) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("解析上游请求失败: %v", err)
+			}
+			got.Store(req.Model)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(oaTextReply("本轮结束，未创建规则。")))
+		}
+	}
+
+	t.Run("指定模型", func(t *testing.T) {
+		var got atomic.Value
+		b := ruleAgentTestBot(t, capture(&got))
+		insertRuleTestModel(t, b, "fake/rule-model", 1)
+		if err := b.PutSetting("antiad_rule_model", "fake/rule-model"); err != nil {
+			t.Fatal(err)
+		}
+		if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+			t.Fatalf("启动失败: %v", err)
+		}
+		st := waitRuleAgentDone(t, 15*time.Second)
+		if st["error"] != "" {
+			t.Fatalf("本轮不应报错：%v", st)
+		}
+		if v, _ := got.Load().(string); v != "rule-model" {
+			t.Errorf("请求体 model 应为 rule-model，得到 %q", v)
+		}
+	})
+
+	t.Run("未指定回退复判列表", func(t *testing.T) {
+		var got atomic.Value
+		b := ruleAgentTestBot(t, capture(&got))
+		if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+			t.Fatalf("启动失败: %v", err)
+		}
+		st := waitRuleAgentDone(t, 15*time.Second)
+		if st["error"] != "" {
+			t.Fatalf("本轮不应报错：%v", st)
+		}
+		// fakeAI 把 antiad_llm_model 配成 llm-model，回退应选中它。
+		if v, _ := got.Load().(string); v != "llm-model" {
+			t.Errorf("回退时请求体 model 应为 llm-model，得到 %q", v)
+		}
+	})
+}
+
+// TestStartRuleDiscoveryConfiguredModelInvalid：antiad_rule_model 非空但
+// 任一条件不满足时，start 直接返回指向该设置项的中文错误，且不进入运行态。
+func TestStartRuleDiscoveryConfiguredModelInvalid(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, b *core.Bot)
+		want  string
+	}{
+		{
+			name: "模型未登记",
+			setup: func(t *testing.T, b *core.Bot) {
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "不在「模型定价」里",
+		},
+		{
+			name: "模型已停用",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestModel(t, b, "ghost/m1", 0)
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "已被停用",
+		},
+		{
+			name: "上游不存在",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestModel(t, b, "ghost/m1", 1)
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "绑定的上游 ghost 不存在",
+		},
+		{
+			name: "上游已停用",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestUpstream(t, b, "ghost", 0, 1, "openai")
+				insertRuleTestModel(t, b, "ghost/m1", 1)
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "绑定的上游 ghost 已停用",
+		},
+		{
+			name: "上游未开启 chat",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestUpstream(t, b, "ghost", 1, 0, "openai")
+				insertRuleTestModel(t, b, "ghost/m1", 1)
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "未开启 chat 能力",
+		},
+		{
+			name: "非 OpenAI 兼容渠道",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestUpstream(t, b, "ghost", 1, 1, "anthropic")
+				insertRuleTestModel(t, b, "ghost/m1", 1)
+				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "只支持 OpenAI 兼容渠道",
+		},
+		{
+			name: "旧格式没有上游前缀",
+			setup: func(t *testing.T, b *core.Bot) {
+				insertRuleTestModel(t, b, "legacy-model", 1)
+				if err := b.PutSetting("antiad_rule_model", "legacy-model"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "缺少「上游名/」前缀",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := testutil.NewTestBot(t, 1)
+			tc.setup(t, b)
+
+			err := StartRuleDiscovery(b.Shared, 1)
+			if err == nil {
+				// 兜底：错误逻辑若被改坏真的启动了，先收住这一轮再失败。
+				StopRuleDiscovery(b.Shared)
+				waitRuleAgentDone(t, 10*time.Second)
+				t.Fatalf("配置无效时 start 应返回错误")
+			}
+			for _, want := range []string{"规则发现模型配置无效", tc.want,
+				"全局设置 → 默认模型 → 规则发现模型"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("错误应包含 %q，得到 %q", want, err.Error())
+				}
+			}
+			if RuleAgentStatus(nil)["running"] == true {
+				t.Error("启动失败不应进入运行态")
+			}
+		})
+	}
+}
+
 // TestRuleAgentTimeoutAndStepExhaustion：超时与步数耗尽也必须把
 // Running 置回 false 并在 Result/Error 里说明原因（测试用可覆盖的
 // 超时/步数变量缩短，不真等 180 秒）。

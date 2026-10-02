@@ -92,6 +92,9 @@ var settingDefaults = map[string]string{
 	// 识图模型（看图片与贴纸），空则图片与贴纸不判。全局一份：它按图片去重缓存，
 	// 与哪个 bot 收到这张图无关。
 	"antiad_vision_model": "",
+	// 规则发现 Agent（AI 必封规则）指定模型，形如 <上游名>/<模型ID>；
+	// 空 = 复判模型列表里第一个 OpenAI 兼容模型（见 antiad/ruleagent.go）。
+	"antiad_rule_model": "",
 
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，

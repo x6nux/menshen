@@ -20,7 +20,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
@@ -151,6 +151,9 @@ export function SettingsPage() {
 
   const [modelEdit, setModelEdit] = useState<ModelWhich | null>(null)
   const [modelDraft, setModelDraft] = useState('')
+  // 规则发现模型是卡片内直接输入的单项：null = 还没编辑过，显示服务端值。
+  const [ruleModelDraft, setRuleModelDraft] = useState<string | null>(null)
+  const lastRuleModel = useRef<string | null>(null)
   const [editingSpec, setEditingSpec] = useState<Spec | null>(null)
   const [specDraft, setSpecDraft] = useState('')
   const [tzOpen, setTzOpen] = useState(false)
@@ -224,6 +227,32 @@ export function SettingsPage() {
         onError: (err) => toast(err.message),
       },
     )
+  }
+
+  /** submitRuleModel 提交「规则发现模型」：单项、可留空。 */
+  function submitRuleModel(value: string) {
+    const v = value.trim()
+    const current = (global.antiad_rule_model ?? '').trim()
+    // 值没变、或刚提交过同一个值（change 已提交、紧接着 blur）就不重复写。
+    if (v === current || lastRuleModel.current === v) return
+    lastRuleModel.current = v
+    setMut.mutate(
+      { scope: 'global', key: 'antiad_rule_model', value: v },
+      {
+        onSuccess: (resp) => toast(resp.note ?? '已保存'),
+        onError: (err) => toast(err.message),
+      },
+    )
+  }
+
+  /**
+   * changeRuleModel：输入即提交，但只对「清空或完整命中已启用模型」发请求，
+   * 免得打字途中的半截名字反复触发服务端 400；其余值等失焦/回车时提交。
+   */
+  function changeRuleModel(value: string) {
+    setRuleModelDraft(value)
+    const v = value.trim()
+    if (v === '' || enabledModels.some((m) => m.name === v)) submitRuleModel(v)
   }
 
   function openSpec(spec: Spec) {
@@ -398,6 +427,23 @@ export function SettingsPage() {
             onClick={() => openModel(row.which)}
           />
         ))}
+        <Box sx={{ px: 2, pt: 1.5 }}>
+          <TextField
+            fullWidth
+            size="small"
+            label="规则发现模型（AI 必封规则）"
+            placeholder="如 demo/gpt-5-mini"
+            value={ruleModelDraft ?? global.antiad_rule_model ?? ''}
+            onChange={(event) => changeRuleModel(event.target.value)}
+            onBlur={() => submitRuleModel(ruleModelDraft ?? global.antiad_rule_model ?? '')}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                submitRuleModel(ruleModelDraft ?? global.antiad_rule_model ?? '')
+              }
+            }}
+            helperText="形如 上游名/模型ID；留空 = 复判模型列表里第一个 OpenAI 兼容模型"
+          />
+        </Box>
         <Box sx={{ px: 2, pb: 1.5 }}>
           <Typography sx={{ fontSize: 12, color: 'text.secondary', lineHeight: 1.7 }}>
             按重试顺序排列；必须是「模型定价」里已登记且启用的模型。

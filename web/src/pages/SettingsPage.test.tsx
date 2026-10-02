@@ -167,6 +167,38 @@ describe('SettingsPage 特殊卡', () => {
     })
   })
 
+  it('规则发现模型：回显全局值并展示配置提示', async () => {
+    useState({
+      ...structuredClone(mockState),
+      global: { ...mockState.global, antiad_rule_model: 'demo/gpt-5-mini' },
+    })
+    await renderSettings()
+
+    expect(screen.getByLabelText('规则发现模型（AI 必封规则）')).toHaveValue('demo/gpt-5-mini')
+    expect(
+      screen.getByText('形如 上游名/模型ID；留空 = 复判模型列表里第一个 OpenAI 兼容模型'),
+    ).toBeInTheDocument()
+  })
+
+  it('规则发现模型：输入完整模型名即提交 set scope=global', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('set', bodies)
+    await renderSettings()
+
+    const input = screen.getByLabelText('规则发现模型（AI 必封规则）')
+    expect(input).toHaveValue('')
+    // 半截名字不发请求；完整命中已启用模型时才 onChange 提交。
+    fireEvent.change(input, { target: { value: 'demo/gpt' } })
+    expect(bodies).toHaveLength(0)
+    fireEvent.change(input, { target: { value: 'demo/gpt-5-mini' } })
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({
+      scope: 'global',
+      key: 'antiad_rule_model',
+      value: 'demo/gpt-5-mini',
+    })
+  })
+
   it('展示时区：常用时区 chip + 自定义输入', async () => {
     const bodies: Record<string, unknown>[] = []
     capturePost('set', bodies)

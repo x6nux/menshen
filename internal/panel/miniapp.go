@@ -433,6 +433,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 	}
 	defaults["antiad_so_models"] = snap.Setting("antiad_so_models")
 	defaults["antiad_llm_models"] = snap.Setting("antiad_llm_models")
+	defaults["antiad_rule_model"] = snap.Setting("antiad_rule_model")
 
 	out := map[string]any{
 		"me": me, "bots": bots, "chats": chats, "bot_settings": botSettings,
@@ -719,14 +720,15 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 		}
 		miniOK(w, map[string]any{"ok": true})
 		return
-	case "antiad_so_models", "antiad_llm_models", "antiad_vision_model":
+	case "antiad_so_models", "antiad_llm_models", "antiad_vision_model",
+		"antiad_rule_model":
 		// 全局默认模型（各 bot 不覆盖时用它）：与 TG 面板的「默认模型」同一份数据。
 		if !sh.IsMain(uid) {
 			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
 			return
 		}
 		snap := sh.Cache.Snap()
-		if key == "antiad_vision_model" {
+		if key == "antiad_vision_model" || key == "antiad_rule_model" {
 			if val != "" {
 				if m := snap.Models[val]; m == nil || !m.Enabled {
 					miniErr(w, http.StatusBadRequest, "该模型不在「模型」页里，或已被停用")

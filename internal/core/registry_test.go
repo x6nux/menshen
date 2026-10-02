@@ -70,7 +70,8 @@ func TestRenameUpstreamRewritesModelRefs(t *testing.T) {
 	}
 	if _, err := w.Exec(`INSERT INTO settings (k,v) VALUES
 		('antiad_so_models','["up1/m1","other/m2"]'),
-		('antiad_so_model','up1/m1')`); err != nil {
+		('antiad_so_model','up1/m1'),
+		('antiad_rule_model','up1/m1')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := w.Exec(`UPDATE bots SET so_models='["up1/m1"]',
@@ -103,6 +104,9 @@ func TestRenameUpstreamRewritesModelRefs(t *testing.T) {
 	}
 	if got := snap.Setting("antiad_so_model"); got != "up2/m1" {
 		t.Errorf("旧单值设置没改写: %q", got)
+	}
+	if got := snap.Setting("antiad_rule_model"); got != "up2/m1" {
+		t.Errorf("规则发现模型设置没改写: %q", got)
 	}
 	rec := snap.Bots[testutil.TestBotID]
 	if !slices.Equal(rec.SoModels, []string{"up2/m1"}) {

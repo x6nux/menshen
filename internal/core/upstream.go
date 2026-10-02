@@ -173,7 +173,8 @@ func rewriteModelRefs(tx *sql.Tx, rewrite func(string) string) error {
 			return err
 		}
 	}
-	for _, k := range []string{"antiad_so_model", "antiad_llm_model", "antiad_vision_model"} {
+	for _, k := range []string{"antiad_so_model", "antiad_llm_model",
+		"antiad_vision_model", "antiad_rule_model"} {
 		v, err := settingValue(tx, k)
 		if err != nil {
 			return err
