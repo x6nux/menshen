@@ -55,6 +55,19 @@ func TestMigrateOldDB(t *testing.T) {
 			supports_chat INTEGER NOT NULL DEFAULT 1,
 			supports_systemone INTEGER NOT NULL DEFAULT 0)`,
 		`INSERT INTO upstreams (name,base_url,api_key) VALUES ('old','http://x','k')`,
+		// 老形状的 ad_rules：没有 last_ads_total / last_kinds（migrate 才补）。
+		`CREATE TABLE ad_rules (id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL, pattern TEXT NOT NULL,
+			category TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'ai', enabled INTEGER NOT NULL DEFAULT 0,
+			enforce INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0,
+			last_matched INTEGER NOT NULL DEFAULT 0, last_tp INTEGER NOT NULL DEFAULT 0,
+			last_fp INTEGER NOT NULL DEFAULT 0, last_undone INTEGER NOT NULL DEFAULT 0,
+			last_scanned INTEGER NOT NULL DEFAULT 0,
+			last_tested_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL DEFAULT 0,
+			created_by INTEGER NOT NULL DEFAULT 0)`,
+		`INSERT INTO ad_rules (name,pattern) VALUES ('old','old')`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatalf("造老库失败: %v", err)
@@ -69,10 +82,21 @@ func TestMigrateOldDB(t *testing.T) {
 	defer s.Close()
 	for _, c := range [][2]string{{"bot_chats", "punish"},
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
-		{"bots", "is_main"}, {"upstreams", "kind"}} {
+		{"bots", "is_main"}, {"upstreams", "kind"},
+		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
+	}
+	// 老规则的新列默认值：0 / 空串。
+	var adsTotal int64
+	var kinds string
+	if err := s.Read.QueryRow(`SELECT last_ads_total,last_kinds FROM ad_rules
+		WHERE name='old'`).Scan(&adsTotal, &kinds); err != nil {
+		t.Fatalf("读老规则新列失败: %v", err)
+	}
+	if adsTotal != 0 || kinds != "" {
+		t.Errorf("老规则新列默认应为 0/空串，得到 %d/%q", adsTotal, kinds)
 	}
 	// 老上游没有类型：迁移默认 openai，行为与升级前一致。
 	var kind string
