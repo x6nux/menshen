@@ -16,16 +16,16 @@ const (
 	// /v1/systemone（newapi 这类同时代理两条路径的网关）。
 	KindOpenAI Kind = "openai"
 	// KindOpenAIResp：OpenAI Responses API（/v1/responses）。只有对话
-	// 能力，请求/响应由协议适配层与 chat/completions 互转（非流式）。
+	// 能力，流式事件与整包响应都由适配层与 chat/completions 互转。
 	KindOpenAIResp Kind = "openai-responses"
 	// KindAnthropic：Anthropic Messages API（/v1/messages）。只有对话
-	// 能力，非流式互转。
+	// 能力，流式事件与整包响应由适配层互转。
 	KindAnthropic Kind = "anthropic"
-	// KindGemini：Google Gemini generateContent。只有对话能力，
-	// 非流式互转。
+	// KindGemini：Google Gemini generateContent（chat 用
+	// :streamGenerateContent?alt=sse）。只有对话能力。
 	KindGemini Kind = "gemini"
 	// KindCloudflare：Cloudflare Workers AI（/ai/run/{模型ID}）。主判定
-	// 直调 Clef；开启 chat 时同样走 ai/run，非流式互转。
+	// 直调 Clef；开启 chat 时同样走 ai/run，流式帧由适配层翻译。
 	KindCloudflare Kind = "cloudflare"
 )
 
@@ -158,7 +158,7 @@ func (u *Upstream) Supports(ep Endpoint) bool {
 //     https://api.openai.com；路径自动接 /v1/chat/completions 或 /v1/responses。
 //   - Anthropic：https://api.anthropic.com，路径自动接 /v1/messages。
 //   - Gemini：https://generativelanguage.googleapis.com/v1beta，
-//     路径自动接 /models/<模型ID>:generateContent。
+//     chat 路径自动接 /models/<模型ID>:streamGenerateContent?alt=sse。
 //   - Cloudflare：到 /client/v4/accounts/<账号ID>（直连官方或兼容网关），
 //     模型 ID 填完整 CF 模型名 @cf/cloudflare/clef，路径自动接 /ai/run/<模型ID>。
 func (u *Upstream) URL(ep Endpoint, model string) (string, error) {
@@ -190,7 +190,7 @@ func (u *Upstream) URL(ep Endpoint, model string) (string, error) {
 		if id == "" {
 			return "", fmt.Errorf("模型 %q 缺少模型 ID", model)
 		}
-		return base + "/models/" + id + ":generateContent", nil
+		return base + "/models/" + id + ":streamGenerateContent?alt=sse", nil
 	}
 	p, ok := Paths[ep]
 	if !ok {

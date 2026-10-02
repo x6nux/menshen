@@ -505,6 +505,15 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		if err != nil {
 			return fail(err)
 		}
+		// 非流式响应在这里翻译回统一形状：chat → OpenAI 形状（供复判与
+		// 计费），systemone → SystemOne 答案形状（供主判定解析）。
+		// 流式分支由 StreamAdapter 边读边转，出来已经是同一形状，不能再翻一次。
+		if norm, nerr := up.NormalizeResponse(ep, raw); nerr != nil {
+			return aiResult{err: fmt.Errorf("上游 %s 响应异常: %w", upName(up), nerr),
+				stage: "解析", elapsed: time.Since(start)}
+		} else {
+			raw = norm
+		}
 	} else {
 		// 首字看门狗在首字到达时停掉，之后只剩两种兜底：客户端的整体超时
 		// （45 秒）与这里的**流空闲**超时。上游「吐两个字就挂住」时只有
@@ -524,7 +533,12 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 			cancel()
 		})
 		defer idleTimer.Stop()
-		raw, err = readChatStream(resp.Body,
+		// 各家的流式帧在这里统一转成 OpenAI 的 delta 形状；OpenAI
+		// Completions 渠道原样透传。提前放弃读取时 Close 读端，
+		// 转换 goroutine 不会卡在写上。
+		stream := up.StreamAdapter(resp.Body)
+		defer stream.Close()
+		raw, err = readChatStream(stream,
 			func() { firstSeen.Store(true); watchdog.Stop(); idleTimer.Reset(idle) },
 			func() { idleTimer.Reset(idle) })
 		if idleTripped.Load() {
@@ -538,15 +552,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		}
 	}
 
-	// 各渠道的响应在这里翻译回统一形状：chat → OpenAI 形状（供复判与
-	// 计费），systemone → SystemOne 答案形状（供主判定解析）。
-	if norm, nerr := up.NormalizeResponse(ep, raw); nerr != nil {
-		return aiResult{err: fmt.Errorf("上游 %s 响应异常: %w", upName(up), nerr),
-			stage: "解析", elapsed: time.Since(start)}
-	} else {
-		raw = norm
-	}
-
+	// 各渠道的响应翻译（流式在适配器里完成、非流式在上一段完成）。
 	usage := billing.ExtractUsage(ep, raw)
 	cost := int64(0)
 	// 按**全名**查价：模型表的主键就是 <上游名>/<模型ID>。

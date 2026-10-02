@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,22 +13,33 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestGeminiChatChannel：chat-only 渠道经协议适配层跑通复判 —— 请求体是
-// generateContent 形状、鉴权走 x-goog-api-key、强制非流式；响应翻译回
-// chat/completions 形状后，复判解析与用量计提照常工作。
+// TestGeminiChatChannel：chat-only 渠道经协议适配层跑通复判 —— 请求发
+// Gemini 的流式端点、鉴权走 x-goog-api-key；SSE 帧由适配器转成 OpenAI
+// delta 形状后，复判解析与用量计提照常工作。
 func TestGeminiChatChannel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 
 	const verdict = `{"is_ad":true,"confidence":0.9,"kind":"scam","scope":"message","severity":2,"reason":"测试"}`
-	var gotPath, gotKey, gotBody atomic.Value
+	var gotPath, gotQuery, gotKey, gotBody atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath.Store(r.URL.Path)
+		gotQuery.Store(r.URL.RawQuery)
 		gotKey.Store(r.Header.Get("x-goog-api-key"))
 		raw, _ := io.ReadAll(r.Body)
 		gotBody.Store(string(raw))
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":`+strconv.Quote(verdict)+
-			`}]}}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20}}`)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		chunk := func(text, meta string) {
+			fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":%s}]}}]%s}\n\n",
+				strconv.Quote(text), meta)
+			fl.Flush()
+		}
+		mid := len([]rune(verdict)) / 2
+		runes := []rune(verdict)
+		chunk(string(runes[:mid]), "")
+		chunk(string(runes[mid:]), `,"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20}`)
+		io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -52,13 +64,16 @@ func TestGeminiChatChannel(t *testing.T) {
 	if !v.IsAd || v.Kind != "scam" || v.Model != "gem/gemini-2.5-flash" {
 		t.Errorf("复判结果不对: %+v", v)
 	}
-	// 100 × $0.1/M + 20 × $0.4/M = $0.000018 → 9 quota。
+	// 流式 usage 汇总：100 × $0.1/M + 20 × $0.4/M = $0.000018 → 9 quota。
 	if v.Usage.PromptTokens != 100 || v.Usage.CompletionTokens != 20 || v.Cost != 9 {
 		t.Errorf("用量/成本不对: usage=%+v cost=%d", v.Usage, v.Cost)
 	}
 
-	if p := gotPath.Load().(string); p != "/models/gemini-2.5-flash:generateContent" {
+	if p := gotPath.Load().(string); p != "/models/gemini-2.5-flash:streamGenerateContent" {
 		t.Errorf("请求路径 = %q", p)
+	}
+	if q := gotQuery.Load().(string); q != "alt=sse" {
+		t.Errorf("查询串 = %q", q)
 	}
 	if k := gotKey.Load().(string); k != "gk" {
 		t.Errorf("x-goog-api-key = %q", k)
@@ -68,7 +83,7 @@ func TestGeminiChatChannel(t *testing.T) {
 		t.Errorf("请求体应带 systemInstruction: %s", body)
 	}
 	if strings.Contains(body, `"stream"`) {
-		t.Errorf("请求体不该带 stream: %s", body)
+		t.Errorf("Gemini 的流式由路径决定，请求体不该带 stream: %s", body)
 	}
 	if !strings.Contains(body, `"temperature":0`) {
 		t.Errorf("判定请求的 temperature 应为 0: %s", body)

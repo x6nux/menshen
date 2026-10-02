@@ -48,10 +48,12 @@ base_url 约定：前四种填到网关前缀（云厂商域名或自建网关�
 `/client/v4/accounts/<账号ID>`（直连官方或兼容网关都行），模型 ID 填完整
 CF 模型名（如 `@cf/cloudflare/clef`）。
 
-非 OpenAI 类型固定走非流式，响应由适配层翻译回 `chat/completions` 形状，
-判定解析、用量计提与面板开销显示都不变。chat-only 的类型（Responses /
-Anthropic / Gemini）只能用于复判与形态总结，不会出现在主判定选路里；
-给它们打开 systemone 会被服务端拒绝。
+所有对话渠道默认流式（SSE）：各家的流式事件由适配层实时转成
+`chat/completions` 的 delta 形状，首字看门狗、流空闲超时与用量汇总对任何
+渠道都一致；上游忽略 `stream` 直接回整包 JSON 时同样能解析。判定解析、
+用量计提与面板开销显示都不变。chat-only 的类型（Responses / Anthropic /
+Gemini）只能用于复判与形态总结，不会出现在主判定选路里；给它们打开
+systemone 会被服务端拒绝。
 
 只有一个上游时，启动会把旧格式模型自动补上前缀（无歧义）；有多个上游时
 不动数据，面板上会提示重新按前缀添加。

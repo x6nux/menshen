@@ -170,7 +170,7 @@ func TestURLPerKind(t *testing.T) {
 		{"openai systemone", "o", "https://api.example.com", "o/jev", "https://api.example.com/v1/systemone", KindOpenAI, EPSystemOne},
 		{"responses", "r", "https://api.openai.com", "r/gpt-5", "https://api.openai.com/v1/responses", KindOpenAIResp, EPChat},
 		{"anthropic", "a", "https://api.anthropic.com", "a/claude-sonnet-4-5", "https://api.anthropic.com/v1/messages", KindAnthropic, EPChat},
-		{"gemini", "g", "https://generativelanguage.googleapis.com/v1beta", "g/gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", KindGemini, EPChat},
+		{"gemini", "g", "https://generativelanguage.googleapis.com/v1beta", "g/gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", KindGemini, EPChat},
 		{"cloudflare", "c", "https://api.cloudflare.com/client/v4/accounts/acc123/", "c/@cf/cloudflare/clef", "https://api.cloudflare.com/client/v4/accounts/acc123/ai/run/@cf/cloudflare/clef", KindCloudflare, EPSystemOne},
 	}
 	for _, c := range cases {
@@ -215,11 +215,22 @@ func TestBuildBodyPerKind(t *testing.T) {
 	if body["model"] != "gpt-4o" || body["stream"] != true {
 		t.Errorf("OpenAI 渠道应原样透传并补 model: %v", body)
 	}
+	// chat 载荷没写 stream 时统一补 true；systemone 是 TypeSafe 原生
+	// 形态，不能带 stream。
+	body = o.BuildBody(EPChat, "o/gpt-4o", map[string]any{
+		"messages": []map[string]string{{"role": "user", "content": "x"}}})
+	if body["stream"] != true {
+		t.Errorf("chat 载荷缺 stream 时默认流式: %v", body)
+	}
+	body = o.BuildBody(EPSystemOne, "o/jev", map[string]any{"state": "x"})
+	if _, ok := body["stream"]; ok {
+		t.Errorf("systemone 不该带 stream: %v", body)
+	}
 
 	r := &Upstream{Name: "r", Kind: KindOpenAIResp}
 	body = r.BuildBody(EPChat, "r/gpt-5", payload)
-	if body["model"] != "gpt-5" || body["stream"] != false {
-		t.Errorf("Responses 渠道应带 model 且强制非流式: %v", body)
+	if body["model"] != "gpt-5" || body["stream"] != true {
+		t.Errorf("Responses 渠道应带 model 且走流式: %v", body)
 	}
 	if body["instructions"] != "SYS" {
 		t.Errorf("Responses 的 system 提示应走 instructions: %v", body)
@@ -233,8 +244,8 @@ func TestBuildBodyPerKind(t *testing.T) {
 	if body["system"] != "SYS" || body["max_tokens"] != anthropicDefaultMaxTokens {
 		t.Errorf("Anthropic 应把 system 提顶层并带 max_tokens: %v", body)
 	}
-	if _, ok := body["stream"]; ok {
-		t.Error("Anthropic 请求不该带 stream")
+	if body["stream"] != true {
+		t.Errorf("Anthropic 应走流式: %v", body)
 	}
 	if msgs, ok := body["messages"].([]map[string]string); !ok || len(msgs) != 1 || msgs[0]["role"] != "user" {
 		t.Errorf("Anthropic 的 messages 应剔掉 system: %v", body["messages"])
@@ -251,8 +262,8 @@ func TestBuildBodyPerKind(t *testing.T) {
 
 	c := &Upstream{Name: "c", Kind: KindCloudflare}
 	body = c.BuildBody(EPChat, "c/@cf/meta/llama-3.1-8b-instruct", payload)
-	if _, ok := body["stream"]; ok {
-		t.Error("Cloudflare chat 请求不该带 stream")
+	if body["stream"] != true {
+		t.Errorf("Cloudflare chat 应走流式: %v", body)
 	}
 	if _, ok := body["model"]; ok {
 		t.Error("Cloudflare chat 请求不该带 model")

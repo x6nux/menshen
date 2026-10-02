@@ -10,11 +10,11 @@ import (
 // 本文件是渠道类型与判定链路之间的协议适配层：
 //
 //	请求侧  BuildBody / SetAuth —— 把逻辑载荷改写成目标渠道的形状；
-//	响应侧  NormalizeResponse —— 把渠道响应翻译回 OpenAI chat/completions
-//	        或 SystemOne 答案形状，判定解析与计费都不用认识各家协议。
+//	响应侧  NormalizeResponse —— 非流式响应（上游忽略 stream 时）翻译回
+//	        OpenAI chat/completions 或 SystemOne 答案形状。
 //
-// 除 OpenAI Completions 外，其余渠道一律走非流式：一次读完整包再翻译。
-// 判定链路的看门狗对非流式响应限的是整次请求（默认 15s），够用且好实现。
+// 流式响应由 stream.go 的 StreamAdapter 边读边转；两条路产出同一形状，
+// 判定解析、计费都不用认识各家协议。
 
 // SetAuth 按渠道类型设置鉴权头。绝大多数走 Bearer；Anthropic 用
 // x-api-key + 版本头，Gemini 用 x-goog-api-key。
@@ -60,6 +60,14 @@ func (u *Upstream) BuildBody(ep Endpoint, model string, payload map[string]any) 
 	}
 	b := clonePayload(payload)
 	b["model"] = id
+	// 统一默认流式：chat 载荷没写 stream 时按流式发（上游忽略、回整包
+	// JSON 时读侧也能回落）。systemone 是 TypeSafe 原生形态，多带字段
+	// 会 400，绝不动。
+	if ep == EPChat {
+		if _, ok := b["stream"]; !ok {
+			b["stream"] = true
+		}
+	}
 	return b
 }
 
@@ -181,7 +189,7 @@ func bodyOpenAIResponses(model string, payload map[string]any) map[string]any {
 			input = append(input, map[string]string{"role": role, "content": m.Content})
 		}
 	}
-	body := map[string]any{"model": model, "input": input, "stream": false}
+	body := map[string]any{"model": model, "input": input, "stream": true}
 	if len(system) > 0 {
 		body["instructions"] = strings.Join(system, "\n\n")
 	}
@@ -212,7 +220,7 @@ func bodyAnthropic(model string, payload map[string]any) map[string]any {
 	if mt := maxTokensOf(payload); mt > 0 {
 		maxTokens = mt
 	}
-	body := map[string]any{"model": model, "max_tokens": maxTokens}
+	body := map[string]any{"model": model, "max_tokens": maxTokens, "stream": true}
 	if len(out) > 0 {
 		body["messages"] = out
 	}
@@ -265,7 +273,7 @@ func geminiContent(role, text string) map[string]any {
 }
 
 func bodyCloudflareChat(payload map[string]any) map[string]any {
-	body := map[string]any{}
+	body := map[string]any{"stream": true}
 	if msgs, ok := payload["messages"]; ok {
 		body["messages"] = msgs
 	}
@@ -275,8 +283,8 @@ func bodyCloudflareChat(payload map[string]any) map[string]any {
 	if mt := maxTokensOf(payload); mt > 0 {
 		body["max_tokens"] = mt
 	}
-	// 不带 stream / stream_options / user / session_id：Workers AI 的文本
-	// 模型不认这些字段，适配层固定走非流式。
+	// 不带 stream_options / user / session_id：Workers AI 的文本模型不认
+	// 这些字段；流式帧由 StreamAdapter 翻译。
 	return body
 }
 
