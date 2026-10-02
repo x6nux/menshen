@@ -791,6 +791,19 @@ func TestRuleAgentReadRecords(t *testing.T) {
 	if run.readRecords(nil) != "错误：ids 必须是非空数组" {
 		t.Errorf("空 ids 文案不对：%s", run.readRecords(nil))
 	}
+
+	// >10 个唯一 id：截断到 10，被截断的 2 个计入 ignored。
+	ids := make([]int64, 0, 12)
+	for i := 0; i < 12; i++ {
+		ids = append(ids, insertRuleAgentLog(t, b, fmt.Sprintf("广告%d", i), "ad", "deleted", "scam"))
+	}
+	var trunc map[string]any
+	if err := json.Unmarshal([]byte(run.readRecords(ids)), &trunc); err != nil {
+		t.Fatal(err)
+	}
+	if trunc["ignored"].(float64) != 2 || len(trunc["records"].([]any)) != 10 {
+		t.Errorf("超 10 条应截断并记 ignored=2：%v", trunc)
+	}
 }
 
 // TestRuleAgentListRules：返回现有规则、未测试的 last_tested_at=0/coverage=0。
@@ -811,6 +824,25 @@ func TestRuleAgentListRules(t *testing.T) {
 	}
 	if rules[0].(map[string]any)["last_tested_at"].(float64) != 0 {
 		t.Errorf("未测试规则 last_tested_at 应为 0：%v", rules[0])
+	}
+
+	// 测过的规则要透出覆盖率与按类型细分（落库 JSON 原样解析）。
+	if _, err := b.Store.Write.Exec(`UPDATE ad_rules SET last_tp=1,last_ads_total=2,
+		last_tested_at=1700000000,last_kinds=? WHERE id=?`,
+		`[{"kind":"scam","total":2,"matched":1}]`, id); err != nil {
+		t.Fatal(err)
+	}
+	var tested map[string]any
+	if err := json.Unmarshal([]byte(run.listRules()), &tested); err != nil {
+		t.Fatal(err)
+	}
+	row := tested["rules"].([]any)[0].(map[string]any)
+	if row["coverage"].(float64) != 0.5 {
+		t.Errorf("覆盖率应为 1/2=0.5：%v", row)
+	}
+	if kinds := row["last_kinds"].([]any); len(kinds) != 1 ||
+		kinds[0].(map[string]any)["kind"] != "scam" {
+		t.Errorf("last_kinds 应透出：%v", row["last_kinds"])
 	}
 }
 
