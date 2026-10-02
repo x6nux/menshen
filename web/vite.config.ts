@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
 import type { Plugin } from 'vite'
 
@@ -23,15 +24,29 @@ function mswWorkerPlugin(): Plugin {
   }
 }
 
+// 产物目录要始终保留一个占位文件：go:embed all:webdist 要求目录非空，而
+// 产物本身不入库；没有它时全新克隆的 go build / go test 会直接编译失败。
+// vite 构建会清空 outDir，所以在构建结束时把 .gitkeep 写回来（该文件入库）。
+function keepWebdistPlaceholder(): Plugin {
+  return {
+    name: 'menshen-webdist-placeholder',
+    apply: 'build',
+    closeBundle() {
+      const outDir = resolve(import.meta.dirname, '../internal/panel/webdist')
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(resolve(outDir, '.gitkeep'), '')
+    },
+  }
+}
+
 // base 固定为 /miniapp/：产物由 Go 在 /miniapp 下托管（internal/panel/miniapp.go），
 // 开发服务器也走同一路径，保证 dev 与线上引用资源的方式一致。
 export default defineConfig({
   base: '/miniapp/',
-  // 约定静态资源只走 src 的 import（进 assets/），不设 public 目录：
-  // 产物根下多出文件的话，会被 /miniapp/<其他> 的 SPA 回退遮蔽。
   // public/ 随产物复制：目前只有自托管的 telegram-web-app.js（见 index.html）。
+  // 产物根下的文件由 Go 在 SPA 回退之前直接服务（internal/panel/miniapp.go）。
   publicDir: 'public',
-  plugins: [react(), mswWorkerPlugin()],
+  plugins: [react(), mswWorkerPlugin(), keepWebdistPlaceholder()],
   build: {
     // 产物直接落到 Go 侧 go:embed 的目录；该目录不入库（见 .gitignore），
     // 由 Docker/CI 或本地 npm run build 生成。

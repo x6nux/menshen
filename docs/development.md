@@ -35,23 +35,23 @@ npm --prefix web run build        # tsc -b && vite build，产物输出到 inter
 （`VITE_MOCK=1` 只 mock 接口；页面仍要能读到 `window.Telegram.WebApp` 才过得了
 打开检查，通常直接在 Telegram 客户端里开，或在 DevTools 里注入一个假 SDK。）
 
-- **构建产物不入库**（`internal/panel/webdist/` 已 gitignore），仓库里不存在构建结果。
 - **Telegram SDK 自托管**：`web/public/telegram-web-app.js`（2026-10-02 取自
   telegram.org 的官方脚本，sha256 `3549138a7934039fe7dfd1291a4ee739bd2b705a614308053a8b08a87d85c451`）
-  随产物发布到
-  `/miniapp/telegram-web-app.js`，`index.html` 用根绝对路径 `/telegram-web-app.js`
-  引用（public 资源交给 Vite 按 base 重写，dev/build 都是 `/miniapp/...`）。
-  不要改回 CDN 外链——外链一旦拿不到，Mini App 就停在引导页。升级 SDK：替换该
-  文件、更新此处的 sha256，并重跑前端测试与 Go 托管测试。
-- Go 侧是 build tag 双实现：`go build -tags miniapp` 用 `go:embed all:webdist`
-  嵌入产物；不带 tag 时编译占位 stub，`/miniapp` 返回「前端未构建」提示（503）。
-  因此没有 Node、没有产物的机器上 `go build` / `go test` 照常工作。
+  随产物发布到 `/miniapp/telegram-web-app.js`，`index.html` 用根绝对路径
+  `/telegram-web-app.js` 引用（public 资源交给 Vite 按 base 重写）。不要改回 CDN
+  外链——外链一旦拿不到，Mini App 就停在引导页。升级 SDK：替换该文件、更新此处的
+  sha256，并重跑前端测试与 Go 托管测试。
+- **构建产物不入库、默认嵌入**（`internal/panel/webdist/` 只提交一个 `.gitkeep` 占位；
+  其余内容 gitignore）。Go 侧 `go:embed all:webdist` **默认编译**，不需要任何 build tag：
+  - 跑过 `npm --prefix web run build` 后，`go build` / `go test` 直接嵌入真实前端；
+  - 没跑过（全新克隆）时目录里只有占位文件，编译与测试照常工作，`/miniapp`
+    运行时返回「前端未构建」提示（503），提示页会告诉你怎么构建。
 - 托管路由：`/miniapp/assets/*` 长期强缓存；产物根下的文件（自托管 SDK 等）短缓存
   `max-age=3600`；其余未匹配路径回退入口页，`/miniapp/api` 绝不回退。
-- 本地要看真实页面：先 `npm --prefix web run build`，再 `go build -tags miniapp`。
-- `docker build` 会自动构建前端并带 tag 编译（Dockerfile 的 web 阶段），部署无需手工构建前端。
-- CI 会跑 `go test -tags miniapp ./...`（此时 webdist 已构建），本地要复现同样先
-  `npm --prefix web run build`。
+- 本地要看真实页面：先 `npm --prefix web run build`，再 `go build`（无需 tag）。
+- `docker build` 会自动构建前端并嵌入（Dockerfile 的 web 阶段），部署无需手工构建前端。
+- CI 顺序：先 `npm ci / lint / test / typecheck / build`，再 `go vet`、`go test ./...`
+  （此时 webdist 已构建）；另跑一次 `go build ./...` 验证无产物的全新克隆也能编译。
 
 ## 发布镜像
 

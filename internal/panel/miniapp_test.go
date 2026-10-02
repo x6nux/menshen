@@ -1042,8 +1042,8 @@ func TestMiniAppChatBulkUpdate(t *testing.T) {
 }
 
 // TestMiniAppServesEmbeddedApp：/miniapp 由嵌入的前端产物托管。
-// 带 -tags miniapp 且已 npm --prefix web run build 时验证真实产物；
-// 无产物或 untagged 时验证 503 占位页（不跳过整个测试，两条路径都要有回归）。
+// 已 npm --prefix web run build 时验证真实产物；产物缺失（全新克隆，webdist
+// 里只有 .gitkeep）时验证 503 占位页（不跳过整个测试，两条路径都要有回归）。
 func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	env := newMiniEnv(t)
 	get := func(path string) *httptest.ResponseRecorder {

@@ -137,4 +137,4 @@ bot 时自动设置（`setChatMenuButton`，只挂在管理员私聊里）。
 全部配置项都能在 Mini App 里读写：上游、模型、机器人、群组、全局与单 bot
 参数、白名单、管理员、联合封禁、判定记录与申诉单。鉴权用 Telegram WebApp
 的 `initData` 验签（24 小时有效期），权限与面板一致。前端由 `docker build`
-的 web 阶段构建并带 `-tags miniapp` 嵌入二进制，部署无需手工构建前端。
+的 web 阶段构建并默认嵌入二进制（无需 build tag），部署无需手工构建前端。

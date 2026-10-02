@@ -1,5 +1,7 @@
-//go:build miniapp
-
+// Mini App 的 go:embed 嵌入口（默认编译，不需要 build tag）：
+// web/ 的构建产物输出到 internal/panel/webdist，npm run build 会顺带写回
+// 一个占位文件 .gitkeep（该文件入库，保证全新克隆在没跑前端构建时也能
+// go build / go test——此时 index.html 不存在，运行时给「前端未构建」提示页）。
 package panel
 
 import (
@@ -9,9 +11,7 @@ import (
 
 //go:generate sh -c "cd ../../web && npm run build"
 
-// miniAppDist 是 web/ 的构建产物（npm --prefix web run build 输出到
-// internal/panel/webdist）。产物不入库：只有带 -tags miniapp 编译
-// （Docker/CI 会先构建前端）时才会嵌入；不带 tag 的构建走 miniapp_stub.go。
+// miniAppDist 是 web/ 的构建产物；未构建时只有 .gitkeep。
 //
 //go:embed all:webdist
 var miniAppDist embed.FS

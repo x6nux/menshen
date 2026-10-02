@@ -38,7 +38,7 @@ const miniBotIDHeader = "X-Bot-Id"
 // MiniAppHandler 返回 /miniapp 的处理器；由 main 组合进 HTTP 服务。
 //
 // 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
-//   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
+//   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（没跑 npm run build）时 503 构建提示
 //   - GET/HEAD  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
 //   - GET/HEAD  /miniapp/<其他>     → 产物根下的普通文件（如自托管 SDK）；否则 SPA 回退到入口页（无产物则 404）
 //   - POST      /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
@@ -136,7 +136,7 @@ func writeHTML(w http.ResponseWriter, r *http.Request, status int, body string) 
 }
 
 // miniAppMissingHTML 是产物缺失时的占位页：文案直接给出构建方式，
-// 避免「忘了带 -tags miniapp」时只看到一片空白。
+// 避免「忘了 npm run build」时只看到一片空白。
 const miniAppMissingHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -147,7 +147,7 @@ const miniAppMissingHTML = `<!doctype html>
 <body style="font:15px/1.7 -apple-system,BlinkMacSystemFont,sans-serif;max-width:34em;margin:12vh auto;padding:0 1.5em;color:#1a1a1a">
 <h1 style="font-size:20px">前端未构建</h1>
 <p>当前二进制没有内嵌 Mini App 前端产物。</p>
-<p>本地开发：<code>npm --prefix web run build</code> 后带 <code>-tags miniapp</code> 重新构建；<br>
+<p>本地开发：<code>npm --prefix web run build</code> 后重新 <code>go build</code>；<br>
 部署构建：<code>docker build</code>（Dockerfile 会先构建前端再嵌入）。</p>
 </body>
 </html>`

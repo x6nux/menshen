@@ -24,9 +24,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 # 用 web 阶段的新鲜产物覆盖构建上下文里的（宿主机 webdist 已被 .dockerignore
-# 排除）。-tags miniapp 才会嵌入前端；不带 tag 的本地构建只编译出占位 stub。
+# 排除）。产物缺失时运行时给「前端未构建」503 提示页，编译本身不受影响。
 COPY --from=web /internal/panel/webdist ./internal/panel/webdist
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags miniapp \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-s -w -X 'main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
     -o /out/menshen .
 

@@ -27,8 +27,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # 前端工程（web/）：先装依赖并构建。产物不入库，而下面
-      # go test -tags miniapp 会 go:embed webdist，必须在 CI 里现构建。
+      # 前端工程（web/）：先装依赖并构建。产物不入库，而 Go 侧默认
+      # go:embed webdist，必须在 CI 里现构建。
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -47,11 +47,9 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
-      # 不带 tag：走 miniapp_stub.go 的占位路径，503 分支由测试覆盖。
+      # 默认嵌入上面构建好的前端产物，覆盖托管逻辑与产物内容。
       - run: go test ./...
-      # 带 tag：嵌入上面构建好的前端产物，覆盖托管逻辑与产物内容。
-      - run: go test -tags miniapp ./...
-      # 不带 tag 的构建：验证无产物的仓库照常编译。
+      # 编译检查：没有产物（webdist 里只有 .gitkeep）的全新克隆也照常编译。
       - run: go build ./...
       # 版本号写死在 main.go，tag 只是发布动作。两者不一致的话，镜像叫 2.3.0，
       # -version 却打印旧版本号，线上排查时会被它误导。
