@@ -67,7 +67,7 @@ export function MinePage() {
             />
             <ListRow
               primary="AI 必封规则"
-              secondary="AI 发现候选、全库误封测试与强制处置"
+              secondary="AI 发现规则、覆盖率测试与强制处置"
               chevron
               onClick={() => nav.push({ k: 'rules' })}
             />
