@@ -1694,7 +1694,8 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 func miniRuleList(sh *core.Shared) ([]map[string]any, error) {
 	rows, err := sh.Store.Read.Query(`SELECT id,name,pattern,category,note,source,
 		enabled,enforce,hits,last_matched,last_tp,last_fp,last_undone,
-		last_scanned,last_tested_at,created_at FROM ad_rules ORDER BY id`)
+		last_scanned,last_tested_at,last_ads_total,last_kinds,
+		created_at FROM ad_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1703,12 +1704,12 @@ func miniRuleList(sh *core.Shared) ([]map[string]any, error) {
 	for rows.Next() {
 		var (
 			id, en, enf, hits, lastMatched, tp, fp, undone, scanned, tested,
-			created int64
-			name, pattern, category, note, src string
+			lastAdsTotal, created int64
+			name, pattern, category, note, src, lastKinds string
 		)
 		if err := rows.Scan(&id, &name, &pattern, &category, &note, &src,
 			&en, &enf, &hits, &lastMatched, &tp, &fp, &undone, &scanned,
-			&tested, &created); err != nil {
+			&tested, &lastAdsTotal, &lastKinds, &created); err != nil {
 			return nil, err
 		}
 		out = append(out, map[string]any{
@@ -1718,7 +1719,9 @@ func miniRuleList(sh *core.Shared) ([]map[string]any, error) {
 			"hits": hits, "last_matched": lastMatched,
 			"last_tp": tp, "last_fp": fp, "last_undone": undone,
 			"last_scanned": scanned, "last_tested_at": tested,
-			"created_at": created,
+			"last_ads_total": lastAdsTotal,
+			"last_kinds":     antiad.ParseRuleKindsJSON(lastKinds),
+			"created_at":     created,
 		})
 	}
 	return out, rows.Err()
@@ -1954,8 +1957,10 @@ func miniRuleExists(sh *core.Shared, id int64) bool {
 // last_matched（最近命中时刻）不在这里动：它由判定路径的 BumpRuleHits 维护。
 func miniRuleWriteTest(sh *core.Shared, id int64, r antiad.RuleTestResult) error {
 	_, err := sh.Store.Write.Exec(`UPDATE ad_rules
-		SET last_tested_at=?,last_scanned=?,last_tp=?,last_fp=?,last_undone=?
-		WHERE id=?`, time.Now().Unix(), r.Scanned, r.TP, r.FP, r.Undone, id)
+		SET last_tested_at=?,last_scanned=?,last_tp=?,last_fp=?,last_undone=?,
+		    last_ads_total=?,last_kinds=?
+		WHERE id=?`, time.Now().Unix(), r.Scanned, r.TP, r.FP, r.Undone,
+		r.AdsTotal, antiad.RuleKindsJSON(r.Kinds), id)
 	return err
 }
 
@@ -1972,9 +1977,17 @@ func miniRuleTestJSON(r antiad.RuleTestResult) map[string]any {
 		}
 		return out
 	}
+	kinds := make([]map[string]any, 0, len(r.Kinds))
+	for _, k := range r.Kinds {
+		kinds = append(kinds, map[string]any{
+			"kind": k.Kind, "total": k.Total, "matched": k.Matched,
+			"coverage": k.Coverage(),
+		})
+	}
 	return map[string]any{
 		"pattern": r.Pattern, "scanned": r.Scanned, "matched": r.Matched,
 		"tp": r.TP, "fp": r.FP, "undone": r.Undone, "neutral": r.Neutral,
+		"ads_total": r.AdsTotal, "coverage": r.Coverage(), "kinds": kinds,
 		"tp_samples":     samples(r.TPSamples),
 		"fp_samples":     samples(r.FPSamples),
 		"undone_samples": samples(r.UndoneSamples),

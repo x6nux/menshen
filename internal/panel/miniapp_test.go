@@ -1732,6 +1732,29 @@ func TestMiniRulesCRUD(t *testing.T) {
 	if test["fp"].(float64) != 0 || test["tp"].(float64) != 1 {
 		t.Fatalf("重跑测试结果不对：%v", test)
 	}
+	// 覆盖率契约：这一轮只有 1 条已确认广告且被命中 → 分母 1、覆盖率 1。
+	if test["ads_total"].(float64) != 1 || test["coverage"].(float64) != 1 {
+		t.Fatalf("测试响应应带覆盖率：%v", test)
+	}
+	kinds, _ := test["kinds"].([]any)
+	if len(kinds) != 1 {
+		t.Fatalf("测试响应应带按类型细分：%v", test["kinds"])
+	}
+	// 这条流水的 ad_kind 是 'none'（见测试里 INSERT 的列值），不是 promo。
+	if kind, _ := kinds[0].(map[string]any)["kind"].(string); kind != "none" {
+		t.Fatalf("按类型细分应为 none：%v", kinds[0])
+	}
+	// 写回落库：列表与详情不用重测就能显示覆盖率。
+	var lastAdsTotal int64
+	var lastKinds string
+	if err := sh.Store.Read.QueryRow(
+		`SELECT last_ads_total,last_kinds FROM ad_rules WHERE id=?`,
+		id).Scan(&lastAdsTotal, &lastKinds); err != nil {
+		t.Fatal(err)
+	}
+	if lastAdsTotal != 1 || !strings.Contains(lastKinds, `"kind":"none"`) {
+		t.Errorf("覆盖率未写回：ads=%d kinds=%s", lastAdsTotal, lastKinds)
+	}
 
 	// 测试干净后允许开强制。
 	if w = mainDo(map[string]any{"action": "enforce", "id": id,
@@ -1764,10 +1787,13 @@ func TestMiniRulesCRUD(t *testing.T) {
 	for _, k := range []string{"id", "name", "pattern", "category", "note",
 		"source", "enabled", "enforce", "hits", "last_matched", "last_tp",
 		"last_fp", "last_undone", "last_scanned", "last_tested_at",
-		"created_at"} {
+		"last_ads_total", "last_kinds", "created_at"} {
 		if _, ok := row[k]; !ok {
 			t.Errorf("列表缺少字段 %s：%v", k, row)
 		}
+	}
+	if row["last_ads_total"].(float64) != 1 {
+		t.Errorf("列表应带覆盖率分母：%v", row["last_ads_total"])
 	}
 	if row["source"] != "ai" || row["enabled"] != true || row["enforce"] != true {
 		t.Errorf("列表内容不对：%v", row)
