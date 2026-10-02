@@ -324,6 +324,11 @@ export const mockRules: Rule[] = [
     last_undone: 0,
     last_scanned: 1200,
     last_tested_at: 1700000500,
+    last_ads_total: 120,
+    last_kinds: [
+      { kind: 'scam', total: 100, matched: 9 },
+      { kind: 'promo', total: 20, matched: 0 },
+    ],
     created_at: 1699990000,
   },
   {
@@ -342,6 +347,8 @@ export const mockRules: Rule[] = [
     last_undone: 1,
     last_scanned: 1200,
     last_tested_at: 1700000500,
+    last_ads_total: 0,
+    last_kinds: [],
     created_at: 1699990000,
   },
 ]
@@ -353,6 +360,7 @@ export const mockRuleAgent: RuleAgent = {
   result: '',
   error: '',
   created_rule_id: 0,
+  created_rule_ids: [],
   steps: [],
 }
 
@@ -364,6 +372,12 @@ export const mockRuleTest: RuleTest = {
   fp: 2,
   undone: 1,
   neutral: 1,
+  ads_total: 96,
+  coverage: 0.125,
+  kinds: [
+    { kind: 'scam', total: 80, matched: 12, coverage: 0.15 },
+    { kind: 'promo', total: 16, matched: 0, coverage: 0 },
+  ],
   tp_samples: [
     {
       id: 9812,

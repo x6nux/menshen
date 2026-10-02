@@ -322,6 +322,9 @@ describe('RuleDetailPage', () => {
       fp: 3,
       undone: 1,
       neutral: 0,
+      ads_total: 1200,
+      coverage: 0,
+      kinds: [],
       tp_samples: [
         {
           id: 9812,
@@ -486,6 +489,9 @@ describe('RuleDetailPage', () => {
       fp: 3,
       undone: 0,
       neutral: 0,
+      ads_total: 1200,
+      coverage: 0,
+      kinds: [],
       tp_samples: [],
       fp_samples: [fpSample],
       undone_samples: [],

@@ -313,7 +313,20 @@ export interface Rule {
   last_undone: number
   last_scanned: number
   last_tested_at: number
+  /** 最近测试的覆盖率分母（已确认广告总数）；0 = 没测过/无广告。 */
+  last_ads_total: number
+  /** 最近测试的按类型细分（落库数据，无 coverage 字段，前端现算）。 */
+  last_kinds: RuleKindStat[]
   created_at: number
+}
+
+/** RuleKindStat 是按 ad_kind 细分的覆盖率。 */
+export interface RuleKindStat {
+  kind: string
+  total: number
+  matched: number
+  /** 工具/测试响应里带；落库列表数据没有，前端按 matched/total 现算。 */
+  coverage?: number
 }
 
 export interface RulesResp {
@@ -345,6 +358,12 @@ export interface RuleTest {
   fp: number
   undone: number
   neutral: number
+  /** 扫描窗口内已确认广告总数（覆盖率分母）。 */
+  ads_total: number
+  /** 总体覆盖率（0-1）；ads_total=0 时为 0。 */
+  coverage: number
+  /** 按 ad_kind 的覆盖率细分。 */
+  kinds: RuleKindStat[]
   tp_samples: RuleSample[]
   fp_samples: RuleSample[]
   undone_samples: RuleSample[]
@@ -365,7 +384,10 @@ export interface RuleAgent {
   finished_at: number
   result: string
   error: string
+  /** 本轮第一条创建的规则（旧字段，兼容保留）。 */
   created_rule_id: number
+  /** 本轮创建的全部规则 id；无创建时是空数组。 */
+  created_rule_ids: number[]
   steps: RuleAgentStep[]
 }
 

@@ -108,7 +108,12 @@ export const handlers = [
       case 'agent_start':
         return HttpResponse.json({
           ok: true,
-          agent: { ...mockRuleAgent, running: true, started_at: 1700000600 },
+          agent: {
+            ...mockRuleAgent,
+            running: true,
+            started_at: 1700000600,
+            created_rule_ids: [],
+          },
         })
       case 'agent_stop':
         return HttpResponse.json({ ok: true, stopped: true })
