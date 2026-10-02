@@ -1,7 +1,8 @@
 // 全局设置（计划 3.5 / 4.10，仅主管理员；次管按无权限处理）：
 // - 总开关：antiad_enabled / alert_copy_main / gban_enabled，Switch 乐观更新，
 //   提交必须是字符串 '1'/'0'（对应旧 TestMiniAppGlobalTogglesValidJS 的迁移不变量）；
-// - 默认模型：判定/复判/识图，抽屉内已启用模型快选 + 逗号输入，按重试顺序；
+// - 默认模型：判定/复判/识图/规则发现，抽屉内已启用模型快选；判定与复判
+//   是逗号列表（按重试顺序），识图与规则发现是单项；
 // - 主题折叠卡（state.sections）：卡头「已设置 N 项」；逐项智能控件——
 //   toggle → Switch、number → 抽屉（时长类预设按 spec.min/max 过滤并显示换算）；
 // - 展示时区 / 群内提示附加链接 / 形态摘要 / 修正文本。
@@ -20,7 +21,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
@@ -76,7 +77,10 @@ const MASTER_TOGGLES: { key: string; label: string; hint: string }[] = [
   { key: 'gban_enabled', label: '联合封禁', hint: '关闭后联封名单不再自动执行' },
 ]
 
-type ModelWhich = 'so' | 'llm' | 'vision'
+type ModelWhich = 'so' | 'llm' | 'vision' | 'rule'
+
+/** SINGLE_MODELS 是单值模型项：识图与规则发现各只接受一个模型。 */
+const SINGLE_MODELS: ReadonlySet<ModelWhich> = new Set(['vision', 'rule'])
 
 const MODEL_ROWS: { which: ModelWhich; key: string; label: string; hint: string }[] = [
   {
@@ -92,6 +96,12 @@ const MODEL_ROWS: { which: ModelWhich; key: string; label: string; hint: string 
     hint: '按重试顺序，逗号分隔',
   },
   { which: 'vision', key: 'antiad_vision_model', label: '识图模型', hint: '留空 = 图片与贴纸不判' },
+  {
+    which: 'rule',
+    key: 'antiad_rule_model',
+    label: '规则发现模型（AI 必封规则）',
+    hint: '留空 = 复判模型列表里第一个 OpenAI 兼容模型',
+  },
 ]
 
 /** SettingsSection 是设置主题折叠卡：卡头显示已设置项数，展开后渲染子行。 */
@@ -151,9 +161,6 @@ export function SettingsPage() {
 
   const [modelEdit, setModelEdit] = useState<ModelWhich | null>(null)
   const [modelDraft, setModelDraft] = useState('')
-  // 规则发现模型是卡片内直接输入的单项：null = 还没编辑过，显示服务端值。
-  const [ruleModelDraft, setRuleModelDraft] = useState<string | null>(null)
-  const lastRuleModel = useRef<string | null>(null)
   const [editingSpec, setEditingSpec] = useState<Spec | null>(null)
   const [specDraft, setSpecDraft] = useState('')
   const [tzOpen, setTzOpen] = useState(false)
@@ -195,12 +202,14 @@ export function SettingsPage() {
   function openModel(which: ModelWhich) {
     const row = MODEL_ROWS.find((r) => r.which === which)
     if (!row) return
-    setModelDraft(which === 'vision' ? (global[row.key] ?? '') : parseModelList(global[row.key]))
+    setModelDraft(
+      SINGLE_MODELS.has(which) ? (global[row.key] ?? '') : parseModelList(global[row.key]),
+    )
     setModelEdit(which)
   }
 
   function toggleModelChip(name: string) {
-    if (modelEdit === 'vision') {
+    if (modelEdit !== null && SINGLE_MODELS.has(modelEdit)) {
       setModelDraft(modelDraft.trim() === name ? '' : name)
       return
     }
@@ -227,32 +236,6 @@ export function SettingsPage() {
         onError: (err) => toast(err.message),
       },
     )
-  }
-
-  /** submitRuleModel 提交「规则发现模型」：单项、可留空。 */
-  function submitRuleModel(value: string) {
-    const v = value.trim()
-    const current = (global.antiad_rule_model ?? '').trim()
-    // 值没变、或刚提交过同一个值（change 已提交、紧接着 blur）就不重复写。
-    if (v === current || lastRuleModel.current === v) return
-    lastRuleModel.current = v
-    setMut.mutate(
-      { scope: 'global', key: 'antiad_rule_model', value: v },
-      {
-        onSuccess: (resp) => toast(resp.note ?? '已保存'),
-        onError: (err) => toast(err.message),
-      },
-    )
-  }
-
-  /**
-   * changeRuleModel：输入即提交，但只对「清空或完整命中已启用模型」发请求，
-   * 免得打字途中的半截名字反复触发服务端 400；其余值等失焦/回车时提交。
-   */
-  function changeRuleModel(value: string) {
-    setRuleModelDraft(value)
-    const v = value.trim()
-    if (v === '' || enabledModels.some((m) => m.name === v)) submitRuleModel(v)
   }
 
   function openSpec(spec: Spec) {
@@ -396,7 +379,7 @@ export function SettingsPage() {
   }
 
   const modelDisplay = (which: ModelWhich, key: string): string => {
-    if (which === 'vision') return global[key] || '未设置'
+    if (SINGLE_MODELS.has(which)) return global[key] || '未设置'
     return parseModelList(global[key]) || '未设置'
   }
 
@@ -427,26 +410,9 @@ export function SettingsPage() {
             onClick={() => openModel(row.which)}
           />
         ))}
-        <Box sx={{ px: 2, pt: 1.5 }}>
-          <TextField
-            fullWidth
-            size="small"
-            label="规则发现模型（AI 必封规则）"
-            placeholder="如 demo/gpt-5-mini"
-            value={ruleModelDraft ?? global.antiad_rule_model ?? ''}
-            onChange={(event) => changeRuleModel(event.target.value)}
-            onBlur={() => submitRuleModel(ruleModelDraft ?? global.antiad_rule_model ?? '')}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                submitRuleModel(ruleModelDraft ?? global.antiad_rule_model ?? '')
-              }
-            }}
-            helperText="形如 上游名/模型ID；留空 = 复判模型列表里第一个 OpenAI 兼容模型"
-          />
-        </Box>
-        <Box sx={{ px: 2, pb: 1.5 }}>
+        <Box sx={{ px: 2, py: 1.5 }}>
           <Typography sx={{ fontSize: 12, color: 'text.secondary', lineHeight: 1.7 }}>
-            按重试顺序排列；必须是「模型定价」里已登记且启用的模型。
+            模型必须是「模型定价」里已登记且启用的；判定与复判列表按重试顺序排列。
           </Typography>
         </Box>
       </SectionCard>
@@ -566,7 +532,7 @@ export function SettingsPage() {
         submitText="保存"
         onSubmit={submitModel}
       >
-        {modelEdit === 'vision' ? (
+        {modelEdit !== null && SINGLE_MODELS.has(modelEdit) ? (
           <TextField
             fullWidth
             size="small"
@@ -574,7 +540,11 @@ export function SettingsPage() {
             placeholder="如 demo/gpt-5-mini"
             value={modelDraft}
             onChange={(event) => setModelDraft(event.target.value)}
-            helperText="留空 = 图片与贴纸不判"
+            helperText={
+              modelEdit === 'vision'
+                ? '留空 = 图片与贴纸不判'
+                : '形如 上游名/模型ID；留空 = 复判模型列表里第一个 OpenAI 兼容模型'
+            }
           />
         ) : (
           <TextField
@@ -597,7 +567,7 @@ export function SettingsPage() {
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 0.75 }}>
               {enabledModels.map((m) => {
                 const picked =
-                  modelEdit === 'vision'
+                  modelEdit !== null && SINGLE_MODELS.has(modelEdit)
                     ? modelDraft.trim() === m.name
                     : modelDraft
                         .split(',')
