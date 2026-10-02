@@ -321,18 +321,29 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 	return llm, nil
 }
 
-// applyJoinMute 限制发言并在群里挂出自助解除入口。
+// applyJoinMute 限制发言并在群里挂出自助解除入口（进群冷判定专用）。
 //
 // 禁言是**无限期**的（不给 until_date），因为解除的条件是「本人改正
 // 账号资料」而不是「等够时间」。给时限的话，广告号只要熬过去就能开工，
 // 而改正过的人却还要继续等。
 func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
+	applyJoinMuteNotify(b, conf, u, v, bio, "进群冷判定", conf.GroupAlert)
+}
+
+// applyJoinMuteNotify 是 applyJoinMute 的展开：note 写进流水说明，announce
+// 决定自己发不发群内通知。
+//
+// 显式 /check 判成广告时必须 announce=true：群内展示默认关，自动通知被吃掉
+// 后管理员看不到任何回执，会以为命令没生效（线上真实反馈）。
+func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict,
+	bio, note string, announce bool) {
+
 	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
 		"chat_id": conf.ChatID, "user_id": u.ID,
 		"permissions": MutedPermissions(),
 	}); !ok {
 		slog.Warn("冷判定：限制发言失败",
-			"chat", conf.ChatID, "uid", u.ID, "tg", desc)
+			"chat", conf.ChatID, "uid", u.ID, "来源", note, "tg", desc)
 		return
 	}
 
@@ -345,13 +356,13 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 	// 是这条冷判定的记录卡片，被限制的人点进来是申诉入口。
 	logID := logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
 		From: u, Text: joinProfileText(u, bio, v)},
-		v, "join_muted", "进群冷判定")
+		v, "join_muted", note)
 
 	// 群内通知与命中告警共用「群内展示」开关（conf.GroupAlert）：群主不想
 	// 让 bot 说话时，禁言照常执行，只是不在群里挂出来。发出来就安排到点
 	// 自动撤回——通知的信息价值在本人看到之后就没有了，申诉入口在私聊里。
 	// 静默开关在 sendGroup 里已经生效。明显账号（高置信高危害）只弹一小会。
-	if conf.GroupAlert {
+	if announce {
 		// 群内只给半行短结论；完整理由留在 join_mutes 里（申诉入口与详情用）。
 		groupText := verdictBrief(v)
 		if groupText == "" {
@@ -365,8 +376,8 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。
 	deleteJoinNotice(b, conf.ChatID, u.ID)
 
-	slog.Info("冷判定：已限制发言",
-		"chat", conf.ChatID, "uid", u.ID, "置信度", v.Confidence)
+	slog.Info("反广告：资料判定已限制发言",
+		"chat", conf.ChatID, "uid", u.ID, "来源", note, "置信度", v.Confidence)
 }
 
 // joinProfileText 把进群资料渲染成流水正文。

@@ -325,6 +325,11 @@ func TestCheckProfileReviewNotShieldedByProfileOK(t *testing.T) {
 	if fake.CountCalls("restrictChatMember") == 0 {
 		t.Error("资料判成广告号后应限制发言")
 	}
+	// 群内展示默认关的群里，判成广告号也必须把结果发回群：没有回执，
+	// 管理员会以为 /check 根本没生效（线上真实反馈）。
+	if fake.CountCalls("sendMessage") == 0 {
+		t.Error("判成广告号的资料复查也必须回执")
+	}
 	if n := countRows(t, b, `SELECT COUNT(*) FROM profile_ok`); n != 0 {
 		t.Errorf("资料判成广告号后应撤销原有放行，剩 %d 行", n)
 	}
