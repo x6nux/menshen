@@ -1557,3 +1557,168 @@ func TestMiniAppUpstreamTestCloudflare(t *testing.T) {
 		t.Errorf("请求体 model 应只带最后一段: %s", req.body)
 	}
 }
+
+// TestMiniRulesCRUD：AI 必封规则只有主管理员能维护；保存自动跑全库测试，
+// 检出误封（last_fp>0）时 enforce 被服务端挡下，重跑测试干净后才允许；
+// 列表字段齐全；停用会同时清掉 enforce；最后可删除。
+func TestMiniRulesCRUD(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterTestBot(t, sh, testToken2, 43, 888)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	sub := signInitData(t, testToken2, map[string]string{
+		"auth_date": strconv.FormatInt(env.now, 10), "user": `{"id":888}`})
+
+	// 次管：403。
+	w := miniDo(t, env.h, testToken2, sub, 43, "rules",
+		map[string]any{"action": "list"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("次管访问必封规则应 403，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	mainDo := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return miniDo(t, env.h, testutil.TestToken, env.adminInit(),
+			testutil.TestBotID, "rules", body)
+	}
+	decode := func(w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("响应不是 JSON：%v（%s）", err, w.Body.String())
+		}
+		return out
+	}
+
+	// 造一条命中该正则的「正常」流水：保存后的自动测试必须把它算成误封。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,555,1,'minirule测试词正常聊天','clean',0.9,'so','none','none','',?,?)`,
+		env.now, testutil.TestBotID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 保存：自动测试应报 1 条误封。
+	w = mainDo(map[string]any{"action": "save", "name": "Mini 规则",
+		"pattern": "minirule测试词", "category": "promo", "note": "说明"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("主管理员保存应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	saved := decode(w)
+	id := int64(saved["id"].(float64))
+	if id == 0 || saved["ok"] != true {
+		t.Fatalf("保存响应不对：%v", saved)
+	}
+	test, _ := saved["test"].(map[string]any)
+	if test == nil || test["fp"].(float64) != 1 || test["tp"].(float64) != 0 {
+		t.Fatalf("保存自动测试结果不对：%v", test)
+	}
+
+	// 重复正则与非法正则都要拒绝。
+	w = mainDo(map[string]any{"action": "save", "name": "重复",
+		"pattern": "minirule测试词"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("重复正则应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	w = mainDo(map[string]any{"action": "save", "name": "坏正则", "pattern": "["})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("非法正则应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// 启用。
+	if w = mainDo(map[string]any{"action": "toggle", "id": id,
+		"enabled": true}); w.Code != http.StatusOK {
+		t.Fatalf("启用应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+
+	// 有误封时不允许开强制。
+	w = mainDo(map[string]any{"action": "enforce", "id": id, "enforce": true})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("检出误封时开强制应 400，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "疑似误封") {
+		t.Errorf("错误文案应说明误封：%q", msg)
+	}
+
+	// 把那条误封改成已确认广告，重跑测试后 last_fp 归零。
+	if _, err := sh.Store.Write.Exec(`UPDATE antiad_log
+		SET verdict='ad', action='deleted'
+		WHERE text='minirule测试词正常聊天'`); err != nil {
+		t.Fatal(err)
+	}
+	w = mainDo(map[string]any{"action": "test", "id": id})
+	if w.Code != http.StatusOK {
+		t.Fatalf("重跑测试应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	test, _ = decode(w)["test"].(map[string]any)
+	if test["fp"].(float64) != 0 || test["tp"].(float64) != 1 {
+		t.Fatalf("重跑测试结果不对：%v", test)
+	}
+
+	// 测试干净后允许开强制。
+	if w = mainDo(map[string]any{"action": "enforce", "id": id,
+		"enforce": true}); w.Code != http.StatusOK {
+		t.Fatalf("测试干净后开强制应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var en, enf, hits, scanned int64
+	if err := sh.Store.Read.QueryRow(`SELECT enabled,enforce,hits,last_scanned
+		FROM ad_rules WHERE id=?`, id).Scan(&en, &enf, &hits, &scanned); err != nil {
+		t.Fatal(err)
+	}
+	if en != 1 || enf != 1 || scanned != 1 {
+		t.Errorf("落库状态不对：enabled=%d enforce=%d scanned=%d",
+			en, enf, scanned)
+	}
+
+	// 列表字段齐全。
+	w = mainDo(map[string]any{"action": "list"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("列表应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	rules, _ := decode(w)["rules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("应有 1 条规则，得到 %d", len(rules))
+	}
+	row, _ := rules[0].(map[string]any)
+	for _, k := range []string{"id", "name", "pattern", "category", "note",
+		"source", "enabled", "enforce", "hits", "last_matched", "last_tp",
+		"last_fp", "last_undone", "last_scanned", "last_tested_at",
+		"created_at"} {
+		if _, ok := row[k]; !ok {
+			t.Errorf("列表缺少字段 %s：%v", k, row)
+		}
+	}
+	if row["source"] != "ai" || row["enabled"] != true || row["enforce"] != true {
+		t.Errorf("列表内容不对：%v", row)
+	}
+
+	// 停用同时清掉 enforce。
+	if w = mainDo(map[string]any{"action": "toggle", "id": id,
+		"enabled": false}); w.Code != http.StatusOK {
+		t.Fatalf("停用应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if err := sh.Store.Read.QueryRow(`SELECT enabled,enforce FROM ad_rules
+		WHERE id=?`, id).Scan(&en, &enf); err != nil {
+		t.Fatal(err)
+	}
+	if en != 0 || enf != 0 {
+		t.Errorf("停用应同时清掉 enforce，得到 enabled=%d enforce=%d", en, enf)
+	}
+
+	// 删除。
+	if w = mainDo(map[string]any{"action": "remove", "id": id}); w.Code != http.StatusOK {
+		t.Fatalf("删除应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var n int
+	if err := sh.Store.Read.QueryRow(
+		`SELECT COUNT(*) FROM ad_rules WHERE id=?`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Error("规则没有被删除")
+	}
+}

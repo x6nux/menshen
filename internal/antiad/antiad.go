@@ -818,6 +818,34 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// 必封规则门：AI 从历史封禁里总结出的正则，零 AI 成本。排在豁免之后
+	// （管理员与白名单不在这条规则的射程内）、一切护栏与送检之前。
+	//
+	// enforce 规则命中即按最高档处置，动作与人工标记广告同一档；非 enforce
+	// 的命中只作为证据注入 prompt（见 buildState 的 known_ad_patterns），
+	// 这里不处置、继续走 AI。命中计数对所有规则都记。
+	if hits := MatchRules(snap, text); len(hits) > 0 {
+		for _, r := range hits {
+			BumpRuleHits(b.Shared, r.ID)
+		}
+		if r, ok := firstEnforcedRule(hits); ok {
+			v := adVerdict{
+				IsAd: true, Confidence: 1, Kind: r.Category,
+				Decider: "rule:" + strconv.FormatInt(r.ID, 10),
+				Reason:  fmt.Sprintf("命中必封规则《%s》", r.Name),
+			}
+			act := withPunish(adAction{Delete: true, Mute: true, Alert: true,
+				Name: "deleted_muted"}, snap.BanMode(conf))
+			note := ApplyAction(b, m, act, conf.Dryrun)
+			// action 名在演练期由 logAction 加 dryrun: 前缀，与其余处置一致。
+			logAd(b, m, v, logAction(act, conf.Dryrun), note)
+			slog.Info("反广告：命中必封规则，按最高档处置", "chat", m.Chat.ID,
+				"uid", m.From.ID, "rule", r.ID, "name", r.Name,
+				"dryrun", conf.Dryrun)
+			return
+		}
+	}
+
 	profile := buildProfile(b, m, gm, at)
 	// 硬规则前置：资料（昵称/用户名）或正文里出现国家领导人姓名就直接封禁
 	// 出群，不送检 —— 模型对「朕刚和美国总统谈完」这类角色扮演判的是正常。
@@ -1594,6 +1622,15 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	}
 
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
+	// 非强制的必封规则命中作为证据注入 prompt：规则是从历史封禁里总结出的
+	// 高置信形态，比摘要更该被模型看见，但仍由模型结合上下文复核，不当判决。
+	if hint := RuleHintText(snap, text); hint != "" {
+		if st.KnownAdPatterns == "" {
+			st.KnownAdPatterns = hint
+		} else {
+			st.KnownAdPatterns += "\n" + hint
+		}
+	}
 	return st
 }
 

@@ -311,6 +311,35 @@ CREATE TABLE IF NOT EXISTS profile_ok (
   expires_at INTEGER NOT NULL,
   PRIMARY KEY (bot_id, user_id)
 );
+
+-- ad_rules 是 AI 从历史封禁记录里总结出的「必封正则规则」，全局一份，
+-- 只有主管理员能维护。规则默认**候选、不启用**：enabled=0 时完全不参与；
+-- enabled=1 且 enforce=0 时命中只作为证据注入判定 prompt；
+-- enforce=1 时命中即按最高档处置（复用人工标记广告的动作），零 AI 成本。
+--
+-- 误封防线：任何创建/保存都先跑一次全库测试（见 antiad.TestRulePattern），
+-- last_tp/last_fp/last_undone 就是那一轮的统计；enforce 只允许在
+-- last_fp=0 且 last_undone=0 时打开（服务端强制）。
+CREATE TABLE IF NOT EXISTS ad_rules (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  name           TEXT    NOT NULL,
+  pattern        TEXT    NOT NULL,
+  category       TEXT    NOT NULL DEFAULT '',
+  note           TEXT    NOT NULL DEFAULT '',
+  source         TEXT    NOT NULL DEFAULT 'ai',
+  enabled        INTEGER NOT NULL DEFAULT 0,
+  enforce        INTEGER NOT NULL DEFAULT 0,
+  hits           INTEGER NOT NULL DEFAULT 0,
+  last_matched   INTEGER NOT NULL DEFAULT 0,
+  last_tp        INTEGER NOT NULL DEFAULT 0,
+  last_fp        INTEGER NOT NULL DEFAULT 0,
+  last_undone    INTEGER NOT NULL DEFAULT 0,
+  last_scanned   INTEGER NOT NULL DEFAULT 0,
+  last_tested_at INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL DEFAULT 0,
+  created_by     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ad_rules_enabled ON ad_rules(enabled);
 `
 
 func Open(path string) (*Store, error) {

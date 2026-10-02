@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -330,6 +332,8 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 		miniWhitelist(sh, w, uid, body)
 	case "digest":
 		miniDigest(sh, w, uid, body)
+	case "rules":
+		miniRules(sh, w, uid, body)
 	case "user":
 		miniUser(sh, w, r, uid, body)
 	case "logs":
@@ -1618,6 +1622,348 @@ func miniDigest(sh *core.Shared, w http.ResponseWriter, uid int64, body map[stri
 		return
 	}
 	miniOK(w, map[string]any{"ok": true})
+}
+
+// ---- AI 必封规则（主管理员专属）----
+
+// miniRules 维护 AI 从历史封禁里总结出的必封正则规则。
+//
+// 规则默认候选、不启用；enforce=1 命中即最高档处置（零 AI 成本），
+// enforce=0 命中只作为证据进 prompt。防误封由服务端强制：保存先跑全库
+// 测试，enforce 只允许在 last_fp=0 且 last_undone=0 时打开。
+func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	if !sh.IsMain(uid) {
+		miniErr(w, http.StatusForbidden, "只有主管理员能维护必封规则")
+		return
+	}
+	switch miniStr(body, "action") {
+	case "list":
+		rules, err := miniRuleList(sh)
+		if err != nil {
+			slog.Error("miniapp：读取必封规则失败", "err", err)
+			miniErr(w, http.StatusInternalServerError, "读取失败")
+			return
+		}
+		miniOK(w, map[string]any{"rules": rules})
+	case "test":
+		miniRuleTest(sh, w, body)
+	case "save":
+		miniRuleSave(sh, w, uid, body)
+	case "toggle":
+		miniRuleToggle(sh, w, body)
+	case "enforce":
+		miniRuleEnforce(sh, w, body)
+	case "remove":
+		id := miniInt(body, "id")
+		if id == 0 {
+			miniErr(w, http.StatusBadRequest, "缺少规则 id")
+			return
+		}
+		res, err := sh.Store.Write.Exec(`DELETE FROM ad_rules WHERE id=?`, id)
+		if err != nil {
+			miniErr(w, http.StatusInternalServerError, "删除失败")
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			miniErr(w, http.StatusBadRequest, "规则不存在")
+			return
+		}
+		miniRuleReload(sh)
+		miniOK(w, map[string]any{"ok": true})
+	default:
+		miniErr(w, http.StatusBadRequest, "未知操作")
+	}
+}
+
+// miniRuleList 返回全部规则（含未启用），按 id 升序。
+func miniRuleList(sh *core.Shared) ([]map[string]any, error) {
+	rows, err := sh.Store.Read.Query(`SELECT id,name,pattern,category,note,source,
+		enabled,enforce,hits,last_matched,last_tp,last_fp,last_undone,
+		last_scanned,last_tested_at,created_at FROM ad_rules ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			id, en, enf, hits, lastMatched, tp, fp, undone, scanned, tested,
+			created int64
+			name, pattern, category, note, src string
+		)
+		if err := rows.Scan(&id, &name, &pattern, &category, &note, &src,
+			&en, &enf, &hits, &lastMatched, &tp, &fp, &undone, &scanned,
+			&tested, &created); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id": id, "name": name, "pattern": pattern, "category": category,
+			"note": note, "source": src,
+			"enabled": en == 1, "enforce": enf == 1,
+			"hits": hits, "last_matched": lastMatched,
+			"last_tp": tp, "last_fp": fp, "last_undone": undone,
+			"last_scanned": scanned, "last_tested_at": tested,
+			"created_at": created,
+		})
+	}
+	return out, rows.Err()
+}
+
+// miniRuleTest 跑一次全库测试：带 id 用库里的规则（并写回 last_*），
+// 只带 pattern 时试跑一条不落库的草稿。
+func miniRuleTest(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
+	id := miniInt(body, "id")
+	pattern := miniStr(body, "pattern")
+	if id != 0 {
+		p, err := miniRulePattern(sh, id)
+		if err != nil {
+			miniErr(w, http.StatusBadRequest, "规则不存在")
+			return
+		}
+		pattern = p
+	}
+	if pattern == "" {
+		miniErr(w, http.StatusBadRequest, "缺少规则正则")
+		return
+	}
+	res, err := antiad.TestRulePattern(sh, pattern)
+	if err != nil {
+		// 编译失败等校验错误：文案里带原因，管理员能直接改。
+		miniErr(w, http.StatusBadRequest, "测试失败："+err.Error())
+		return
+	}
+	if id != 0 {
+		if err := miniRuleWriteTest(sh, id, res); err != nil {
+			miniErr(w, http.StatusInternalServerError, "写回测试结果失败")
+			return
+		}
+	}
+	miniOK(w, map[string]any{"test": miniRuleTestJSON(res)})
+}
+
+// miniRuleSave 新建或更新一条规则：校验 → 写库 → 自动跑全库测试并写回
+// last_* → 重建快照。source 保持原值，新建默认 'ai'。
+func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
+	id := miniInt(body, "id")
+	name := miniStr(body, "name")
+	pattern := miniStr(body, "pattern")
+	category := miniStr(body, "category")
+	note := miniStr(body, "note")
+
+	if n := len([]rune(name)); n < 1 || n > 60 {
+		miniErr(w, http.StatusBadRequest, "名称需为 1~60 个字符")
+		return
+	}
+	if pattern == "" {
+		miniErr(w, http.StatusBadRequest, "规则不能为空")
+		return
+	}
+	if len([]rune(pattern)) > 500 {
+		miniErr(w, http.StatusBadRequest, "规则过长（最多 500 个字符）")
+		return
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		miniErr(w, http.StatusBadRequest, "正则无法编译："+err.Error())
+		return
+	}
+	if len([]rune(category)) > 20 {
+		miniErr(w, http.StatusBadRequest, "分类最多 20 个字符")
+		return
+	}
+	if len([]rune(note)) > 300 {
+		miniErr(w, http.StatusBadRequest, "备注最多 300 个字符")
+		return
+	}
+
+	// 同一条正则在库里只允许存在一份：重复规则在命中时会产生两条流水，
+	// 计数与处置也会重复评估，没有意义。
+	var dup int64
+	if err := sh.Store.Read.QueryRow(
+		`SELECT COUNT(*) FROM ad_rules WHERE pattern=? AND id<>?`,
+		pattern, id).Scan(&dup); err != nil {
+		miniErr(w, http.StatusInternalServerError, "校验失败")
+		return
+	}
+	if dup > 0 {
+		miniErr(w, http.StatusBadRequest, "已存在相同正则的规则")
+		return
+	}
+
+	if id == 0 {
+		res, err := sh.Store.Write.Exec(`INSERT INTO ad_rules
+			(name,pattern,category,note,source,enabled,enforce,created_at,created_by)
+			VALUES (?,?,?,?, 'ai', 0, 0, ?, ?)`,
+			name, pattern, category, note, time.Now().Unix(), uid)
+		if err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		id, _ = res.LastInsertId()
+	} else {
+		res, err := sh.Store.Write.Exec(`UPDATE ad_rules
+			SET name=?,pattern=?,category=?,note=? WHERE id=?`,
+			name, pattern, category, note, id)
+		if err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// 规则存在但值完全没变时 RowsAffected 为 0；先查一次存在性再下结论。
+			if !miniRuleExists(sh, id) {
+				miniErr(w, http.StatusBadRequest, "规则不存在")
+				return
+			}
+		}
+	}
+
+	// 保存即测：enforce 的前提数据必须是这一版 pattern 的真实结果，
+	// 不能沿用改规则之前的那一轮。
+	res, err := antiad.TestRulePattern(sh, pattern)
+	if err != nil {
+		miniErr(w, http.StatusBadRequest, "测试失败："+err.Error())
+		return
+	}
+	if err := miniRuleWriteTest(sh, id, res); err != nil {
+		miniErr(w, http.StatusInternalServerError, "写回测试结果失败")
+		return
+	}
+	miniRuleReload(sh)
+	miniOK(w, map[string]any{
+		"ok": true, "id": id, "test": miniRuleTestJSON(res)})
+}
+
+// miniRuleToggle 启用/停用。停用时同时清掉 enforce：再次启用必须重新
+// 通过全库测试，不能靠一个 toggle 把最高档处置直接放回来。
+func miniRuleToggle(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
+	id := miniInt(body, "id")
+	if id == 0 {
+		miniErr(w, http.StatusBadRequest, "缺少规则 id")
+		return
+	}
+	on := miniBool(body, "enabled")
+	var (
+		res sql.Result
+		err error
+	)
+	if on {
+		res, err = sh.Store.Write.Exec(`UPDATE ad_rules SET enabled=1 WHERE id=?`, id)
+	} else {
+		res, err = sh.Store.Write.Exec(
+			`UPDATE ad_rules SET enabled=0,enforce=0 WHERE id=?`, id)
+	}
+	if err != nil {
+		miniErr(w, http.StatusInternalServerError, "保存失败")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 && !miniRuleExists(sh, id) {
+		miniErr(w, http.StatusBadRequest, "规则不存在")
+		return
+	}
+	miniRuleReload(sh)
+	miniOK(w, map[string]any{"ok": true})
+}
+
+// miniRuleEnforce 开关强制。打开前必须 enabled=1 且最近一轮全库测试
+// 没有误封（last_fp=0 且 last_undone=0）；关闭随时允许。
+func miniRuleEnforce(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
+	id := miniInt(body, "id")
+	if id == 0 {
+		miniErr(w, http.StatusBadRequest, "缺少规则 id")
+		return
+	}
+	on := miniBool(body, "enforce")
+	if on {
+		var en, fp, undone int64
+		err := sh.Store.Read.QueryRow(
+			`SELECT enabled,last_fp,last_undone FROM ad_rules WHERE id=?`,
+			id).Scan(&en, &fp, &undone)
+		if errors.Is(err, sql.ErrNoRows) {
+			miniErr(w, http.StatusBadRequest, "规则不存在")
+			return
+		}
+		if err != nil {
+			miniErr(w, http.StatusInternalServerError, "读取失败")
+			return
+		}
+		if en != 1 {
+			miniErr(w, http.StatusBadRequest, "规则未启用，不能开启强制")
+			return
+		}
+		if fp != 0 || undone != 0 {
+			// undone 已计入 fp；db 被手改时单独兜一下，避免文案报「0 条」。
+			n := fp
+			if undone > n {
+				n = undone
+			}
+			miniErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"规则尚未通过全库测试（疑似误封 %d 条），不能开启强制", n))
+			return
+		}
+	}
+	res, err := sh.Store.Write.Exec(
+		`UPDATE ad_rules SET enforce=? WHERE id=?`, boolToInt64(on), id)
+	if err != nil {
+		miniErr(w, http.StatusInternalServerError, "保存失败")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 && !miniRuleExists(sh, id) {
+		miniErr(w, http.StatusBadRequest, "规则不存在")
+		return
+	}
+	miniRuleReload(sh)
+	miniOK(w, map[string]any{"ok": true})
+}
+
+// miniRulePattern 读一条规则的 pattern。
+func miniRulePattern(sh *core.Shared, id int64) (string, error) {
+	var pattern string
+	err := sh.Store.Read.QueryRow(
+		`SELECT pattern FROM ad_rules WHERE id=?`, id).Scan(&pattern)
+	return pattern, err
+}
+
+func miniRuleExists(sh *core.Shared, id int64) bool {
+	var one int64
+	return sh.Store.Read.QueryRow(
+		`SELECT 1 FROM ad_rules WHERE id=?`, id).Scan(&one) == nil
+}
+
+// miniRuleWriteTest 把一轮全库测试的统计写回规则行。
+// last_matched（最近命中时刻）不在这里动：它由判定路径的 BumpRuleHits 维护。
+func miniRuleWriteTest(sh *core.Shared, id int64, r antiad.RuleTestResult) error {
+	_, err := sh.Store.Write.Exec(`UPDATE ad_rules
+		SET last_tested_at=?,last_scanned=?,last_tp=?,last_fp=?,last_undone=?
+		WHERE id=?`, time.Now().Unix(), r.Scanned, r.TP, r.FP, r.Undone, id)
+	return err
+}
+
+// miniRuleTestJSON 把测试结果转成前端契约形状。
+func miniRuleTestJSON(r antiad.RuleTestResult) map[string]any {
+	samples := func(list []antiad.RuleSample) []map[string]any {
+		out := make([]map[string]any, 0, len(list))
+		for _, s := range list {
+			out = append(out, map[string]any{
+				"id": s.ID, "verdict": s.Verdict, "action": s.Action,
+				"kind": s.Kind, "user_id": s.UserID, "chat_id": s.ChatID,
+				"created_at": s.CreatedAt, "text": s.Text,
+			})
+		}
+		return out
+	}
+	return map[string]any{
+		"pattern": r.Pattern, "scanned": r.Scanned, "matched": r.Matched,
+		"tp": r.TP, "fp": r.FP, "undone": r.Undone, "neutral": r.Neutral,
+		"tp_samples":     samples(r.TPSamples),
+		"fp_samples":     samples(r.FPSamples),
+		"undone_samples": samples(r.UndoneSamples),
+	}
+}
+
+// miniRuleReload 规则写操作后重建快照，判定路径立即生效。
+func miniRuleReload(sh *core.Shared) {
+	if err := sh.Cache.Reload(); err != nil {
+		slog.Error("miniapp：必封规则写库后刷新缓存失败", "err", err)
+	}
 }
 
 // miniLogCols 是记录列表与详情共用的列清单。

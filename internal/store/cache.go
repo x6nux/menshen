@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,6 +242,33 @@ type WhiteRec struct {
 	CreatedAt int64
 }
 
+// AdRuleRec 是 ad_rules 的一行：AI 总结的必封正则规则。
+//
+// Re 是 Pattern 预编译后的结果，只在快照里存活；Pattern 编译失败的行走
+// 加载时跳过（见 loadAdRules），不会进快照。
+type AdRuleRec struct {
+	ID       int64
+	Name     string
+	Pattern  string
+	Category string
+	Note     string
+	Source   string
+	Enabled  bool
+	Enforce  bool
+	// Hits / LastMatched 是命中计数与最近命中时刻（秒）。
+	Hits        int64
+	LastMatched int64
+	// Last* 是最近一次全库测试的结果（见 antiad.TestRulePattern）：
+	// TP 是命中已确认广告，FP 是命中正常消息/被撤销的处罚。
+	LastTP       int64
+	LastFP       int64
+	LastUndone   int64
+	LastScanned  int64
+	LastTestedAt int64
+	CreatedAt    int64
+	Re           *regexp.Regexp
+}
+
 // ProfileOKRec 是 profile_ok 的一行：某人的资料被复判放行到什么时候。
 // PHash 绑定当时那份资料，改了资料这条就自动失效。
 type ProfileOKRec struct {
@@ -276,6 +305,10 @@ type Snapshot struct {
 
 	// ProfileOK 是资料被复判临时放行的账号（见 antiad.GrantProfileOK）。
 	ProfileOK []ProfileOKRec
+
+	// AdRules 是 AI 总结的必封正则规则（全局，主管理员维护）。
+	// 量小，判定路径线性扫即可。
+	AdRules []AdRuleRec
 
 	// loc 是展示与调度用的时区，构建快照时解析一次（见 Location）。
 	loc *time.Location
@@ -533,6 +566,9 @@ func (c *Cache) Reload() error {
 	}
 	snap.loc = resolveLocation(snap.Settings)
 	if err := c.loadTenancy(snap, tx); err != nil {
+		return err
+	}
+	if err := c.loadAdRules(snap, tx); err != nil {
 		return err
 	}
 
@@ -814,6 +850,41 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 			snap.GbanOwnBans[ownerID] = map[int64]GbanRec{}
 		}
 		snap.GbanOwnBans[ownerID][g.UserID] = g
+	}
+	return rows.Err()
+}
+
+// loadAdRules 加载必封正则规则，按 id 升序（MatchRules 依赖这个顺序）。
+//
+// pattern 编译失败的行走 slog.Warn 并跳过：规则是主管理员（或 AI）写的，
+// 一条坏正则不该让整份快照重建失败 —— 那等于服务起不来。被跳过的规则在
+// 判定路径上当作不存在，面板的测试入口仍会给出编译错误。
+func (c *Cache) loadAdRules(snap *Snapshot, q rowQueryer) error {
+	rows, err := q.Query(`SELECT id,name,pattern,category,note,source,enabled,
+		enforce,hits,last_matched,last_tp,last_fp,last_undone,last_scanned,
+		last_tested_at,created_at FROM ad_rules ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r AdRuleRec
+		var en, enf int64
+		if err := rows.Scan(&r.ID, &r.Name, &r.Pattern, &r.Category, &r.Note,
+			&r.Source, &en, &enf, &r.Hits, &r.LastMatched, &r.LastTP,
+			&r.LastFP, &r.LastUndone, &r.LastScanned, &r.LastTestedAt,
+			&r.CreatedAt); err != nil {
+			return err
+		}
+		r.Enabled, r.Enforce = en == 1, enf == 1
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			slog.Warn("配置：必封规则正则编译失败，已跳过",
+				"id", r.ID, "name", r.Name, "err", err)
+			continue
+		}
+		r.Re = re
+		snap.AdRules = append(snap.AdRules, r)
 	}
 	return rows.Err()
 }
