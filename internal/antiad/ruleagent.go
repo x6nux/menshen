@@ -69,7 +69,18 @@ const (
 	// ruleAgentFindScanLimit 与 TestRulePattern 的全库扫描上限一致：
 	// find 与 test_rule 的计数口径要对得上，扫描范围就不能两样。
 	ruleAgentFindScanLimit = ruleScanLimit
+	// ruleAgentEvidenceMax 是写进 note 的证据 id 上限。
+	ruleAgentEvidenceMax = 20
+	// ruleAgentEvidenceInputMax 是单次校验处理的输入 id 上限：模型偶尔
+	// 会塞一长串 id，逐个查库之前先截断，别让一个工具调用打出一串查询。
+	ruleAgentEvidenceInputMax = 50
 )
+
+// ruleAgentToolNames 是暴露给模型的工具名。两处要用：UnknownToolsHandler
+// 的可用清单提示，以及测试断言。
+var ruleAgentToolNames = []string{
+	"list_banned", "read_record", "find", "test_rule", "create_rule",
+}
 
 // 规则发现不可用的错误。文案直接回给 Mini App，保持中文。
 var (
@@ -310,6 +321,14 @@ func runRuleDiscovery(ctx context.Context, sh *core.Shared, uid int64,
 			// 顺序执行让步骤日志的顺序与模型意图一致，也避免并发工具
 			// 同时写全局步骤序号。
 			ExecuteSequentially: true,
+			// 模型偶尔会调用不存在的工具；不接这个回调时 ToolsNode 会
+			// 直接返回错误把图掐死，模型连纠正工具名的机会都没有。
+			UnknownToolsHandler: func(ctx context.Context, name, input string) (string, error) {
+				msg := fmt.Sprintf("没有名为 %s 的工具，可用工具：%s。请改用可用工具重试。",
+					name, strings.Join(ruleAgentToolNames, "、"))
+				run.toolFailStep(name, msg)
+				return msg, nil
+			},
 		},
 		MaxStep: ruleAgentMaxStep,
 	})
@@ -442,6 +461,26 @@ func (r *ruleAgentRun) toolStep(name string, args any, result string) {
 	ruleAgentAppendStep("tool", name, summary)
 }
 
+// toolFailStep 记录一次没走到工具实现的失败调用（参数解析失败、工具名
+// 不存在）。此时拿不到参数，模型请求里的参数在 model 步骤里，两下一凑
+// 就能看出模型发了什么、错在哪。
+func (r *ruleAgentRun) toolFailStep(name, msg string) {
+	ruleAgentAppendStep("tool", name, "调用失败："+msg)
+}
+
+// wrapRuleTool 给工具套一层错误兜底：InferTool 在参数 JSON 解析失败时
+// 返回 Go error，ToolsNode 若不拦截会直接让整张图报错退出 —— 模型连
+// 「参数写错了」都看不到。包装后错误变成一条中文工具结果回给模型，同时
+// 记进步骤日志，让模型自己纠正参数继续跑。
+func wrapRuleTool(run *ruleAgentRun, name string, t tool.BaseTool) tool.BaseTool {
+	return toolutils.WrapToolWithErrorHandler(t, func(ctx context.Context, err error) string {
+		msg := fmt.Sprintf("工具 %s 调用失败：参数或执行出错，请检查参数格式后重试。原始错误：%s",
+			name, core.TruncateRunes(err.Error(), 200))
+		run.toolFailStep(name, msg)
+		return msg
+	})
+}
+
 // ---- 工具 ----
 
 // listBannedArgs 是 list_banned 的参数。
@@ -508,7 +547,7 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		"用宽松正则扫描全部历史判定流水（最多 10 万条），返回命中统计与样本，不会创建任何规则。"+
 			"这是写规则前的试跑工具：反复收缩正则，直到只命中广告、不碰正常消息。",
 		func(ctx context.Context, in findArgs) (string, error) {
-			out := run.findMatches(in)
+			out := run.findMatches(ctx, in)
 			run.toolStep("find", in, out)
 			return out, nil
 		})
@@ -521,7 +560,7 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 			"fp（命中正常消息/被撤销的误判）、undone、neutral 与误封样本。"+
 			"fp 或 undone 大于 0 时绝对不能创建规则。",
 		func(ctx context.Context, in testRuleArgs) (string, error) {
-			out := run.testRule(in.Pattern)
+			out := run.testRule(ctx, in.Pattern)
 			run.toolStep("test_rule", in, out)
 			return out, nil
 		})
@@ -542,7 +581,15 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 		return nil, err
 	}
 
-	return []tool.BaseTool{list, read, find, test, create}, nil
+	// 每个工具都套错误兜底：参数畸形、执行出错都转成工具结果串回给模型，
+	// 而不是让 ToolsNode 掐死整张图。
+	return []tool.BaseTool{
+		wrapRuleTool(run, "list_banned", list),
+		wrapRuleTool(run, "read_record", read),
+		wrapRuleTool(run, "find", find),
+		wrapRuleTool(run, "test_rule", test),
+		wrapRuleTool(run, "create_rule", create),
+	}, nil
 }
 
 // ---- 工具实现 ----
@@ -648,7 +695,9 @@ type ruleAgentSample struct {
 // 命中行的原始 verdict 分布，用来补足 TP/FP/Neutral 之外的信息。
 // scope=banned 时样本优先给已确认广告，再用正常消息作参照；scope=all
 // 按时间倒序给全部命中。
-func (r *ruleAgentRun) findMatches(in findArgs) string {
+//
+// 扫描每 ruleScanCtxCheckEvery 行检查一次 ctx：stop 后不必等十万行扫完。
+func (r *ruleAgentRun) findMatches(ctx context.Context, in findArgs) string {
 	re, err := compileRuleLenient(in.Pattern)
 	if err != nil {
 		return "错误：" + err.Error()
@@ -694,6 +743,9 @@ func (r *ruleAgentRun) findMatches(in findArgs) string {
 			return "错误：解析判定流水失败：" + err.Error()
 		}
 		scanned++
+		if scanned%ruleScanCtxCheckEvery == 0 && ctx.Err() != nil {
+			return "已停止：本轮扫描被取消，未统计完整结果。"
+		}
 		if !re.MatchString(text) {
 			continue
 		}
@@ -748,11 +800,14 @@ func (r *ruleAgentRun) findMatches(in findArgs) string {
 	return string(out)
 }
 
-// testRule 调 T-A 的 TestRulePattern 做正式口径的全库测试，并给出
+// testRule 调 T-A 的全库测试（可取消版本）做正式口径验证，并给出
 // 明确的「能不能创建」结论。
-func (r *ruleAgentRun) testRule(pattern string) string {
-	res, err := TestRulePattern(r.sh, pattern)
+func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
+	res, err := testRulePatternCtx(ctx, r.sh, pattern)
 	if err != nil {
+		if errors.Is(err, errRuleScanStopped) {
+			return "测试失败：已停止（本轮扫描被取消）。"
+		}
 		return "测试失败：" + err.Error()
 	}
 	out := map[string]any{
@@ -787,6 +842,15 @@ func (r *ruleAgentRun) testRule(pattern string) string {
 // 不可编译/匹配空文本；TestRulePattern 检出 fp/undone 一律不写库。
 // 连续失败达到上限时调用 SetReturnDirectly 让 ReAct 图立即收尾。
 func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string {
+	// 本轮已经创建过规则：直接拒绝。SetReturnDirectly 正常生效时模型
+	// 不会再有机会调用，但兜底要有，避免极端情况下一次运行写多条。
+	r.mu.Lock()
+	createdID := r.createdRuleID
+	r.mu.Unlock()
+	if createdID != 0 {
+		return fmt.Sprintf("本轮已创建规则 #%d，不再重复创建；请直接总结收尾。", createdID)
+	}
+
 	fail := func(msg string) string {
 		r.mu.Lock()
 		r.createFails++
@@ -822,8 +886,13 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 		return fail("创建失败：已存在完全相同的正则规则，请勿重复创建。")
 	}
 
-	res, err := TestRulePattern(r.sh, in.Pattern)
+	res, err := testRulePatternCtx(ctx, r.sh, in.Pattern)
 	if err != nil {
+		// 扫描被取消不算一次「创建失败」：这不是模型的正则写得不好，
+		// 计数与连续失败保护别被取消动作污染。
+		if errors.Is(err, errRuleScanStopped) {
+			return "创建失败：已停止（本轮扫描被取消）。"
+		}
 		return fail("创建失败：全库测试失败（" + err.Error() + "）。")
 	}
 	if res.FP > 0 || res.Undone > 0 {
@@ -844,9 +913,13 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 		return fail(sb.String())
 	}
 
+	// 证据 id 只保留库里真实存在、且 verdict='ad' 的：模型可能引用不存在
+	// 的 id，或把正常消息当证据；把无效 id 写进 note 会污染规则的可解释性。
+	validEvidence, ignoredEvidence := r.filterEvidence(in.EvidenceIDs)
+
 	category := core.TruncateRunes(strings.TrimSpace(in.Category), 20)
 	note := strings.TrimSpace(in.Note)
-	if ids := formatRuleEvidence(in.EvidenceIDs); ids != "" {
+	if ids := formatRuleEvidence(validEvidence); ids != "" {
 		if note != "" {
 			note += " "
 		}
@@ -885,12 +958,50 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 	// 成功即结束本轮，不再让模型继续调工具烧钱。
 	_ = react.SetReturnDirectly(ctx)
 
-	return fmt.Sprintf("创建成功：候选规则 #%d《%s》已写入（enabled=0、enforce=0，等待主管理员复核）。"+
+	msg := fmt.Sprintf("创建成功：候选规则 #%d《%s》已写入（enabled=0、enforce=0，等待主管理员复核）。"+
 		"本轮测试：命中广告 %d 条、正常消息 0 条、全库扫描 %d 条。",
 		id, name, res.TP, res.Scanned)
+	if ignoredEvidence > 0 {
+		msg += fmt.Sprintf("已忽略 %d 个无效、重复或非广告的证据 id。", ignoredEvidence)
+	}
+	return msg
 }
 
-// formatRuleEvidence 把证据流水 id 拼成简短说明。
+// filterEvidence 校验证据 id：只保留 antiad_log 里真实存在且
+// verdict='ad' 的行，去重并限量 ruleAgentEvidenceMax；同时返回被忽略的
+// 数量（不存在、非广告、重复、超出上限都算）。
+//
+// action='undone' 的行 verdict 仍是 'ad'，按「只保留 verdict='ad'」的
+// 口径保留 —— 它作为「当时被判为广告」的记录本身是成立的。
+func (r *ruleAgentRun) filterEvidence(ids []int64) (valid []int64, ignored int) {
+	seen := make(map[int64]bool, len(ids))
+	for i, id := range ids {
+		if i >= ruleAgentEvidenceInputMax {
+			ignored += len(ids) - i
+			break
+		}
+		if id <= 0 || seen[id] {
+			ignored++
+			continue
+		}
+		seen[id] = true
+		if len(valid) >= ruleAgentEvidenceMax {
+			ignored++
+			continue
+		}
+		var one int64
+		if err := r.sh.Store.Read.QueryRow(
+			`SELECT 1 FROM antiad_log WHERE id=? AND verdict='ad'`, id).Scan(&one); err != nil {
+			ignored++
+			continue
+		}
+		valid = append(valid, id)
+	}
+	return valid, ignored
+}
+
+// formatRuleEvidence 把证据流水 id 拼成简短说明。note 总长 300 字的硬
+// 上限下，只列前 10 个，避免把名称与理由挤掉。
 func formatRuleEvidence(ids []int64) string {
 	if len(ids) == 0 {
 		return ""

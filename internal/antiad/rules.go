@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,7 +19,15 @@ var (
 	errRuleEmpty        = errors.New("规则不能为空")
 	errRuleTooLong      = fmt.Errorf("规则过长（最多 %d 个字符）", rulePatternMax)
 	errRuleMatchesEmpty = errors.New("规则不能匹配空文本（会命中所有消息）")
+	// errRuleScanStopped 表示全库扫描被调用方的 context 取消。规则发现
+	// Agent 被停止时，不必等整库扫完才结束。
+	errRuleScanStopped = errors.New("已停止")
 )
+
+// ruleScanCtxCheckEvery 是扫描循环检查 context 的频率（每多少行一次）。
+// 1000 行在本地 SQLite 上只是毫秒级，取消延迟足够短，也不至于每行
+// 都碰一次 ctx（那会让热循环多一次原子读）。
+const ruleScanCtxCheckEvery = 1000
 
 // ---- AI 必封规则：全局候选正则 ----
 //
@@ -185,7 +194,22 @@ func compileRuleLenient(pattern string) (*regexp.Regexp, error) {
 // 语料不再按 text 非空过滤：空文本（纯图/贴纸）同样会走到判定门，
 // 匹配空文本的规则造成的误封恰恰只能在这里看见 —— 让它在测试结果里
 // 显式暴露（FP/样本），而不是悄悄漏出测试口径之外。
+//
+// 盲区：语料是 antiad_log 里**落库截断后**的文本（adTextLimit=1000 rune），
+// 而判定门匹配的是消息完整正文。超过 1000 rune 的长消息，其尾部特征在
+// 这里看不见：一条只依赖被截掉尾部的规则可能测出 fp=0 却在线上误封。
+// 所以规则应尽量锚定出现在前 1000 字内的形态组合。
 func TestRulePattern(sh *core.Shared, pattern string) (RuleTestResult, error) {
+	// 无取消需求的老入口：面板、保存流程都走这里。
+	return testRulePatternCtx(context.Background(), sh, pattern)
+}
+
+// testRulePatternCtx 是 TestRulePattern 的可取消版本：扫描每
+// ruleScanCtxCheckEvery 行检查一次 ctx，取消时返回 errRuleScanStopped。
+// 规则发现 Agent 用它在 stop 后立刻收尾，不等整库扫完。
+func testRulePatternCtx(ctx context.Context, sh *core.Shared,
+	pattern string) (RuleTestResult, error) {
+
 	res := RuleTestResult{Pattern: pattern}
 	re, err := compileRuleLenient(pattern)
 	if err != nil {
@@ -211,6 +235,9 @@ func TestRulePattern(sh *core.Shared, pattern string) (RuleTestResult, error) {
 			return res, err
 		}
 		res.Scanned++
+		if res.Scanned%ruleScanCtxCheckEvery == 0 && ctx.Err() != nil {
+			return res, errRuleScanStopped
+		}
 		if !re.MatchString(text) {
 			continue
 		}

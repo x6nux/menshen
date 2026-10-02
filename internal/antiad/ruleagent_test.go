@@ -5,8 +5,11 @@ package antiad
 // 真实的 HTTP 往返（选路、解析、工具执行都是被测对象）。
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -163,6 +166,10 @@ func TestRuleAgentHappyPath(t *testing.T) {
 	}
 	if by != 7 {
 		t.Errorf("created_by 应记录操作者 7，得到 %d", by)
+	}
+	// evidence_ids=[1] 指向那条已确认广告，服务端校验后写进 note。
+	if !strings.Contains(note, "#1") {
+		t.Errorf("note 应写入有效证据 id：%q", note)
 	}
 	if got, _ := st["created_rule_id"].(int64); got != id {
 		t.Errorf("状态里的 created_rule_id=%v，落库 id=%d", st["created_rule_id"], id)
@@ -427,7 +434,8 @@ func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 	insertRuleAgentLog(t, b, "今天天气不错", "ad", "deleted", "scam")
 
 	run := &ruleAgentRun{sh: b.Shared}
-	raw := run.findMatches(findArgs{Pattern: "贷款刷单", Scope: "banned", Limit: 20})
+	raw := run.findMatches(context.Background(),
+		findArgs{Pattern: "贷款刷单", Scope: "banned", Limit: 20})
 
 	var got struct {
 		Scanned   int64             `json:"scanned"`
@@ -486,11 +494,208 @@ func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 	}
 
 	// 非法 scope 与编译不过的正则都返回可读错误，而不是崩掉工具。
-	if s := run.findMatches(findArgs{Pattern: "贷款", Scope: "wat"}); !strings.Contains(s, "scope") {
+	if s := run.findMatches(context.Background(),
+		findArgs{Pattern: "贷款", Scope: "wat"}); !strings.Contains(s, "scope") {
 		t.Errorf("非法 scope 应返回错误文本，得到 %q", s)
 	}
-	if s := run.findMatches(findArgs{Pattern: "["}); !strings.Contains(s, "错误") {
+	if s := run.findMatches(context.Background(),
+		findArgs{Pattern: "["}); !strings.Contains(s, "错误") {
 		t.Errorf("坏正则应返回错误文本，得到 %q", s)
+	}
+}
+
+// TestRuleAgentToolErrorsDoNotKillRun：参数畸形（limit 传字符串）与调用
+// 不存在的工具都只作为工具结果回给模型，运行继续；模型据此收尾，整轮不报错。
+func TestRuleAgentToolErrorsDoNotKillRun(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 1:
+			// limit 是字符串：反序列化失败，走错误兜底。
+			w.Write([]byte(oaToolCallReply("c1", "list_banned", map[string]any{
+				"limit": "十"})))
+		case 2:
+			// 不存在的工具名：走 UnknownToolsHandler。
+			w.Write([]byte(oaToolCallReply("c2", "hack_tool", map[string]any{})))
+		default:
+			w.Write([]byte(oaTextReply("参数问题已了解，本轮不创建规则。")))
+		}
+	})
+
+	if err := StartRuleDiscovery(b.Shared, 1); err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 10*time.Second)
+	if st["error"] != "" {
+		t.Errorf("工具错误不应让整轮失败：error=%v result=%v", st["error"], st["result"])
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("模型收到错误后应继续到第 3 轮，实际请求 %d 次", got)
+	}
+
+	var sawBadArgs, sawUnknown bool
+	steps, _ := st["steps"].([]map[string]any)
+	for _, s := range steps {
+		if s["kind"] != "tool" {
+			continue
+		}
+		sum, _ := s["summary"].(string)
+		switch s["name"] {
+		case "list_banned":
+			if strings.Contains(sum, "调用失败") {
+				sawBadArgs = true
+			}
+		case "hack_tool":
+			if strings.Contains(sum, "没有名为 hack_tool 的工具") {
+				sawUnknown = true
+			}
+		}
+	}
+	if !sawBadArgs {
+		t.Errorf("步骤日志应记录参数解析失败：%v", steps)
+	}
+	if !sawUnknown {
+		t.Errorf("步骤日志应记录未知工具：%v", steps)
+	}
+}
+
+// TestRuleAgentScanCancellation：find/test_rule 的扫描在 ctx 取消后
+// 尽快返回「已停止」，不必扫完全库；未取消时同一批数据完整扫完。
+func TestRuleAgentScanCancellation(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	// 超过 ruleScanCtxCheckEvery 行才会经过取消检查点。
+	const rows = ruleScanCtxCheckEvery + 5
+
+	tx, err := b.Store.Write.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,555,?,'批量广告测试','ad',0.9,'so','scam','deleted','',?,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < rows; i++ {
+		if _, err := stmt.Exec(i, time.Now().Unix(), b.BotID()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	run := &ruleAgentRun{sh: b.Shared}
+	if got := run.findMatches(ctx, findArgs{
+		Pattern: "批量广告", Scope: "all", Limit: 5}); !strings.Contains(got, "已停止") {
+		t.Errorf("find 在取消后应返回已停止，得到 %q", got)
+	}
+	if got := run.testRule(ctx, "批量广告"); !strings.Contains(got, "已停止") {
+		t.Errorf("test_rule 在取消后应返回已停止，得到 %q", got)
+	}
+	if _, err := testRulePatternCtx(ctx, b.Shared, "批量广告"); !errors.Is(err, errRuleScanStopped) {
+		t.Errorf("底层扫描取消应返回 errRuleScanStopped，得到 %v", err)
+	}
+
+	res, err := testRulePatternCtx(context.Background(), b.Shared, "批量广告")
+	if err != nil || res.Scanned != rows {
+		t.Errorf("未取消时应扫完 %d 行，得到 scanned=%d err=%v", rows, res.Scanned, err)
+	}
+}
+
+// TestRuleAgentEvidenceFilter：证据 id 只保留库里 verdict='ad' 的行，
+// 去重、限量；无效与超限的都计入 ignored。
+func TestRuleAgentEvidenceFilter(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	adID := insertRuleAgentLog(t, b, "广告一", "ad", "deleted", "scam")
+	cleanID := insertRuleAgentLog(t, b, "正常聊天", "clean", "none", "")
+	undoneID := insertRuleAgentLog(t, b, "被撤销的广告", "ad", "undone", "scam")
+
+	run := &ruleAgentRun{sh: b.Shared}
+	valid, ignored := run.filterEvidence(
+		[]int64{adID, cleanID, 99999, adID, 0, undoneID, -1})
+	want := []int64{adID, undoneID}
+	if !slices.Equal(valid, want) {
+		t.Errorf("有效证据应为 %v，得到 %v", want, valid)
+	}
+	if ignored != 5 {
+		t.Errorf("应忽略 5 个（正常消息/不存在/重复/0/负数），得到 %d", ignored)
+	}
+
+	// 限量 20：26 个候选里只留 20 个，其余计入 ignored。
+	ids := []int64{adID}
+	for i := 0; i < ruleAgentEvidenceMax+5; i++ {
+		ids = append(ids, insertRuleAgentLog(t, b, "批量广告", "ad", "deleted", "scam"))
+	}
+	valid, ignored = run.filterEvidence(ids)
+	if len(valid) != ruleAgentEvidenceMax {
+		t.Errorf("最多保留 %d 个证据，得到 %d", ruleAgentEvidenceMax, len(valid))
+	}
+	if ignored != 6 {
+		t.Errorf("26 个候选应忽略 6 个超限，得到 %d", ignored)
+	}
+}
+
+// TestRuleAgentCreateRuleSinglePerRun：同一轮里已经创建过规则后，
+// 再次 create_rule 直接拒绝，不再写库。
+func TestRuleAgentCreateRuleSinglePerRun(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRuleAgentLog(t, b, "广告文案", "ad", "deleted", "scam")
+
+	run := &ruleAgentRun{sh: b.Shared, ctx: context.Background()}
+	run.createdRuleID = 5
+	got := run.createRule(context.Background(), createRuleArgs{
+		Name: "重复创建", Pattern: "广告文案"})
+	if !strings.Contains(got, "本轮已创建规则") {
+		t.Errorf("重复创建应被拒绝，得到 %q", got)
+	}
+	if run.createFails != 0 {
+		t.Errorf("重复创建不是一次失败尝试，不应计数，得到 %d", run.createFails)
+	}
+	var n int
+	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM ad_rules`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("重复创建不应写库，ad_rules 有 %d 条", n)
+	}
+}
+
+// TestRuleAgentCreateRuleNotesOnlyValidEvidence：create_rule 只把有效的
+// 广告证据写进 note，并在工具结果里注明忽略数量。
+func TestRuleAgentCreateRuleNotesOnlyValidEvidence(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	adID := insertRuleAgentLog(t, b, "有效广告证据", "ad", "deleted", "scam")
+	cleanID := insertRuleAgentLog(t, b, "正常消息", "clean", "none", "")
+
+	run := &ruleAgentRun{sh: b.Shared, ctx: context.Background()}
+	got := run.createRule(context.Background(), createRuleArgs{
+		Name: "证据校验", Category: "promo", Pattern: "有效广告证据",
+		Note:        "理由：测试",
+		EvidenceIDs: []int64{adID, cleanID, 99999},
+	})
+	if !strings.Contains(got, "创建成功") {
+		t.Fatalf("应创建成功，得到 %q", got)
+	}
+	if !strings.Contains(got, "已忽略 2 个") {
+		t.Errorf("工具结果应注明忽略数量，得到 %q", got)
+	}
+
+	var note string
+	if err := b.Store.Read.QueryRow(`SELECT note FROM ad_rules`).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "#"+itoa(adID)) {
+		t.Errorf("note 应列出有效证据 #%d：%q", adID, note)
+	}
+	if strings.Contains(note, "#"+itoa(cleanID)) || strings.Contains(note, "#99999") {
+		t.Errorf("note 不应列出无效/非广告证据：%q", note)
 	}
 }
 
@@ -501,7 +706,7 @@ func TestRuleAgentTestRuleBlocksFP(t *testing.T) {
 	insertRuleAgentLog(t, b, "正常聊天记录", "clean", "none", "")
 
 	run := &ruleAgentRun{sh: b.Shared}
-	raw := run.testRule("正常聊天")
+	raw := run.testRule(context.Background(), "正常聊天")
 	var got struct {
 		CanCreate bool              `json:"can_create"`
 		Message   string            `json:"message"`
