@@ -39,15 +39,15 @@ import { InfoRow } from './shared'
 
 const MONO = 'ui-monospace, Menlo, monospace'
 
-/** pct 覆盖率显示：一位小数；分母为 0 时 null（调用方决定「—」或省略）。 */
+/** pct 覆盖率显示：一位小数；分母缺失或为 0 时 null（调用方决定「—」或省略）。 */
 function pct(matched: number, total: number): string | null {
-  if (total <= 0) return null
+  if (!Number.isFinite(total) || total <= 0) return null
   return `${((matched / total) * 100).toFixed(1)}%`
 }
 
 /** KindCoverageList 是「按类型覆盖」小节：实时测试与落库数据共用。 */
 function KindCoverageList({ kinds }: { kinds: RuleKindStat[] }) {
-  if (kinds.length === 0) return null
+  if (!kinds || kinds.length === 0) return null
   return (
     <Box sx={{ mt: 1.5 }}>
       <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'text.secondary' }}>
@@ -515,7 +515,11 @@ export function RulesPage() {
           label="正则（RE2）"
           placeholder="如 兼职.{0,6}(日结|垫付|押金)"
           value={testPattern}
-          onChange={(event) => setTestPattern(event.target.value)}
+          onChange={(event) => {
+            setTestPattern(event.target.value)
+            // 改了正则，旧结果不再对应当前输入，立即作废。
+            setTestResult(null)
+          }}
           sx={{ '& textarea': { fontFamily: MONO, fontSize: 13 } }}
         />
         <Typography sx={{ mt: 1, fontSize: 12, color: 'text.secondary', lineHeight: 1.6 }}>
@@ -702,7 +706,7 @@ function SampleList({
   )
 }
 
-/** RuleTestPanel 渲染一轮全库测试：六个数字 + FP/已撤销红色样本 + 可折叠 TP 样本。 */
+/** RuleTestPanel 渲染一轮全库测试：七个数字 + FP/已撤销红色样本 + 可折叠 TP 样本。 */
 function RuleTestPanel({ test, tz }: { test: RuleTest; tz?: string }) {
   const [tpOpen, setTpOpen] = useState(false)
   return (

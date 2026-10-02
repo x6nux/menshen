@@ -1,7 +1,8 @@
-// AI 必封规则：Agent 启停/步骤/完成后刷新列表、启动竞态、约 2 秒自动轮询
-// 与卸载停止、状态读取失败重试、列表徽标与 TP/FP 摘要、详情全库误封测试与
-// 强制防误封门、开关乐观更新与失败回滚、400 toast、手动新增参数与保留输入、
-// 删除确认、次管 403 且不发 rules 请求。
+// AI 必封规则：Agent 启停/步骤/完成后刷新列表与多条创建、启动竞态、约 2 秒
+// 自动轮询与卸载停止、状态读取失败重试、列表徽标与 TP/FP/覆盖率摘要、详情
+// 全库误封测试（覆盖率与按类型细分）与强制防误封门、开关乐观更新与失败回滚、
+// 400 toast、手动新增参数与保留输入、测试正则抽屉（试跑不落库/预填新建/
+// 改输入作废旧结果）、删除确认、次管 403 且不发 rules 请求。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -326,7 +327,7 @@ describe('RulesPage · 列表与新增', () => {
   })
 
   it('测试正则：试跑展示结果，可带着正则去新建', async () => {
-    captureRules((body) => {
+    const bodies = captureRules((body) => {
       if (body.action === 'list') return HttpResponse.json({ rules: [] })
       if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
       if (body.action === 'test') return HttpResponse.json({ test: mockRuleTest })
@@ -344,6 +345,11 @@ describe('RulesPage · 列表与新增', () => {
     // 覆盖率格/按类型小节在 Task 10 才加，这里只验结果面板与预填。
     expect(await screen.findByTestId('rule-test-result')).toBeInTheDocument()
     expect(screen.getByTestId('rule-test-tp')).toHaveTextContent('12')
+    // 试跑必须不带 id（否则服务端会写回 last_*）。
+    expect(bodies.find((b) => b.action === 'test')).toEqual({
+      action: 'test',
+      pattern: '兼职.{0,6}押金',
+    })
 
     fireEvent.click(screen.getByRole('button', { name: '用此正则新建规则' }))
     expect(await screen.findByLabelText('正则（RE2）')).toHaveValue('兼职.{0,6}押金')
@@ -383,6 +389,19 @@ describe('RulesPage · 列表与新增', () => {
     })
     renderPage(<RulesPage />)
     expect(await screen.findByTestId('rule-tpfp-1')).toHaveTextContent('覆盖 7.5%')
+    // 迁移前的老规则 last_ads_total=0：整段省略覆盖率，不能出现 NaN%。
+    const old = await screen.findByTestId('rule-tpfp-2')
+    expect(old).toHaveTextContent('TP 4 · FP 2')
+    expect(old.textContent).not.toContain('覆盖')
+  })
+
+  it('详情：last_ads_total=0 时覆盖率显示「—」', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [mockRules[1]] })
+      return ok()
+    })
+    renderPage(<RuleDetailPage id={2} />)
+    expect(await screen.findByText(/覆盖率 —/)).toBeInTheDocument()
   })
 
   it('测试正则抽屉展示覆盖率与按类型', async () => {
@@ -402,6 +421,26 @@ describe('RulesPage · 列表与新增', () => {
     expect(await screen.findByTestId('rule-test-coverage')).toHaveTextContent('12.5%')
     expect(screen.getByText('按类型覆盖')).toBeInTheDocument()
     expect(screen.getByText('scam')).toBeInTheDocument()
+  })
+
+  it('测试正则：改输入即作废旧结果', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [] })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      if (body.action === 'test') return HttpResponse.json({ test: mockRuleTest })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试正则' }))
+    fireEvent.change(await screen.findByLabelText('正则（RE2）'), { target: { value: '兼职' } })
+    fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
+    expect(await screen.findByTestId('rule-test-result')).toBeInTheDocument()
+
+    // 旧统计不能留在屏幕上误导「用此正则新建规则」。
+    fireEvent.change(screen.getByLabelText('正则（RE2）'), { target: { value: '兼职押金' } })
+    expect(screen.queryByTestId('rule-test-result')).not.toBeInTheDocument()
   })
 })
 
