@@ -29,6 +29,8 @@ describe('LogDetailPage', () => {
     expect(screen.getByText('时间')).toBeInTheDocument()
     expect(screen.getByText('处置')).toBeInTheDocument()
     expect(screen.getByText('删除+禁言')).toBeInTheDocument()
+    // 判定来源翻译：mockLogDetail.decider='llm' → 复判模型（不再显示原始代码）。
+    expect(screen.getByText(/复判模型/)).toBeInTheDocument()
     // 群标题来自 state.chats（fixtures：测试群）
     expect(screen.getByText(/测试群/)).toBeInTheDocument()
     expect(screen.getByText('uid 555（资料）')).toBeInTheDocument()

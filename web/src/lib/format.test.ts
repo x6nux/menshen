@@ -3,6 +3,7 @@ import {
   actionLabel,
   apAI,
   apStatus,
+  deciderLabel,
   fmtTS,
   kindLabel,
   meLabel,
@@ -11,6 +12,7 @@ import {
   punishLabel,
   settingOf,
   verdictLabel,
+  whiteSourceLabel,
 } from './format'
 
 // 2023-11-14 00:05:00 UTC —— 同时验证 24 小时制不会出现 24:05。
@@ -63,11 +65,33 @@ describe('文案映射', () => {
     expect(apAI('whatever')).toBe('未复核')
   })
 
-  it('actionLabel 处理 dryrun: 前缀与未知值', () => {
+  it('actionLabel 处理 dryrun: 前缀与未知值，联封/告警有中文', () => {
     expect(actionLabel('deleted_muted')).toBe('删除+禁言')
-    expect(actionLabel('dryrun:deleted')).toBe('演练:deleted')
-    expect(actionLabel('dryrun:muted')).toBe('演练:muted')
+    expect(actionLabel('gban_muted')).toBe('联封禁言')
+    expect(actionLabel('gban_banned')).toBe('联封出群')
+    expect(actionLabel('alerted')).toBe('仅告警')
+    expect(actionLabel('dryrun:deleted')).toBe('演练:删除')
+    expect(actionLabel('dryrun:gban_muted')).toBe('演练:联封禁言')
     expect(actionLabel('custom')).toBe('custom')
+  })
+
+  it('deciderLabel 翻译判定来源与必封规则 id', () => {
+    expect(deciderLabel('systemone')).toBe('初判模型')
+    expect(deciderLabel('llm')).toBe('复判模型')
+    expect(deciderLabel('systemone+llm')).toBe('初判+复判')
+    expect(deciderLabel('hash')).toBe('内容哈希')
+    expect(deciderLabel('manual-ban')).toBe('人工封禁')
+    expect(deciderLabel('rule:12')).toBe('必封规则 #12')
+    expect(deciderLabel('rule')).toBe('内置规则')
+    expect(deciderLabel('weird')).toBe('weird')
+  })
+
+  it('whiteSourceLabel 翻译白名单来源', () => {
+    expect(whiteSourceLabel('adw')).toBe('/adw 白名单')
+    expect(whiteSourceLabel('appeal')).toBe('申诉通过')
+    expect(whiteSourceLabel('uad')).toBe('群内 /uad')
+    expect(whiteSourceLabel('')).toBe('—')
+    expect(whiteSourceLabel('weird')).toBe('weird')
   })
 })
 

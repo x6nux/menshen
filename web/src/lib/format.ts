@@ -84,14 +84,50 @@ const ACTION_LABELS: Record<string, string> = {
   deleted_banned: '删除+封禁',
   join_muted: '进群限制发言',
   join_checked: '入群检查',
+  gban_muted: '联封禁言',
+  gban_banned: '联封出群',
+  alerted: '仅告警',
   undone: '已撤销',
 }
 
-/** actionLabel 处置动作文案；dryrun: 前缀渲染成「演练:xxx」。 */
+/** actionLabel 处置动作文案；dryrun: 前缀渲染成「演练:xxx」且内层同样翻译。 */
 export function actionLabel(a: string): string {
   const known = ACTION_LABELS[a]
   if (known) return known
-  return a.startsWith('dryrun:') ? '演练:' + a.slice(7) : a
+  return a.startsWith('dryrun:') ? '演练:' + actionLabel(a.slice(7)) : a
+}
+
+const DECIDER_LABELS: Record<string, string> = {
+  systemone: '初判模型',
+  so: '初判模型',
+  llm: '复判模型',
+  'systemone+llm': '初判+复判',
+  hash: '内容哈希',
+  manual: '人工标记',
+  'manual-ban': '人工封禁',
+  rule: '内置规则',
+  skipped: '未送检',
+}
+
+/** deciderLabel 判定来源文案；rule:<id> 显示为「必封规则 #id」，未知值原样返回。 */
+export function deciderLabel(d: string): string {
+  if (d.startsWith('rule:')) {
+    const id = d.slice('rule:'.length)
+    return id ? `必封规则 #${id}` : '必封规则'
+  }
+  return DECIDER_LABELS[d] || d
+}
+
+const WHITE_SOURCE_LABELS: Record<string, string> = {
+  adw: '/adw 白名单',
+  miniapp: 'Mini App 添加',
+  appeal: '申诉通过',
+  uad: '群内 /uad',
+}
+
+/** whiteSourceLabel 白名单来源文案；未知值原样返回，空值显示 —。 */
+export function whiteSourceLabel(s: string): string {
+  return WHITE_SOURCE_LABELS[s] || s || '—'
 }
 
 const KIND_LABELS: Record<string, string> = {

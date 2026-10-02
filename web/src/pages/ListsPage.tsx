@@ -18,7 +18,7 @@ import {
 } from '../api/mutations'
 import type { AdminRow, Bot, Chat, GbanRow, ProfileOKRow, State, WhiteRow } from '../api/types'
 import { filterRows, gbanKey, profileOKKey, whiteKey } from '../lib/filters'
-import { displayTz, fmtTS, meLabel } from '../lib/format'
+import { displayTz, fmtTS, meLabel, whiteSourceLabel } from '../lib/format'
 import {
   Badge,
   ErrorState,
@@ -378,7 +378,7 @@ export function ListsPage({ section }: { section?: string }) {
               <ListRow
                 key={`${w.bot_id}:${w.chat_id}:${w.user_id}`}
                 primary={`${w.user_id} · ${scopeText(w)}`}
-                secondary={`来源 ${w.source || '—'} · ${
+                secondary={`来源 ${whiteSourceLabel(w.source)} · ${
                   w.expires_at ? `到 ${fmtTS(w.expires_at, tz)}` : '永久'
                 }`}
                 trailing={

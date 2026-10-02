@@ -61,7 +61,7 @@ describe('ListsPage 可见性', () => {
       }),
     )
     renderPage(<ListsPage />)
-    expect(await screen.findByText('来源 adw · 到 11-15 12:13')).toBeInTheDocument()
+    expect(await screen.findByText('来源 /adw 白名单 · 到 11-15 12:13')).toBeInTheDocument()
   })
 
   it('section 参数直接进入联封', async () => {

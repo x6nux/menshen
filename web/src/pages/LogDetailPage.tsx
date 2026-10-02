@@ -7,7 +7,7 @@ import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
 import { useLog, useMiniState } from '../api/hooks'
 import { useLogactMutation } from '../api/mutations'
-import { actionLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
+import { actionLabel, deciderLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
@@ -119,7 +119,7 @@ export function LogDetailPage({ id }: { id: number }) {
       value: [
         verdictLabel(l.verdict),
         `${Math.round(l.confidence * 100)}%`,
-        l.decider,
+        l.decider ? deciderLabel(l.decider) : '',
         l.kind ? kindLabel(l.kind) : '',
       ]
         .filter(Boolean)
