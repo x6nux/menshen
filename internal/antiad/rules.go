@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -150,9 +151,37 @@ type RuleTestResult struct {
 	Undone  int64
 	Neutral int64
 
+	// AdsTotal 是扫描窗口内已确认广告总数（verdict='ad' 且
+	// action<>'undone'），覆盖率分母；Kinds 是同一批按 ad_kind 的细分。
+	AdsTotal int64
+	Kinds    []RuleKindStat
+
 	TPSamples     []RuleSample
 	FPSamples     []RuleSample
 	UndoneSamples []RuleSample
+}
+
+// RuleKindStat 是按 ad_kind 细分的覆盖率：Matched/Total 是该类型的召回。
+type RuleKindStat struct {
+	Kind    string `json:"kind"`
+	Total   int64  `json:"total"`
+	Matched int64  `json:"matched"`
+}
+
+// Coverage 返回该类型的覆盖率；Total=0 时 0。
+func (s RuleKindStat) Coverage() float64 {
+	if s.Total == 0 {
+		return 0
+	}
+	return float64(s.Matched) / float64(s.Total)
+}
+
+// Coverage 返回总体覆盖率：命中的已确认广告 ÷ 已确认广告总数。
+func (r RuleTestResult) Coverage() float64 {
+	if r.AdsTotal == 0 {
+		return 0
+	}
+	return float64(r.TP) / float64(r.AdsTotal)
 }
 
 // CompileRulePattern 是**写入口**的严格校验：空串、超长、编译失败，
@@ -186,6 +215,72 @@ func compileRuleLenient(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(pattern)
 }
 
+// ruleKindAcc 在扫描循环里累计覆盖率数据；testRulePatternCtx 与
+// ruleAgentRun.findMatches 共用，保证两边口径与数字完全一致。
+type ruleKindAcc struct {
+	adsTotal int64
+	totals   map[string]int64
+	matched  map[string]int64
+}
+
+func newRuleKindAcc() *ruleKindAcc {
+	return &ruleKindAcc{totals: map[string]int64{}, matched: map[string]int64{}}
+}
+
+// ad 记一条已确认广告（分母 + 类型分母）。
+func (a *ruleKindAcc) ad(kind string) {
+	a.adsTotal++
+	a.totals[kind]++
+}
+
+// hit 记一条命中且属于已确认广告的行（TP）。
+func (a *ruleKindAcc) hit(kind string) { a.matched[kind]++ }
+
+// result 返回分母与类型切片：Total 降序、同数按 Kind 升序。
+func (a *ruleKindAcc) result() (int64, []RuleKindStat) {
+	kinds := make([]RuleKindStat, 0, len(a.totals))
+	for kind, total := range a.totals {
+		kinds = append(kinds, RuleKindStat{Kind: kind, Total: total, Matched: a.matched[kind]})
+	}
+	sort.Slice(kinds, func(i, j int) bool {
+		if kinds[i].Total != kinds[j].Total {
+			return kinds[i].Total > kinds[j].Total
+		}
+		return kinds[i].Kind < kinds[j].Kind
+	})
+	return a.adsTotal, kinds
+}
+
+// RuleKindsJSON 把类型细分序列化成落库/契约 JSON；空或失败返回空串。
+// 面板写回与 Agent 创建规则共用，保证两处落库格式一致。
+func RuleKindsJSON(kinds []RuleKindStat) string {
+	if len(kinds) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(kinds)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// ParseRuleKindsJSON 解析落库的 last_kinds；空/坏数据返回空切片（非 nil），
+// 面板列表与 Agent 的 list_rules 共用，避免两处解析口径漂移。
+func ParseRuleKindsJSON(raw string) []map[string]any {
+	if raw == "" {
+		return []map[string]any{}
+	}
+	var kinds []RuleKindStat
+	if err := json.Unmarshal([]byte(raw), &kinds); err != nil || kinds == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, map[string]any{"kind": k.Kind, "total": k.Total, "matched": k.Matched})
+	}
+	return out
+}
+
 // TestRulePattern 在 antiad_log 全量历史上试跑一条正则，统计它会命中
 // 多少已确认广告、多少正常消息（含被撤销的误判）。
 //
@@ -211,6 +306,7 @@ func testRulePatternCtx(ctx context.Context, sh *core.Shared,
 	pattern string) (RuleTestResult, error) {
 
 	res := RuleTestResult{Pattern: pattern}
+	acc := newRuleKindAcc()
 	re, err := compileRuleLenient(pattern)
 	if err != nil {
 		return res, err
@@ -238,6 +334,10 @@ func testRulePatternCtx(ctx context.Context, sh *core.Shared,
 		if res.Scanned%ruleScanCtxCheckEvery == 0 && ctx.Err() != nil {
 			return res, errRuleScanStopped
 		}
+		// 已确认广告：计入覆盖率分母与类型分母（与 TP 口径逐条一致）。
+		if verdict == "ad" && action != "undone" {
+			acc.ad(s.Kind)
+		}
 		if !re.MatchString(text) {
 			continue
 		}
@@ -254,6 +354,7 @@ func testRulePatternCtx(ctx context.Context, sh *core.Shared,
 			addRuleSample(&res.UndoneSamples, s, ruleUndoneSamples)
 		case verdict == "ad":
 			res.TP++
+			acc.hit(s.Kind)
 			addRuleSample(&res.TPSamples, s, ruleTPSamples)
 		case verdict == "clean" || verdict == "none":
 			res.FP++
@@ -266,6 +367,7 @@ func testRulePatternCtx(ctx context.Context, sh *core.Shared,
 	if err := rows.Err(); err != nil {
 		return res, err
 	}
+	res.AdsTotal, res.Kinds = acc.result()
 	return res, nil
 }
 

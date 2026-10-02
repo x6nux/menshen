@@ -49,6 +49,66 @@ func insertLog(t *testing.T, b *core.Bot, verdict, action, text string) {
 	}
 }
 
+// insertKindLog 与 insertLog 相同，但可指定 ad_kind。
+func insertKindLog(t *testing.T, b *core.Bot, verdict, action, kind, text string) {
+	t.Helper()
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,555,0,?,?,0.9,'test',?,?,'',?,?)`,
+		text, verdict, kind, action, time.Now().Unix(), b.BotID()); err != nil {
+		t.Fatalf("插入流水失败: %v", err)
+	}
+}
+
+// TestRuleCoverageByKind 锁覆盖率口径：分母是 verdict='ad' 且 action<>'undone'；
+// 按 ad_kind 分组；undone/clean 不进分母；空库 coverage=0。
+func TestRuleCoverageByKind(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertKindLog(t, b, "ad", "deleted", "scam", "办理贷款加微信")
+	insertKindLog(t, b, "ad", "deleted", "scam", "办理贷款加微信")
+	insertKindLog(t, b, "ad", "deleted", "scam", "今天天气不错")
+	insertKindLog(t, b, "ad", "deleted", "promo", "限时促销")
+	insertKindLog(t, b, "ad", "undone", "scam", "办理贷款（撤销）")
+	insertKindLog(t, b, "clean", "none", "scam", "办理贷款（正常聊天）")
+
+	res, err := TestRulePattern(b.Shared, "办理贷款")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AdsTotal != 4 || res.TP != 2 {
+		t.Fatalf("覆盖率分子分母不对：AdsTotal=%d TP=%d", res.AdsTotal, res.TP)
+	}
+	if got := res.Coverage(); got != 0.5 {
+		t.Errorf("总体覆盖率应为 0.5，得到 %v", got)
+	}
+	want := []RuleKindStat{
+		{Kind: "scam", Total: 3, Matched: 2},
+		{Kind: "promo", Total: 1, Matched: 0},
+	}
+	if len(res.Kinds) != len(want) {
+		t.Fatalf("类型数应为 %d，得到 %+v", len(want), res.Kinds)
+	}
+	for i := range want {
+		if res.Kinds[i] != want[i] {
+			t.Errorf("类型[%d] 应为 %+v，得到 %+v", i, want[i], res.Kinds[i])
+		}
+	}
+	if got := res.Kinds[1].Coverage(); got != 0 {
+		t.Errorf("promo 覆盖率应为 0，得到 %v", got)
+	}
+
+	// 空库：不除零。
+	b2, _ := testutil.NewTestBot(t, 2)
+	empty, err := TestRulePattern(b2.Shared, "办理贷款")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.AdsTotal != 0 || empty.Coverage() != 0 || len(empty.Kinds) != 0 {
+		t.Errorf("空库应 AdsTotal=0 coverage=0 kinds 空，得到 %+v", empty)
+	}
+}
+
 // TestRuleTestPatternClassification 锁住全库测试的分类口径与样本上限：
 // ad 计 TP；clean/none 计 FP；action=undone 计 Undone 且同时计 FP
 // （它就是被撤销的误判）；skipped/error 计 Neutral；样本按上限截取，
