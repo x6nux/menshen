@@ -1,5 +1,6 @@
-// AI 必封规则：Agent 启停/步骤/完成后刷新列表、列表徽标与 TP/FP 摘要、
-// 详情全库误封测试与强制防误封门、手动新增参数与 400 保留输入、
+// AI 必封规则：Agent 启停/步骤/完成后刷新列表、启动竞态、约 2 秒自动轮询
+// 与卸载停止、状态读取失败重试、列表徽标与 TP/FP 摘要、详情全库误封测试与
+// 强制防误封门、开关乐观更新与失败回滚、400 toast、手动新增参数与保留输入、
 // 删除确认、次管 403 且不发 rules 请求。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
@@ -20,7 +21,7 @@ function useState(state: State) {
 }
 
 /** captureRules 安装一个可编排的 rules handler，返回收到的请求体数组。 */
-function captureRules(handler: (body: RulesBody, n: number) => Response) {
+function captureRules(handler: (body: RulesBody, n: number) => Response | Promise<Response>) {
   const bodies: RulesBody[] = []
   server.use(
     http.post('*/miniapp/api/rules', async ({ request }) => {
@@ -124,6 +125,109 @@ describe('RulesPage · Agent', () => {
     expect(screen.getByText('已完成')).toBeInTheDocument()
     await waitFor(() => expect(listCalls).toBeGreaterThan(before))
   })
+
+  it('竞态：迟到的挂载期 agent_status 不覆盖启动态，轮询继续', async () => {
+    let releaseSlow!: () => void
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve
+    })
+    let statusCalls = 0
+    let agent: RuleAgent = { ...mockRuleAgent }
+    captureRules((body) => {
+      switch (body.action) {
+        case 'list':
+          return HttpResponse.json({ rules: [] })
+        case 'agent_status':
+          statusCalls++
+          if (statusCalls === 1) {
+            // 挂载期第一次状态请求卡住，模拟它在「开始发现」之后才带着空闲
+            // 旧数据返回——没有竞态防护时会把 running 改回 false。
+            return slowGate.then(() => HttpResponse.json({ agent: { ...mockRuleAgent } }))
+          }
+          return HttpResponse.json({ agent })
+        case 'agent_start':
+          agent = { ...agent, running: true, started_at: 1700000600 }
+          return ok({ agent })
+        default:
+          return ok()
+      }
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+    // 确保慢请求已经在途，再点开始。
+    await waitFor(() => expect(statusCalls).toBe(1))
+
+    fireEvent.click(screen.getByRole('button', { name: '开始发现' }))
+    expect(await screen.findByText('已开始规则发现，完成后会给出候选规则')).toBeInTheDocument()
+
+    // 迟到的空闲响应现在才 resolve：卡片必须保持「运行中」。
+    releaseSlow()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(screen.getByText('运行中')).toBeInTheDocument()
+
+    // 且轮询没有被打断：下一次 status（约 2 秒后）仍会发生。
+    await waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(3), { timeout: 6000 })
+    expect(screen.getByText('运行中')).toBeInTheDocument()
+  }, 15000)
+
+  it('运行中约每 2 秒自动轮询，卸载后停止', async () => {
+    let statusCalls = 0
+    const runningAgent: RuleAgent = {
+      ...mockRuleAgent,
+      running: true,
+      started_at: 1700000600,
+      steps: [
+        { n: 1, at: 1700000601, kind: 'model', name: '选样本', summary: '读取 20 条历史封禁' },
+      ],
+    }
+    captureRules((body) => {
+      switch (body.action) {
+        case 'list':
+          return HttpResponse.json({ rules: [] })
+        case 'agent_status':
+          statusCalls++
+          return HttpResponse.json({ agent: runningAgent })
+        default:
+          return ok()
+      }
+    })
+    const { unmount } = renderPage(<RulesPage />)
+
+    // 初始一次 + 约 2 秒后的轮询：不手动 refetch，真等定时器。
+    await waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(2), { timeout: 6000 })
+    expect(await screen.findByText('运行中')).toBeInTheDocument()
+
+    unmount()
+    const atUnmount = statusCalls
+    await new Promise((resolve) => setTimeout(resolve, 2400))
+    expect(statusCalls).toBe(atUnmount)
+  }, 15000)
+
+  it('状态读取失败：行内提示与重试，重试后恢复', async () => {
+    let fail = true
+    const agent: RuleAgent = { ...mockRuleAgent }
+    captureRules((body) => {
+      switch (body.action) {
+        case 'list':
+          return HttpResponse.json({ rules: [] })
+        case 'agent_status':
+          if (fail) return HttpResponse.json({ error: '状态读取失败' }, { status: 500 })
+          return HttpResponse.json({ agent })
+        default:
+          return ok()
+      }
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+
+    expect(await screen.findByText('状态读取失败')).toBeInTheDocument()
+    expect(screen.getByText('失败')).toBeInTheDocument()
+
+    fail = false
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByText(/让 AI 扫描历史封禁生成候选/)).toBeInTheDocument()
+    expect(screen.queryByText('状态读取失败')).not.toBeInTheDocument()
+  }, 15000)
 })
 
 describe('RulesPage · 列表与新增', () => {
@@ -305,5 +409,123 @@ describe('RuleDetailPage', () => {
     await waitFor(() =>
       expect(bodies.some((b) => b.action === 'remove' && b.id === 1)).toBe(true),
     )
+  })
+
+  it('启用 Switch：乐观翻转，服务端确认后保持启用', async () => {
+    let rule: Rule = { ...mockRules[1], enabled: false }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const bodies = captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [rule] })
+      if (body.action === 'toggle') {
+        return gate.then(() => {
+          rule = { ...rule, enabled: body.enabled === true }
+          return ok()
+        })
+      }
+      return ok()
+    })
+    renderPage(<RuleDetailPage id={2} />)
+
+    const sw = await screen.findByRole('switch', { name: '启用' })
+    expect(sw).not.toBeChecked()
+    fireEvent.click(sw)
+    // 服务端响应被 gate 拦住时，UI 已经乐观翻转。
+    await waitFor(() => expect(sw).toBeChecked())
+
+    act(() => release())
+    await waitFor(() =>
+      expect(bodies.some((b) => b.action === 'toggle' && b.enabled === true && b.id === 2)).toBe(
+        true,
+      ),
+    )
+    // 服务端确认 + 列表刷新后仍是启用。
+    await waitFor(() => expect(screen.getByRole('switch', { name: '启用' })).toBeChecked())
+  })
+
+  it('启用 Switch：服务端 500 时回滚并 toast 服务端文案', async () => {
+    const rule: Rule = { ...mockRules[1], enabled: false }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [rule] })
+      if (body.action === 'toggle') {
+        return gate.then(() => HttpResponse.json({ error: '保存失败：规则表被占用' }, { status: 500 }))
+      }
+      return ok()
+    })
+    renderPage(<RuleDetailPage id={2} />)
+
+    const sw = await screen.findByRole('switch', { name: '启用' })
+    fireEvent.click(sw)
+    await waitFor(() => expect(sw).toBeChecked())
+
+    act(() => release())
+    await waitFor(() => expect(screen.getByRole('switch', { name: '启用' })).not.toBeChecked())
+    expect(await screen.findByText('保存失败：规则表被占用')).toBeInTheDocument()
+  })
+
+  it('强制：服务端 400 时回滚并 toast；误封样本仍高亮可见', async () => {
+    const rule: Rule = {
+      ...mockRules[0],
+      enabled: true,
+      enforce: false,
+      last_fp: 0,
+      last_undone: 0,
+      last_tested_at: 1700000500,
+    }
+    const testResp: RuleTest = {
+      pattern: rule.pattern,
+      scanned: 1200,
+      matched: 4,
+      tp: 1,
+      fp: 3,
+      undone: 0,
+      neutral: 0,
+      tp_samples: [],
+      fp_samples: [fpSample],
+      undone_samples: [],
+    }
+    let releaseEnforce!: () => void
+    const enforceGate = new Promise<void>((resolve) => {
+      releaseEnforce = resolve
+    })
+    const bodies = captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [rule] })
+      if (body.action === 'test') return HttpResponse.json({ test: testResp })
+      if (body.action === 'enforce') {
+        // 卡住响应先验证乐观翻转，再放行 400 观察回滚。
+        return enforceGate.then(() =>
+          HttpResponse.json(
+            { error: '规则尚未通过全库测试（疑似误封 3 条），不能开启强制' },
+            { status: 400 },
+          ),
+        )
+      }
+      return ok()
+    })
+    renderPage(<RuleDetailPage id={1} />)
+
+    // 先跑一次测试：FP 样本红色可见。
+    fireEvent.click(await screen.findByRole('button', { name: '重新跑全库测试' }))
+    expect(await screen.findByTestId('rule-sample-fp')).toBeInTheDocument()
+
+    const sw = screen.getByRole('switch', { name: '强制' })
+    expect(sw).not.toBeDisabled()
+    fireEvent.click(sw)
+    await waitFor(() => expect(sw).toBeChecked())
+
+    // 服务端 400：乐观翻转回滚，toast 服务端文案；样本仍在。
+    act(() => releaseEnforce())
+    await waitFor(() => expect(screen.getByRole('switch', { name: '强制' })).not.toBeChecked())
+    expect(
+      await screen.findByText('规则尚未通过全库测试（疑似误封 3 条），不能开启强制'),
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('rule-sample-fp')).toBeInTheDocument()
+    await waitFor(() => expect(bodies.some((b) => b.action === 'enforce')).toBe(true))
   })
 })

@@ -153,10 +153,15 @@ function AgentCard({ tz }: { tz?: string }) {
   const running = agent?.running ?? false
   // 一步日志一行，时间线只保留最近 50 步，避免长跑后 DOM 无限增长。
   const steps = (agent?.steps ?? []).slice(-50)
-  const status = agentStatus(agent)
+  const status = agentQuery.isError
+    ? { label: '失败', tone: 'no' as const }
+    : agentStatus(agent)
   const ended =
     agent !== undefined &&
     (agent.error !== '' || agent.result !== '' || agent.created_rule_id > 0)
+
+  const stepsRef = useRef<HTMLDivElement | null>(null)
+  const lastStepN = steps.length > 0 ? steps[steps.length - 1].n : 0
 
   // 运行 → 结束的跳变：Agent 可能刚写入了新候选，刷新规则列表。
   useEffect(() => {
@@ -166,13 +171,25 @@ function AgentCard({ tz }: { tz?: string }) {
     wasRunning.current = running
   }, [running, queryClient])
 
+  // 新步骤到达时把时间线滚到底部，长跑时总能看到最新一条。
+  useEffect(() => {
+    const el = stepsRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [lastStepN])
+
   function start() {
     startMut.mutate(
       { action: 'agent_start' },
       {
-        onSuccess: (resp) => {
-          // agent_start 直接带回初始运行态：先写进缓存，轮询随即接上。
-          if (resp.agent) queryClient.setQueryData(miniQueryKeys.rulesAgent, { agent: resp.agent })
+        // 竞态防护：挂载期的 agent_status 可能还在途，等它回来时若直接
+        // setQueryData 会被旧响应覆盖（running 变回 false、轮询停掉、步骤
+        // 不再出现）。先取消在途请求，再写启动态，最后失效重取确认真值。
+        onSuccess: async (resp) => {
+          if (resp.agent) {
+            await queryClient.cancelQueries({ queryKey: miniQueryKeys.rulesAgent })
+            queryClient.setQueryData(miniQueryKeys.rulesAgent, { agent: resp.agent })
+            await queryClient.invalidateQueries({ queryKey: miniQueryKeys.rulesAgent })
+          }
           toast('已开始规则发现，完成后会给出候选规则')
         },
         onError: (err) => toast(err.message),
@@ -196,11 +213,24 @@ function AgentCard({ tz }: { tz?: string }) {
       <Box sx={{ px: 2, py: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Badge tone={status.tone}>{status.label}</Badge>
-          <Typography sx={{ fontSize: 13, color: 'text.secondary', lineHeight: 1.5 }}>
-            {running
-              ? '正在从历史封禁里总结必封正则…'
-              : '让 AI 扫描历史封禁生成候选；候选默认不启用。'}
-          </Typography>
+          {agentQuery.isError ? (
+            <>
+              <Typography
+                sx={{ flex: 1, minWidth: 0, fontSize: 13, color: 'error.main', lineHeight: 1.5 }}
+              >
+                状态读取失败
+              </Typography>
+              <Button size="small" onClick={() => void agentQuery.refetch()}>
+                重试
+              </Button>
+            </>
+          ) : (
+            <Typography sx={{ fontSize: 13, color: 'text.secondary', lineHeight: 1.5 }}>
+              {running
+                ? '正在从历史封禁里总结必封正则…'
+                : '让 AI 扫描历史封禁生成候选；候选默认不启用。'}
+            </Typography>
+          )}
         </Box>
         <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
           <Button
@@ -227,6 +257,7 @@ function AgentCard({ tz }: { tz?: string }) {
 
       {steps.length > 0 && (
         <Box
+          ref={stepsRef}
           data-testid="agent-steps"
           sx={{ maxHeight: 280, overflowY: 'auto', borderTop: '1px solid', borderColor: 'divider' }}
         >

@@ -67,5 +67,6 @@ describe('MinePage', () => {
     expect(screen.queryByText('上游渠道')).not.toBeInTheDocument()
     expect(screen.queryByText('模型定价')).not.toBeInTheDocument()
     expect(screen.queryByText('全局设置')).not.toBeInTheDocument()
+    expect(screen.queryByText('AI 必封规则')).not.toBeInTheDocument()
   })
 })
