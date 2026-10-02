@@ -156,6 +156,34 @@ func TestEnsureMainBotDemotesOldMain(t *testing.T) {
 	}
 }
 
+// TestBackfillChatTitles：启动回填把「先加配置、后入群」留下的空标题补上。
+func TestBackfillChatTitles(t *testing.T) {
+	reg, b := testutil.NewTestRegistry(t, nil)
+	fake := b.TG.(*testutil.FakeTG)
+	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":-100,"type":"supergroup",` +
+				`"title":"补回来的群名"}}`, true
+		}
+		return "", false
+	}
+	if _, err := b.Store.Write.Exec(`INSERT INTO bot_chats
+		(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
+		VALUES (?,?, '',1,0,0,0)`, b.BotID(), int64(-100)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	backfillChatTitles(reg)
+
+	conf, ok := b.Cache.Snap().ChatConf(b.BotID(), -100)
+	if !ok || conf.Title != "补回来的群名" {
+		t.Fatalf("空标题应被启动回填补上，得到 %+v", conf)
+	}
+}
+
 // TestWebhookServerTimeouts：只设 ReadHeaderTimeout 挡不住慢速发 body 的
 // 连接——它会一直占着 goroutine 与内存。四项超时都必须就位。
 func TestWebhookServerTimeouts(t *testing.T) {
