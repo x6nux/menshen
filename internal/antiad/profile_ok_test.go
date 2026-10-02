@@ -1,8 +1,12 @@
 package antiad
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,5 +271,61 @@ func TestProfileOKGrantUsesEnrichedProfile(t *testing.T) {
 		profileHash(senderProfile{UserID: 7001, Username: "someone"}),
 		time.Now().Unix()); until != 0 {
 		t.Error("不带简介的指纹不该命中")
+	}
+}
+
+// TestCheckProfileReviewNotShieldedByProfileOK：管理员 /check 一个没有留底的人
+// 走资料复查时，既有的资料放行不能当盾牌 —— 这次复查的对象就是资料本身。
+//
+// 线上真实漏过：明显的 VPS 广告资料先被冷判定放行 6 小时，管理员 /check 想
+// 复核，模型却以「该资料已被 profile_ok 放行」为由判正常，反手把放行续到
+// 72 小时。复查判成广告号后，原有的放行也要撤掉。
+func TestCheckProfileReviewNotShieldedByProfileOK(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	var sawProfileOK atomic.Bool
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"profile_ok"`)) {
+			sawProfileOK.Store(true)
+		}
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			w.Write([]byte(soReply("ad", 0.95, "promo", "account")))
+			return
+		}
+		w.Write([]byte(llmReply(true, 0.9, "promo", "account")))
+	})
+	const bio = "抗投诉服务器、全球服务器、VPS、CDN、域名证书申请、免费安装海外版宝塔," +
+		"唯一大号：@jiyuan999，自动化监听群消息"
+	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":7301,"type":"private",` +
+				`"first_name":"全球服务器|怪物","username":"jiyuan53","bio":"` + bio + `"}}`, true
+		}
+		return "", false
+	}
+
+	// 预置：这份资料刚被冷判定放过 6 小时。
+	u := &tg.TGUser{ID: 7301, FirstName: "全球服务器|怪物", Username: "jiyuan53"}
+	seed := buildProfile(b, &tg.Message{From: u}, groupMember{}, time.Now().Unix())
+	seed.Bio = bio
+	if GrantProfileOK(b, seed, 6, "冷判定放行") == 0 {
+		t.Fatal("预置放行失败")
+	}
+
+	// 管理员 /check：此人没有任何留底，走资料复查分支。
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 41, "/check 7301"))
+	waitIdle(t, b)
+
+	if sawProfileOK.Load() {
+		t.Error("资料复查的提示词里不该带 profile_ok —— 复查的对象就是资料，" +
+			"被既有放行挡住等于复查永远维持原判、还会续期")
+	}
+	if fake.CountCalls("restrictChatMember") == 0 {
+		t.Error("资料判成广告号后应限制发言")
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM profile_ok`); n != 0 {
+		t.Errorf("资料判成广告号后应撤销原有放行，剩 %d 行", n)
 	}
 }

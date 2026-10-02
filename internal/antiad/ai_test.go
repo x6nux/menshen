@@ -35,6 +35,21 @@ func TestPromptsSeparateQuotedFromBio(t *testing.T) {
 	}
 }
 
+// TestPromptsCoverServiceListAd：资料里列着售卖中的服务并附联系方式，就是在
+// 招揽 —— 线上真实漏过「抗投诉服务器、VPS、CDN、域名证书申请 + 唯一大号」的
+// 简介被冷判定当成「业务介绍、无价格无招揽」放行，管理员 /check 反被续期。
+// 四份提示词都要有这个口径，否则冷判定与消息判定会各漏各的。
+func TestPromptsCoverServiceListAd(t *testing.T) {
+	for name, p := range map[string]string{
+		"so": soInstructions, "llm": llmSystemPrompt,
+		"cold": coldInstructions, "coldLLM": coldLLMPrompt,
+	} {
+		if !strings.Contains(p, "业务清单") || !strings.Contains(p, "没有标价也算") {
+			t.Errorf("%s 提示词缺少「资料写成业务清单也是招揽」的口径", name)
+		}
+	}
+}
+
 // TestPromptsExplainKnownAdPatterns：不说明的话，模型会把样本库里的广告原文
 // 当成本条消息（或此人资料）里的内容，凭空判广告。
 func TestPromptsExplainKnownAdPatterns(t *testing.T) {

@@ -158,7 +158,7 @@ const coldInstructions = "join_check 为 true：这是一个刚进群、还没�
 	"known_ad_patterns 只是本群过往广告的样本，不是此人的资料，" +
 	"不得把其中的文字当成此人写过的内容。\n" +
 	"判据只有一条：username、first_name、last_name、bio 里是否写着推广文案、" +
-	"收益承诺、引流话术或价目。写着的就是广告号。" + bioLinksClause + profileOKClause + patternClause +
+	"收益承诺、引流话术或价目。写着的就是广告号。" + bioLinksClause + serviceListClause + profileOKClause + patternClause +
 	"中文广告常靠变形规避：形近字或同音字替换（看煮页=看主页、赚米=赚钱、" +
 	"薇信=微信）、字母与数字互替（曰入5ooo+=日入5000+）、拼音缩写、" +
 	"空格拆词——先还原本意再判断。" +
@@ -177,7 +177,7 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 	"1. message 整块是空的，这是正常的，不要把它当成任何信号。\n" +
 	"2. 唯一判据是 sender 的账号资料：username、first_name、last_name、bio 里" +
 	"是否写着推广文案、收益承诺、引流话术或价目。\n" +
-	"2.2 " + bioLinksClause + "\n" +
+	"2.2 " + bioLinksClause + serviceListClause + "\n" +
 	"2.3 " + profileOKClause + "\n" +
 	"2.4 " + patternClause + "\n" +
 	"2.1 known_ad_patterns 只是本群过往广告的样本，不是此人的资料，" +

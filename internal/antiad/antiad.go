@@ -557,6 +557,9 @@ func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	logID := logAd(b, target, v, logAction(act, conf.Dryrun), note)
 
 	if !conf.Dryrun {
+		// 人工标记广告后，之前的资料放行作废：否则这份资料还能继续挡
+		// 后续判定的资料一路，人工结论被一份过期的自动放行架空。
+		DropProfileOK(b, target.From.ID, "人工标记为广告")
 		BumpAdHits(b, conf.ChatID, target.From.ID, 1)
 		maybeGban(b, conf.ChatID, target.From.ID,
 			"人工标记："+core.TruncateRunes(displayText(target), 60))
@@ -2283,6 +2286,11 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	// 复查的是「人」，简介必须拿最新的：对方可能刚改过资料。
 	b.BioCache.Delete(u.ID)
 	enrichSender(b, &p)
+	// 显式复查的对象就是资料本身，不能被既有的资料放行挡住：放行是给常规
+	// 消息判定用的（资料免罪、正文照判），在资料复查里沿用等于让复查永远
+	// 维持原判、还把放行续期（线上真实漏过：管理员 /check 一份明显的 VPS
+	// 广告资料，反被从 6 小时续到了 72 小时）。
+	p.ProfileOK, p.ProfileOKUntil = false, ""
 	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
 	ensureJoinAge(b, chatID, &p)
 
@@ -2312,6 +2320,10 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 		sendGroup(b, chatID, "🔎 <b>资料复查结果</b>\n"+
 			renderReviewClean(b, msg, v, false), nil)
 		return
+	}
+	// 复查判成广告号：之前的资料放行作废 —— 那份资料重新成了广告证据。
+	if !conf.Dryrun {
+		DropProfileOK(b, u.ID, "资料复查判为广告号")
 	}
 	applyJoinMute(b, conf, u, v, p.Bio)
 }
