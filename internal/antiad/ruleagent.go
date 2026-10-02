@@ -370,7 +370,12 @@ func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 	} else {
 		cfg.Timeout = 60 * time.Second
 	}
-	return einoopenai.NewChatModel(context.Background(), cfg)
+	m, err := einoopenai.NewChatModel(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
+	// 包一层网络重试：上游偶发超时/5xx 不该让整轮发现直接失败。
+	return withModelRetry(m), nil
 }
 
 // ---- 执行 ----
