@@ -337,12 +337,16 @@ export function RulesPage() {
   // rules op 只对主管理员开放：次管不发请求，直接落到 403。
   const rulesQuery = useRules(main)
   const addMut = useRulesMutation<RuleSaveResp>()
+  const testMut = useRulesMutation<{ test: RuleTest }>()
 
   const [addOpen, setAddOpen] = useState(false)
   const [name, setName] = useState('')
   const [pattern, setPattern] = useState('')
   const [category, setCategory] = useState('')
   const [note, setNote] = useState('')
+  const [testOpen, setTestOpen] = useState(false)
+  const [testPattern, setTestPattern] = useState('')
+  const [testResult, setTestResult] = useState<RuleTest | null>(null)
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {
@@ -402,6 +406,17 @@ export function RulesPage() {
             >
               规则（{rules.length}）
             </Typography>
+            <Button
+              size="small"
+              onClick={() => {
+                setTestPattern('')
+                setTestResult(null)
+                setTestOpen(true)
+              }}
+              sx={{ minHeight: 30, px: 1, fontSize: 13 }}
+            >
+              测试正则
+            </Button>
             <Button size="small" onClick={openAdd} sx={{ minHeight: 30, px: 1, fontSize: 13 }}>
               ＋ 手动新增
             </Button>
@@ -428,6 +443,59 @@ export function RulesPage() {
           </SectionCard>
         </>
       )}
+
+      <FormDrawer
+        open={testOpen}
+        onClose={() => setTestOpen(false)}
+        title="测试正则"
+        pending={testMut.isPending}
+        submitText="开始测试"
+        submitDisabled={testPattern.trim() === ''}
+        onSubmit={() =>
+          testMut.mutate(
+            { action: 'test', pattern: testPattern.trim() },
+            {
+              onSuccess: (resp) => setTestResult(resp.test),
+              onError: (err) => toast(err.message),
+            },
+          )
+        }
+      >
+        <TextField
+          fullWidth
+          multiline
+          minRows={2}
+          size="small"
+          label="正则（RE2）"
+          placeholder="如 兼职.{0,6}(日结|垫付|押金)"
+          value={testPattern}
+          onChange={(event) => setTestPattern(event.target.value)}
+          sx={{ '& textarea': { fontFamily: MONO, fontSize: 13 } }}
+        />
+        <Typography sx={{ mt: 1, fontSize: 12, color: 'text.secondary', lineHeight: 1.6 }}>
+          只试跑不落库；保存时服务端仍会跑一次同样的全库测试。
+        </Typography>
+        {testResult !== null && (
+          <>
+            <RuleTestPanel test={testResult} tz={tz} />
+            <Button
+              fullWidth
+              variant="outlined"
+              sx={{ mt: 1.5 }}
+              onClick={() => {
+                setTestOpen(false)
+                setName('')
+                setPattern(testPattern.trim())
+                setCategory('')
+                setNote('')
+                setAddOpen(true)
+              }}
+            >
+              用此正则新建规则
+            </Button>
+          </>
+        )}
+      </FormDrawer>
 
       <FormDrawer
         open={addOpen}

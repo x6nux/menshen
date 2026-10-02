@@ -7,7 +7,7 @@ import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { miniQueryKeys } from '../api/hooks'
 import type { Rule, RuleAgent, RuleSample, RuleTest, State } from '../api/types'
-import { mockRuleAgent, mockRules, mockState } from '../mocks/fixtures'
+import { mockRuleAgent, mockRuleTest, mockRules, mockState } from '../mocks/fixtures'
 import { NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { RuleDetailPage, RulesPage } from './RulesPage'
@@ -302,6 +302,56 @@ describe('RulesPage · 列表与新增', () => {
 
     expect(await screen.findByText('没有权限')).toBeInTheDocument()
     expect(bodies).toHaveLength(0)
+  })
+
+  it('测试正则：试跑展示结果，可带着正则去新建', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [] })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      if (body.action === 'test') return HttpResponse.json({ test: mockRuleTest })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试正则' }))
+    fireEvent.change(await screen.findByLabelText('正则（RE2）'), {
+      target: { value: '兼职.{0,6}押金' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
+
+    // 覆盖率格/按类型小节在 Task 10 才加，这里只验结果面板与预填。
+    expect(await screen.findByTestId('rule-test-result')).toBeInTheDocument()
+    expect(screen.getByTestId('rule-test-tp')).toHaveTextContent('12')
+
+    fireEvent.click(screen.getByRole('button', { name: '用此正则新建规则' }))
+    expect(await screen.findByLabelText('正则（RE2）')).toHaveValue('兼职.{0,6}押金')
+    expect(screen.getByText('手动新增规则')).toBeInTheDocument()
+  })
+
+  it('测试正则：400 保留输入并 toast 服务端文案', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [] })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      if (body.action === 'test') {
+        return HttpResponse.json(
+          { error: '测试失败：规则不能匹配空文本（会命中所有消息）' },
+          { status: 400 },
+        )
+      }
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试正则' }))
+    fireEvent.change(await screen.findByLabelText('正则（RE2）'), { target: { value: 'a*' } })
+    fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
+
+    expect(
+      await screen.findByText('测试失败：规则不能匹配空文本（会命中所有消息）'),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('正则（RE2）')).toHaveValue('a*')
   })
 })
 
