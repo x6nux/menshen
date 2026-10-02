@@ -1,0 +1,10 @@
+{
+  // 部署前：npx wrangler secret put API_TOKEN
+  "name": "clef-gateway",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-02",
+  "workers_dev": true,
+  // AI binding：Worker 内 env.AI.run(...)，无需在代码里持有 Cloudflare API Token
+  "ai": { "binding": "AI" },
+  "observability": { "enabled": true }
+}

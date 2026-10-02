@@ -25,3 +25,7 @@ CLAUDE.md
 # npm --prefix web run build 生成，带 -tags miniapp 编译时嵌入 Go 二进制
 web/node_modules/
 internal/panel/webdist/
+
+# Cloudflare Worker 垫片（cloudflare/clef-gateway）：依赖与本地缓存不入库
+cloudflare/clef-gateway/node_modules/
+cloudflare/clef-gateway/.wrangler/

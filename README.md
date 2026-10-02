@@ -172,6 +172,7 @@ CGO_ENABLED=0 go build -o menshen .
 | [判定链路](docs/how-it-works.md) | 两级判定、处置矩阵、内容哈希、冷判定、闭环学习、成本护栏 |
 | [入群时间接口](docs/join-time.md) | Bot API 的 curl 调用、MTProto 的 Python 示例、date 语义、限制与错误速查 |
 | [部署与接入](docs/deployment.md) | 长轮询 / Webhook、反代、多 bot、配置项与环境变量 |
+| [Clef 决策上游](docs/clef-gateway.md) | 把 Cloudflare Workers AI 的 Clef 包成 systemone 端点（含 Worker 部署），零改动接入主判 |
 | [面板与租户](docs/panel.md) | 管理面板、多租户权限、群内命令与通知细节 |
 | [开发与发布](docs/development.md) | 构建测试、镜像发布流程、数据库表 |
 
