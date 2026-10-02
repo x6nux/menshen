@@ -9,6 +9,7 @@ function mockWebApp(overrides: Partial<TelegramWebAppLike> = {}) {
     initData: 'query_id=AAA&user=%7B%22id%22%3A1%7D',
     colorScheme: 'dark',
     themeParams: { bg_color: '#17212B' },
+    platform: 'tdesktop',
     ready: () => calls.push('ready'),
     expand: () => calls.push('expand'),
     onEvent: (event, cb) => {
@@ -62,6 +63,21 @@ describe('initTelegram', () => {
     expect(() => bridge.backButton.show()).not.toThrow()
     expect(bridge.onThemeChanged(() => {})).toBeTypeOf('function')
     expect(bridge.getTheme()).toEqual({ colorScheme: '', themeParams: {} })
+  })
+
+  it('SDK 存在但不在 Telegram（platform=unknown、initData 为空）：返回不可用且不调 ready/expand', async () => {
+    const { wa, calls } = mockWebApp({ platform: 'unknown', initData: '' })
+    const bridge = await initTelegram({ getWebApp: () => wa })
+    expect(bridge.available).toBe(false)
+    expect(calls).not.toContain('ready')
+    expect(calls).not.toContain('expand')
+  })
+
+  it('platform=unknown 但 initData 非空（老客户端）：仍视为 Telegram 环境', async () => {
+    const { wa } = mockWebApp({ platform: 'unknown' })
+    const bridge = await initTelegram({ getWebApp: () => wa })
+    expect(bridge.available).toBe(true)
+    expect(bridge.initData).toContain('query_id=AAA')
   })
 
   it('轮询第 N 次才拿到 SDK 仍成功', async () => {

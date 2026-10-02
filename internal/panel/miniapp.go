@@ -40,7 +40,7 @@ const miniBotIDHeader = "X-Bot-Id"
 // 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
 //   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（未带 -tags miniapp 或未构建）时 503 构建提示
 //   - GET/HEAD  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
-//   - GET/HEAD  /miniapp/<其他>     → SPA 回退到入口页（无产物则 404）
+//   - GET/HEAD  /miniapp/<其他>     → 产物根下的普通文件（如自托管 SDK）；否则 SPA 回退到入口页（无产物则 404）
 //   - POST      /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
 func MiniAppHandler(sh *core.Shared) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +83,12 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 			if !allowPageMethod(w, r) {
 				return
 			}
-			// 自研导航栈不写 URL，回退只为兜住刷新与外链；没有产物就没有页面可回退。
+			// 产物根下的普通文件（自托管的 telegram-web-app.js 等）优先于 SPA
+			// 回退；文件名不带内容哈希，用短缓存。其余路径回退入口页（刷新/
+			// 外链不白屏），没有产物就没有页面可回退。
+			if miniAppDistFile(w, r, p, "public, max-age=3600") {
+				return
+			}
 			if _, ok := miniAppDistFS(); !ok {
 				http.NotFound(w, r)
 				return
@@ -162,23 +167,31 @@ func miniAppIndex(w http.ResponseWriter, r *http.Request) {
 	writeHTML(w, r, http.StatusOK, string(index))
 }
 
-// miniAppAsset 输出 /miniapp/assets/* 下的静态资源。p 是 path.Clean 后的
-// 路径；只服务 fs.Stat 命中且为普通文件的路径：目录（含 /miniapp/assets/）
-// 与缺失一律 404，不允许把产物目录列举出去。文件名带内容哈希，可以长期强缓存。
-func miniAppAsset(w http.ResponseWriter, r *http.Request, p string) {
+// miniAppDistFile 服务产物目录下的普通文件（assets/* 与根下文件共用）。
+// p 是 path.Clean 后的路径；命中并已写出响应返回 true。目录与缺失一律
+// 不处理（返回 false），由调用方决定 404 还是 SPA 回退。
+func miniAppDistFile(w http.ResponseWriter, r *http.Request, p, cache string) bool {
 	dist, ok := miniAppDistFS()
 	if !ok {
-		http.NotFound(w, r)
-		return
+		return false
 	}
 	name := strings.TrimPrefix(p, "/miniapp/")
 	info, err := fs.Stat(dist, name)
 	if err != nil || info.IsDir() {
-		http.NotFound(w, r)
-		return
+		return false
 	}
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", cache)
 	http.StripPrefix("/miniapp/", http.FileServerFS(dist)).ServeHTTP(w, r)
+	return true
+}
+
+// miniAppAsset 输出 /miniapp/assets/* 下的静态资源：只服务真实存在的普通
+// 文件，目录（含 /miniapp/assets/）与缺失一律 404，不允许把产物目录列举
+// 出去。文件名带内容哈希，可以长期强缓存。
+func miniAppAsset(w http.ResponseWriter, r *http.Request, p string) {
+	if !miniAppDistFile(w, r, p, "public, max-age=31536000, immutable") {
+		http.NotFound(w, r)
+	}
 }
 
 // validateMiniInitData 校验 Telegram WebApp 的 initData。

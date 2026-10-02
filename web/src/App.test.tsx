@@ -63,7 +63,7 @@ describe('App', () => {
     expect(
       await screen.findByText('请通过 Telegram 里的菜单按钮「配置」打开本页。'),
     ).toBeInTheDocument()
-    expect(screen.getByText(/telegram\.org 在部分网络下不可达/)).toBeInTheDocument()
+    expect(screen.getByText(/请关闭后重新打开本页/)).toBeInTheDocument()
     expect(mockApi).not.toHaveBeenCalled()
   })
 

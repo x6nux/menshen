@@ -36,9 +36,15 @@ npm --prefix web run build        # tsc -b && vite build，产物输出到 inter
 打开检查，通常直接在 Telegram 客户端里开，或在 DevTools 里注入一个假 SDK。）
 
 - **构建产物不入库**（`internal/panel/webdist/` 已 gitignore），仓库里不存在构建结果。
+- **Telegram SDK 自托管**：`web/public/telegram-web-app.js`（2026-10-02 取自
+  telegram.org 的官方脚本）随产物发布到 `/miniapp/telegram-web-app.js`，`index.html`
+  用 `%BASE_URL%` 引用。不要改回 CDN 外链——telegram.org 在部分网络不可达，
+  会导致 Mini App 永远停在引导页。升级 SDK：替换该文件后重跑前端测试与 Go 托管测试。
 - Go 侧是 build tag 双实现：`go build -tags miniapp` 用 `go:embed all:webdist`
   嵌入产物；不带 tag 时编译占位 stub，`/miniapp` 返回「前端未构建」提示（503）。
   因此没有 Node、没有产物的机器上 `go build` / `go test` 照常工作。
+- 托管路由：`/miniapp/assets/*` 长期强缓存；产物根下的文件（自托管 SDK 等）短缓存
+  `max-age=3600`；其余未匹配路径回退入口页，`/miniapp/api` 绝不回退。
 - 本地要看真实页面：先 `npm --prefix web run build`，再 `go build -tags miniapp`。
 - `docker build` 会自动构建前端并带 tag 编译（Dockerfile 的 web 阶段），部署无需手工构建前端。
 - CI 会跑 `go test -tags miniapp ./...`（此时 webdist 已构建），本地要复现同样先

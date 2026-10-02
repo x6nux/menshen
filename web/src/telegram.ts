@@ -1,6 +1,7 @@
-// Telegram WebApp 桥：复刻旧页面的 3 秒轮询（等 telegram-web-app.js 加载），
-// 就绪后 ready/expand，并把 BackButton、themeChanged、openLink 收成一个对象，
-// 供导航栈与主题重建使用。SDK 不可达时返回 available=false，不抛错。
+// Telegram WebApp 桥：SDK 由 index.html 自托管加载（/miniapp/telegram-web-app.js，
+// 不依赖 telegram.org）；这里仍轮询等待，就绪后 ready/expand，并把 BackButton、
+// themeChanged、openLink 收成一个对象，供导航栈与主题重建使用。
+// 不在 Telegram 里（或 SDK 始终没出现）时返回 available=false，不抛错。
 import type { MiniThemeParams } from './theme'
 
 /** Telegram WebApp 里用到的部分；只声明用得上的方法，便于测试注入。 */
@@ -8,6 +9,8 @@ export interface TelegramWebAppLike {
   initData?: string
   colorScheme?: string
   themeParams?: Record<string, string>
+  /** 运行平台；普通浏览器里 SDK 也会定义 WebApp，此时为 'unknown'。 */
+  platform?: string
   ready(): void
   expand(): void
   onEvent?(event: string, cb: () => void): void
@@ -121,7 +124,17 @@ function unavailableBridge(botId: string): TelegramBridge {
   }
 }
 
-/** initTelegram 轮询等待 SDK 就绪；超时（默认 3 秒）返回不可用桥。 */
+/** inTelegram 判断是否真的在 Telegram 环境里：官方 SDK 在普通浏览器中也会
+ *  定义 window.Telegram.WebApp（platform='unknown'、initData 为空），只看对象
+ *  存在会把浏览器误判成 Telegram。有 initData 一定在 Telegram 内；否则看
+ *  platform（客户端为 tdesktop/ios/android/web…，浏览器为 unknown）。 */
+function inTelegram(app: TelegramWebAppLike): boolean {
+  if ((app.initData ?? '') !== '') return true
+  const p = app.platform
+  return typeof p === 'string' && p !== '' && p !== 'unknown'
+}
+
+/** initTelegram 轮询等待 SDK 就绪；超时（默认 3 秒）或不在 Telegram 时返回不可用桥。 */
 export async function initTelegram(options: InitTelegramOptions = {}): Promise<TelegramBridge> {
   const timeoutMs = options.timeoutMs ?? 3000
   const intervalMs = options.intervalMs ?? 100
@@ -137,7 +150,7 @@ export async function initTelegram(options: InitTelegramOptions = {}): Promise<T
   }
 
   const botId = botIdFromURL()
-  if (!wa) return unavailableBridge(botId)
+  if (!wa || !inTelegram(wa)) return unavailableBridge(botId)
   const app = wa
 
   // ready/expand 分开兜底：个别旧客户端只会在其中一个上抛。

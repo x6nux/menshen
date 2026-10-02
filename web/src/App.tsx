@@ -282,8 +282,8 @@ function UnavailableGuide() {
           请通过 Telegram 里的菜单按钮「配置」打开本页。
         </Typography>
         <Typography sx={{ mt: 1, fontSize: 13, color: '#6B6B70', lineHeight: 1.6 }}>
-          如果你已经在 Telegram 里打开，说明官方脚本没加载出来（telegram.org
-          在部分网络下不可达），换网络或挂代理后重试。
+          如果你已经在 Telegram 里打开，请关闭后重新打开本页；仍不行请更新 Telegram
+          客户端或换网络重试。
         </Typography>
       </Box>
     </Box>

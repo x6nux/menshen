@@ -1067,6 +1067,9 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 		if w := get("/miniapp/xxx"); w.Code != http.StatusNotFound {
 			t.Errorf("无产物时 SPA 回退应 404，得到 %d", w.Code)
 		}
+		if w := get("/miniapp/telegram-web-app.js"); w.Code != http.StatusNotFound {
+			t.Errorf("无产物时产物根文件也应 404，得到 %d", w.Code)
+		}
 		return
 	}
 
@@ -1076,6 +1079,11 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	}
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("入口页应 no-store，得到 %q", got)
+	}
+	// 入口页必须引用自托管的 SDK；漏掉 script 标签时 Telegram 里会永远
+	// 停在引导页（线上踩过一次，这里守住）。
+	if !strings.Contains(w.Body.String(), "telegram-web-app.js") {
+		t.Error("入口页应引用自托管的 telegram-web-app.js")
 	}
 
 	// 真实存在的 assets 文件 200 且长期强缓存；Content-Type 由扩展名给出。
@@ -1093,6 +1101,18 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	if got := w.Header().Get("Content-Type"); got == "" {
 		t.Error("assets 应带 Content-Type")
 	}
+	// 自托管 SDK：产物根下的普通文件要能直接取到，且不能被 SPA 回退成 HTML。
+	w = get("/miniapp/telegram-web-app.js")
+	if w.Code != http.StatusOK || w.Body.Len() == 0 {
+		t.Fatalf("GET /miniapp/telegram-web-app.js 应 200 且有内容，得到 %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Errorf("SDK 应返回 JS Content-Type，得到 %q", got)
+	}
+	if got := w.Header().Get("Cache-Control"); !strings.Contains(got, "max-age=3600") {
+		t.Errorf("产物根文件应短缓存，得到 %q", got)
+	}
+
 	// 目录与缺失一律 404，禁止目录列举。
 	if w := get("/miniapp/assets/"); w.Code != http.StatusNotFound {
 		t.Errorf("目录 /miniapp/assets/ 应 404，得到 %d", w.Code)
