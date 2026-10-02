@@ -22,7 +22,7 @@ describe('MinePage', () => {
     expect(await screen.findByText('主管理员')).toBeInTheDocument()
     expect(screen.getByText('@menshen_admin')).toBeInTheDocument()
     expect(screen.getByText('可以管理全部机器人、群组、名单与全局设置。')).toBeInTheDocument()
-    for (const entry of ['名单管理', '上游渠道', '模型定价', '全局设置']) {
+    for (const entry of ['名单管理', '上游渠道', '模型定价', '全局设置', 'AI 必封规则']) {
       expect(screen.getByText(entry)).toBeInTheDocument()
     }
     expect(screen.getByText('本页仅管理员可见；接入新 bot 请在私聊面板操作。')).toBeInTheDocument()
@@ -48,6 +48,8 @@ describe('MinePage', () => {
     expect(screen.getByTestId('nav-top').textContent).toBe('models')
     fireEvent.click(screen.getByText('全局设置'))
     expect(screen.getByTestId('nav-top').textContent).toBe('settings')
+    fireEvent.click(screen.getByText('AI 必封规则'))
+    expect(screen.getByTestId('nav-top').textContent).toBe('rules')
   })
 
   it('次级管理员：不出现上游/模型/设置入口，名单入口仍在', async () => {

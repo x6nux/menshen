@@ -7,6 +7,9 @@ import {
   mockAppeals,
   mockLogDetail,
   mockLogs,
+  mockRuleAgent,
+  mockRuleTest,
+  mockRules,
   mockState,
   mockUser,
 } from './fixtures'
@@ -93,7 +96,31 @@ export const handlers = [
     })
   }),
   http.post('*/miniapp/api/appeal', () => HttpResponse.json(mockAppealDetail)),
-  // 其余写操作（set/bot/chat/upstream/model/admin/gban/gbanown/whitelist/digest/）
+  // AI 必封规则（主管理员专属）：列表/状态读 fixtures，写操作只在 mock 里回
+  // 成功形状，真实校验（空文本正则、防误封门）以后端测试为准。
+  http.post('*/miniapp/api/rules', async ({ request }) => {
+    const body = await bodyOf(request)
+    switch (String(body.action ?? '')) {
+      case 'list':
+        return HttpResponse.json({ rules: mockRules })
+      case 'agent_status':
+        return HttpResponse.json({ agent: mockRuleAgent })
+      case 'agent_start':
+        return HttpResponse.json({
+          ok: true,
+          agent: { ...mockRuleAgent, running: true, started_at: 1700000600 },
+        })
+      case 'agent_stop':
+        return HttpResponse.json({ ok: true, stopped: true })
+      case 'test':
+        return HttpResponse.json({ test: mockRuleTest })
+      case 'save':
+        return HttpResponse.json({ ok: true, id: 3, test: mockRuleTest })
+      default:
+        return HttpResponse.json({ ok: true, note: '（mock）已保存' })
+    }
+  }),
+  // 其余写操作（set/bot/chat/upstream/model/admin/gban/gbanown/whitelist/digest/
   // logact/appealact）统一返回成功；note 与真实服务端文案格式一致。
   http.post('*/miniapp/api/:op', () => HttpResponse.json({ ok: true, note: '（mock）已保存' })),
 ]

@@ -17,6 +17,8 @@ export type Page =
   | { k: 'upstream'; id: number }
   | { k: 'models' }
   | { k: 'model'; name: string }
+  | { k: 'rules' }
+  | { k: 'rule'; id: number }
   | { k: 'settings' }
 
 export interface NavValue {
@@ -61,10 +63,12 @@ function samePage(a: Page, b: Page): boolean {
       return a.id === (b as Extract<Page, { k: 'upstream' }>).id
     case 'model':
       return a.name === (b as Extract<Page, { k: 'model' }>).name
+    case 'rule':
+      return a.id === (b as Extract<Page, { k: 'rule' }>).id
     case 'lists':
       return (a.section ?? '') === ((b as Extract<Page, { k: 'lists' }>).section ?? '')
     default:
-      // upstreams / models / settings 没有参数，kind 相同就是同一页。
+      // upstreams / models / rules / settings 没有参数，kind 相同就是同一页。
       return true
   }
 }

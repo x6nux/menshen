@@ -30,6 +30,7 @@ import { MinePage } from './pages/MinePage'
 import { ModelDetailPage, ModelsPage } from './pages/ModelsPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RecordsPage } from './pages/RecordsPage'
+import { RuleDetailPage, RulesPage } from './pages/RulesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { UpstreamDetailPage, UpstreamsPage } from './pages/UpstreamsPage'
 import { UserPage } from './pages/UserPage'
@@ -59,6 +60,8 @@ const PAGE_NAMES: Record<Page['k'], string> = {
   upstream: '上游详情',
   models: '模型定价',
   model: '模型详情',
+  rules: 'AI 必封规则',
+  rule: '规则详情',
   settings: '全局设置',
 }
 
@@ -231,6 +234,10 @@ function renderStackPage(page: Page): ReactNode {
       return <ModelsPage />
     case 'model':
       return <ModelDetailPage key={page.name} name={page.name} />
+    case 'rules':
+      return <RulesPage />
+    case 'rule':
+      return <RuleDetailPage key={page.id} id={page.id} />
     case 'settings':
       return <SettingsPage />
   }
@@ -257,6 +264,8 @@ function detailTitle(page: Page, state: State): string {
       return (state.upstreams ?? []).find((u) => u.id === page.id)?.name ?? PAGE_NAMES.upstream
     case 'model':
       return page.name || PAGE_NAMES.model
+    case 'rule':
+      return `规则 #${page.id}`
     default:
       return PAGE_NAMES[page.k]
   }

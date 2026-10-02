@@ -288,6 +288,104 @@ export interface AppealsResp {
   total: number
 }
 
+// ---- AI 必封规则（主管理员专属）----
+
+/**
+ * Rule 是一条必封规则。enforce=true 命中即最高档处置；false 只把命中作为
+ * 证据注入判定 prompt。last_tp/last_fp/last_undone/last_scanned 是最近一轮
+ * 全库测试写回的结果；last_tested_at=0 表示从未测试过（与 last_fp=0
+ *「测过且干净」不是一回事，所以强制开关的门要先看 last_tested_at）。
+ */
+export interface Rule {
+  id: number
+  name: string
+  pattern: string
+  category: string
+  note: string
+  /** 来源：新建默认 'ai'（AI 发现/手动新增在后端都记这篇）。 */
+  source: string
+  enabled: boolean
+  enforce: boolean
+  hits: number
+  last_matched: number
+  last_tp: number
+  last_fp: number
+  last_undone: number
+  last_scanned: number
+  last_tested_at: number
+  created_at: number
+}
+
+export interface RulesResp {
+  rules: Rule[]
+}
+
+/** RuleSample 是全库测试里的一条命中样本（正文已截断到 200 字）。 */
+export interface RuleSample {
+  id: number
+  verdict: string
+  action: string
+  kind: string
+  user_id: number
+  chat_id: number
+  created_at: number
+  text: string
+}
+
+/**
+ * RuleTest 是一条规则跑全库测试的结果。分类口径：
+ * TP=verdict 'ad'；FP=verdict 'clean'/'none' 或 action 'undone'；
+ * Undone=action 'undone'（同时计入 FP）；Neutral=verdict 'skipped'/'error'。
+ */
+export interface RuleTest {
+  pattern: string
+  scanned: number
+  matched: number
+  tp: number
+  fp: number
+  undone: number
+  neutral: number
+  tp_samples: RuleSample[]
+  fp_samples: RuleSample[]
+  undone_samples: RuleSample[]
+}
+
+/** RuleAgentStep 是规则发现 Agent 的一条步骤日志：kind=model（模型轮次）/tool（工具调用）。 */
+export interface RuleAgentStep {
+  n: number
+  at: number
+  kind: string
+  name: string
+  summary: string
+}
+
+export interface RuleAgent {
+  running: boolean
+  started_at: number
+  finished_at: number
+  result: string
+  error: string
+  created_rule_id: number
+  steps: RuleAgentStep[]
+}
+
+export interface RuleAgentStatusResp {
+  agent: RuleAgent
+}
+
+/** RuleAgentStartResp 是 agent_start 的返回：带回刚启动时的初始运行态。 */
+export interface RuleAgentStartResp {
+  ok: boolean
+  agent: RuleAgent
+}
+
+/** RuleSaveResp 是 save 的返回：新 id 与保存时自动跑的那轮全库测试。 */
+export interface RuleSaveResp {
+  ok: boolean
+  id: number
+  test: RuleTest
+}
+
 // ---- 写操作 ----
 
 /** OkResp 是大多数写操作的返回；note 是服务端给用户看的提示文案。 */

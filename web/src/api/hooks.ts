@@ -12,6 +12,8 @@ import type {
   AppealsResp,
   LogDetail,
   LogsResp,
+  RuleAgentStatusResp,
+  RulesResp,
   State,
   UserDossier,
 } from './types'
@@ -23,6 +25,9 @@ export const miniQueryKeys = {
   user: (id: number, filter: string, page: number) => ['user', id, filter, page] as const,
   appeals: (filter: string, page: number) => ['appeals', filter, page] as const,
   appeal: (id: number) => ['appeal', id] as const,
+  // 规则列表与 Agent 状态分开 key：写规则只需失效 'list'，不必连带重拉运行态。
+  rules: ['rules', 'list'] as const,
+  rulesAgent: ['rules', 'agent'] as const,
   // 无限列表用独立 key（数据形状是 pages，不能与单页查询共 key）；
   // 前缀仍以资源名开头，写操作的 ['logs']/['user']/['appeals'] 失效照常命中。
   logsInfinite: (filter: string, q: string) => ['logs', 'infinite', filter, q] as const,
@@ -119,6 +124,36 @@ export function useAppeal(id: number, enabled = true) {
     queryKey: miniQueryKeys.appeal(id),
     queryFn: ({ signal }) => api<AppealDetail>('appeal', { id }, signal),
     enabled: enabled && id > 0,
+  })
+}
+
+/** RULE_AGENT_POLL_MS 是规则发现 Agent 运行中的状态轮询间隔。 */
+export const RULE_AGENT_POLL_MS = 2000
+
+/**
+ * useRules 拉取全部必封规则（含未启用）。rules op 只对主管理员开放，
+ * 调用方必须在确认 me.main 后才 enabled（次管进页面不发请求）。
+ */
+export function useRules(enabled = true) {
+  return useQuery({
+    queryKey: miniQueryKeys.rules,
+    queryFn: ({ signal }) => api<RulesResp>('rules', { action: 'list' }, signal),
+    enabled,
+  })
+}
+
+/**
+ * useRuleAgent 拉取规则发现 Agent 的运行态与步骤日志。运行中每
+ * RULE_AGENT_POLL_MS 轮询一次；结束后回调返回 false 自动停表。rules op
+ * 只对主管理员开放，同样由调用方按 me.main 门控 enabled。
+ */
+export function useRuleAgent(enabled = true) {
+  return useQuery({
+    queryKey: miniQueryKeys.rulesAgent,
+    queryFn: ({ signal }) =>
+      api<RuleAgentStatusResp>('rules', { action: 'agent_status' }, signal),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.agent.running ? RULE_AGENT_POLL_MS : false),
   })
 }
 

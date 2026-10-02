@@ -9,7 +9,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { api } from './client'
 import type { ApiError } from './client'
-import type { OkResp, State } from './types'
+import { miniQueryKeys } from './hooks'
+import type { OkResp, RulesResp, State } from './types'
 
 export type MiniMutationOp =
   | 'set'
@@ -24,6 +25,7 @@ export type MiniMutationOp =
   | 'digest'
   | 'logact'
   | 'appealact'
+  | 'rules'
 
 export interface MiniMutationOptions {
   /** 除 ['state'] 外还要失效的 queryKey 前缀。 */
@@ -89,6 +91,13 @@ export function useAppealactMutation() {
   return useMiniMutation('appealact', { invalidate: [['appeal'], ['appeals']] })
 }
 
+/** AI 必封规则：list/test/save/toggle/enforce/remove/agent_* 都走 rules op。 */
+export function useRulesMutation<TResp = OkResp>() {
+  return useMiniMutation<Record<string, unknown>, TResp>('rules', {
+    invalidate: [miniQueryKeys.rules],
+  })
+}
+
 export interface OptimisticVars<TBody> {
   body: TBody
   /** apply 基于当前 ['state'] 缓存放回乐观结果；必须返回新对象，不要原地改。 */
@@ -121,6 +130,37 @@ export function useOptimisticMiniMutation<TBody = Record<string, unknown>, TResp
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['state'] })
+    },
+  })
+}
+
+export interface OptimisticRuleVars {
+  body: Record<string, unknown>
+  /** apply 基于当前规则列表响应缓存返回新对象；必须返回新对象，不要原地改。 */
+  apply: (data: RulesResp) => RulesResp
+}
+
+/**
+ * useOptimisticRulesMutation 是规则开关（启用/强制）的乐观更新：规则不在
+ * ['state'] 里，所以单独作用于 ['rules','list']——立即写预期结果，失败回滚
+ * 到调用前快照并冒泡错误（页面 toast），无论成败最后都失效列表让服务端真值
+ * 校正（服务端会用防误封门拒绝不合法的 enforce）。
+ */
+export function useOptimisticRulesMutation<TResp = OkResp>() {
+  const queryClient = useQueryClient()
+  return useMutation<TResp, ApiError, OptimisticRuleVars, { prev: RulesResp | undefined }>({
+    mutationFn: ({ body }) => api<TResp>('rules', body),
+    onMutate: async ({ apply }) => {
+      await queryClient.cancelQueries({ queryKey: miniQueryKeys.rules })
+      const prev = queryClient.getQueryData<RulesResp>(miniQueryKeys.rules)
+      queryClient.setQueryData<RulesResp>(miniQueryKeys.rules, (data) => (data ? apply(data) : data))
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined) queryClient.setQueryData(miniQueryKeys.rules, ctx.prev)
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: miniQueryKeys.rules })
     },
   })
 }

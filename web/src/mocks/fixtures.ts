@@ -4,6 +4,9 @@ import type {
   AppealDetail,
   AppealRow,
   LogRow,
+  Rule,
+  RuleAgent,
+  RuleTest,
   Spec,
   State,
   UserDossier,
@@ -299,4 +302,101 @@ export const mockAppealDetail: AppealDetail = {
   web_checks: 1,
   web_passes: 0,
   redeems: [],
+}
+
+// ---- AI 必封规则 ----
+
+export const mockRules: Rule[] = [
+  {
+    id: 1,
+    name: '（mock）兼职押金话术',
+    pattern: '兼职.{0,6}(日结|垫付|押金)',
+    category: 'scam',
+    note: '（mock）历史封禁里高频出现的押金话术。',
+    source: 'ai',
+    enabled: true,
+    enforce: false,
+    hits: 12,
+    last_matched: 1700000000,
+    last_tp: 9,
+    last_fp: 0,
+    last_undone: 0,
+    last_scanned: 1200,
+    last_tested_at: 1700000500,
+    created_at: 1699990000,
+  },
+  {
+    id: 2,
+    name: '（mock）联系方式引流',
+    pattern: '(加|私)(我|聊).{0,4}(微信|tg)',
+    category: 'contact',
+    note: '',
+    source: 'ai',
+    enabled: false,
+    enforce: false,
+    hits: 0,
+    last_matched: 0,
+    last_tp: 4,
+    last_fp: 2,
+    last_undone: 1,
+    last_scanned: 1200,
+    last_tested_at: 1700000500,
+    created_at: 1699990000,
+  },
+]
+
+export const mockRuleAgent: RuleAgent = {
+  running: false,
+  started_at: 0,
+  finished_at: 0,
+  result: '',
+  error: '',
+  created_rule_id: 0,
+  steps: [],
+}
+
+export const mockRuleTest: RuleTest = {
+  pattern: mockRules[0].pattern,
+  scanned: 1200,
+  matched: 15,
+  tp: 12,
+  fp: 2,
+  undone: 1,
+  neutral: 1,
+  tp_samples: [
+    {
+      id: 9812,
+      verdict: 'ad',
+      action: 'deleted_muted',
+      kind: 'scam',
+      user_id: 555,
+      chat_id: -1001234567890,
+      created_at: 1700000000,
+      text: '（mock）加我兼职日结，先交押金。',
+    },
+  ],
+  fp_samples: [
+    {
+      id: 9810,
+      verdict: 'clean',
+      action: 'none',
+      kind: 'none',
+      user_id: 556,
+      chat_id: -1001234567890,
+      created_at: 1699998000,
+      text: '（mock）正常消息被误匹配。',
+    },
+  ],
+  undone_samples: [
+    {
+      id: 9809,
+      verdict: 'ad',
+      action: 'undone',
+      kind: 'promo',
+      user_id: 557,
+      chat_id: -1001111111111,
+      created_at: 1699997000,
+      text: '（mock）已撤销的处罚样本。',
+    },
+  ],
 }
