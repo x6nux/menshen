@@ -98,7 +98,7 @@ func waitRuleAgentDone(t *testing.T, timeout time.Duration) map[string]any {
 }
 
 // TestRuleAgentHappyPath：假上游依次驱动 find → test_rule → create_rule，
-// 规则真正落库为候选（enabled=0 / enforce=0，last_* 写本轮结果），
+// 规则真正落库并默认启用（enabled=1 / enforce=0，last_* 写本轮结果），
 // 运行态归位且步骤日志能看到三次工具调用。
 func TestRuleAgentHappyPath(t *testing.T) {
 	var calls atomic.Int32
@@ -137,11 +137,11 @@ func TestRuleAgentHappyPath(t *testing.T) {
 		t.Errorf("happy path 不应有错误：%v", st["error"])
 	}
 	result, _ := st["result"].(string)
-	if !strings.Contains(result, "候选规则") || !strings.Contains(result, "发现完成") {
-		t.Errorf("Result 应说明已创建候选规则，得到 %q", result)
+	if !strings.Contains(result, "规则") || !strings.Contains(result, "发现完成") {
+		t.Errorf("Result 应说明已创建规则，得到 %q", result)
 	}
 
-	// 落库检查：enabled/enforce 归零，last_* 写的是本次测试结果。
+	// 落库检查：无误封默认启用（仅证据）、不强制；last_* 写的是本次测试结果。
 	var (
 		id                                     int64
 		name, pattern, source, category, note  string
@@ -158,8 +158,8 @@ func TestRuleAgentHappyPath(t *testing.T) {
 	if name != "贷款引流" || pattern != "办理贷款" || source != "ai" {
 		t.Errorf("规则内容不对：name=%q pattern=%q source=%q", name, pattern, source)
 	}
-	if enabled != 0 || enforce != 0 {
-		t.Errorf("候选规则必须 enabled=0/enforce=0，得到 %d/%d", enabled, enforce)
+	if enabled != 1 || enforce != 0 {
+		t.Errorf("无误封的规则应 enabled=1/enforce=0，得到 %d/%d", enabled, enforce)
 	}
 	if tp != 1 || fp != 0 || undone != 0 || scan != 2 || tested == 0 {
 		t.Errorf("last_* 测试结果不对：tp=%d fp=%d undone=%d scan=%d tested=%d",
@@ -187,14 +187,14 @@ func TestRuleAgentHappyPath(t *testing.T) {
 	}
 
 	// 步骤日志：三条工具调用各一条，且摘要都不超过 300 字符。
-	steps, _ := st["steps"].([]map[string]any)
+	steps := RuleAgentSteps()
 	toolCalls := map[string]int{}
 	for _, s := range steps {
-		if sum, _ := s["summary"].(string); len([]rune(sum)) > ruleAgentSummaryMax {
-			t.Errorf("步骤摘要超过 %d 字符：%q", ruleAgentSummaryMax, sum)
+		if len([]rune(s.Summary)) > ruleAgentSummaryMax {
+			t.Errorf("步骤摘要超过 %d 字符：%q", ruleAgentSummaryMax, s.Summary)
 		}
-		if s["kind"] == "tool" {
-			toolCalls[s["name"].(string)]++
+		if s.Kind == "tool" {
+			toolCalls[s.Name]++
 		}
 	}
 	for _, name := range []string{"find", "test_rule", "create_rule"} {
@@ -248,13 +248,13 @@ func TestRuleAgentRejectsFPAndStopsAfterThree(t *testing.T) {
 		t.Errorf("创建被拒时不应写库，ad_rules 有 %d 条", n)
 	}
 
-	steps, _ := st["steps"].([]map[string]any)
+	steps := RuleAgentSteps()
 	rejects := 0
 	for _, s := range steps {
-		if s["kind"] == "tool" && s["name"] == "create_rule" {
+		if s.Kind == "tool" && s.Name == "create_rule" {
 			rejects++
-			if sum, _ := s["summary"].(string); !strings.Contains(sum, "创建被拒绝") {
-				t.Errorf("步骤摘要应含拒绝原因，得到 %q", sum)
+			if !strings.Contains(s.Summary, "创建被拒绝") {
+				t.Errorf("步骤摘要应含拒绝原因，得到 %q", s.Summary)
 			}
 		}
 	}
@@ -957,19 +957,18 @@ func TestRuleAgentToolErrorsDoNotKillRun(t *testing.T) {
 	}
 
 	var sawBadArgs, sawUnknown bool
-	steps, _ := st["steps"].([]map[string]any)
+	steps := RuleAgentSteps()
 	for _, s := range steps {
-		if s["kind"] != "tool" {
+		if s.Kind != "tool" {
 			continue
 		}
-		sum, _ := s["summary"].(string)
-		switch s["name"] {
+		switch s.Name {
 		case "list_banned":
-			if strings.Contains(sum, "调用失败") {
+			if strings.Contains(s.Summary, "调用失败") {
 				sawBadArgs = true
 			}
 		case "hack_tool":
-			if strings.Contains(sum, "没有名为 hack_tool 的工具") {
+			if strings.Contains(s.Summary, "没有名为 hack_tool 的工具") {
 				sawUnknown = true
 			}
 		}

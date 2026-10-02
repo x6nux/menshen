@@ -61,10 +61,10 @@ func TestMiniRulesAgentOps(t *testing.T) {
 		return agent
 	}
 
-	// 空态：契约字段齐全、steps 是数组、running=false。
+	// 空态：契约字段齐全、steps_count 是数字、running=false。
 	agent := agentOf(mainDo(map[string]any{"action": "agent_status"}))
 	for _, k := range []string{"running", "started_at", "finished_at", "result",
-		"error", "created_rule_id", "created_rule_ids", "steps"} {
+		"error", "created_rule_id", "created_rule_ids", "steps_count"} {
 		if _, ok := agent[k]; !ok {
 			t.Errorf("agent 状态缺少字段 %s：%v", k, agent)
 		}
@@ -72,8 +72,8 @@ func TestMiniRulesAgentOps(t *testing.T) {
 	if agent["running"] != false {
 		t.Errorf("空态 running 应为 false：%v", agent)
 	}
-	if _, ok := agent["steps"].([]any); !ok {
-		t.Errorf("steps 应是数组：%v", agent["steps"])
+	if _, ok := agent["steps_count"].(float64); !ok {
+		t.Errorf("steps_count 应是数字：%v", agent["steps_count"])
 	}
 
 	// 没在跑时 stop 是空操作。
@@ -132,7 +132,7 @@ func TestMiniRulesAgentOps(t *testing.T) {
 	if agent["error"] != "" {
 		t.Errorf("假上游正常应答不应报错：%v", agent["error"])
 	}
-	if _, ok := agent["steps"].([]any); !ok || len(agent["steps"].([]any)) == 0 {
-		t.Errorf("跑完后应有步骤日志：%v", agent["steps"])
+	if got, _ := agent["steps_count"].(float64); got <= 0 {
+		t.Errorf("跑完后 steps_count 应大于 0：%v", agent["steps_count"])
 	}
 }

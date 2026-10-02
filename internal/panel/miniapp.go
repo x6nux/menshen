@@ -1763,6 +1763,7 @@ func miniRuleTest(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
 // last_* → 重建快照。source 保持原值，新建默认 'ai'。
 func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	id := miniInt(body, "id")
+	created := id == 0
 	name := miniStr(body, "name")
 	pattern := miniStr(body, "pattern")
 	category := miniStr(body, "category")
@@ -1844,6 +1845,15 @@ func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 	if err := miniRuleWriteTest(sh, id, res); err != nil {
 		miniErr(w, http.StatusInternalServerError, "写回测试结果失败")
 		return
+	}
+	// 新建且无误封：默认启用（命中只作为判定证据，强制仍需管理员手动开启）。
+	// 更新已有规则时不动 enabled，避免保存备注把管理员停用的规则又打开。
+	if created && res.FP == 0 && res.Undone == 0 {
+		if _, err := sh.Store.Write.Exec(
+			`UPDATE ad_rules SET enabled=1 WHERE id=?`, id); err != nil {
+			miniErr(w, http.StatusInternalServerError, "保存失败")
+			return
+		}
 	}
 	miniRuleReload(sh)
 	miniOK(w, map[string]any{

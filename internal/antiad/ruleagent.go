@@ -192,23 +192,17 @@ func StartRuleDiscovery(sh *core.Shared, uid int64) error {
 //
 //	{"running":bool,"started_at":int,"finished_at":int,"result":string,
 //	 "error":string,"created_rule_id":int,"created_rule_ids":[int],
-//	 "steps":[{"n":int,"at":int,"kind":string,"name":string,"summary":string}]}
+//	 "steps_count":int}
 //
 // created_rule_id 是本轮第一条（旧前端兼容），created_rule_ids 是全部；
-// 无创建时返回空切片而不是 null。
+// 无创建时返回空切片而不是 null。步骤内容不再下发（前端只显示运行状态），
+// 只给条数；需要明细时用 RuleAgentSteps。
 func RuleAgentStatus(sh *core.Shared) map[string]any {
 	ruleAgentRT.mu.Lock()
 	defer ruleAgentRT.mu.Unlock()
-	steps := make([]map[string]any, 0, len(ruleAgentRT.steps))
-	for _, s := range ruleAgentRT.steps {
-		steps = append(steps, map[string]any{
-			"n": s.N, "at": s.At, "kind": s.Kind, "name": s.Name,
-			"summary": s.Summary,
-		})
-	}
 	errText := ruleAgentRT.errText
 	if ruleAgentRT.running {
-		// 运行中不暴露上一轮的旧错误，前端只看 running 与实时步骤。
+		// 运行中不暴露上一轮的旧错误，前端只看 running 与实时状态。
 		errText = ""
 	}
 	ids := append([]int64{}, ruleAgentRT.createdRuleIDs...)
@@ -224,8 +218,16 @@ func RuleAgentStatus(sh *core.Shared) map[string]any {
 		"error":            errText,
 		"created_rule_id":  first,
 		"created_rule_ids": ids,
-		"steps":            steps,
+		"steps_count":      len(ruleAgentRT.steps),
 	}
+}
+
+// RuleAgentSteps 返回当前步骤日志的副本：仅用于测试与日志排查。
+// Mini App 的 agent_status 只暴露 steps_count，不再下发步骤内容。
+func RuleAgentSteps() []RuleAgentStep {
+	ruleAgentRT.mu.Lock()
+	defer ruleAgentRT.mu.Unlock()
+	return append([]RuleAgentStep{}, ruleAgentRT.steps...)
 }
 
 // StopRuleDiscovery 请求中止当前一轮。没有在跑返回 false。
@@ -471,8 +473,8 @@ func (r *ruleAgentRun) finish(genErr, setupErr error) {
 		for _, id := range created {
 			ids = append(ids, fmt.Sprintf("#%d", id))
 		}
-		result = fmt.Sprintf("发现完成：本轮写入 %d 条候选规则（%s），均未启用、未强制；"+
-			"请在必封规则列表里逐条复核测试后决定是否启用。",
+		result = fmt.Sprintf("发现完成：本轮写入 %d 条规则（%s），均已默认启用（命中只作为判定证据、未强制）；"+
+			"请在必封规则列表里复核，确认无误后可逐条开启强制。",
 			len(created), strings.Join(ids, "、"))
 	case fails >= ruleAgentMaxCreateFails:
 		errText = fmt.Sprintf("连续 %d 次创建候选规则被拒绝，已提前结束", fails)
@@ -734,9 +736,9 @@ func buildRuleAgentTools(sh *core.Shared, run *ruleAgentRun) ([]tool.BaseTool, e
 	}
 
 	create, err := toolutils.InferTool("create_rule",
-		"创建一条候选必封规则（enabled=0、enforce=0，等主管理员复核）。"+
-			"会做严格校验与全库测试；命中任何正常消息（fp>0 或 undone>0）或已存在相同正则都会被拒绝。"+
-			"创建成功后继续找下一个未覆盖形态，没有新形态时再总结收尾。",
+		"创建一条必封规则：会做严格校验与全库测试；命中任何正常消息（fp>0 或 undone>0）"+
+			"或已存在相同正则都会被拒绝。创建成功后默认启用（命中只作为判定证据），"+
+			"强制由主管理员复核后手动开启。创建成功后继续找下一个未覆盖形态，没有新形态时再总结收尾。",
 		func(ctx context.Context, in createRuleArgs) (string, error) {
 			out := run.createRule(ctx, in)
 			run.toolStep("create_rule", in, out)
@@ -1381,7 +1383,7 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 		 last_tp,last_fp,last_undone,last_scanned,last_tested_at,
 		 last_ads_total,last_kinds,
 		 created_at,created_by)
-		VALUES (?,?,?,?, 'ai', 0, 0, ?,?,?,?,?, ?,?, ?,?)`,
+		VALUES (?,?,?,?, 'ai', 1, 0, ?,?,?,?,?, ?,?, ?,?)`,
 		name, in.Pattern, category, note,
 		res.TP, res.FP, res.Undone, res.Scanned, now,
 		res.AdsTotal, RuleKindsJSON(res.Kinds), now, r.uid)
@@ -1404,10 +1406,11 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 	if err := r.sh.Cache.Reload(); err != nil {
 		slog.Error("规则发现：候选规则写库后刷新缓存失败", "规则", id, "err", err)
 	}
-	// 成功不结束本轮：模型继续用 list_kinds / list_rules 找下一个未覆盖形态。
-	msg := fmt.Sprintf("创建成功：候选规则 #%d《%s》已写入（enabled=0、enforce=0，等待主管理员复核）。"+
+	// 成功不结束本轮：模型继续用 list_kinds / list_rules / list_uncovered
+	// 找下一个未覆盖形态。
+	msg := fmt.Sprintf("创建成功：规则 #%d《%s》已写入并默认启用（命中只作为判定证据，未开启强制）。"+
 		"本轮测试：命中广告 %d 条、正常消息 0 条、覆盖率 %.1f%%（全库扫描 %d 条）。"+
-		"请继续用 list_kinds / list_rules 找下一个未覆盖形态；没有新形态时用中文总结收尾。",
+		"请继续用 list_uncovered 找下一个未覆盖形态；没有新形态时用中文总结收尾。",
 		id, name, res.TP, res.Coverage()*100, res.Scanned)
 	if ignoredEvidence > 0 {
 		msg += fmt.Sprintf("已忽略 %d 个无效、重复或非广告的证据 id。", ignoredEvidence)
@@ -1506,7 +1509,7 @@ const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现�
 3. 针对一个未覆盖形态：read_records 批量读 list_uncovered 的 rows（或 list_banned 的样本）全文（一次最多 10 条），观察它区别于正常消息的组合特征；
 4. find 用正则草稿试跑，看命中什么、误伤什么、覆盖率多少；反复收缩直到只命中广告；
 5. test_rule 用正式口径验证：fp>0 或 undone>0 时绝对不要 create_rule，回到第 4 步改进；
-6. create_rule 创建候选规则（默认不启用，等主管理员复核）；
+6. create_rule 创建规则：通过校验与全库测试后会自动启用（命中只作为判定证据；强制需主管理员复核后手动开启）；
 7. 创建成功后不要停，回到第 1/2 步找下一个未覆盖形态；没有新的高精度形态、或步数/时间预算将尽时，用中文总结收尾。
 
 如果 create_rule 被拒绝：仔细阅读返回的误封样本，收缩正则后重新 test_rule；连续 3 次失败本轮会被终止。收尾总结请列出：本轮创建了哪些规则、分别覆盖什么形态、依据哪些证据。`

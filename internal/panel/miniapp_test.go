@@ -1859,4 +1859,21 @@ func TestMiniRulesCRUD(t *testing.T) {
 	if _, ok := snapRule("mini改版测试词"); ok {
 		t.Error("删除后快照里不应还有这条规则")
 	}
+
+	// 新建且无误封：默认启用（仅证据），强制仍需管理员手动开。
+	w = mainDo(map[string]any{"action": "save", "name": "干净规则",
+		"pattern": "测试词正常聊天"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("干净规则保存应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	cleanID := int64(decode(w)["id"].(float64))
+	var cleanEnabled, cleanEnforce int64
+	if err := sh.Store.Read.QueryRow(`SELECT enabled,enforce FROM ad_rules
+		WHERE id=?`, cleanID).Scan(&cleanEnabled, &cleanEnforce); err != nil {
+		t.Fatal(err)
+	}
+	if cleanEnabled != 1 || cleanEnforce != 0 {
+		t.Errorf("无误封的新规则应默认启用且不强制，得到 %d/%d",
+			cleanEnabled, cleanEnforce)
+	}
 }
