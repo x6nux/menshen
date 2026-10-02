@@ -1082,8 +1082,8 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	}
 	// 入口页必须引用自托管的 SDK；漏掉 script 标签时 Telegram 里会永远
 	// 停在引导页（线上踩过一次，这里守住）。
-	if !strings.Contains(w.Body.String(), "telegram-web-app.js") {
-		t.Error("入口页应引用自托管的 telegram-web-app.js")
+	if !strings.Contains(w.Body.String(), `src="/miniapp/telegram-web-app.js"`) {
+		t.Error("入口页应引用自托管的 telegram-web-app.js（/miniapp/telegram-web-app.js）")
 	}
 
 	// 真实存在的 assets 文件 200 且长期强缓存；Content-Type 由扩展名给出。

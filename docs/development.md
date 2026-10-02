@@ -37,9 +37,12 @@ npm --prefix web run build        # tsc -b && vite build，产物输出到 inter
 
 - **构建产物不入库**（`internal/panel/webdist/` 已 gitignore），仓库里不存在构建结果。
 - **Telegram SDK 自托管**：`web/public/telegram-web-app.js`（2026-10-02 取自
-  telegram.org 的官方脚本）随产物发布到 `/miniapp/telegram-web-app.js`，`index.html`
-  用 `%BASE_URL%` 引用。不要改回 CDN 外链——telegram.org 在部分网络不可达，
-  会导致 Mini App 永远停在引导页。升级 SDK：替换该文件后重跑前端测试与 Go 托管测试。
+  telegram.org 的官方脚本，sha256 `3549138a7934039fe7dfd1291a4ee739bd2b705a614308053a8b08a87d85c451`）
+  随产物发布到
+  `/miniapp/telegram-web-app.js`，`index.html` 用根绝对路径 `/telegram-web-app.js`
+  引用（public 资源交给 Vite 按 base 重写，dev/build 都是 `/miniapp/...`）。
+  不要改回 CDN 外链——外链一旦拿不到，Mini App 就停在引导页。升级 SDK：替换该
+  文件、更新此处的 sha256，并重跑前端测试与 Go 托管测试。
 - Go 侧是 build tag 双实现：`go build -tags miniapp` 用 `go:embed all:webdist`
   嵌入产物；不带 tag 时编译占位 stub，`/miniapp` 返回「前端未构建」提示（503）。
   因此没有 Node、没有产物的机器上 `go build` / `go test` 照常工作。
