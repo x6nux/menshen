@@ -591,7 +591,8 @@ func ruleKindsAgentJSON(kinds []RuleKindStat) []map[string]any {
 ```
 
 ```go
-// ruleCoverage 计算覆盖率；分母为 0 时 0。
+// ruleCoverage 计算覆盖率；分母为 0 时 0。口径与 RuleTestResult.Coverage()
+// 相同（verdict='ad' 且 action<>'undone' 为分母），改动时两处要一起改。
 func ruleCoverage(matched, total int64) float64 {
 	if total == 0 {
 		return 0
@@ -1205,7 +1206,7 @@ Expected: FAIL（第二条被拒 / 状态缺 `created_rule_ids` / 提前收尾�
 同时更新 `internal/panel/ruleagent_test.go` 的冻结契约字段清单，加入
 `"created_rule_ids"`（与 `created_rule_id` 并存）。
 
-`RuleAgentStatus`：
+`RuleAgentStatus`（同时更新函数上方的契约注释，补 `created_rule_ids`）：
 
 ```go
 	ids := append([]int64{}, ruleAgentRT.createdRuleIDs...)
@@ -1835,7 +1836,9 @@ bd close <id> --reason "实现、测试、文档全部完成"
 
 ```bash
 git status   # 确认工作树干净（除既有未跟踪文件）
-git pull --rebase origin main && git push origin main
+git pull --rebase origin main
+bd sync      # bd 账本同步（本仓库 .beads 在 .git/info/exclude，不产生提交）
+git push origin main
 ```
 
 ---
