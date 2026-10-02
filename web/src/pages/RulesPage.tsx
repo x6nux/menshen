@@ -16,6 +16,7 @@ import type {
   Rule,
   RuleAgent,
   RuleAgentStartResp,
+  RuleKindStat,
   RuleSample,
   RuleSaveResp,
   RuleTest,
@@ -37,6 +38,48 @@ import {
 import { InfoRow } from './shared'
 
 const MONO = 'ui-monospace, Menlo, monospace'
+
+/** pct 覆盖率显示：一位小数；分母为 0 时 null（调用方决定「—」或省略）。 */
+function pct(matched: number, total: number): string | null {
+  if (total <= 0) return null
+  return `${((matched / total) * 100).toFixed(1)}%`
+}
+
+/** KindCoverageList 是「按类型覆盖」小节：实时测试与落库数据共用。 */
+function KindCoverageList({ kinds }: { kinds: RuleKindStat[] }) {
+  if (kinds.length === 0) return null
+  return (
+    <Box sx={{ mt: 1.5 }}>
+      <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'text.secondary' }}>
+        按类型覆盖
+      </Typography>
+      {kinds.map((k) => (
+        <Box
+          key={k.kind || '（空）'}
+          sx={{ display: 'flex', gap: 1, mt: 0.5, fontSize: 13, alignItems: 'baseline' }}
+        >
+          <Box component="span" sx={{ flex: 1, fontFamily: MONO, wordBreak: 'break-all' }}>
+            {k.kind || '（空）'}
+          </Box>
+          <Box component="span" sx={{ color: 'text.secondary', whiteSpace: 'nowrap' }}>
+            {k.matched}/{k.total}
+          </Box>
+          <Box
+            component="span"
+            sx={{
+              minWidth: 48,
+              textAlign: 'right',
+              whiteSpace: 'nowrap',
+              color: k.matched === 0 ? 'text.disabled' : 'text.primary',
+            }}
+          >
+            {pct(k.matched, k.total) ?? '—'}
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  )
+}
 
 /** agentStatus 把 Agent 运行态归成状态徽标（空闲/运行中/已完成/失败）。 */
 function agentStatus(agent: RuleAgent | undefined): {
@@ -126,6 +169,7 @@ function TpFpValue({ rule }: { rule: Rule }) {
       </Box>
     )
   }
+  const cov = pct(rule.last_tp, rule.last_ads_total)
   return (
     <Box
       component="span"
@@ -136,6 +180,7 @@ function TpFpValue({ rule }: { rule: Rule }) {
       <Box component="span" sx={{ color: rule.last_fp > 0 ? 'error.main' : 'inherit' }}>
         FP {rule.last_fp}
       </Box>
+      {cov !== null && <> · 覆盖 {cov}</>}
     </Box>
   )
 }
@@ -562,7 +607,7 @@ function TestStat({
   testId,
 }: {
   label: string
-  value: number
+  value: number | string
   tone?: 'plain' | 'ok' | 'no'
   testId: string
 }) {
@@ -668,6 +713,11 @@ function RuleTestPanel({ test, tz }: { test: RuleTest; tz?: string }) {
         <TestStat testId="rule-test-scanned" label="扫描" value={test.scanned} />
         <TestStat testId="rule-test-matched" label="命中" value={test.matched} />
         <TestStat
+          testId="rule-test-coverage"
+          label="覆盖率"
+          value={pct(test.tp, test.ads_total) ?? '—'}
+        />
+        <TestStat
           testId="rule-test-tp"
           label="TP 确认广告"
           value={test.tp}
@@ -687,6 +737,8 @@ function RuleTestPanel({ test, tz }: { test: RuleTest; tz?: string }) {
         />
         <TestStat testId="rule-test-neutral" label="中性" value={test.neutral} />
       </Box>
+
+      <KindCoverageList kinds={test.kinds} />
 
       {test.fp_samples.length > 0 && (
         <SampleList
@@ -864,9 +916,10 @@ export function RuleDetailPage({ id }: { id: number }) {
           {rule.last_tested_at > 0
             ? `${fmtTS(rule.last_tested_at, tz)} · 扫描 ${rule.last_scanned} · TP ${rule.last_tp} · FP ${rule.last_fp}${
                 rule.last_undone > 0 ? ` · 已撤销 ${rule.last_undone}` : ''
-              }`
+              } · 覆盖率 ${pct(rule.last_tp, rule.last_ads_total) ?? '—'}`
             : '从未测试'}
         </InfoRow>
+        <KindCoverageList kinds={rule.last_kinds} />
       </SectionCard>
 
       <SectionCard>

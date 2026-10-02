@@ -353,6 +353,35 @@ describe('RulesPage · 列表与新增', () => {
     ).toBeInTheDocument()
     expect(screen.getByLabelText('正则（RE2）')).toHaveValue('a*')
   })
+
+  it('列表行展示最近测试覆盖率', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: mockRules })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    expect(await screen.findByTestId('rule-tpfp-1')).toHaveTextContent('覆盖 7.5%')
+  })
+
+  it('测试正则抽屉展示覆盖率与按类型', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [] })
+      if (body.action === 'agent_status') return HttpResponse.json({ agent: mockRuleAgent })
+      if (body.action === 'test') return HttpResponse.json({ test: mockRuleTest })
+      return ok()
+    })
+    renderPage(<RulesPage />)
+    await screen.findByText('还没有规则')
+
+    fireEvent.click(screen.getByRole('button', { name: '测试正则' }))
+    fireEvent.change(await screen.findByLabelText('正则（RE2）'), { target: { value: '兼职' } })
+    fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
+
+    expect(await screen.findByTestId('rule-test-coverage')).toHaveTextContent('12.5%')
+    expect(screen.getByText('按类型覆盖')).toBeInTheDocument()
+    expect(screen.getByText('scam')).toBeInTheDocument()
+  })
 })
 
 describe('RuleDetailPage', () => {
@@ -413,6 +442,18 @@ describe('RuleDetailPage', () => {
     expect(screen.getByText('误封')).toBeInTheDocument()
     // 这一版规则仍有 fp：测试完仍不允许开启强制
     expect(screen.getByRole('switch', { name: '强制' })).toBeDisabled()
+  })
+
+  it('详情展示最近测试覆盖率与落库的按类型细分', async () => {
+    captureRules((body) => {
+      if (body.action === 'list') return HttpResponse.json({ rules: [mockRules[0]] })
+      return ok()
+    })
+    renderPage(<RuleDetailPage id={1} />)
+    expect(await screen.findByText(/覆盖率 7\.5%/)).toBeInTheDocument()
+    expect(screen.getByText('按类型覆盖')).toBeInTheDocument()
+    // 用 promo 断言：scam 既是规则分类（InfoRow）也是类型行，getByText 会撞多元素。
+    expect(screen.getByText('promo')).toBeInTheDocument()
   })
 
   it('修正后（fp=0 且测试过）可开启强制并提交 enforce', async () => {
