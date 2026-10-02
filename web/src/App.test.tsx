@@ -96,7 +96,7 @@ describe('App', () => {
     })
 
     expect(await screen.findByText('门神')).toBeInTheDocument()
-    expect(screen.getByText('主管理员 · uid 100')).toBeInTheDocument()
+    expect(screen.getByText('主管理员 · @menshen_admin')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '概览' })).toBeInTheDocument()
     expect(mockApi).toHaveBeenCalledWith('state', undefined, expect.anything())
   })
@@ -114,7 +114,7 @@ describe('App', () => {
     // 第二次仍必须是 state 请求（不能因重试而漏掉鉴权前的数据加载）
     await waitFor(() => expect(mockApi.mock.calls.length).toBeGreaterThanOrEqual(2))
     expect(mockApi.mock.calls[1][0]).toBe('state')
-    expect(await screen.findByText('主管理员 · uid 100')).toBeInTheDocument()
+    expect(await screen.findByText('主管理员 · @menshen_admin')).toBeInTheDocument()
   })
 
   it('themeChanged 后 ThemeProvider 用新 themeParams 实时重建（CssBaseline 生效）', async () => {

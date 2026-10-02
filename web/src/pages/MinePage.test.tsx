@@ -20,7 +20,7 @@ describe('MinePage', () => {
     renderPage(<MinePage />)
 
     expect(await screen.findByText('主管理员')).toBeInTheDocument()
-    expect(screen.getByText('uid 100')).toBeInTheDocument()
+    expect(screen.getByText('@menshen_admin')).toBeInTheDocument()
     expect(screen.getByText('可以管理全部机器人、群组、名单与全局设置。')).toBeInTheDocument()
     for (const entry of ['名单管理', '上游渠道', '模型定价', '全局设置']) {
       expect(screen.getByText(entry)).toBeInTheDocument()

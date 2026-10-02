@@ -57,6 +57,10 @@ describe('LogDetailPage', () => {
     renderPage(<LogDetailPage id={9812} />)
     await screen.findByText('AI 复查')
 
+    // 操作栏按钮必须是紧凑尺寸：全局 Button 覆盖把 minHeight 提到 44，
+    // 记录详情六个动作会撑满屏幕（用户反馈过）。
+    expect(screen.getByRole('button', { name: 'AI 复查' })).toHaveStyle({ minHeight: '32px' })
+
     fireEvent.click(screen.getByRole('button', { name: 'AI 复查' }))
     await waitFor(() => expect(bodies).toHaveLength(1))
     expect(bodies[0]).toEqual({ id: 9812, action: 'review' })

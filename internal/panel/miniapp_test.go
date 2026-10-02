@@ -82,7 +82,7 @@ func newMiniEnv(t *testing.T) *miniTestEnv {
 
 func (e *miniTestEnv) adminInit() string {
 	return signInitData(e.t, testutil.TestToken, map[string]string{
-		"auth_date": strconv.FormatInt(e.now, 10), "user": `{"id":777}`})
+		"auth_date": strconv.FormatInt(e.now, 10), "user": `{"id":777,"username":"tester"}`})
 }
 
 // TestValidateMiniInitData 守的是 Mini App 的鉴权：签名不对、过期、
@@ -92,25 +92,25 @@ func TestValidateMiniInitData(t *testing.T) {
 	now := time.Now().Unix()
 	good := signInitData(t, token, map[string]string{
 		"auth_date": strconv.FormatInt(now, 10),
-		"user":      `{"id":777,"first_name":"admin"}`,
+		"user":      `{"id":777,"first_name":"admin","username":"admin_x"}`,
 	})
-	if uid, err := validateMiniInitData(token, good); err != nil || uid != 777 {
-		t.Fatalf("合法 initData 应通过，uid=%d err=%v", uid, err)
+	if uid, username, err := validateMiniInitData(token, good); err != nil || uid != 777 || username != "admin_x" {
+		t.Fatalf("合法 initData 应通过并带出 username，uid=%d username=%q err=%v", uid, username, err)
 	}
 
 	other := signInitData(t, "999:othertoken", map[string]string{
 		"auth_date": strconv.FormatInt(now, 10), "user": `{"id":777}`})
-	if _, err := validateMiniInitData(token, other); err == nil {
+	if _, _, err := validateMiniInitData(token, other); err == nil {
 		t.Error("别的 bot 的签名不该通过")
 	}
 
 	stale := signInitData(t, token, map[string]string{
 		"auth_date": strconv.FormatInt(now-25*3600, 10), "user": `{"id":777}`})
-	if _, err := validateMiniInitData(token, stale); err == nil {
+	if _, _, err := validateMiniInitData(token, stale); err == nil {
 		t.Error("超过 24 小时的 initData 不该通过")
 	}
 
-	if _, err := validateMiniInitData(token, good+"&extra=1"); err == nil {
+	if _, _, err := validateMiniInitData(token, good+"&extra=1"); err == nil {
 		t.Error("追加字段应导致签名不匹配")
 	}
 }
@@ -375,6 +375,9 @@ func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	}
 	if _, ok := st["global_defaults"].(map[string]any)["antiad_mute_minutes"]; !ok {
 		t.Error("状态里应包含 antiad_mute_minutes 全局默认值")
+	}
+	if me, ok := st["me"].(map[string]any); !ok || me["username"] != "tester" {
+		t.Errorf("state.me 应带 initData 里的 username，得到 %v", st["me"])
 	}
 }
 

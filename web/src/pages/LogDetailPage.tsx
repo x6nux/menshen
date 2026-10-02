@@ -11,7 +11,7 @@ import { actionLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/f
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
-import { InfoRow, UserLink } from './shared'
+import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
 // 主操作（与旧页四个按钮一一对应）；危险项带确认文案。
@@ -184,16 +184,16 @@ export function LogDetailPage({ id }: { id: number }) {
           left: 0,
           right: 0,
           bottom: 0,
-          px: 1.5,
-          pt: 1,
-          pb: 'calc(8px + env(safe-area-inset-bottom))',
+          px: 1.25,
+          pt: 0.75,
+          pb: 'calc(6px + env(safe-area-inset-bottom))',
           bgcolor: 'background.paper',
           borderTop: '1px solid',
           borderColor: 'divider',
           zIndex: (theme) => theme.zIndex.appBar,
         }}
       >
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.75 }}>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
           {PRIMARY_ACTIONS.map((spec) => (
             <Button
               key={spec.action}
@@ -202,6 +202,7 @@ export function LogDetailPage({ id }: { id: number }) {
               color={spec.danger ? 'error' : 'primary'}
               disabled={act.isPending}
               onClick={() => void run(spec)()}
+              sx={COMPACT_BTN_SX}
             >
               {spec.label}
             </Button>
@@ -215,12 +216,13 @@ export function LogDetailPage({ id }: { id: number }) {
                 color="error"
                 disabled={act.isPending}
                 onClick={() => void run(spec)()}
+                sx={COMPACT_BTN_SX}
               >
                 {spec.label}
               </Button>
             ))}
         </Box>
-        <Typography sx={{ mt: 0.75, fontSize: 12, color: 'text.secondary', lineHeight: 1.5 }}>
+        <Typography sx={{ mt: 0.5, fontSize: 11, color: 'text.secondary', lineHeight: 1.5 }}>
           复查结果发到群里（受群内静默开关约束）；人工标记与群内 /ban 命令同效。
         </Typography>
       </Box>

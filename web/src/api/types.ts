@@ -7,6 +7,8 @@
 export interface Me {
   uid: number
   main: boolean
+  /** 来自 initData 的 @username；没设用户名时为空串，界面回退成 uid。 */
+  username?: string
 }
 
 export interface Bot {

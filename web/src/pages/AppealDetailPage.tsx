@@ -11,7 +11,7 @@ import { appealStatusInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
 import { Badge, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
-import { InfoRow, UserLink } from './shared'
+import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
 /** 未结状态集合：与旧页 viewAppealDetail 的 open 数组一致。 */
@@ -185,21 +185,22 @@ export function AppealDetailPage({ id }: { id: number }) {
             left: 0,
             right: 0,
             bottom: 0,
-            px: 1.5,
-            pt: 1,
-            pb: 'calc(8px + env(safe-area-inset-bottom))',
+            px: 1.25,
+            pt: 0.75,
+            pb: 'calc(6px + env(safe-area-inset-bottom))',
             bgcolor: 'background.paper',
             borderTop: '1px solid',
             borderColor: 'divider',
             zIndex: (theme) => theme.zIndex.appBar,
           }}
         >
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.75 }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
             <Button
               size="small"
               variant="outlined"
               disabled={act.isPending}
               onClick={() => void approve()}
+              sx={COMPACT_BTN_SX}
             >
               人工解除
             </Button>
@@ -209,6 +210,7 @@ export function AppealDetailPage({ id }: { id: number }) {
               color="error"
               disabled={act.isPending}
               onClick={() => void reject()}
+              sx={COMPACT_BTN_SX}
             >
               驳回
             </Button>
@@ -218,6 +220,7 @@ export function AppealDetailPage({ id }: { id: number }) {
                 variant="outlined"
                 disabled={act.isPending}
                 onClick={() => run('issue_code')}
+                sx={COMPACT_BTN_SX}
               >
                 直接签发解禁码
               </Button>
@@ -228,12 +231,13 @@ export function AppealDetailPage({ id }: { id: number }) {
                 variant="outlined"
                 disabled={act.isPending}
                 onClick={() => run('rerun')}
+                sx={COMPACT_BTN_SX}
               >
                 重跑 AI 复核
               </Button>
             )}
           </Box>
-          <Typography sx={{ mt: 0.75, fontSize: 12, color: 'text.secondary', lineHeight: 1.5 }}>
+          <Typography sx={{ mt: 0.5, fontSize: 11, color: 'text.secondary', lineHeight: 1.5 }}>
             人工解除与 AI 撤销同效：解除禁言与冷判定限制；联合封禁只有主管理员能在此一并解除。
           </Typography>
         </Box>

@@ -18,7 +18,7 @@ import {
 } from '../api/mutations'
 import type { AdminRow, Bot, Chat, GbanRow, ProfileOKRow, State, WhiteRow } from '../api/types'
 import { filterRows, gbanKey, profileOKKey, whiteKey } from '../lib/filters'
-import { displayTz, fmtTS } from '../lib/format'
+import { displayTz, fmtTS, meLabel } from '../lib/format'
 import {
   Badge,
   ErrorState,
@@ -407,7 +407,7 @@ export function ListsPage({ section }: { section?: string }) {
                 下面这些人的消息不送检、不处置。它们不在上面的白名单表里，是判定前的内置放行：
               </Typography>
             </Box>
-            <ListRow primary="主管理员（你）" value={`uid ${data.me.uid}`} />
+            <ListRow primary="主管理员（你）" value={meLabel(data.me)} />
             {bots
               .filter((b) => b.owner_id)
               .map((b) => (

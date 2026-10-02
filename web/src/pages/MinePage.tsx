@@ -4,6 +4,7 @@
 import { Box, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
+import { meLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { ErrorState, ListRow, SectionCard, Skeletons } from '../ui'
 
@@ -27,7 +28,7 @@ export function MinePage() {
             <Typography component="h2" sx={{ fontSize: 17, fontWeight: 600 }}>
               {role}
             </Typography>
-            <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>uid {me.uid}</Typography>
+            <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>{meLabel(me)}</Typography>
           </Box>
           <Typography sx={{ mt: 0.5, fontSize: 13, color: 'text.secondary', lineHeight: 1.6 }}>
             {me.main

@@ -5,6 +5,7 @@ import {
   apStatus,
   fmtTS,
   kindLabel,
+  meLabel,
   muteOptLabel,
   muteText,
   punishLabel,
@@ -119,5 +120,16 @@ describe('settingOf / punishLabel / muteOptLabel', () => {
     expect(muteOptLabel(numeric, defaults, 7)).toBe('永久禁言')
     expect(punishLabel(numeric, defaults, 7, -1)).toBe('永久禁言')
     expect(punishLabel(numeric, defaults, 7, 0)).toBe('永久禁言')
+  })
+})
+
+describe('meLabel', () => {
+  it('有 username 显示 @username', () => {
+    expect(meLabel({ uid: 5740566746, username: 'admenshen' })).toBe('@admenshen')
+  })
+
+  it('没有 username（含空串）回退 uid', () => {
+    expect(meLabel({ uid: 5740566746 })).toBe('uid 5740566746')
+    expect(meLabel({ uid: 5740566746, username: '' })).toBe('uid 5740566746')
   })
 })

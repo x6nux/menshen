@@ -204,3 +204,8 @@ export function muteOptLabel(
 ): string {
   return muteOf(botSettings, globalDefaults, botId)
 }
+
+/** meLabel 渲染管理员身份：优先 @username，没有才回退 uid。 */
+export function meLabel(me: { uid: number; username?: string }): string {
+  return me.username ? `@${me.username}` : `uid ${me.uid}`
+}

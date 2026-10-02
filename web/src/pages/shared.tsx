@@ -10,6 +10,17 @@ import { botStatus, chatStatus } from '../lib/status'
 import { Badge, ErrorState } from '../ui'
 
 /** BotStatusBadge 渲染 运行中/未运行/已停用 徽标。 */
+/** 底部操作条的紧凑按钮：全局 Button 覆盖把 minHeight 提到 44，这里压回 32，
+ *  按钮贴底一屏尽量放下，不遮挡正文。记录与申诉详情共用。 */
+export const COMPACT_BTN_SX = {
+  minHeight: 32,
+  px: 1.25,
+  fontSize: 13,
+  flex: '1 1 auto',
+  minWidth: 0,
+  whiteSpace: 'nowrap',
+} as const
+
 export function BotStatusBadge({ bot }: { bot: Pick<Bot, 'enabled' | 'live'> }) {
   const status = botStatus(bot)
   return <Badge tone={status.tone}>{status.label}</Badge>

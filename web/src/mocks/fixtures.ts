@@ -20,7 +20,7 @@ const SPECS: Spec[] = [
 ]
 
 export const mockState: State = {
-  me: { uid: 100, main: true },
+  me: { uid: 100, main: true, username: 'menshen_admin' },
   bots: [
     {
       bot_id: 1,

@@ -16,6 +16,7 @@ import type { ReactNode } from 'react'
 import { ApiError, setApiBridge } from './api/client'
 import { useMiniState } from './api/hooks'
 import type { State } from './api/types'
+import { meLabel } from './lib/format'
 import { NavProvider, useNav } from './nav'
 import type { Page, TabKey } from './nav'
 import { AppealDetailPage } from './pages/AppealDetailPage'
@@ -170,7 +171,7 @@ function Shell() {
     <>
       <TopBar
         title={top ? currentName : '门神'}
-        subtitle={top ? undefined : `${role} · uid ${me.uid}`}
+        subtitle={top ? undefined : `${role} · ${meLabel(me)}`}
       />
       <Box
         component="main"

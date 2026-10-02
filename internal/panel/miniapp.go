@@ -194,18 +194,19 @@ func miniAppAsset(w http.ResponseWriter, r *http.Request, p string) {
 	}
 }
 
-// validateMiniInitData 校验 Telegram WebApp 的 initData。
+// validateMiniInitData 校验 Telegram WebApp 的 initData，并返回用户 id 与
+// username（没有 username 时为空串，界面自行回退成 uid）。
 //
 // secret_key = HMAC-SHA256("WebAppData", bot_token)，
 // hash = HMAC-SHA256(secret_key, data_check_string)。逐字节比较用常数时间。
-func validateMiniInitData(token, initData string) (int64, error) {
+func validateMiniInitData(token, initData string) (int64, string, error) {
 	vals, err := url.ParseQuery(initData)
 	if err != nil {
-		return 0, fmt.Errorf("initData 无法解析")
+		return 0, "", fmt.Errorf("initData 无法解析")
 	}
 	hash := vals.Get("hash")
 	if hash == "" {
-		return 0, fmt.Errorf("initData 缺少 hash")
+		return 0, "", fmt.Errorf("initData 缺少 hash")
 	}
 	vals.Del("hash")
 	keys := make([]string, 0, len(vals))
@@ -223,39 +224,40 @@ func validateMiniInitData(token, initData string) (int64, error) {
 	mac.Write([]byte(strings.Join(lines, "\n")))
 	want := hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(want), []byte(hash)) {
-		return 0, fmt.Errorf("initData 签名不匹配")
+		return 0, "", fmt.Errorf("initData 签名不匹配")
 	}
 	ad, _ := strconv.ParseInt(vals.Get("auth_date"), 10, 64)
 	if ad == 0 || time.Now().Unix()-ad > 24*3600 {
-		return 0, fmt.Errorf("initData 已过期，请重新打开")
+		return 0, "", fmt.Errorf("initData 已过期，请重新打开")
 	}
 	var u struct {
-		ID int64 `json:"id"`
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
 	}
 	if json.Unmarshal([]byte(vals.Get("user")), &u) != nil || u.ID == 0 {
-		return 0, fmt.Errorf("initData 缺少用户信息")
+		return 0, "", fmt.Errorf("initData 缺少用户信息")
 	}
-	return u.ID, nil
+	return u.ID, u.Username, nil
 }
 
-// miniAuth 校验请求并返回操作者；失败时已写好响应。
-func miniAuth(sh *core.Shared, w http.ResponseWriter, r *http.Request) (uid, botID int64, ok bool) {
+// miniAuth 校验请求并返回操作者（uid + username）与目标 bot；失败时已写好响应。
+func miniAuth(sh *core.Shared, w http.ResponseWriter, r *http.Request) (uid int64, username string, botID int64, ok bool) {
 	botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
 	rec := sh.Cache.Snap().Bots[botID]
 	if rec == nil {
 		miniErr(w, http.StatusBadRequest, "未知的 bot")
-		return 0, 0, false
+		return 0, "", 0, false
 	}
-	uid, err := validateMiniInitData(rec.Token, r.Header.Get(miniInitDataHeader))
+	uid, username, err := validateMiniInitData(rec.Token, r.Header.Get(miniInitDataHeader))
 	if err != nil {
 		miniErr(w, http.StatusUnauthorized, err.Error())
-		return 0, 0, false
+		return 0, "", 0, false
 	}
 	if !sh.IsStaff(uid) {
 		miniErr(w, http.StatusForbidden, "你不是本服务的管理员")
-		return 0, 0, false
+		return 0, "", 0, false
 	}
-	return uid, botID, true
+	return uid, username, botID, true
 }
 
 func miniErr(w http.ResponseWriter, status int, msg string) {
@@ -290,7 +292,7 @@ func miniCanManageBot(sh *core.Shared, uid, botID int64) bool {
 
 // miniAPI 是 /miniapp/api/* 的总分发。
 func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string) {
-	uid, _, ok := miniAuth(sh, w, r)
+	uid, username, _, ok := miniAuth(sh, w, r)
 	if !ok {
 		return
 	}
@@ -307,7 +309,7 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 
 	switch op {
 	case "state":
-		miniState(sh, w, uid)
+		miniState(sh, w, uid, username)
 	case "set":
 		miniSet(sh, w, uid, body)
 	case "bot":
@@ -373,11 +375,13 @@ func miniBool(body map[string]any, key string) bool {
 
 // ---- 状态 ----
 
-func miniState(sh *core.Shared, w http.ResponseWriter, uid int64) {
+func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username string) {
 	snap := sh.Cache.Snap()
 	main := sh.IsMain(uid)
 
-	me := map[string]any{"uid": uid, "main": main}
+	// username 来自 initData 签名，可能为空（用户没设 @username）；界面
+	// 优先显示 @username，没有才回退 uid。
+	me := map[string]any{"uid": uid, "main": main, "username": username}
 	bots := []map[string]any{}
 	chats := []map[string]any{}
 	botSettings := map[string]map[string]string{}
