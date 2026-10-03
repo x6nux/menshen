@@ -873,8 +873,9 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// （管理员与白名单不在这条规则的射程内）、一切护栏与送检之前。
 	//
 	// enforce 规则命中即按最高档处置，动作与人工标记广告同一档；非 enforce
-	// 的命中只作为证据注入 prompt（见 buildState 的 known_ad_patterns），
-	// 这里不处置、继续走 AI。命中计数对所有规则都记。
+	// 的命中不在这里处置 —— 它稍后走「先删后判」专线：立即删除 + 临时禁言，
+	// 跳过 systemone，直接交大模型复判定案（见 buildState 的 matched_rules
+	// 与 judgeAndAct）。命中计数对所有规则都记。
 	if hits := MatchRules(snap, text); len(hits) > 0 {
 		for _, r := range hits {
 			BumpRuleHits(b.Shared, r.ID)
@@ -909,6 +910,20 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// 挪进判定 worker 的话，此人随后几条也可能已经落库，模型会把
 	// 「之后说的话」当成上下文。
 	state := buildState(b, snap, m, profile)
+
+	// 必封规则（非强制）命中：不等 systemone，立即进判定 worker 先删后判
+	// ——删除 + 临时禁言，大模型定案（复判正常会自动解除）。与哈希命中
+	// 一样不占群送检额度：规则是经过全库零误封测试的高精度形态。
+	if len(state.MatchedRules) > 0 {
+		if !b.AdSubmit(func() { judgeAndAct(b, snap, conf, m, profile, state) }) {
+			slog.Warn("反广告：规则命中但判定队列已满，未处置",
+				"chat", m.Chat.ID, "uid", m.From.ID,
+				"rules", matchedRuleIDs(state.MatchedRules))
+			logAd(b, m, adVerdict{Reason: "命中必封规则，但判定队列已满"},
+				"none", "判定队列已满，未处置")
+		}
+		return
+	}
 
 	// 同样的内容此前已判为消息级广告：不送检、不占本群送检额度，直接删，
 	// 禁言交给复判模型——必须排在护栏之前。
@@ -987,14 +1002,26 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		return
 	}
 
-	v, err := judgeFirst(b, snap, state)
-	if err != nil {
-		// 失败一律放行。反向会在上游抖动时清空整个群聊。
-		slog.Warn("反广告：判定失败，放行", "chat", m.Chat.ID,
-			"uid", m.From.ID, "err", err)
-		logAd(b, m, adVerdict{Reason: err.Error(), Usage: vis.Usage, Cost: vis.Cost},
-			"none", "判定失败")
-		return
+	// 必封规则命中时不跑 systemone：规则本身就是初判（启用前经过全库
+	// 零误封测试），直接用规则作为 prior 交给大模型复判定案。「命中就先删
+	// + 临时禁言」不必等一次初判往返；没有复判模型时才按处置矩阵定案。
+	ruleHit := len(state.MatchedRules) > 0
+	var v adVerdict
+	if ruleHit {
+		v = ruleVerdict(state.MatchedRules)
+		slog.Info("反广告：命中必封规则，跳过初判直接复判", "chat", m.Chat.ID,
+			"uid", m.From.ID, "rules", matchedRuleIDs(state.MatchedRules))
+	} else {
+		var err error
+		v, err = judgeFirst(b, snap, state)
+		if err != nil {
+			// 失败一律放行。反向会在上游抖动时清空整个群聊。
+			slog.Warn("反广告：判定失败，放行", "chat", m.Chat.ID,
+				"uid", m.From.ID, "err", err)
+			logAd(b, m, adVerdict{Reason: err.Error(), Usage: vis.Usage, Cost: vis.Cost},
+				"none", "判定失败")
+			return
+		}
 	}
 	// 识图的钱也是判这条消息花的。
 	v.Usage, v.Cost = billing.MergeUsage(v.Usage, vis.Usage), v.Cost+vis.Cost
@@ -1011,11 +1038,9 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		actOnVerdict(b, snap, conf, m, profile, v, pre, preNote, text)
 	}
 	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
-	// 规则命中时强制进入大模型复判：初判再自信也可能忽略强证据，而这些
-	// 规则是通过全库零误封测试的形态，值得第二个模型定夺。systemone 不可用
-	// （已是大模型结论）或没配复判模型时保持原行为。
-	ruleHit := len(state.MatchedRules) > 0
-	forceReview := ruleHit && v.Decider == "systemone" && hasLLM(b, snap)
+	// 规则命中时必须过大模型复判（systemone 已被跳过）；其余沿用采信线与
+	// 要罚才复判。
+	forceReview := ruleHit && hasLLM(b, snap)
 	if !needReview(b, snap, v, act) && !forceReview {
 		finish(v, adAction{}, "")
 		return
@@ -1023,8 +1048,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 初判下限：置信度低于它的「广告」是噪声（jev 对资料类特征会给 3%~32%），
 	// 直接放行、连复判都不跑 —— 那种结论跑复判只是花钱买一个必然被推翻的
 	// 结果。按未定记流水，管理员在记录里能看到为什么放行。
-	// 规则命中时不适用：有零误封规则指路，低置信初判不再等于噪声。
-	if !ruleHit && v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
+	if v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
 		b.BotID(), "antiad_so_floor", store.DefaultSoFloor)) {
 		floor := snap.BotSettingInt(b.BotID(), "antiad_so_floor", store.DefaultSoFloor)
 		v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
@@ -1042,9 +1066,18 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 低于它时只送复判，不先删也不禁。低置信初判本来就拿不准（jev 对「资料
 	// 挂频道/bot」这类会给 3%~32% 的广告），而按模型结论定档不看置信度，
 	// 先行动作会把「拿不准」直接变成删消息 + 临时禁言。
+	// 规则命中不受这条线约束：规则是全库零误封测试过的高精度形态，
+	// 一律先删 + 临时禁言，复判正常时 actOnVerdict 会自动解除。
 	var pre adAction
 	var preNote string
-	if v.Confidence*100 >= float64(snap.BotSettingInt(
+	if ruleHit {
+		pre = adAction{Delete: true, Mute: m.From.ID > 0, Temp: true}
+		preNote = ApplyAction(b, m, pre, conf.Dryrun)
+		if pre.Mute && !conf.Dryrun {
+			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
+			NoteTempMute(m.Chat.ID, m.From.ID)
+		}
+	} else if v.Confidence*100 >= float64(snap.BotSettingInt(
 		b.BotID(), "antiad_pre_act_conf", store.DefaultPreActConf)) {
 		pre = adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)
@@ -1059,7 +1092,11 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	if !b.AdReview(func() { finish(review(b, snap, state, v, llmSystemPrompt), pre, preNote) }) {
 		// 按初判定案，临时禁言照样转正式：让它到期自己解除，等于白白放走。
 		slog.Warn("反广告：复判队列已满，按初判定案", "chat", m.Chat.ID, "uid", m.From.ID)
-		v.Reason = "（复判队列已满，仅采信 systemone 初判）" + v.Reason
+		if ruleHit {
+			v.Reason = "（复判队列已满，仅采信必封规则）" + v.Reason
+		} else {
+			v.Reason = "（复判队列已满，仅采信 systemone 初判）" + v.Reason
+		}
 		finish(v, pre, preNote)
 	}
 }

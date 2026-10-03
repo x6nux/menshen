@@ -35,7 +35,9 @@ const ruleScanCtxCheckEvery = 1000
 // 规则由 AI 从历史封禁记录里总结（见 T-B 的 Agent），主管理员在 Mini App
 // 里测试、启用与强制。三层语义：
 //   - enabled=0：完全不参与判定；
-//   - enabled=1 且 enforce=0：命中只作为证据注入判定 prompt（见 RuleHintText）；
+//   - enabled=1 且 enforce=0：命中立即删除 + 临时禁言，**跳过 systemone**，
+//     规则以 matched_rules 作为强证据直接交大模型复判定案（复判正常会
+//     自动解除临时禁言）；没有复判模型时按处置矩阵定案；
 //   - enabled=1 且 enforce=1：命中即最高档处置，不花 AI 的钱。
 //
 // 防误封：任何保存都先跑全库测试（TestRulePattern），enforce 只允许在
@@ -116,6 +118,22 @@ func matchedRuleIDs(rules []MatchedRule) []int64 {
 		out = append(out, r.ID)
 	}
 	return out
+}
+
+// ruleVerdict 把命中的非强制规则合成规则级初判：置信度取 1（规则在启用
+// 前经过全库零误封测试），分类取规则的分类，decider 用 rule:<id> 以便
+// 流水识别来源。多条命中时以最老的一条为准（MatchRules 已按 id 升序），
+// 理由里列出全部规则名。
+func ruleVerdict(rules []MatchedRule) adVerdict {
+	names := make([]string, 0, len(rules))
+	for _, r := range rules {
+		names = append(names, "《"+r.Name+"》")
+	}
+	return adVerdict{
+		IsAd: true, Confidence: 1, Kind: rules[0].Category, Scope: "message",
+		Decider: "rule:" + fmt.Sprintf("%d", rules[0].ID),
+		Reason:  "命中必封规则" + strings.Join(names, "、"),
+	}
 }
 
 // BumpRuleHits 记一次规则命中（计数 + 最近命中时刻）。

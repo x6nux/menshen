@@ -620,7 +620,7 @@ describe('RuleDetailPage', () => {
 
     const sw = await screen.findByRole('switch', { name: '强制' })
     expect(sw).not.toBeDisabled()
-    expect(screen.getByText('开启后命中即最高档处置（零 AI 成本）；不开则命中作为强证据送 AI 复核')).toBeInTheDocument()
+    expect(screen.getByText('开启后命中即最高档处置（零 AI 成本）；不开则命中先删+临时禁言，再交 AI 复判')).toBeInTheDocument()
 
     fireEvent.click(sw)
     await waitFor(() =>

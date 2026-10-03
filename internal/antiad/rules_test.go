@@ -429,51 +429,55 @@ func TestRuleWhitelistExempt(t *testing.T) {
 	}
 }
 
-// TestRuleHitInjectedIntoPrompt：非 enforce 规则命中时不处置，但规则要以
-// matched_rules 强证据字段出现在送给 systemone 的载荷里。
-func TestRuleHitInjectedIntoPrompt(t *testing.T) {
-	b, _ := testutil.NewTestBot(t, 1)
+// TestRuleHitPreDeleteReview：启用未强制的规则命中时跳过 systemone：
+// 立即删除 + 临时禁言，规则作为 prior 直接交大模型复判；复判正常时解除
+// 临时禁言，流水来源记 rule:<id>+llm。
+func TestRuleHitPreDeleteReview(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	insertRule(t, b, "提示测试规则", "提示命中词", "", true, false)
-
-	var req atomic.Value
-	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/systemone") {
-			raw, _ := io.ReadAll(r.Body)
-			req.Store(string(raw))
-			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
-			return
-		}
-		w.Write([]byte(llmReply(false, 0.9, "none", "message")))
-	})
-
-	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含提示命中词"))
-	waitIdle(t, b)
-
-	raw, _ := req.Load().(string)
-	if raw == "" {
-		t.Fatal("没有向 systemone 发请求")
-	}
-	if !strings.Contains(raw, "matched_rules") || !strings.Contains(raw, "提示测试规则") {
-		t.Errorf("prompt 里没有注入规则证据：%s", raw)
-	}
-}
-
-// TestRuleHitForcesReview：命中启用规则（未强制）时，即使 systemone 高置信
-// 判正常（本会直接采信），也必须过大模型复判——强证据不能被一次初判吞掉；
-// 没有规则命中时高置信初判照旧直接采信。
-func TestRuleHitForcesReview(t *testing.T) {
-	b, _ := testutil.NewTestBot(t, 1)
-	testutil.EnableAntiad(t, b, -100)
-	insertRule(t, b, "强证据规则", "强证据命中词", "scam", true, false)
-	soN, llmN := fakeAIWith(t, b, soReply("clean", 0.99, "none", "message"),
+	insertRule(t, b, "证据规则", "证据命中词", "scam", true, false)
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.99, "scam", "message"),
 		llmReply(false, 0.9, "none", "message"))
-	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含强证据命中词"))
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含证据命中词"))
 	waitIdle(t, b)
-	if soN.Load() == 0 || llmN.Load() == 0 {
-		t.Errorf("命中规则应强制复判，so=%d llm=%d", soN.Load(), llmN.Load())
+
+	if soN.Load() != 0 {
+		t.Errorf("规则命中应跳过 systemone，实际调用 %d 次", soN.Load())
+	}
+	if llmN.Load() == 0 {
+		t.Fatal("规则命中应过大模型复判")
+	}
+	if n := fake.CountCalls("deleteMessage"); n == 0 {
+		t.Error("规则命中应立即删除")
+	}
+	// 先临时禁言、复判正常后解除：两次 restrictChatMember，其中一次权限全开。
+	if n := fake.CountCalls("restrictChatMember"); n < 2 {
+		t.Errorf("应先临时禁言再解除，实际 %d 次", n)
+	}
+	sawUnmute := false
+	for _, p := range fake.Calls("restrictChatMember") {
+		if perms, ok := p["permissions"].(map[string]any); ok &&
+			perms["can_send_messages"] == true {
+			sawUnmute = true
+		}
+	}
+	if !sawUnmute {
+		t.Error("复判正常应解除临时禁言")
+	}
+	var verdict, decider string
+	if err := b.Store.Read.QueryRow(
+		`SELECT verdict,decider FROM antiad_log ORDER BY id DESC LIMIT 1`).
+		Scan(&verdict, &decider); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "clean" || !strings.HasPrefix(decider, "rule:") ||
+		!strings.HasSuffix(decider, "+llm") {
+		t.Errorf("流水应记 rule:*+llm 的 clean，得到 verdict=%q decider=%q",
+			verdict, decider)
 	}
 
+	// 对照：没有规则命中时高置信初判照旧直接采信（不调大模型）。
 	b2, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	soN2, llmN2 := fakeAIWith(t, b2, soReply("clean", 0.99, "none", "message"),
@@ -485,27 +489,62 @@ func TestRuleHitForcesReview(t *testing.T) {
 	}
 }
 
-// TestRuleHitBypassesSoFloor：命中规则时，低于初判下限的「广告」也不再
-// 直接放行——有零误封规则指路，低置信初判不再等于噪声。
-func TestRuleHitBypassesSoFloor(t *testing.T) {
+// TestRuleHitInjectedIntoPrompt：规则命中时不跑 systemone，规则以
+// matched_rules 强证据出现在送给大模型的复判载荷里。
+func TestRuleHitInjectedIntoPrompt(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	insertRule(t, b, "证据规则", "证据命中词", "scam", true, false)
-	fakeAIWith(t, b, soReply("ad", 0.2, "scam", "message"),
+	insertRule(t, b, "提示测试规则", "提示命中词", "", true, false)
+
+	var req atomic.Value
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			t.Error("规则命中不该请求 systemone")
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		req.Store(string(raw))
+		w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+	})
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含提示命中词"))
+	waitIdle(t, b)
+
+	raw, _ := req.Load().(string)
+	if raw == "" {
+		t.Fatal("没有向大模型发复判请求")
+	}
+	if !strings.Contains(raw, "matched_rules") || !strings.Contains(raw, "提示测试规则") {
+		t.Errorf("复判载荷里没有规则证据：%s", raw)
+	}
+}
+
+// TestRuleHitNoLLMFallsBackToMatrix：没有复判模型时，规则命中仍然先删 +
+// 临时禁言，并按处置矩阵定案（来源记 rule:<id>）。
+func TestRuleHitNoLLMFallsBackToMatrix(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	soN, llmN := fakeAIWith(t, b, soReply("clean", 0.99, "none", "message"),
 		llmReply(false, 0.9, "none", "message"))
+	// 清掉复判模型：只剩 systemone（而规则命中不该跑它）。
+	if err := b.PutSetting("antiad_llm_model", ""); err != nil {
+		t.Fatal(err)
+	}
+	insertRule(t, b, "证据规则", "证据命中词", "scam", true, false)
+
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含证据命中词"))
 	waitIdle(t, b)
 
-	var verdict, reason string
+	if soN.Load() != 0 || llmN.Load() != 0 {
+		t.Errorf("无复判模型时也不该跑 systemone：so=%d llm=%d", soN.Load(), llmN.Load())
+	}
+	var action, decider string
 	if err := b.Store.Read.QueryRow(
-		`SELECT verdict,reason FROM antiad_log ORDER BY id DESC LIMIT 1`).
-		Scan(&verdict, &reason); err != nil {
+		`SELECT action,decider FROM antiad_log ORDER BY id DESC LIMIT 1`).
+		Scan(&action, &decider); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(reason, "低于下限线") {
-		t.Errorf("命中规则不该走初判下限放行：%q", reason)
-	}
-	if verdict != "clean" {
-		t.Errorf("复判正常应以 clean 定案，得到 %q（%s）", verdict, reason)
+	if !strings.HasPrefix(decider, "rule:") || action != "deleted_muted" {
+		t.Errorf("无复判模型时按矩阵定案：action=%q decider=%q", action, decider)
 	}
 }

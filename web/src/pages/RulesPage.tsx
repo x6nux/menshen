@@ -143,7 +143,7 @@ function enforceHint(rule: Rule): string {
   if (rule.last_fp > 0 || rule.last_undone > 0) {
     return `全库测试有疑似误封（FP ${rule.last_fp} · 已撤销 ${rule.last_undone}）：先修净误封，再开启强制`
   }
-  return '开启后命中即最高档处置（零 AI 成本）；不开则命中作为强证据送 AI 复核'
+  return '开启后命中即最高档处置（零 AI 成本）；不开则命中先删+临时禁言，再交 AI 复判'
 }
 
 /** RuleBadges 列表/详情共用的启用状态与强制徽标。 */
@@ -874,7 +874,7 @@ export function RuleDetailPage({ id }: { id: number }) {
       },
       {
         onSuccess: () =>
-          toast(next ? '已启用：命中作为强证据送 AI 复核（开启强制才直接处置）' : '已停用（强制一并关闭）'),
+          toast(next ? '已启用：命中即删除+临时禁言，交 AI 复判（开启强制则直接最高档）' : '已停用（强制一并关闭）'),
         onError: (err) => toast(err.message),
       },
     )
