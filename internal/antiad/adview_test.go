@@ -1,9 +1,9 @@
 package antiad
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,8 +14,8 @@ import (
 
 func itoaTest(n int64) string { return strconv.FormatInt(n, 10) }
 
-// TestViewPageGateAndContent：GET 只给警示与按钮，POST 验签且未过期才渲染；
-// 原文里的脚本被模板转义。
+// TestViewPageGateAndContent：GET 只给警示与查看凭据（不含原文），POST
+// 验签且未过期才返回内容；过期凭据 404。
 func TestViewPageGateAndContent(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
@@ -34,48 +34,62 @@ func TestViewPageGateAndContent(t *testing.T) {
 	path := "/_w/v/" + itoaTest(id) + "/" + logViewSig(b.Shared, id)
 	handler := WebHandler(b.Shared)
 
-	// GET：门槛页，不含原文。
+	// GET ?json=1：门槛数据，不含原文。
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET 应 200，得到 %d", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "查看内容") || !strings.Contains(body, `name="k"`) {
-		t.Errorf("门槛页应给出查看按钮与签名表单:\n%s", body)
+	var gateOut struct {
+		Gate struct {
+			Title string `json:"title"`
+			Warn  string `json:"warn"`
+			Exp   int64  `json:"exp"`
+			K     string `json:"k"`
+		} `json:"gate"`
 	}
-	if strings.Contains(body, "买号") {
-		t.Error("GET 不该渲染原文")
+	if err := json.Unmarshal(w.Body.Bytes(), &gateOut); err != nil {
+		t.Fatalf("门槛响应应是 JSON：%v（%s）", err, w.Body.String())
+	}
+	if gateOut.Gate.K == "" || gateOut.Gate.Exp <= time.Now().Unix() {
+		t.Errorf("门槛数据应带未过期的查看凭据：%+v", gateOut.Gate)
+	}
+	if strings.Contains(w.Body.String(), "买号") {
+		t.Error("GET 不该返回原文")
 	}
 
-	// POST：签名有效才渲染，脚本被转义。
-	exp := time.Now().Add(time.Minute).Unix()
-	form := url.Values{"e": {itoaTest(exp)},
-		"k": {logViewPostSig(b.Shared, id, exp)}}
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// POST 凭据：返回内容（JSON 原样保留文本，前端负责转义）。
+	body, _ := json.Marshal(map[string]any{"e": gateOut.Gate.Exp, "k": gateOut.Gate.K})
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST 应 200，得到 %d", w.Code)
+		t.Fatalf("POST 应 200，得到 %d：%s", w.Code, w.Body.String())
 	}
-	body = w.Body.String()
-	if !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, "<script>alert") {
-		t.Errorf("原文应被模板转义:\n%s", body)
+	var viewOut struct {
+		View struct {
+			Record struct {
+				ID   int64  `json:"id"`
+				Text string `json:"text"`
+			} `json:"record"`
+		} `json:"view"`
 	}
-	if !strings.Contains(body, "买号") {
-		t.Error("验签通过后应能看到原文")
+	if err := json.Unmarshal(w.Body.Bytes(), &viewOut); err != nil {
+		t.Fatalf("内容响应应是 JSON：%v（%s）", err, w.Body.String())
+	}
+	if viewOut.View.Record.ID != id ||
+		!strings.Contains(viewOut.View.Record.Text, "买号") {
+		t.Errorf("验签通过后应能看到原文：%+v", viewOut.View.Record)
 	}
 
-	// 过期表单：404。
+	// 过期凭据：404。
 	old := time.Now().Add(-time.Minute).Unix()
-	form = url.Values{"e": {itoaTest(old)}, "k": {logViewPostSig(b.Shared, id, old)}}
-	req = httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	body, _ = json.Marshal(map[string]any{"e": old, "k": logViewPostSig(b.Shared, id, old)})
+	req = httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
-		t.Errorf("过期表单应 404，得到 %d", w.Code)
+		t.Errorf("过期凭据应 404，得到 %d", w.Code)
 	}
 }
 
@@ -142,30 +156,72 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 	}
 
 	path := "/_w/apv/" + itoaTest(appealID) + "/" + appealViewSig(b.Shared, appealID)
-	exp := time.Now().Add(time.Minute).Unix()
-	form := url.Values{"e": {itoaTest(exp)},
-		"k": {logViewPostSig(b.Shared, appealID, exp)}}
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler := WebHandler(b.Shared)
+
+	// GET ?json=1：门槛数据；POST 凭据才返回内容。
 	w := httptest.NewRecorder()
-	WebHandler(b.Shared).ServeHTTP(w, req)
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST 应 200，得到 %d", w.Code)
+		t.Fatalf("GET 应 200，得到 %d", w.Code)
 	}
-	body := w.Body.String()
-	for _, want := range []string{
-		`class="side"`, `class="main"`,
-		"账号信息", "判定时昵称", "广告昵称", "群内发言：3 条", "历史命中：1 次",
-		"当前生效限制", "进群资料审核", "资料里写着引流",
-		"历史处罚", "上一条已改判",
-		"群内留底发言", "加微信 日入5000", "被拦", "测试群",
-		"判定流水",
-		"网页验证记录", "1.2.3.4", "fphash", "屏幕尺寸为 0",
-		"我是清白的", "已发解禁码",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("申诉详情页应包含 %q\n%s", want, body)
+	if strings.Contains(w.Body.String(), "我是清白的") {
+		t.Error("门槛数据不该包含申诉理由")
+	}
+	var gateOut struct {
+		Gate struct {
+			Exp int64  `json:"exp"`
+			K   string `json:"k"`
+		} `json:"gate"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &gateOut); err != nil || gateOut.Gate.K == "" {
+		t.Fatalf("门槛响应缺查看凭据：%v（%s）", err, w.Body.String())
+	}
+
+	body, _ := json.Marshal(map[string]any{"e": gateOut.Gate.Exp, "k": gateOut.Gate.K})
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST 应 200，得到 %d：%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		View appealViewData `json:"view"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("内容响应应是 JSON：%v（%s）", err, w.Body.String())
+	}
+	v := out.View
+	if v.UID != 555 || v.UName != "广告昵称" || v.Msgs != 3 || v.Hits != 1 {
+		t.Errorf("账号信息不对：uid=%d name=%q msgs=%d hits=%d", v.UID, v.UName, v.Msgs, v.Hits)
+	}
+	if !strings.Contains(v.Status, "解禁码") {
+		t.Errorf("状态应翻译成中文，得到 %q", v.Status)
+	}
+	if v.Statement != "我是清白的" || v.AIReason != "资料里有推广话术" {
+		t.Errorf("申诉单字段不对：%+v", v)
+	}
+	if len(v.Limits) == 0 || !strings.Contains(v.Limits[0].Reason, "资料里写着引流") {
+		t.Errorf("当前生效限制应带理由：%+v", v.Limits)
+	}
+	foundPenalty := false
+	for _, p := range v.Penalties {
+		if strings.Contains(p.Reason, "上一条已改判") || strings.Contains(p.Text, "上次那条") {
+			foundPenalty = true
 		}
+	}
+	if !foundPenalty {
+		t.Errorf("历史处罚应包含已撤销的记录：%+v", v.Penalties)
+	}
+	if len(v.History) == 0 || !strings.Contains(v.History[0].Text, "加微信 日入5000") ||
+		v.History[0].Chat != "测试群" || !v.History[0].Blocked {
+		t.Errorf("群内留底应带群名与「被拦」标记：%+v", v.History)
+	}
+	if len(v.Logs) == 0 {
+		t.Errorf("应带判定流水：%+v", v.Logs)
+	}
+	if len(v.Checks) != 1 || v.Checks[0].IP != "1.2.3.4" || v.Checks[0].FP != "fphash" ||
+		!strings.Contains(v.Checks[0].Flags, "屏幕尺寸为 0") {
+		t.Errorf("网页验证记录不对：%+v", v.Checks)
 	}
 }
 

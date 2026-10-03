@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"log/slog"
 	"net"
 	"net/http"
@@ -148,6 +147,23 @@ func parseWebRoute(p string) (webRoute, bool) {
 	return webRoute{}, false
 }
 
+// IsWebPagePath 报告路径是否指向公开网页的页面路由（ap / apv / v）。
+//
+// 只做形状判断、不验签：SPA 外壳本身不含任何数据，签名校验发生在
+// ?json=1 的数据接口里。main 在把 _w 请求交给 WebHandler 之前用它
+// 决定是否先发壳（见 panel.PublicShellHandler）。
+func IsWebPagePath(p string) bool {
+	rt, ok := parseWebRoute(p)
+	if !ok {
+		return false
+	}
+	switch rt.kind {
+	case "ap", "apv", "v":
+		return true
+	}
+	return false
+}
+
 // WebHandler 处理 _w 下的网页请求。
 //
 // 签名不对、记录不存在一律 404，不区分两者 —— 免得被人按编号扫出
@@ -174,45 +190,30 @@ func WebHandler(sh *core.Shared) http.Handler {
 
 // ---- 页面处理器 ----
 
-// handleAppealPage 处理验证页 GET/POST。
+// handleAppealPage 处理验证页的数据接口 GET ?json=1 与提交 POST。
+//
+// 页面外壳由 React SPA 托管（main.go 在路由层先发壳）；这里只出数据。
 func handleAppealPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {
 	ap, ok := loadAppealByID(sh.Store, rt.id)
 	if !ok || !webSigOK(sh, fmt.Sprintf("ap:%d:%d", ap.ID, ap.UserID), rt.sig) {
-		http.NotFound(w, r) // 签名错与记录不存在不区分，免得被按编号扫
+		// 签名错与记录不存在不区分，免得被按编号扫
+		writeWebJSON(w, http.StatusNotFound, map[string]any{"error": "链接无效或已被替换。"})
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		appealPageGet(sh, w, r, ap)
-	case http.MethodPost:
+	switch {
+	case r.Method == http.MethodGet && r.URL.Query().Get("json") == "1":
+		if !appealWebUsable(ap, time.Now().Unix()) {
+			writeWebJSON(w, http.StatusGone, map[string]any{
+				"error": "链接已失效，请回到 bot 重新申诉。"})
+			return
+		}
+		writeWebJSON(w, http.StatusOK, appealPageDataOf(sh, ap))
+	case r.Method == http.MethodPost:
 		appealPagePost(sh, w, r, ap)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-// appealPageGet 渲染验证页。
-func appealPageGet(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap appealRec) {
-	if !appealWebUsable(ap, time.Now().Unix()) {
-		writeHTMLHeaders(w, "")
-		w.WriteHeader(http.StatusGone)
-		fmt.Fprint(w, expiredPageHTML)
-		return
-	}
-	nonce := newNonce()
-	writeHTMLHeaders(w, nonce)
-	days := sh.Cache.Snap().SettingInt("log_retention_days", 30)
-	account, limits, msgs, ai := appealPageInfo(sh, ap)
-	page := strings.ReplaceAll(appealPageHTML, "{{NONCE}}", nonce)
-	page = strings.ReplaceAll(page, "{{SITEKEY}}", html.EscapeString(sh.Cfg.TurnstileSiteKey))
-	page = strings.ReplaceAll(page, "{{CDATA}}", strconv.FormatInt(ap.ID, 10))
-	page = strings.ReplaceAll(page, "{{DAYS}}", strconv.FormatInt(days, 10))
-	page = strings.ReplaceAll(page, "{{ACCOUNT}}", account)
-	page = strings.ReplaceAll(page, "{{LIMITS}}", limits)
-	page = strings.ReplaceAll(page, "{{MSGS}}", msgs)
-	page = strings.ReplaceAll(page, "{{AI}}", ai)
-	fmt.Fprint(w, page)
 }
 
 // appealWebWindow 是网页验证链接的有效窗口。链接签名不过期，过期由
@@ -229,7 +230,7 @@ func appealWebUsable(ap appealRec, now int64) bool {
 func appealPagePost(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap appealRec) {
 	now := time.Now().Unix()
 	if !appealWebUsable(ap, now) {
-		writeJSON(w, http.StatusGone, map[string]any{
+		writeWebJSON(w, http.StatusGone, map[string]any{
 			"ok": false, "msg": "链接已失效，请回到 bot 重新申诉。"})
 		return
 	}
@@ -238,7 +239,7 @@ func appealPagePost(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap 
 	// 限频：每张申诉单每分钟 5 次、每个 IP 每分钟 20 次。
 	if !sh.AdLimits.Allow(fmt.Sprintf("web:ap:%d", ap.ID), 5) ||
 		!sh.AdLimits.Allow("web:ip:"+ip, 20) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		writeWebJSON(w, http.StatusTooManyRequests, map[string]any{
 			"ok": false, "msg": "请求太频繁，请稍后再试。"})
 		return
 	}
@@ -249,7 +250,7 @@ func appealPagePost(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap 
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).
 		Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
+		writeWebJSON(w, http.StatusBadRequest, map[string]any{
 			"ok": false, "msg": "请求体无法解析。"})
 		return
 	}
@@ -276,14 +277,14 @@ func appealPagePost(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap 
 	if result == "pass" {
 		c, ok := issueUnlockCode(sh, ap.ID)
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
+			writeWebJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok": false, "msg": "签发解禁码失败，请稍后重试。"})
 			return
 		}
 		code = c
 		ap, _ = loadAppealByID(sh.Store, ap.ID)
 		notifyCodeIssued(sh, ap, ip, fp, soft)
-		writeJSON(w, http.StatusOK, map[string]any{
+		writeWebJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "code": code,
 			"msg": "验证通过。把解禁码发给群管理员即可解除限制。"})
 		return
@@ -297,7 +298,7 @@ func appealPagePost(sh *core.Shared, w http.ResponseWriter, r *http.Request, ap 
 		ap, _ = loadAppealByID(sh.Store, ap.ID)
 		notifyAppealRejected(sh, ap, hard, soft, ip, fp)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": false, "msg": msg})
+	writeWebJSON(w, http.StatusOK, map[string]any{"ok": false, "msg": msg})
 }
 
 // notifyCodeIssued 通知申诉人并给管理员推完整卡片。
@@ -340,28 +341,13 @@ func apHasGban(sh *core.Shared, uid int64) bool {
 
 // ---- 请求头与响应 ----
 
-// writeHTMLHeaders 设置网页响应的安全头。nonce 为空时不带脚本（查看页）。
-func writeHTMLHeaders(w http.ResponseWriter, nonce string) {
+// writeWebJSON 是网页接口的 JSON 响应：no-store + noindex，与页面同口径。
+func writeWebJSON(w http.ResponseWriter, status int, v any) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Robots-Tag", "noindex, nofollow")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("Content-Type", "text/html; charset=utf-8")
-	if nonce == "" {
-		h.Set("Content-Security-Policy",
-			"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
-		return
-	}
-	h.Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'nonce-"+nonce+
-			"' https://challenges.cloudflare.com; "+
-			"frame-src https://challenges.cloudflare.com; connect-src 'self'; "+
-			"style-src 'unsafe-inline'")
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }

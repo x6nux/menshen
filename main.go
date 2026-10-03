@@ -233,7 +233,7 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh)},
+		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh), public: panel.PublicShellHandler()},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
 		// 只设 ReadHeaderTimeout 挡不住慢速发 body 的连接：它会一直占着
 		// goroutine 与内存（暴露到回环之外时就是廉价的 slowloris）。
@@ -260,13 +260,23 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 // 其余交给 webhook。识别方式与 core.TokenFromPath 一样不依赖前缀，
 // 反代再套几层子路径都认得出来。
 type webRouter struct {
-	reg  *core.Registry
-	web  http.Handler
-	mini http.Handler
+	reg    *core.Registry
+	web    http.Handler
+	mini   http.Handler
+	public http.Handler
 }
 
 func (h webRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if hasWebSegment(r.URL.Path) {
+		// 页面壳（GET/HEAD、无 json=1）先交给公开网页 SPA；数据与提交
+		// 仍走 antiad.WebHandler。壳不含数据，签名校验在接口里。
+		if h.public != nil &&
+			(r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			r.URL.Query().Get("json") != "1" &&
+			antiad.IsWebPagePath(r.URL.Path) {
+			h.public.ServeHTTP(w, r)
+			return
+		}
 		h.web.ServeHTTP(w, r)
 		return
 	}

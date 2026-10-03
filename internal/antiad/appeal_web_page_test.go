@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -298,9 +297,9 @@ func TestAppealWebFlowBotFailsAndRejects(t *testing.T) {
 	}
 }
 
-// TestAppealPageHeadersAndExpiry：验证页带齐安全响应头；超过 24 小时
-// 的链接返回失效页。
-func TestAppealPageHeadersAndExpiry(t *testing.T) {
+// TestAppealPageDataAndExpiry：验证页数据接口带齐 no-store/noindex，
+// 带上 sitekey / cdata / 天数；链接过 24 小时返回 410，签名不对 404。
+func TestAppealPageDataAndExpiry(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
 	b.Cfg.TurnstileSiteKey, b.Cfg.TurnstileSecret = "site", "secret"
@@ -320,53 +319,56 @@ func TestAppealPageHeadersAndExpiry(t *testing.T) {
 	handler := WebHandler(b.Shared)
 
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
 	if w.Code != http.StatusOK {
-		t.Fatalf("有效链接应 200，得到 %d", w.Code)
+		t.Fatalf("有效链接应 200，得到 %d：%s", w.Code, w.Body.String())
 	}
 	h := w.Header()
 	if h.Get("Cache-Control") != "no-store" || !strings.Contains(h.Get("X-Robots-Tag"), "noindex") {
 		t.Errorf("缺少 no-store / noindex 头: %v", h)
 	}
-	csp := h.Get("Content-Security-Policy")
-	// nonce 必须整体被成对单引号包住（'nonce-xxx'）。少收尾那个引号时，
-	// CSP 解析器判定整个 script-src 非法、回退到 default-src 'self'，
-	// 页面上的内联脚本从此不执行 —— Turnstile 能解出来，但没有任何东西
-	// 会去提交，用户永远拿不到解禁码，而服务端日志里一行痕迹都没有。
-	m := regexp.MustCompile(`script-src 'nonce-([A-Za-z0-9+/=_-]+)'`).FindStringSubmatch(csp)
-	if m == nil {
-		t.Fatalf("CSP 的 nonce 表达式应形如 'nonce-<value>'（成对引号）: %q", csp)
+	var data map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("响应应是 JSON：%v（%s）", err, w.Body.String())
 	}
-	if !strings.Contains(csp, "challenges.cloudflare.com") {
-		t.Errorf("CSP 应放行 Turnstile 脚本: %q", csp)
+	if data["sitekey"] != "site" {
+		t.Errorf("数据应带 Turnstile sitekey，得到 %v", data["sitekey"])
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, `nonce="`+m[1]+`"`) {
-		t.Errorf("页面脚本的 nonce 应与 CSP 头一致：csp=%s", m[1])
+	if data["cdata"] != fmt.Sprintf("%d", appealID) {
+		t.Errorf("cdata 应是申诉单 id，得到 %v", data["cdata"])
 	}
-	if !strings.Contains(body, "function onToken") {
-		t.Error("页面应包含提交用的内联脚本")
-	}
-	if !strings.Contains(body, "cf-turnstile") ||
-		!strings.Contains(body, `data-sitekey="site"`) {
-		t.Error("页面应包含 Turnstile 组件")
+	if days, _ := data["days"].(float64); days <= 0 {
+		t.Errorf("数据应带保留天数，得到 %v", data["days"])
 	}
 
-	// 超过 24 小时：失效页
+	// 超过 24 小时：410 + 中文错误（前端渲染失效页）。
 	if _, err := b.Store.Write.Exec(`UPDATE appeals SET web_since=? WHERE id=?`,
 		now-25*3600, appealID); err != nil {
 		t.Fatal(err)
 	}
 	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
 	if w.Code != http.StatusGone {
 		t.Errorf("过期链接应 410，得到 %d", w.Code)
 	}
+	if !strings.Contains(w.Body.String(), "失效") {
+		t.Errorf("410 响应应说明链接已失效：%s", w.Body.String())
+	}
+
+	// 签名不对：404。
+	bad := fmt.Sprintf("/_w/ap/%d/%s", appealID, strings.Repeat("0", 32))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, bad+"?json=1", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("坏签名应 404，得到 %d", w.Code)
+	}
 }
 
-// TestAppealPageShowsEvidence：验证页要展示「为什么被限制 + 账号信息 +
+// TestAppealPageShowsEvidence：验证页数据要包含「为什么被限制 + 账号信息 +
 // 发言留底 + AI 复核结论」。只写「完成验证拿解禁码」时，用户既不知道
 // 为什么被罚、也不知道该改什么，只能盲点一遍。
+//
+// JSON 层保留原文（不转义），转义由 React 渲染负责。
 func TestAppealPageShowsEvidence(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
@@ -386,7 +388,7 @@ func TestAppealPageShowsEvidence(t *testing.T) {
 		"deleted_muted", "昵称里写着日入5000", now-60, "张三 (@zs)"); err != nil {
 		t.Fatal(err)
 	}
-	// 两条发言留底。
+	// 两条发言留底（其中一条带脚本，JSON 原样保留、由前端转义）。
 	for i, text := range []string{"加微信买号", "日入过万 <script>alert(1)</script>"} {
 		if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
 			(chat_id,message_id,user_id,text,at) VALUES (-100,?,555,?,?)`,
@@ -407,26 +409,53 @@ func TestAppealPageShowsEvidence(t *testing.T) {
 	path := fmt.Sprintf("/_w/ap/%d/%s", appealID, appealSig(b.Shared, appealID, 555))
 
 	w := httptest.NewRecorder()
-	WebHandler(b.Shared).ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	WebHandler(b.Shared).ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("验证页应 200，得到 %d", w.Code)
 	}
-	body := w.Body.String()
-	for _, want := range []string{
-		"为什么被限制", "消息判定处置", "昵称里写着日入5000",
-		"账号信息", "张三 (@zs)",
-		"你在群里的发言",
-		"AI 复核", "维持原判", "资料仍写着推广", "我改资料了",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("页面缺少 %q", want)
+	var data struct {
+		Account struct {
+			UID  int64  `json:"uid"`
+			Name string `json:"name"`
+		} `json:"account"`
+		Limits []struct {
+			Type   string `json:"type"`
+			Reason string `json:"reason"`
+		} `json:"limits"`
+		Messages []struct {
+			Text string `json:"text"`
+		} `json:"messages"`
+		AI struct {
+			Label     string  `json:"label"`
+			Conf      float64 `json:"conf"`
+			Reason    string  `json:"reason"`
+			Statement string  `json:"statement"`
+		} `json:"ai"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("响应应是 JSON：%v（%s）", err, w.Body.String())
+	}
+	if data.Account.UID != 555 || !strings.Contains(data.Account.Name, "张三 (@zs)") {
+		t.Errorf("账号信息不对：%+v", data.Account)
+	}
+	if len(data.Limits) == 0 || !strings.Contains(data.Limits[0].Reason, "昵称里写着日入5000") {
+		t.Errorf("为什么被限制应给出理由：%+v", data.Limits)
+	}
+	if len(data.Messages) != 2 {
+		t.Fatalf("应带两条发言留底：%+v", data.Messages)
+	}
+	foundRaw := false
+	for _, m := range data.Messages {
+		if m.Text == "日入过万 <script>alert(1)</script>" {
+			foundRaw = true
 		}
 	}
-	// 用户内容必须转义：原文里的脚本不能活。
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Error("发言留底必须 HTML 转义")
+	if !foundRaw {
+		t.Errorf("JSON 层应原样保留用户文本（前端负责转义）：%+v", data.Messages)
 	}
-	if !strings.Contains(body, "&lt;script&gt;") {
-		t.Error("发言留底应转义后展示")
+	if !strings.Contains(data.AI.Label, "维持原判") ||
+		!strings.Contains(data.AI.Reason, "资料仍写着推广") ||
+		!strings.Contains(data.AI.Statement, "我改资料了") {
+		t.Errorf("AI 复核结论不对：%+v", data.AI)
 	}
 }

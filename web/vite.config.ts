@@ -54,6 +54,13 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {
+      // 两个入口：index 是 Telegram Mini App / 网页版管理面板；
+      // public 是申诉验证、原文查看、申诉详情等公开网页（_w 路由），
+      // 单独分包避免公开页加载整个管理端。
+      input: {
+        main: resolve(import.meta.dirname, 'index.html'),
+        public: resolve(import.meta.dirname, 'public.html'),
+      },
       output: {
         // React 与 MUI 体积大且很少变动，单独分包便于缓存。
         // Vite 8（Rolldown）只接受函数形式，这里按包路径归入 vendor。
