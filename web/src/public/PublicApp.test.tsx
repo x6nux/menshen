@@ -2,7 +2,7 @@
 // 门槛凭据 → 内容；申诉详情页资料渲染。
 import { fireEvent, render, screen } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { server, startTestServer } from '../test/server'
 import type { AppealData, AppealDossierView, LogRecordView } from './api'
 import { PublicApp } from './PublicApp'
@@ -259,5 +259,59 @@ describe('PublicApp', () => {
     at('/other/path')
     render(<PublicApp />)
     expect(await screen.findByText('链接无效或已被替换。')).toBeInTheDocument()
+  })
+})
+
+// stubMatchMedia 让 jsdom 里的 useMediaQuery 按查询返回指定匹配。
+function stubMatchMedia(matches: (q: string) => boolean) {
+  window.matchMedia = ((q: string) => ({
+    matches: matches(q),
+    media: q,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}
+
+/** mockAPV 挂上申诉详情的门槛与内容接口。 */
+function mockAPV(view: unknown) {
+  server.use(
+    http.get('*/_w/apv/7/sig', () =>
+      HttpResponse.json({
+        gate: { title: '申诉详情', warn: '敏感内容', exp: 123, k: 'kk', ttl_seconds: 300 },
+      }),
+    ),
+    http.post('*/_w/apv/7/sig', () => HttpResponse.json({ view })),
+  )
+}
+
+describe('PublicApp · 申诉详情响应式列数', () => {
+  const realMatchMedia = window.matchMedia
+  afterEach(() => {
+    window.matchMedia = realMatchMedia
+  })
+
+  it('≥1400px 三列并排', async () => {
+    stubMatchMedia((q) => q.includes('1400') || q.includes('900'))
+    at('/_w/apv/7/sig')
+    mockAPV(appealView)
+    render(<PublicApp />)
+    fireEvent.click(await screen.findByRole('button', { name: '查看内容' }))
+    expect(await screen.findByTestId('appeal-grid-3')).toBeInTheDocument()
+    expect(screen.queryByTestId('appeal-grid-2')).not.toBeInTheDocument()
+  })
+
+  it('900–1400px 两列（资料与活动同栏）', async () => {
+    stubMatchMedia((q) => q.includes('900') && !q.includes('1400'))
+    at('/_w/apv/7/sig')
+    mockAPV(appealView)
+    render(<PublicApp />)
+    fireEvent.click(await screen.findByRole('button', { name: '查看内容' }))
+    expect(await screen.findByTestId('appeal-grid-2')).toBeInTheDocument()
+    expect(screen.getByTestId('appeal-two-wrap')).toBeInTheDocument()
+    expect(screen.queryByTestId('appeal-grid-3')).not.toBeInTheDocument()
   })
 })

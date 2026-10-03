@@ -1,5 +1,6 @@
-// 申诉详情页（_w/apv/<id>/<sig>）：左栏账号资料与留底，右栏申诉单复核。
-import { Box, Button, CircularProgress, Typography } from '@mui/material'
+// 申诉详情页（_w/apv/<id>/<sig>）：资料、留底与申诉处理详情。
+// 桌面端按视口宽度自适应列数：<900 一列、≥900 两列、≥1400 三列。
+import { Box, Button, CircularProgress, Typography, useMediaQuery } from '@mui/material'
 import type { AppealDossierView, WebRoute } from '../api'
 import { InvalidState } from '../InvalidState'
 import { useGate } from '../useGate'
@@ -34,24 +35,51 @@ export function AppealViewPage({ route }: { route: WebRoute }) {
 }
 
 function AppealContent({ view }: { view: AppealDossierView }) {
+  // 桌面端按宽度自适应：手机一列；≥900px 主栏 + 资料/活动两列；
+  // ≥1400px 主栏 + 资料栏 + 活动栏三列并排（卡片分组见 SideProfile /
+  // SideActivity），避免宽屏下正文被拉成一条细长列。
+  const three = useMediaQuery('(min-width: 1400px)')
+  const two = useMediaQuery('(min-width: 900px)')
   return (
     <Box data-testid="appeal-view">
       <WarnCard text="敏感内容，请勿转发。以下为账号资料、留底与申诉处理详情。" />
-      <Box
-        sx={{
-          display: 'flex',
-          gap: 2,
-          alignItems: 'flex-start',
-          flexWrap: 'wrap',
-        }}
-      >
-        <Box sx={{ flex: '1 1 420px', minWidth: 0 }}>
+      {three ? (
+        <Box
+          data-testid="appeal-grid-3"
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: 2,
+            alignItems: 'start',
+          }}
+        >
           <MainColumn view={view} />
+          <SideProfile view={view} />
+          <SideActivity view={view} />
         </Box>
-        <Box sx={{ flex: '1 1 380px', minWidth: 0, maxWidth: { lg: 520 } }}>
-          <SideColumn view={view} />
+      ) : two ? (
+        <Box
+          data-testid="appeal-grid-2"
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1.1fr) minmax(340px, 1fr)',
+            gap: 2,
+            alignItems: 'start',
+          }}
+        >
+          <MainColumn view={view} />
+          <Box data-testid="appeal-two-wrap" sx={{ minWidth: 0 }}>
+            <SideProfile view={view} />
+            <SideActivity view={view} />
+          </Box>
         </Box>
-      </Box>
+      ) : (
+        <>
+          <MainColumn view={view} />
+          <SideProfile view={view} />
+          <SideActivity view={view} />
+        </>
+      )}
     </Box>
   )
 }
@@ -98,17 +126,12 @@ function MainColumn({ view }: { view: AppealDossierView }) {
   )
 }
 
-function SideColumn({ view }: { view: AppealDossierView }) {
+/** SideProfile 是资料栏：账号信息 + 当前生效限制 + 历史处罚。 */
+function SideProfile({ view }: { view: AppealDossierView }) {
   // 数组字段兜底：服务端旧版本/异常时可能给 null，直接 .length/.map 会让
   // 整页白屏（线上真实事故）。契约已固定为数组，这里再兜一层。
   const limits = view.limits ?? []
   const penalties = view.penalties ?? []
-  const history = view.history ?? []
-  const historyMore = view.history_more ?? []
-  const logs = view.logs ?? []
-  const checks = view.checks ?? []
-  const strong = view.strong ?? []
-  const weak = view.weak ?? []
   return (
     <>
       <Box sx={cardSx}>
@@ -158,7 +181,20 @@ function SideColumn({ view }: { view: AppealDossierView }) {
 
       <PenaltyList title="当前生效限制" items={limits} active />
       <PenaltyList title={`历史处罚（${penalties.length} 条）`} items={penalties} />
+    </>
+  )
+}
 
+/** SideActivity 是活动栏：留底发言 + 判定流水 + 网页验证 + 关联账号。 */
+function SideActivity({ view }: { view: AppealDossierView }) {
+  const history = view.history ?? []
+  const historyMore = view.history_more ?? []
+  const logs = view.logs ?? []
+  const checks = view.checks ?? []
+  const strong = view.strong ?? []
+  const weak = view.weak ?? []
+  return (
+    <>
       {history.length > 0 && (
         <Box sx={cardSx}>
           <Typography sx={titleSx}>群内留底发言（最近 {view.history_count} 条）</Typography>

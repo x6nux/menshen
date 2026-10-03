@@ -25,10 +25,15 @@ export function PublicApp() {
     [],
   )
 
+  // 公开页容器宽度按页面性质选：验证页是表单（窄）；查看页有表格（中）；
+  // 申诉详情桌面端要两/三列（宽）。
+  const containerWidth: 'sm' | 'lg' | 'xl' =
+    route?.kind === 'apv' ? 'xl' : route?.kind === 'v' ? 'lg' : 'sm'
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Container maxWidth="sm" sx={{ py: 3 }}>
+      <Container maxWidth={containerWidth} sx={{ py: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
           <Typography sx={{ fontSize: 22, fontWeight: 700 }}>门神</Typography>
           <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
