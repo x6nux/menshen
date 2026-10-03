@@ -64,6 +64,26 @@ func TestPromptsExplainKnownAdPatterns(t *testing.T) {
 	}
 }
 
+// TestPromptsExplainMatchedRules：「启用但未强制」的规则靠 matched_rules
+// 进判定：两级提示词都必须给出采信口径（强证据，可结合语境推翻但要写理由），
+// 否则它只能混在摘要里、被模型当弱提示忽略。
+func TestPromptsExplainMatchedRules(t *testing.T) {
+	for name, p := range map[string]string{
+		"systemone": soInstructions,
+		"llm":       llmSystemPrompt,
+	} {
+		if !strings.Contains(p, "matched_rules") {
+			t.Errorf("%s 提示词未说明 matched_rules", name)
+		}
+		if !strings.Contains(p, "强证据") {
+			t.Errorf("%s 提示词未写明 matched_rules 是强证据", name)
+		}
+		if !strings.Contains(p, "可以判正常") {
+			t.Errorf("%s 提示词未给出结合语境推翻的出口", name)
+		}
+	}
+}
+
 // TestAICallRetriesTransientFailure：5xx 是瞬时故障，重试便宜，漏判不便宜。
 func TestAICallRetriesTransientFailure(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

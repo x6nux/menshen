@@ -257,17 +257,32 @@ func TestRuleDisabledIgnored(t *testing.T) {
 	}
 }
 
-// TestRuleEnforceExcludedFromHint：enforce 规则命中时处置优先（不进 AI），
-// 即便有人直接调 RuleHintText，也不该把 enforce 规则拼进 prompt 提示。
-func TestRuleEnforceExcludedFromHint(t *testing.T) {
+// TestMatchedRuleInfos：启用且非强制的规则命中会成为证据条目；
+// enforce 规则命中即处置、不进证据（与旧 RuleHintText 的排除口径一致）。
+func TestMatchedRuleInfos(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	insertRule(t, b, "强制规则名", "强制命中词", "", true, true)
-
 	if hits := MatchRules(b.Cache.Snap(), "强制命中词"); len(hits) != 1 {
 		t.Fatalf("MatchRules 应命中 enforce 规则，得到 %d 条", len(hits))
 	}
-	if got := RuleHintText(b.Cache.Snap(), "强制命中词"); got != "" {
-		t.Errorf("enforce 规则不该进 hint，得到 %q", got)
+	if got := MatchedRuleInfos(b.Cache.Snap(), "强制命中词"); len(got) != 0 {
+		t.Errorf("enforce 规则不该进证据，得到 %+v", got)
+	}
+
+	id := insertRule(t, b, "证据规则", "证据命中词", "scam", true, false)
+	if _, err := b.Store.Write.Exec(`UPDATE ad_rules SET note='来自历史封禁' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	got := MatchedRuleInfos(b.Cache.Snap(), "这条包含证据命中词")
+	if len(got) != 1 || got[0].ID != id || got[0].Name != "证据规则" ||
+		got[0].Category != "scam" || got[0].Note != "来自历史封禁" {
+		t.Errorf("证据条目字段不对：%+v", got)
+	}
+	if got := MatchedRuleInfos(b.Cache.Snap(), "没有命中的文本"); len(got) != 0 {
+		t.Errorf("未命中不该有证据：%+v", got)
 	}
 }
 
@@ -414,9 +429,9 @@ func TestRuleWhitelistExempt(t *testing.T) {
 	}
 }
 
-// TestRuleHintInjectedIntoPrompt：非 enforce 规则命中时不处置，但规则名
-// 要出现在送给 systemone 的 prompt 里（known_ad_patterns）。
-func TestRuleHintInjectedIntoPrompt(t *testing.T) {
+// TestRuleHitInjectedIntoPrompt：非 enforce 规则命中时不处置，但规则要以
+// matched_rules 强证据字段出现在送给 systemone 的载荷里。
+func TestRuleHitInjectedIntoPrompt(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	insertRule(t, b, "提示测试规则", "提示命中词", "", true, false)
@@ -439,7 +454,58 @@ func TestRuleHintInjectedIntoPrompt(t *testing.T) {
 	if raw == "" {
 		t.Fatal("没有向 systemone 发请求")
 	}
-	if !strings.Contains(raw, "命中必封规则") || !strings.Contains(raw, "提示测试规则") {
-		t.Errorf("prompt 里没有注入规则提示：%s", raw)
+	if !strings.Contains(raw, "matched_rules") || !strings.Contains(raw, "提示测试规则") {
+		t.Errorf("prompt 里没有注入规则证据：%s", raw)
+	}
+}
+
+// TestRuleHitForcesReview：命中启用规则（未强制）时，即使 systemone 高置信
+// 判正常（本会直接采信），也必须过大模型复判——强证据不能被一次初判吞掉；
+// 没有规则命中时高置信初判照旧直接采信。
+func TestRuleHitForcesReview(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	insertRule(t, b, "强证据规则", "强证据命中词", "scam", true, false)
+	soN, llmN := fakeAIWith(t, b, soReply("clean", 0.99, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含强证据命中词"))
+	waitIdle(t, b)
+	if soN.Load() == 0 || llmN.Load() == 0 {
+		t.Errorf("命中规则应强制复判，so=%d llm=%d", soN.Load(), llmN.Load())
+	}
+
+	b2, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b2, -100)
+	soN2, llmN2 := fakeAIWith(t, b2, soReply("clean", 0.99, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 555, 1, "普通消息"))
+	waitIdle(t, b2)
+	if soN2.Load() == 0 || llmN2.Load() != 0 {
+		t.Errorf("无规则命中时高置信初判不该复判，so=%d llm=%d", soN2.Load(), llmN2.Load())
+	}
+}
+
+// TestRuleHitBypassesSoFloor：命中规则时，低于初判下限的「广告」也不再
+// 直接放行——有零误封规则指路，低置信初判不再等于噪声。
+func TestRuleHitBypassesSoFloor(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	insertRule(t, b, "证据规则", "证据命中词", "scam", true, false)
+	fakeAIWith(t, b, soReply("ad", 0.2, "scam", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "这条包含证据命中词"))
+	waitIdle(t, b)
+
+	var verdict, reason string
+	if err := b.Store.Read.QueryRow(
+		`SELECT verdict,reason FROM antiad_log ORDER BY id DESC LIMIT 1`).
+		Scan(&verdict, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reason, "低于下限线") {
+		t.Errorf("命中规则不该走初判下限放行：%q", reason)
+	}
+	if verdict != "clean" {
+		t.Errorf("复判正常应以 clean 定案，得到 %q（%s）", verdict, reason)
 	}
 }

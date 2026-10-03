@@ -81,28 +81,41 @@ func MatchRules(snap *store.Snapshot, text string) []store.AdRuleRec {
 	return hits
 }
 
-// RuleHintText 把命中的**非强制**规则拼成一行提示，注入判定 prompt
-// （buildState 的 known_ad_patterns）。没有命中时返回空串。
+// MatchedRule 是一条命中的**非强制**必封规则，作为强证据注入判定载荷
+// （adState.MatchedRules）。enforce 规则不进这里：命中即处置，轮不到 AI。
+type MatchedRule struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category,omitempty"`
+	Note     string `json:"note,omitempty"`
+}
+
+// MatchedRuleInfos 返回命中的非 enforce 规则证据；没有命中返回 nil。
 //
-// enforce 规则不进提示：调用方在命中 enforce 规则时已经终止判定，
-// 轮不到 prompt；万一两者同时命中，处置优先，这条不重复描述。
-func RuleHintText(snap *store.Snapshot, text string) string {
-	var sb strings.Builder
+// 与 known_ad_patterns（形态摘要，提示词明确说它只是参考、不是判决）不同：
+// 这些是主管理员启用、且通过全库零误封测试的高精度规则，提示词要求模型
+// 按**强证据**对待；但规则是纯模式匹配、不看语境，模型仍可结合上下文
+// 推翻（引用他人广告做批评/警示、正常讨论里恰好同形等）。
+func MatchedRuleInfos(snap *store.Snapshot, text string) []MatchedRule {
+	var out []MatchedRule
 	for _, r := range MatchRules(snap, text) {
 		if r.Enforce {
 			continue
 		}
-		sb.WriteString("命中必封规则《")
-		sb.WriteString(r.Name)
-		sb.WriteString("》")
-		if note := strings.TrimSpace(r.Note); note != "" {
-			sb.WriteString("（")
-			sb.WriteString(note)
-			sb.WriteString("）")
-		}
-		sb.WriteString("；")
+		out = append(out, MatchedRule{
+			ID: r.ID, Name: r.Name, Category: r.Category, Note: r.Note,
+		})
 	}
-	return sb.String()
+	return out
+}
+
+// matchedRuleIDs 取证据规则的 id 列表（日志用）。
+func matchedRuleIDs(rules []MatchedRule) []int64 {
+	out := make([]int64, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.ID)
+	}
+	return out
 }
 
 // BumpRuleHits 记一次规则命中（计数 + 最近命中时刻）。

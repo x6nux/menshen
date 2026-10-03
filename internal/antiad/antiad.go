@@ -950,7 +950,8 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 // 先删后判：初判（systemone）一出结论就先动手——删消息、要罚的先临时禁言
 // （tempMute），再把大模型复判投进**单独的**复判队列，定案后补正式处罚、
 // 连带删除与告警。大模型再慢，广告也不会一直挂在群里，发广告的人也发不了
-// 下一条。初判低于采信线、或者要罚才复判（needReview）。
+// 下一条。初判低于采信线、要罚、或命中了必封规则证据（matched_rules）时
+// 才复判（needReview / forceReview）。
 //
 // 进程退出时不等待在飞的判定：它们最长几十秒，且并发有上限，全部只会
 // 写自己的流水。store 关闭后写操作返回错误而非 panic（database/sql
@@ -999,17 +1000,31 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	v.Usage, v.Cost = billing.MergeUsage(v.Usage, vis.Usage), v.Cost+vis.Cost
 
 	finish := func(v adVerdict, pre adAction, preNote string) {
+		// 规则命中但最终判为正常：把「命中未被采信」记进日志。规则页的
+		// 命中数是运营数据，这里补定案视角——一条规则总被推翻，说明它
+		// 覆盖过宽或只是与正常讨论同形。
+		if len(state.MatchedRules) > 0 && !v.IsAd {
+			slog.Info("反广告：必封规则命中但最终判为正常", "chat", m.Chat.ID,
+				"uid", m.From.ID, "rules", matchedRuleIDs(state.MatchedRules),
+				"decider", v.Decider)
+		}
 		actOnVerdict(b, snap, conf, m, profile, v, pre, preNote, text)
 	}
 	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
-	if !needReview(b, snap, v, act) {
+	// 规则命中时强制进入大模型复判：初判再自信也可能忽略强证据，而这些
+	// 规则是通过全库零误封测试的形态，值得第二个模型定夺。systemone 不可用
+	// （已是大模型结论）或没配复判模型时保持原行为。
+	ruleHit := len(state.MatchedRules) > 0
+	forceReview := ruleHit && v.Decider == "systemone" && hasLLM(b, snap)
+	if !needReview(b, snap, v, act) && !forceReview {
 		finish(v, adAction{}, "")
 		return
 	}
 	// 初判下限：置信度低于它的「广告」是噪声（jev 对资料类特征会给 3%~32%），
 	// 直接放行、连复判都不跑 —— 那种结论跑复判只是花钱买一个必然被推翻的
 	// 结果。按未定记流水，管理员在记录里能看到为什么放行。
-	if v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
+	// 规则命中时不适用：有零误封规则指路，低置信初判不再等于噪声。
+	if !ruleHit && v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
 		b.BotID(), "antiad_so_floor", store.DefaultSoFloor)) {
 		floor := snap.BotSettingInt(b.BotID(), "antiad_so_floor", store.DefaultSoFloor)
 		v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
@@ -1602,6 +1617,9 @@ type adState struct {
 	JoinCheck           bool   `json:"join_check,omitempty"`
 	KnownAdPatterns     string `json:"known_ad_patterns"`
 	KnownFalsePositives string `json:"known_false_positives"`
+	// MatchedRules 是命中的非强制必封规则（强证据，不是判决）。enforce
+	// 规则命中时已在同步段直接处置，不会走到送检；这里只放需要 AI 复核的。
+	MatchedRules []MatchedRule `json:"matched_rules,omitempty"`
 }
 
 // buildProfile 组装发送者画像。
@@ -1673,15 +1691,9 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	}
 
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
-	// 非强制的必封规则命中作为证据注入 prompt：规则是从历史封禁里总结出的
-	// 高置信形态，比摘要更该被模型看见，但仍由模型结合上下文复核，不当判决。
-	if hint := RuleHintText(snap, text); hint != "" {
-		if st.KnownAdPatterns == "" {
-			st.KnownAdPatterns = hint
-		} else {
-			st.KnownAdPatterns += "\n" + hint
-		}
-	}
+	// 启用的必封规则命中单独成字段：它比形态摘要强，提示词按「强证据」
+	// 对待（见 matchedRulesClause），但仍由模型结合上下文复核后处置。
+	st.MatchedRules = MatchedRuleInfos(snap, text)
 	return st
 }
 

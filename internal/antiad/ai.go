@@ -728,7 +728,8 @@ const soInstructions = "这条群消息是否为广告、推广、引流或诈�
 	fpExamplesClause +
 	payloadClause + evasionClause +
 	"参考 known_ad_patterns 中近期在本群出现过的广告形态；" +
-	"known_false_positives 列出的形态已被管理员确认为正常，不得判为广告。"
+	"known_false_positives 列出的形态已被管理员确认为正常，不得判为广告。" +
+	matchedRulesClause
 
 // payloadClause 说明 message.text 里的方括号前缀行（见 msgText）。两级消息
 // 判定共用一份：它描述的是载荷格式，两处措辞一旦分叉，其中一级就会
@@ -791,6 +792,17 @@ const patternClause = "known_ad_patterns 是过去样本的**归纳提示**，�
 	"资料里的「双向机器人 / 双向 bot / 请通过 bot 私聊我」是中文群常见的**隐私保护**" +
 	"做法（不想被私聊骚扰），不得据此判为色情或引流，要看被挂 bot 的名称与简介本身" +
 	"（见 bio_links）以及有没有招揽、价目、露骨内容一起出现。"
+
+// matchedRulesClause 说明 matched_rules（启用的必封规则命中）在判定里的
+// 地位：它比形态摘要（known_ad_patterns，提示词明确说只是参考）强得多，
+// 但仍不是判决 —— 规则是纯模式匹配、不看语境。这样「启用但未强制」的
+// 规则才真正起作用：由 AI 复核后处置，而不是被当成可有可无的摘要提示。
+const matchedRulesClause = "matched_rules 是主管理员**启用且通过全库零误封测试**的" +
+	"必封规则命中（含 id、名称、分类与说明）。它是把本条判为广告的**强证据**：" +
+	"正文或引用确实呈现该形态时，应判为广告（分类与危害度按证据归类，" +
+	"可参考规则给的 category 与 note）；但规则是模式匹配、不看语境 ——" +
+	"引用他人广告做批评、警示、询问，或正常讨论里恰好出现同形文字时，可以判正常，" +
+	"并在 reason 里说明为什么命中不成立。"
 
 // pornClause 是色情内容的口径。实测漏判：色情引流大多不写广告语，只有露骨
 // 描述，systemone 给出 1% 的置信度。
@@ -977,6 +989,7 @@ const llmSystemPrompt = "你是 Telegram 群组的反广告审核员。用户消
 	"7.1 " + bioLinksClause + serviceListClause + "\n" +
 	"7.2 " + profileOKClause + "\n" +
 	"7.3 " + patternClause + "\n" +
+	"7.4 " + matchedRulesClause + "\n" +
 	"8. review_history 非空时，这是对该用户的整体复查：它是此人在本群的" +
 	"全部留底消息，请据此判断这个账号是否在做广告、引流或诈骗，而不是只看" +
 	"message 那一条。单条看似正常、但整体呈现反复推销或引流意图的，应判为广告。\n" +
