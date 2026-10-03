@@ -9,6 +9,38 @@ import (
 	"menshen/internal/tg"
 )
 
+// TestManualMarkByRecordDropsProfileOK：配置台「标记广告」与群内 /banad 是
+// 同一个语义，人工结论落地后先前的资料放行必须一起作废 —— 否则这份放行还能
+// 继续挡后续判定的资料一路，等于人工结论被一份过期的自动放行架空。演练群
+// 不动真实状态，与 /banad 的分支保持一致（见 TestAdbDropsProfileOK）。
+func TestManualMarkByRecordDropsProfileOK(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	p := senderProfile{UserID: 555, FirstName: "广告位"}
+	if GrantProfileOK(b, p, 48, "先前的放行") == 0 {
+		t.Fatal("预置放行失败")
+	}
+	ManualMarkByRecord(b, conf, -100, 10, 555, "广告", 1)
+	if n := countRows(t, b, `SELECT COUNT(*) FROM profile_ok`); n != 0 {
+		t.Errorf("配置台人工标记广告后应撤销资料放行，剩 %d 行", n)
+	}
+
+	// 演练群不处置：真实的放行也不该被撤。
+	b2, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiadMode(t, b2, -100, true)
+	conf2 := testutil.ChatConfOf(t, b2, -100)
+	p2 := senderProfile{UserID: 555, FirstName: "广告位"}
+	if GrantProfileOK(b2, p2, 48, "先前的放行") == 0 {
+		t.Fatal("预置放行失败")
+	}
+	ManualMarkByRecord(b2, conf2, -100, 10, 555, "广告", 1)
+	if n := countRows(t, b2, `SELECT COUNT(*) FROM profile_ok`); n != 1 {
+		t.Errorf("演练群不该撤真实放行，剩 %d 行", n)
+	}
+}
+
 // TestReleaseUserKeepsVerdict：解封是「单纯放人」，判定维持不变 ——
 // 记录动作不改写、内容哈希不被撤、命中数不回退，只撤掉生效中的限制、
 // 清掉记录，并在理由里留一行痕。

@@ -55,6 +55,10 @@ func ManualMarkByRecord(b *core.Bot, conf store.BotChat,
 	note := ApplyAction(b, tgt, act, conf.Dryrun)
 	logID := logAd(b, tgt, v, logAction(act, conf.Dryrun), note)
 	if !conf.Dryrun {
+		// 与群内 /banad 同语义：人工标记广告后，之前的资料放行作废。
+		// 配置台只是同一动作的另一条入口，两条路的行为必须一致 ——
+		// 少了这一句，复查给的放行会把人工结论架空到过期为止。
+		DropProfileOK(b, uid, "人工标记为广告")
 		BumpAdHits(b, chatID, uid, 1)
 		maybeGban(b, chatID, uid, "人工标记："+core.TruncateRunes(text, 60))
 	}
