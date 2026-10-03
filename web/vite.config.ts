@@ -61,15 +61,9 @@ export default defineConfig({
         main: resolve(import.meta.dirname, 'index.html'),
         public: resolve(import.meta.dirname, 'public.html'),
       },
-      output: {
-        // React 与 MUI 体积大且很少变动，单独分包便于缓存。
-        // Vite 8（Rolldown）只接受函数形式，这里按包路径归入 vendor。
-        manualChunks: (id) => {
-          if (/node_modules\/(react|react-dom|@mui|@emotion)\//.test(id)) {
-            return 'vendor'
-          }
-        },
-      },
+      // 不手动切 vendor：多入口下手工分包会把 CJS 包装函数与 MUI 拆进
+      // 互相 import 的两个 chunk，模块初始化顺序反过来时直接 TypeError
+      // （线上白屏事故）。交给 Rolldown 自动分组，它知道谁依赖谁。
     },
   },
   server: {
