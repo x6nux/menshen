@@ -110,6 +110,7 @@ func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
 	antiad.ReassertActiveMutes(sh) // 进群限制被外部解除时补一次（见 reassert.go）
 	antiad.RunAdDigest(sh, false)  // 形态摘要，样本不够时内部直接返回
+	antiad.AutoRuleDiscovery(sh)   // 规则发现自动运行：开关 + 新未覆盖广告门控
 	// 全量刷一遍群标题：群改名后跟上面板，也让一直没查到的空标题再试。
 	// 启动时 runHourly 会立刻跑一轮，等于启动回填。
 	if sh.Reg != nil {

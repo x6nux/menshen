@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -1253,5 +1254,121 @@ func TestRuleAgentTestRuleBlocksFP(t *testing.T) {
 	}
 	if len(got.FPSamples) != 1 || got.FPSamples[0].Verdict != "clean" {
 		t.Errorf("应带误封样本：%+v", got.FPSamples)
+	}
+}
+
+// TestRuleAgentTargetRecord：指定记录模式 —— 启动消息里带上目标记录全文与
+// 覆盖清单，状态带 target_log_id；非法目标（不存在/正常/已撤销）在启动前被拒。
+func TestRuleAgentTargetRecord(t *testing.T) {
+	var firstBody atomic.Value
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			body, _ := io.ReadAll(r.Body)
+			firstBody.Store(string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(oaTextReply("目标形态样本太少，无法写出高精度规则。")))
+	})
+	targetID := insertRuleAgentLog(t, b, "办理贷款加微信 vx123", "ad", "deleted", "scam")
+	insertRuleAgentLog(t, b, "今天天气不错", "clean", "none", "")
+
+	if err := StartRuleDiscoveryForRecord(b.Shared, 7, targetID); err != nil {
+		t.Fatalf("指定记录启动失败: %v", err)
+	}
+	if got, _ := RuleAgentStatus(nil)["target_log_id"].(int64); got != targetID {
+		t.Errorf("运行态 target_log_id=%v，期望 %d",
+			RuleAgentStatus(nil)["target_log_id"], targetID)
+	}
+	st := waitRuleAgentDone(t, 15*time.Second)
+	if st["error"] != "" {
+		t.Errorf("不应报错：%v", st["error"])
+	}
+	body, _ := firstBody.Load().(string)
+	for _, want := range []string{"指定记录模式", "办理贷款加微信 vx123", "系统预取的覆盖空白清单"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("启动消息应包含 %q，实际首轮请求：%s", want, body)
+		}
+	}
+
+	// 非法目标在启动前被拒绝。
+	cleanID := insertRuleAgentLog(t, b, "闲聊", "clean", "none", "")
+	if err := StartRuleDiscoveryForRecord(b.Shared, 7, cleanID); err == nil ||
+		!strings.Contains(err.Error(), "不是广告判定") {
+		t.Errorf("clean 记录应被拒绝，得到 %v", err)
+	}
+	undoneID := insertRuleAgentLog(t, b, "被撤销", "ad", "undone", "scam")
+	if err := StartRuleDiscoveryForRecord(b.Shared, 7, undoneID); err == nil ||
+		!strings.Contains(err.Error(), "已被管理员撤销") {
+		t.Errorf("undone 记录应被拒绝，得到 %v", err)
+	}
+	if err := StartRuleDiscoveryForRecord(b.Shared, 7, 999999); err == nil ||
+		!strings.Contains(err.Error(), "没有 id=999999") {
+		t.Errorf("不存在的记录应被拒绝，得到 %v", err)
+	}
+}
+
+// TestRuleAgentAutoDiscovery：自动运行的三重门 —— 开关关闭或没有新广告时不跑；
+// 有现有规则覆盖不到的新广告时启动，结束后游标推进；新广告已被覆盖时只推游标。
+func TestRuleAgentAutoDiscovery(t *testing.T) {
+	var calls atomic.Int32
+	b := ruleAgentTestBot(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(oaTextReply("没有值得创建的新形态。")))
+	})
+
+	// 开关默认关：不启动、不请求模型。
+	AutoRuleDiscovery(b.Shared)
+	if st := RuleAgentStatus(nil); st["running"] != false {
+		t.Fatalf("开关关闭时不应启动：%v", st)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("开关关闭时不该请求模型，实际 %d 次", calls.Load())
+	}
+
+	if err := b.PutSetting("antiad_rule_auto", "1"); err != nil {
+		t.Fatal(err)
+	}
+	// 没有新广告：不跑。
+	AutoRuleDiscovery(b.Shared)
+	if RuleAgentStatus(nil)["running"] != false || calls.Load() != 0 {
+		t.Fatal("没有新广告时不应启动")
+	}
+
+	// 有现有规则覆盖不到的广告：启动并跑完，游标推进到该流水 id。
+	id := insertRuleAgentLog(t, b, "办理贷款加微信 vx123", "ad", "deleted", "scam")
+	AutoRuleDiscovery(b.Shared)
+	if RuleAgentStatus(nil)["running"] != true {
+		t.Fatal("有未覆盖广告时应启动自动运行")
+	}
+	waitRuleAgentDone(t, 15*time.Second)
+	if got := b.Cache.Snap().SettingInt("antiad_rule_cursor", 0); got != id {
+		t.Errorf("结束后游标应推进到 %d，得到 %d", id, got)
+	}
+	if calls.Load() == 0 {
+		t.Error("启动的自动运行应请求模型")
+	}
+
+	// 新广告已被现有规则覆盖：只推游标，不再触发模型。
+	if _, err := b.Store.Write.Exec(`INSERT INTO ad_rules
+		(name,pattern,category,note,source,enabled,enforce,created_at,created_by)
+		VALUES ('覆盖测试','办理贷款','x','','manual',1,0,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	id2 := insertRuleAgentLog(t, b, "办理贷款", "ad", "deleted", "scam")
+	before := calls.Load()
+	AutoRuleDiscovery(b.Shared)
+	if RuleAgentStatus(nil)["running"] != false {
+		t.Fatal("新广告已被规则覆盖时不应启动")
+	}
+	if got := b.Cache.Snap().SettingInt("antiad_rule_cursor", 0); got != id2 {
+		t.Errorf("被覆盖时也应推进游标到 %d，得到 %d", id2, got)
+	}
+	if calls.Load() != before {
+		t.Error("被覆盖时不应请求模型")
 	}
 }

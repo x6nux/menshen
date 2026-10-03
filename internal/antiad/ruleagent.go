@@ -29,6 +29,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -139,17 +140,62 @@ type ruleAgentRuntime struct {
 	createdRuleIDs []int64
 	steps          []RuleAgentStep
 	seq            int
+	// targetLogID > 0 表示本轮是指定记录模式（仅供状态展示）。
+	targetLogID int64
 	// cancel 只在 running 期间非空，StopRuleDiscovery 用它中止本轮。
 	cancel context.CancelFunc
 }
 
 var ruleAgentRT ruleAgentRuntime
 
-// StartRuleDiscovery 启动一轮规则发现，**立即返回**，实际执行在后台。
+// ruleStartOpts 是一轮规则发现的可选项。
+type ruleStartOpts struct {
+	// targetLogID > 0：指定记录模式。启动消息里给出这条判定的全文，
+	// 要求围绕它的形态写规则；工具不受限，仍可搜索同类形态。
+	targetLogID int64
+	// autoWatermark > 0：定时任务触发。本轮正常结束（或至少创建了一条
+	// 规则）时，把自动运行游标推进到这个 antiad_log id。
+	autoWatermark int64
+}
+
+// StartRuleDiscovery 启动一轮全库规则发现（Mini App 手动入口），**立即返回**，
+// 实际执行在后台。
 //
 // 单飞：已在运行返回中文错误；模型选择/客户端构建失败也返回错误，且不会
 // 改变运行态。uid 写入 ad_rules.created_by，用于追溯是谁触发的。
 func StartRuleDiscovery(sh *core.Shared, uid int64) error {
+	return startRuleDiscovery(sh, uid, ruleStartOpts{})
+}
+
+// StartRuleDiscoveryForRecord 启动一轮「指定记录」的规则发现：以一条已确认
+// 广告流水为目标总结正则，但全部工具照常可用（find/list_uncovered 找同类
+// 形态，避免只针对孤例写出过窄的规则）。
+//
+// 只接受**未撤销的已确认广告**：clean 记录写出的正则必然把这条正常消息算成
+// 误伤（fp>0）而被拒绝；undone 是被管理员纠正过的误判，不能当必封依据。
+func StartRuleDiscoveryForRecord(sh *core.Shared, uid, logID int64) error {
+	if sh == nil {
+		return errors.New("规则发现不可用：服务未初始化")
+	}
+	if logID <= 0 {
+		return errors.New("记录 id 必须是正整数")
+	}
+	row, ok := LoadAdLog(sh.Store, logID)
+	if !ok {
+		return fmt.Errorf("没有 id=%d 的判定记录", logID)
+	}
+	if row.Verdict != "ad" {
+		return fmt.Errorf("记录 #%d 不是广告判定（verdict=%s），不能作为必封规则的依据",
+			logID, row.Verdict)
+	}
+	if row.Action == "undone" {
+		return fmt.Errorf("记录 #%d 的判定已被管理员撤销，不能作为必封规则的依据", logID)
+	}
+	return startRuleDiscovery(sh, uid, ruleStartOpts{targetLogID: logID})
+}
+
+// startRuleDiscovery 是两种入口共用的实现。
+func startRuleDiscovery(sh *core.Shared, uid int64, opts ruleStartOpts) error {
 	if sh == nil {
 		return errors.New("规则发现不可用：服务未初始化")
 	}
@@ -181,11 +227,112 @@ func StartRuleDiscovery(sh *core.Shared, uid int64) error {
 	ruleAgentRT.createdRuleIDs = nil
 	ruleAgentRT.steps = nil
 	ruleAgentRT.seq = 0
+	ruleAgentRT.targetLogID = opts.targetLogID
 	ruleAgentRT.cancel = cancel
 
-	slog.Info("规则发现：开始运行", "模型", modelName, "上游", upName(up), "操作者", uid)
-	go runRuleDiscovery(ctx, sh, uid, chat, modelName)
+	slog.Info("规则发现：开始运行", "模型", modelName, "上游", upName(up),
+		"操作者", uid, "指定记录", opts.targetLogID, "自动运行", opts.autoWatermark > 0)
+	go runRuleDiscovery(ctx, sh, uid, chat, modelName, opts)
 	return nil
+}
+
+// AutoRuleDiscovery 是定时任务的自动运行入口，每小时被调用一次。
+//
+// 三重门：开关 antiad_rule_auto=1、有可用的规则发现模型、且出现了**现有
+// 规则覆盖不到的新广告**（id > antiad_rule_cursor）。都没有时才启动；游标
+// 在本轮结束时推进（见 finish），所以同一批广告不会每小时重复烧钱。
+func AutoRuleDiscovery(sh *core.Shared) {
+	if sh == nil {
+		return
+	}
+	snap := sh.Cache.Snap()
+	if snap == nil || snap.SettingInt("antiad_rule_auto", 0) != 1 {
+		return
+	}
+	// 没配可用模型时静默跳过：这属于没配置好，不是每小时该报一次的故障。
+	if _, _, err := pickRuleAgentModel(snap); err != nil {
+		return
+	}
+	ruleAgentRT.mu.Lock()
+	running := ruleAgentRT.running
+	ruleAgentRT.mu.Unlock()
+	if running {
+		return
+	}
+
+	cursor := snap.SettingInt("antiad_rule_cursor", 0)
+	newAds, uncovered, watermark := ruleAgentAutoWork(sh, cursor)
+	if newAds == 0 {
+		return
+	}
+	if uncovered == 0 {
+		// 新广告都已被现有规则覆盖：没有可发现的空白，推进游标即可。
+		advanceRuleAgentCursor(sh, watermark)
+		slog.Info("规则发现：新增广告均已被现有规则覆盖，跳过自动运行", "新增", newAds)
+		return
+	}
+	slog.Info("规则发现：自动运行触发", "游标", cursor,
+		"新增广告", newAds, "未覆盖", uncovered)
+	if err := startRuleDiscovery(sh, 0, ruleStartOpts{autoWatermark: watermark}); err != nil {
+		slog.Info("规则发现：自动运行未启动", "err", err)
+	}
+}
+
+// advanceRuleAgentCursor 把自动运行游标推进到 watermark。只在批次处理完
+// （或全被覆盖）时调用；watermark<=0 不写库，避免空扫描把游标归零。
+func advanceRuleAgentCursor(sh *core.Shared, watermark int64) {
+	if sh == nil || watermark <= 0 {
+		return
+	}
+	if err := sh.PutSetting("antiad_rule_cursor",
+		strconv.FormatInt(watermark, 10)); err != nil {
+		slog.Error("规则发现：推进自动运行游标失败", "游标", watermark, "err", err)
+	}
+}
+
+// ruleAgentAutoWork 统计游标之后的新广告里有多少是现有规则（含未启用候选）
+// 覆盖不到的。watermark 是扫描窗口内最新的 antiad_log id（没有新广告时为 0）。
+func ruleAgentAutoWork(sh *core.Shared, cursor int64) (newAds, uncovered, watermark int64) {
+	var rules []store.AdRuleRec
+	if snap := sh.Cache.Snap(); snap != nil {
+		rules = snap.AdRules
+	}
+	rows, err := sh.Store.Read.Query(`SELECT id,text FROM antiad_log
+		WHERE id > ? AND verdict='ad' AND action <> 'undone'
+		ORDER BY id DESC LIMIT ?`, cursor, ruleScanLimit)
+	if err != nil {
+		slog.Error("规则发现：扫描新增广告失败", "err", err)
+		return 0, 0, 0
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id   int64
+			text string
+		)
+		if err := rows.Scan(&id, &text); err != nil {
+			slog.Warn("规则发现：新增广告行解析失败", "err", err)
+			continue
+		}
+		if watermark == 0 {
+			watermark = id // DESC：第一条就是最新
+		}
+		newAds++
+		matched := false
+		for _, rule := range rules {
+			if rule.Re != nil && rule.Re.MatchString(text) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			uncovered++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("规则发现：扫描新增广告失败", "err", err)
+	}
+	return newAds, uncovered, watermark
 }
 
 // RuleAgentStatus 返回 Mini App 的序列化状态。契约（T-C 前端依赖）：
@@ -219,6 +366,7 @@ func RuleAgentStatus(sh *core.Shared) map[string]any {
 		"created_rule_id":  first,
 		"created_rule_ids": ids,
 		"steps_count":      len(ruleAgentRT.steps),
+		"target_log_id":    ruleAgentRT.targetLogID,
 	}
 }
 
@@ -391,6 +539,9 @@ type ruleAgentRun struct {
 	// ctx 只用于 finish 判定「超时/手动停止」：上游错误经过 Eino 的层层
 	// 包装后，单看 error 链未必能分辨是哪种结束，ctx 状态最可靠。
 	ctx context.Context
+	// targetLogID / autoWatermark 来自 ruleStartOpts，见两个 Start 入口。
+	targetLogID   int64
+	autoWatermark int64
 
 	mu             sync.Mutex
 	createdRuleIDs []int64
@@ -400,9 +551,10 @@ type ruleAgentRun struct {
 
 // runRuleDiscovery 在后台跑完一轮，并负责把结束状态写回全局运行态。
 func runRuleDiscovery(ctx context.Context, sh *core.Shared, uid int64,
-	chat model.ToolCallingChatModel, modelName string) {
+	chat model.ToolCallingChatModel, modelName string, opts ruleStartOpts) {
 
-	run := &ruleAgentRun{sh: sh, uid: uid, model: modelName, ctx: ctx}
+	run := &ruleAgentRun{sh: sh, uid: uid, model: modelName, ctx: ctx,
+		targetLogID: opts.targetLogID, autoWatermark: opts.autoWatermark}
 	tools, err := buildRuleAgentTools(sh, run)
 	if err != nil {
 		run.finish(nil, fmt.Errorf("构建规则发现工具失败: %w", err))
@@ -451,10 +603,43 @@ func runRuleDiscovery(ctx context.Context, sh *core.Shared, uid int64,
 	_, genErr := ag.Generate(ctx,
 		[]*schema.Message{
 			schema.SystemMessage(ruleAgentSystemPrompt),
-			schema.UserMessage(ruleAgentUserPrompt),
+			schema.UserMessage(ruleAgentKickoff(sh, opts)),
 		},
 		einoagent.WithComposeOptions(compose.WithCallbacks(handler)))
 	run.finish(genErr, nil)
+}
+
+// ruleAgentKickoff 组装本轮的启动消息。
+//
+// 全库模式：把当前覆盖空白清单（list_uncovered 的结果）预取一份塞进启动
+// 消息，模型不必先烧一轮找范围；指定记录模式：额外给出目标记录的全文与
+// 优先级要求，先围绕它写规则，预算有余再处理清单里的其他类型。
+func ruleAgentKickoff(sh *core.Shared, opts ruleStartOpts) string {
+	msg := ruleAgentUserPrompt
+	if opts.targetLogID > 0 {
+		if payload, errMsg := ruleAgentRecordPayload(sh, opts.targetLogID); errMsg == "" {
+			raw, _ := json.Marshal(payload)
+			id := strconv.FormatInt(opts.targetLogID, 10)
+			msg += "\n\n【指定记录模式】管理员指定判定流水 #" + id +
+				" 为唯一重点，请针对这条记录的形态总结正则。\n目标记录：" + string(raw) +
+				"\n要求：" +
+				"1) 先 read_record #" + id + " 确认全文与判定信息；" +
+				"2) 用 find 从它特有的关键词与组合特征入手，配合 list_uncovered / list_banned " +
+				"搜索同类记录，确认这是可归纳的形态而不是孤例（同类样本太少时说明情况，不要硬写）；" +
+				"3) 正则只锚定该类形态特有的证据，test_rule 必须 fp=0、undone=0；" +
+				"4) create_rule 的 evidence_ids 必须包含 #" + id + "；" +
+				"5) 完成目标后若还有预算，按覆盖清单继续处理其他类型，否则总结收尾。"
+		} else {
+			msg += "\n\n【指定记录模式】目标记录读取失败：" + errMsg
+		}
+	}
+	if snap := sh.Cache.Snap(); snap != nil {
+		scan := &ruleAgentRun{sh: sh}
+		if work := scan.listUncovered(listUncoveredArgs{Limit: 10}); work != "" {
+			msg += "\n\n【系统预取的覆盖空白清单】\n" + work
+		}
+	}
+	return msg
 }
 
 // finish 统一落定运行态：Running 置回 false，写 Result/Error。
@@ -509,6 +694,12 @@ func (r *ruleAgentRun) finish(genErr, setupErr error) {
 	ruleAgentRT.createdRuleIDs = append([]int64{}, created...)
 	ruleAgentRT.cancel = nil
 	ruleAgentRT.mu.Unlock()
+
+	// 定时任务触发的运行：正常收尾或至少产出了规则时推进游标，避免同一批
+	// 广告每小时重复触发；超时/失败不推进，下一小时还有机会补跑。
+	if r.autoWatermark > 0 && (errText == "" || len(created) > 0) {
+		advanceRuleAgentCursor(r.sh, r.autoWatermark)
+	}
 
 	if errText != "" {
 		slog.Warn("规则发现：本轮结束", "结果", result, "错误", errText)
@@ -826,10 +1017,16 @@ func (r *ruleAgentRun) listBanned(in listBannedArgs) string {
 
 // readRecordPayload 读一条流水的完整载荷；失败返回错误文案。
 func (r *ruleAgentRun) readRecordPayload(id int64) (map[string]any, string) {
+	return ruleAgentRecordPayload(r.sh, id)
+}
+
+// ruleAgentRecordPayload 读一条流水的完整载荷（read_record 与指定记录模式
+// 的启动消息共用同一形状）。正文截断 2000 字。
+func ruleAgentRecordPayload(sh *core.Shared, id int64) (map[string]any, string) {
 	if id <= 0 {
 		return nil, "id 必须为正整数"
 	}
-	row, ok := LoadAdLog(r.sh.Store, id)
+	row, ok := LoadAdLog(sh.Store, id)
 	if !ok {
 		return nil, fmt.Sprintf("没有 id=%d 的判定记录", id)
 	}
@@ -1488,7 +1685,7 @@ func ruleSamplesJSON(list []RuleSample, max int) []ruleAgentSample {
 // ---- 提示词 ----
 
 // ruleAgentSystemPrompt 是规则发现 Agent 的中文系统提示词。
-const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现工程师，任务不是聊天，而是从历史判定流水里总结出多条高精度的「必封正则规则」，尽量覆盖不同的广告类型与形态。
+const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现工程师，任务不是聊天，而是从历史判定流水里总结出高精度的「必封正则规则」。本轮目标是**一次性覆盖所有值得写正则的未覆盖形态**：启动消息里给了一份覆盖空白清单，逐类处理，不要只做一条就收尾。
 
 可用语料：antiad_log 判定流水。verdict='ad' 是已确认广告，verdict='clean'/'none' 是正常消息，action='undone' 是被管理员撤销的误判。所有结论必须有流水证据，不得凭想象编造正则。
 
@@ -1497,22 +1694,24 @@ const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现�
 2. 正则不得匹配空文本（例如 a*、.* 一律不能作为规则，会命中纯图/贴纸消息）；
 3. 不得命中任何正常聊天：create_rule 之前必须 test_rule，且 fp=0、undone=0；
 4. 优先锚定广告特有的组合形态：联系方式（微信/QQ/telegram/whatsapp 等 + 账号串）、招聘/贷款/博彩等话术组合、引流域名与短链形态；不要用「加微信」「看主页」这类正常聊天也会大量出现的裸词；
-5. 每条规则必须可解释：name 说明打击的广告形态，note 写明理由，evidence_ids 填你实际读过或命中的流水 id；
-6. 建议用 (?i) 忽略大小写，用边界、字符类与量词收紧匹配；宁可少覆盖一点，也不能误封；
-7. 不要创建与现有规则 pattern 完全相同的规则（create_rule 会拒绝）。
+5. 一条规则只表达一个形态，不要把互不相关的形态硬塞进一条正则；
+6. 每条规则必须可解释：name 说明打击的广告形态，note 写明理由，evidence_ids 填你实际读过或命中的流水 id；
+7. 建议用 (?i) 忽略大小写，用边界、字符类与量词收紧匹配；宁可少覆盖一点，也不能误封；
+8. 不要创建与现有规则 pattern 完全相同的规则（create_rule 会拒绝）。
 
 覆盖率说明：find 与 test_rule 会返回覆盖率（该正则命中的已确认广告 ÷ 全库已确认广告）与按 ad_kind 的细分。覆盖率不是创建门槛，但优先做「覆盖某类型较大比例」的形态；覆盖率过低说明规则太窄，考虑合并同类话术或换更有代表性的形态。
 
-工作流（按顺序循环，不要跳步）：
-1. list_kinds 看广告类型分布（total 从大到小）；
-2. list_rules 看已有 pattern 与覆盖率，再用 list_uncovered 拿现有规则都匹配不到的广告（覆盖空白），按 by_kind 的 uncovered 从大到小选目标形态；
-3. 针对一个未覆盖形态：read_records 批量读 list_uncovered 的 rows（或 list_banned 的样本）全文（一次最多 10 条），观察它区别于正常消息的组合特征；
-4. find 用正则草稿试跑，看命中什么、误伤什么、覆盖率多少；反复收缩直到只命中广告；
-5. test_rule 用正式口径验证：fp>0 或 undone>0 时绝对不要 create_rule，回到第 4 步改进；
-6. create_rule 创建规则：通过校验与全库测试后会自动启用（命中只作为判定证据；强制需主管理员复核后手动开启）；
-7. 创建成功后不要停，回到第 1/2 步找下一个未覆盖形态；没有新的高精度形态、或步数/时间预算将尽时，用中文总结收尾。
+工作流（按顺序执行）：
+1. 先摸清现状：list_kinds 看类型分布；list_rules 看已有 pattern 与覆盖率；list_uncovered 拿现有规则都匹配不到的广告（启动消息里已预取一份快照，可直接用；需要最新数据时再调）。
+2. 建立本轮清单：按 by_kind 的 uncovered 从大到小，所有 uncovered>0 的类型都要处理。
+3. 逐类处理：read_records 批量读该类样本全文（一次最多 10 条，跨类凑批也行），归纳它们区别于正常消息的共同特征（关键词、格式、结构）。
+4. find 用正则草稿试跑，看命中什么、误伤什么、覆盖率多少；反复收缩直到只命中广告。
+5. test_rule 用正式口径验证：fp>0 或 undone>0 时绝对不要 create_rule，回到第 4 步改进。
+6. create_rule 创建规则；成功后回到第 3 步处理清单里的下一个类型。
+7. 清单里每个 uncovered>0 的类型都必须有结论：要么创建了规则，要么说明样本太杂、太短、或属于正常讨论而无法写出高精度规则。只有全部处理过、或步数/时间预算将尽，才用中文总结收尾。
 
-如果 create_rule 被拒绝：仔细阅读返回的误封样本，收缩正则后重新 test_rule；连续 3 次失败本轮会被终止。收尾总结请列出：本轮创建了哪些规则、分别覆盖什么形态、依据哪些证据。`
+如果 create_rule 被拒绝：仔细阅读返回的误封样本，收缩正则后重新 test_rule；连续 3 次失败本轮会被终止。收尾总结请逐类列出：创建了哪些规则、覆盖什么形态、依据哪些证据、哪些类型未覆盖及原因。`
 
-// ruleAgentUserPrompt 是每轮的启动指令。
-const ruleAgentUserPrompt = `请开始一轮规则发现：先用 list_kinds 看广告类型分布，用 list_rules 看已有覆盖，再用 list_uncovered 拿现有规则都匹配不到的广告；然后对每个未覆盖的高精度形态按 read_records → find → test_rule → create_rule 的流程产出候选规则。创建成功后不要停，继续找下一个形态；没有新形态或预算将尽时总结收尾。`
+// ruleAgentUserPrompt 是每轮的启动指令（全库模式的基线；指定记录模式与
+// 覆盖清单由 ruleAgentKickoff 追加）。
+const ruleAgentUserPrompt = `请开始一轮规则发现：先看启动消息里预取的覆盖空白清单（需要最新数据时再调 list_uncovered），然后逐类型按 read_records → find → test_rule → create_rule 的流程产出候选规则。本轮目标是一次性覆盖清单里所有值得写正则的形态，不要只做一条就收尾；每个 uncovered>0 的类型都要有结论（创建了规则，或说明为什么做不了）；预算将尽时逐类总结收尾。`

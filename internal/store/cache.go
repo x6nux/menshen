@@ -95,6 +95,13 @@ var settingDefaults = map[string]string{
 	// 规则发现 Agent（AI 必封规则）指定模型，形如 <上游名>/<模型ID>；
 	// 空 = 复判模型列表里第一个 OpenAI 兼容模型（见 antiad/ruleagent.go）。
 	"antiad_rule_model": "",
+	// 规则发现自动运行：1 = 每小时最多一轮，且只在有**新的未覆盖广告**时
+	// 才真正启动（游标 antiad_rule_cursor 累积）；0 = 只在 Mini App 手动运行。
+	// 一轮会反复调模型、可能持续几十分钟，升级默认关，避免悄悄烧钱。
+	"antiad_rule_auto": "0",
+	// antiad_rule_cursor 是自动运行的内部游标：已处理到的 antiad_log id。
+	// 不在面板暴露，只由 AutoRuleDiscovery/规则发现结束时推进。
+	"antiad_rule_cursor": "0",
 
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
