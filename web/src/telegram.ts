@@ -41,6 +41,8 @@ export interface TelegramBackButton {
 export interface TelegramBridge {
   /** SDK 是否就绪；false 时页面应渲染「请通过 Telegram 打开」的引导。 */
   available: boolean
+  /** 网页版（浏览器 /admin）：鉴权走会话 cookie，不使用 initData。 */
+  web?: boolean
   initData: string
   /** URL ?bot= 指定要管理的 bot，缺省 '0'（主 bot）。 */
   botId: string
@@ -112,6 +114,7 @@ function unavailableBridge(botId: string): TelegramBridge {
   const noop = () => {}
   return {
     available: false,
+    web: false,
     initData: '',
     botId,
     getTheme: () => readTheme(undefined),
@@ -119,6 +122,31 @@ function unavailableBridge(botId: string): TelegramBridge {
     backButton: { show: noop, hide: noop, onClick: () => noop },
     openLink: (url) => {
       // 没有 SDK 也要能打开原文查看页。
+      if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+    },
+  }
+}
+
+/**
+ * webBridge 是浏览器（非 Telegram）打开网页版管理面板时的桥：
+ * 鉴权走会话 cookie（api/client 会带 X-Web 头），主题跟系统深浅色，
+ * BackButton 无操作（桌面外壳自带返回），openLink 一律新窗口。
+ */
+export function webBridge(botId: string): TelegramBridge {
+  const noop = () => {}
+  const dark =
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true
+  const theme: TelegramTheme = { colorScheme: dark ? 'dark' : 'light', themeParams: {} }
+  return {
+    available: true,
+    web: true,
+    initData: '',
+    botId,
+    getTheme: () => theme,
+    onThemeChanged: () => noop,
+    backButton: { show: noop, hide: noop, onClick: () => noop },
+    openLink: (url) => {
       if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
     },
   }

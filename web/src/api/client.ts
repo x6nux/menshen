@@ -16,18 +16,24 @@ export class ApiError extends Error {
 export interface ApiAuth {
   initData: string
   botId: string
+  /** web=true 时按网页版会话鉴权：带 X-Web 头，服务端读 cookie。 */
+  web: boolean
 }
 
-let auth: ApiAuth = { initData: '', botId: '0' }
+let auth: ApiAuth = { initData: '', botId: '0', web: false }
 
 /** setApiAuth 注入请求头；start 时 telegram 桥未就绪就传空串与 '0'。 */
 export function setApiAuth(next: Partial<ApiAuth>): void {
   auth = { ...auth, ...next }
 }
 
-/** setApiBridge 从 Telegram 桥取鉴权信息（main/外壳在 initTelegram 后调用）。 */
+/** setApiBridge 从桥取鉴权信息（main/外壳在 initTelegram 后调用）。 */
 export function setApiBridge(bridge: TelegramBridge | null): void {
-  setApiAuth({ initData: bridge?.initData ?? '', botId: bridge?.botId ?? '0' })
+  setApiAuth({
+    initData: bridge?.initData ?? '',
+    botId: bridge?.botId ?? '0',
+    web: bridge?.web === true,
+  })
 }
 
 /** apiURL 拼出请求地址：浏览器相对地址即可；vitest（Node fetch）不接受
@@ -78,6 +84,7 @@ export async function api<T>(op: string, body?: unknown, signal?: AbortSignal): 
         'Content-Type': 'application/json',
         'X-Tg-Init-Data': auth.initData,
         'X-Bot-Id': auth.botId,
+        ...(auth.web ? { 'X-Web': '1' } : {}),
       },
       body: JSON.stringify(body ?? {}),
       signal,

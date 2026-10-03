@@ -1,77 +1,48 @@
-// App 外壳：initTelegram() 的可用性驱动三种界面——
-//   1) 初始化中：整页骨架；
-//   2) SDK 不可用（被墙/没在 Telegram 里打开）：引导页（沿用旧页文案）；
-//   3) 就绪：装配主题（getTheme 初读 + onThemeChanged 实时重建）、数据查询、
-//      导航与全局 Provider，渲染 TopBar + 当前页 + TabBar。
+// App 外壳：Telegram Mini App 与网页版管理面板共用入口。
 //
-// 契约：initData 就绪前不得发请求（api 鉴权头为空会 401）——本组件只在
-// bridge.available 之后才挂载 Shell，Shell 内 useMiniState(true) 必已带上 initData。
-// 页面映射集中在 Shell 一处。
-import { Box, CssBaseline, Skeleton, Typography } from '@mui/material'
+//   1) 初始化中：整页骨架；
+//   2) 网页版（/admin）：跳过 Telegram SDK，走会话 cookie 鉴权；
+//      宽屏渲染桌面外壳（DesktopShell），窄屏退回移动端外壳；
+//   3) Telegram 里：initData 鉴权；SDK 不可用时渲染引导页。
+//
+// 契约：鉴权信息就绪前不得发请求（api 鉴权头为空会 401）——两个分支都
+// 在注入桥之后才挂载数据查询。
+import { Box, CssBaseline, Skeleton, Typography, useMediaQuery } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
 import { ApiError, setApiBridge } from './api/client'
 import { useMiniState } from './api/hooks'
-import type { State } from './api/types'
+import { DesktopShell, isWebMode } from './DesktopShell'
 import { meLabel } from './lib/format'
 import { NavProvider, useNav } from './nav'
-import type { Page, TabKey } from './nav'
-import { AppealDetailPage } from './pages/AppealDetailPage'
-import { BotDetailPage } from './pages/BotDetailPage'
-import { BotsPage } from './pages/BotsPage'
-import { ChatDetailPage } from './pages/ChatDetailPage'
-import { ChatsPage } from './pages/ChatsPage'
-import { ListsPage } from './pages/ListsPage'
-import { LogDetailPage } from './pages/LogDetailPage'
-import { MinePage } from './pages/MinePage'
-import { ModelDetailPage, ModelsPage } from './pages/ModelsPage'
-import { OverviewPage } from './pages/OverviewPage'
-import { RecordsPage } from './pages/RecordsPage'
-import { RuleDetailPage, RulesPage } from './pages/RulesPage'
-import { SettingsPage } from './pages/SettingsPage'
-import { UpstreamDetailPage, UpstreamsPage } from './pages/UpstreamsPage'
-import { UserPage } from './pages/UserPage'
+import { detailTitle, renderStackPage, renderTabPage, TAB_NAMES } from './shellPages'
 import { buildMiniTheme } from './theme'
-import { initTelegram } from './telegram'
+import { botIdFromURL, initTelegram, webBridge } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
 import { ActionSheetProvider, ErrorState, Skeletons, TabBar, ToastProvider, TopBar } from './ui'
 
-/** 一级 Tab 名称（TopBar 标题用）。 */
-const TAB_NAMES: Record<TabKey, string> = {
-  overview: '概览',
-  bots: '机器人',
-  chats: '群组',
-  records: '记录',
-  mine: '我的',
-}
-
-/** 二级页标题：列表数据里找不到具体名称时的回退。 */
-const PAGE_NAMES: Record<Page['k'], string> = {
-  bot: '机器人详情',
-  chat: '群组详情',
-  log: '记录详情',
-  user: '用户资料',
-  appeal: '申诉详情',
-  lists: '名单管理',
-  upstreams: '上游渠道',
-  upstream: '上游详情',
-  models: '模型定价',
-  model: '模型详情',
-  rules: 'AI 必封规则',
-  rule: '规则详情',
-  settings: '全局设置',
-}
-
-type Boot = { phase: 'booting' } | { phase: 'unavailable' } | { phase: 'ready'; bridge: TelegramBridge }
+type Boot =
+  | { phase: 'booting' }
+  | { phase: 'unavailable' }
+  | { phase: 'ready'; bridge: TelegramBridge }
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>({ phase: 'booting' })
 
   useEffect(() => {
     let alive = true
+    if (isWebMode()) {
+      // 网页版：不加载 Telegram SDK。会话是否有效由首个 state 请求裁决，
+      // 401 交给桌面外壳渲染「获取登录链接」的指引。
+      const bridge = webBridge(botIdFromURL())
+      setApiBridge(bridge)
+      setBoot({ phase: 'ready', bridge })
+      return () => {
+        alive = false
+      }
+    }
     void initTelegram()
       .then((bridge) => {
         if (!alive) return
@@ -131,7 +102,7 @@ function ReadyApp({ bridge }: { bridge: TelegramBridge }) {
         <NavProvider backButton={bridge.backButton}>
           <ActionSheetProvider>
             <ToastProvider>
-              <Shell />
+              <ShellChoice web={bridge.web === true} />
             </ToastProvider>
           </ActionSheetProvider>
         </NavProvider>
@@ -140,9 +111,16 @@ function ReadyApp({ bridge }: { bridge: TelegramBridge }) {
   )
 }
 
+/** ShellChoice 在网页版宽屏用桌面外壳，其余（Telegram 内、窄屏浏览器）用移动端外壳。 */
+function ShellChoice({ web }: { web: boolean }) {
+  const wide = useMediaQuery('(min-width: 900px)')
+  if (web && wide) return <DesktopShell />
+  return <Shell />
+}
+
 function Shell() {
   const nav = useNav()
-  // 外壳只在 bridge 就绪后挂载，这里 enabled 恒为 true 是安全的。
+  // 外壳只在桥就绪后挂载，这里 enabled 恒为 true 是安全的。
   const state = useMiniState(true)
   const top = nav.stack.length > 0 ? nav.stack[nav.stack.length - 1] : null
 
@@ -192,83 +170,6 @@ function Shell() {
       <TabBar />
     </>
   )
-}
-
-/** renderTabPage 是一级 Tab 的页面映射。 */
-function renderTabPage(tab: TabKey): ReactNode {
-  switch (tab) {
-    case 'overview':
-      return <OverviewPage />
-    case 'bots':
-      return <BotsPage />
-    case 'chats':
-      return <ChatsPage />
-    case 'records':
-      return <RecordsPage />
-    case 'mine':
-      return <MinePage />
-  }
-}
-
-/** renderStackPage 渲染导航栈顶的二级页。 */
-function renderStackPage(page: Page): ReactNode {
-  switch (page.k) {
-    case 'bot':
-      return <BotDetailPage botId={page.id} />
-    case 'chat':
-      return <ChatDetailPage botId={page.botId} chatId={page.chatId} />
-    case 'log':
-      return <LogDetailPage key={page.id} id={page.id} />
-    case 'user':
-      return <UserPage key={page.id} id={page.id} />
-    case 'appeal':
-      return <AppealDetailPage key={page.id} id={page.id} />
-    case 'lists':
-      // key 带上 section：白名单 → 联封等分段切换时重挂载，初始化到正确的分段。
-      return <ListsPage key={page.section ?? 'default'} section={page.section} />
-    case 'upstreams':
-      return <UpstreamsPage />
-    case 'upstream':
-      return <UpstreamDetailPage key={page.id} id={page.id} />
-    case 'models':
-      return <ModelsPage />
-    case 'model':
-      return <ModelDetailPage key={page.name} name={page.name} />
-    case 'rules':
-      return <RulesPage />
-    case 'rule':
-      return <RuleDetailPage key={page.id} id={page.id} />
-    case 'settings':
-      return <SettingsPage />
-  }
-}
-
-/** detailTitle 用列表数据给二级页一个具体标题（bot 名 / 群名 / 上游名），找不到再回退通用名。 */
-function detailTitle(page: Page, state: State): string {
-  switch (page.k) {
-    case 'bot':
-      return state.bots.find((b) => b.bot_id === page.id)?.label ?? PAGE_NAMES.bot
-    case 'chat': {
-      const chat = state.chats.find(
-        (c) => c.bot_id === page.botId && c.chat_id === page.chatId,
-      )
-      return chat?.title || (chat ? String(chat.chat_id) : PAGE_NAMES.chat)
-    }
-    case 'log':
-      return `记录 #${page.id}`
-    case 'user':
-      return `用户 uid ${page.id}`
-    case 'appeal':
-      return `申诉 #${page.id}`
-    case 'upstream':
-      return (state.upstreams ?? []).find((u) => u.id === page.id)?.name ?? PAGE_NAMES.upstream
-    case 'model':
-      return page.name || PAGE_NAMES.model
-    case 'rule':
-      return `规则 #${page.id}`
-    default:
-      return PAGE_NAMES[page.k]
-  }
 }
 
 /** BootSkeleton 初始化阶段的整页骨架（此时还没有主题与导航）。 */
