@@ -176,9 +176,9 @@ export interface AppealDossierView {
   hits: number
   chats: number
   gban: string
-  limits: AppealPenalty[]
-  penalties: AppealPenalty[]
-  history: {
+  limits?: AppealPenalty[]
+  penalties?: AppealPenalty[]
+  history?: {
     chat: string
     text: string
     at: number
@@ -186,7 +186,7 @@ export interface AppealDossierView {
     mark: string
     blocked: boolean
   }[]
-  history_more: {
+  history_more?: {
     chat: string
     text: string
     at: number
@@ -195,7 +195,7 @@ export interface AppealDossierView {
     blocked: boolean
   }[]
   history_count: number
-  logs: {
+  logs?: {
     id: number
     chat_id: number
     chat: string
@@ -207,7 +207,7 @@ export interface AppealDossierView {
     at: number
     time: string
   }[]
-  checks: {
+  checks?: {
     result: string
     flags: string
     ip: string
@@ -216,6 +216,6 @@ export interface AppealDossierView {
     at: number
     time: string
   }[]
-  strong: { uid: number; mark: string }[]
-  weak: { uid: number; mark: string }[]
+  strong?: { uid: number; mark: string }[]
+  weak?: { uid: number; mark: string }[]
 }

@@ -199,6 +199,16 @@ func appealViewDataOf(sh *core.Shared, id int64) (appealViewData, bool) {
 		AIConf: ap.AIConf * 100, AIReason: ap.AIReason, AIModel: ap.AIModel,
 		WebAttempts: ap.WebAttempts, Code: ap.Code,
 		Created: formatTS(sh, ap.CreatedAt),
+		// 数组字段先给空切片：nil 切片会序列化成 null，前端 length/map
+		// 直接抛错把整页卸载（线上真实事故：申诉详情点「查看内容」白屏）。
+		Limits:      []appealViewPenalty{},
+		Penalties:   []appealViewPenalty{},
+		History:     []appealViewMsg{},
+		HistoryMore: []appealViewMsg{},
+		Logs:        []appealViewLog{},
+		Checks:      []webCheckView{},
+		Strong:      []relatedView{},
+		Weak:        []relatedView{},
 	}
 	if ap.CodeExpires != 0 {
 		data.CodeExpires = formatTS(sh, ap.CodeExpires)

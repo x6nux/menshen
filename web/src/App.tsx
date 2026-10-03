@@ -21,7 +21,7 @@ import { detailTitle, renderStackPage, renderTabPage, TAB_NAMES } from './shellP
 import { buildMiniTheme } from './theme'
 import { botIdFromURL, initTelegram, webBridge } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
-import { ActionSheetProvider, ErrorState, Skeletons, TabBar, ToastProvider, TopBar } from './ui'
+import { ActionSheetProvider, ErrorBoundary, ErrorState, Skeletons, TabBar, ToastProvider, TopBar } from './ui'
 
 type Boot =
   | { phase: 'booting' }
@@ -102,7 +102,9 @@ function ReadyApp({ bridge }: { bridge: TelegramBridge }) {
         <NavProvider backButton={bridge.backButton}>
           <ActionSheetProvider>
             <ToastProvider>
-              <ShellChoice web={bridge.web === true} />
+              <ErrorBoundary>
+                <ShellChoice web={bridge.web === true} />
+              </ErrorBoundary>
             </ToastProvider>
           </ActionSheetProvider>
         </NavProvider>

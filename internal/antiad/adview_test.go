@@ -254,3 +254,52 @@ func TestJoinNoticePairedEitherOrder(t *testing.T) {
 	}
 	GCJoinNotices(b3.Shared) // 不 panic 即可
 }
+
+// TestAppealViewJSONArraysNeverNull：申诉详情的数组字段必须序列化成 []，
+// 不能是 null —— 前端对 null 调 length/map 会抛错并卸载整页
+// （线上真实事故：点「查看内容」后白屏）。
+func TestAppealViewJSONArraysNeverNull(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	b.Cfg.PublicURL = "https://ad.example.com"
+	if err := EnsureWebSecret(b.Shared); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	res, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'web',?,?)`,
+		b.BotID(), 555, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appealID, _ := res.LastInsertId()
+	path := "/_w/apv/" + itoaTest(appealID) + "/" + appealViewSig(b.Shared, appealID)
+	handler := WebHandler(b.Shared)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?json=1", nil))
+	var gate struct {
+		Gate struct {
+			Exp int64  `json:"exp"`
+			K   string `json:"k"`
+		} `json:"gate"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &gate); err != nil || gate.Gate.K == "" {
+		t.Fatalf("门槛响应不对：%v（%s）", err, w.Body.String())
+	}
+	body, _ := json.Marshal(map[string]any{"e": gate.Gate.Exp, "k": gate.Gate.K})
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body))))
+	var out struct {
+		View map[string]json.RawMessage `json:"view"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("内容响应不是 JSON：%v（%s）", err, w.Body.String())
+	}
+	for _, k := range []string{"limits", "penalties", "history", "history_more",
+		"logs", "checks", "strong", "weak"} {
+		raw, ok := out.View[k]
+		if !ok || string(raw) == "null" {
+			t.Errorf("字段 %s 应是数组，得到 %s", k, string(raw))
+		}
+	}
+}

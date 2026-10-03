@@ -225,6 +225,36 @@ describe('PublicApp', () => {
     expect(screen.getByText(/1\.2\.3\.4/)).toBeInTheDocument()
   })
 
+  it('申诉详情数组字段为 null 时也正常渲染（不再整页白屏）', async () => {
+    at('/_w/apv/7/sig')
+    // 模拟服务端旧版本/异常返回 null：前端必须自己兜底，否则 React 卸载整页。
+    const nullArrays = {
+      ...appealView,
+      limits: null,
+      penalties: null,
+      history: null,
+      history_more: null,
+      logs: null,
+      checks: null,
+      strong: null,
+      weak: null,
+    } as unknown as AppealDossierView
+    server.use(
+      http.get('*/_w/apv/7/sig', () =>
+        HttpResponse.json({
+          gate: { title: '申诉详情', warn: '敏感内容', exp: 123, k: 'kk', ttl_seconds: 300 },
+        }),
+      ),
+      http.post('*/_w/apv/7/sig', () => HttpResponse.json({ view: nullArrays })),
+    )
+    render(<PublicApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '查看内容' }))
+    expect(await screen.findByText('账号信息')).toBeInTheDocument()
+    expect(screen.getByText(/生效中限制：0 条/)).toBeInTheDocument()
+    expect(screen.queryByTestId('error-boundary')).not.toBeInTheDocument()
+  })
+
   it('路径不是公开网页时给出无效链接提示', async () => {
     at('/other/path')
     render(<PublicApp />)

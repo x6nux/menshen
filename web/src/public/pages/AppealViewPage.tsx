@@ -99,6 +99,16 @@ function MainColumn({ view }: { view: AppealDossierView }) {
 }
 
 function SideColumn({ view }: { view: AppealDossierView }) {
+  // 数组字段兜底：服务端旧版本/异常时可能给 null，直接 .length/.map 会让
+  // 整页白屏（线上真实事故）。契约已固定为数组，这里再兜一层。
+  const limits = view.limits ?? []
+  const penalties = view.penalties ?? []
+  const history = view.history ?? []
+  const historyMore = view.history_more ?? []
+  const logs = view.logs ?? []
+  const checks = view.checks ?? []
+  const strong = view.strong ?? []
+  const weak = view.weak ?? []
   return (
     <>
       <Box sx={cardSx}>
@@ -142,33 +152,33 @@ function SideColumn({ view }: { view: AppealDossierView }) {
             </>
           )}
           <br />
-          生效中限制：{view.limits.length} 条
+          生效中限制：{limits.length} 条
         </Typography>
       </Box>
 
-      <PenaltyList title="当前生效限制" items={view.limits} active />
-      <PenaltyList title={`历史处罚（${view.penalties.length} 条）`} items={view.penalties} />
+      <PenaltyList title="当前生效限制" items={limits} active />
+      <PenaltyList title={`历史处罚（${penalties.length} 条）`} items={penalties} />
 
-      {view.history.length > 0 && (
+      {history.length > 0 && (
         <Box sx={cardSx}>
           <Typography sx={titleSx}>群内留底发言（最近 {view.history_count} 条）</Typography>
-          <HistoryList items={view.history} />
-          {view.history_more.length > 0 && (
+          <HistoryList items={history} />
+          {historyMore.length > 0 && (
             <Box component="details" sx={{ mt: 1 }}>
               <summary style={{ cursor: 'pointer', fontSize: 13 }}>
-                展开其余 {view.history_more.length} 条
+                展开其余 {historyMore.length} 条
               </summary>
-              <HistoryList items={view.history_more} />
+              <HistoryList items={historyMore} />
             </Box>
           )}
         </Box>
       )}
 
-      {view.logs.length > 0 && (
+      {logs.length > 0 && (
         <Box sx={cardSx}>
-          <Typography sx={titleSx}>判定流水（{view.logs.length} 条）</Typography>
+          <Typography sx={titleSx}>判定流水（{logs.length} 条）</Typography>
           <List>
-            {view.logs.map((l) => (
+            {logs.map((l) => (
               <li key={l.id}>
                 <Mono>{l.time}</Mono> {l.chat} · {l.verdict} {Math.round(l.confidence * 100)}% →{' '}
                 {l.action_label || l.action}
@@ -179,11 +189,11 @@ function SideColumn({ view }: { view: AppealDossierView }) {
         </Box>
       )}
 
-      {view.checks.length > 0 && (
+      {checks.length > 0 && (
         <Box sx={cardSx}>
-          <Typography sx={titleSx}>网页验证记录（{view.checks.length} 条）</Typography>
+          <Typography sx={titleSx}>网页验证记录（{checks.length} 条）</Typography>
           <List>
-            {view.checks.map((c, i) => (
+            {checks.map((c, i) => (
               <li key={i}>
                 <Mono>{c.time}</Mono> {c.result}
                 {(c.ip || c.fp) && (
@@ -205,23 +215,23 @@ function SideColumn({ view }: { view: AppealDossierView }) {
         </Box>
       )}
 
-      {(view.strong.length > 0 || view.weak.length > 0) && (
+      {(strong.length > 0 || weak.length > 0) && (
         <Box sx={cardSx}>
           <Typography sx={titleSx}>关联账号</Typography>
-          {view.strong.length > 0 && (
+          {strong.length > 0 && (
             <>
               <Typography sx={{ fontSize: 13, color: 'text.secondary', mt: 0.5 }}>
                 强关联（同指纹）
               </Typography>
-              <Related items={view.strong} />
+              <Related items={strong} />
             </>
           )}
-          {view.weak.length > 0 && (
+          {weak.length > 0 && (
             <>
               <Typography sx={{ fontSize: 13, color: 'text.secondary', mt: 0.5 }}>
                 弱关联（30 天内同 IP，仅供参考）
               </Typography>
-              <Related items={view.weak} />
+              <Related items={weak} />
             </>
           )}
         </Box>
@@ -236,7 +246,7 @@ function PenaltyList({
   active,
 }: {
   title: string
-  items: AppealDossierView['limits']
+  items: NonNullable<AppealDossierView['limits']>
   active?: boolean
 }) {
   if (items.length === 0) return null
@@ -259,7 +269,7 @@ function PenaltyList({
   )
 }
 
-function HistoryList({ items }: { items: AppealDossierView['history'] }) {
+function HistoryList({ items }: { items: NonNullable<AppealDossierView['history']> }) {
   return (
     <List>
       {items.map((h, i) => (
@@ -276,7 +286,7 @@ function HistoryList({ items }: { items: AppealDossierView['history'] }) {
   )
 }
 
-function Related({ items }: { items: AppealDossierView['strong'] }) {
+function Related({ items }: { items: NonNullable<AppealDossierView['strong']> }) {
   return (
     <List>
       {items.map((r) => (

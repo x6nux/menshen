@@ -5,6 +5,7 @@ import { Box, Container, CssBaseline, Typography } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
 import { useMemo } from 'react'
 import { buildMiniTheme } from '../theme'
+import { ErrorBoundary } from '../ui'
 import { parseRoute } from './api'
 import { InvalidState } from './InvalidState'
 import { AppealVerifyPage } from './pages/AppealVerifyPage'
@@ -37,11 +38,17 @@ export function PublicApp() {
         {route === null ? (
           <InvalidState message="链接无效或已被替换。" />
         ) : route.kind === 'ap' ? (
-          <AppealVerifyPage route={route} />
+          <ErrorBoundary>
+            <AppealVerifyPage route={route} />
+          </ErrorBoundary>
         ) : route.kind === 'v' ? (
-          <LogViewPage route={route} />
+          <ErrorBoundary>
+            <LogViewPage route={route} />
+          </ErrorBoundary>
         ) : (
-          <AppealViewPage route={route} />
+          <ErrorBoundary>
+            <AppealViewPage route={route} />
+          </ErrorBoundary>
         )}
       </Container>
     </ThemeProvider>
