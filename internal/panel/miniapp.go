@@ -664,9 +664,9 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 	key := miniStr(body, "key")
 	val := strings.TrimSpace(miniStr(body, "value"))
 
-	// 三个布尔开关不走 settingSpecs（面板里是一键切换），单独放行。
+	// 四个布尔开关不走 settingSpecs（面板里是一键切换），单独放行。
 	switch key {
-	case "antiad_enabled", "alert_copy_main", "gban_enabled":
+	case "antiad_enabled", "alert_copy_main", "gban_enabled", "antiad_rule_auto":
 		if !sh.IsMain(uid) {
 			miniErr(w, http.StatusForbidden, "只有主管理员能改全局开关")
 			return
@@ -1673,8 +1673,16 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		miniOK(w, map[string]any{"ok": true})
 	case "agent_start":
 		// 启动一轮 AI 规则发现（单飞、后台跑）。失败原因（没有 OpenAI
-		// 兼容上游、已在运行等）直接回给前端。
-		if err := antiad.StartRuleDiscovery(sh, uid); err != nil {
+		// 兼容上游、已在运行、指定记录不合法等）直接回给前端。
+		// 带 record_id 时进入「指定记录」模式：围绕该条已确认广告写规则，
+		// 工具不受限，仍可搜索同类形态。
+		var err error
+		if id := miniInt(body, "record_id"); id > 0 {
+			err = antiad.StartRuleDiscoveryForRecord(sh, uid, id)
+		} else {
+			err = antiad.StartRuleDiscovery(sh, uid)
+		}
+		if err != nil {
 			miniErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

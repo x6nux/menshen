@@ -64,7 +64,8 @@ func TestMiniRulesAgentOps(t *testing.T) {
 	// 空态：契约字段齐全、steps_count 是数字、running=false。
 	agent := agentOf(mainDo(map[string]any{"action": "agent_status"}))
 	for _, k := range []string{"running", "started_at", "finished_at", "result",
-		"error", "created_rule_id", "created_rule_ids", "steps_count"} {
+		"error", "created_rule_id", "created_rule_ids", "steps_count",
+		"target_log_id"} {
 		if _, ok := agent[k]; !ok {
 			t.Errorf("agent 状态缺少字段 %s：%v", k, agent)
 		}
@@ -110,6 +111,13 @@ func TestMiniRulesAgentOps(t *testing.T) {
 	}
 	if err := sh.PutSetting("antiad_llm_model", "pai/llm"); err != nil {
 		t.Fatal(err)
+	}
+
+	// 指定记录模式：不存在的记录 id 在启动前被拒绝（证明 record_id 已接线）。
+	if w := mainDo(map[string]any{"action": "agent_start", "record_id": 999999}); w.Code != http.StatusBadRequest {
+		t.Fatalf("不存在的记录应 400，得到 %d：%s", w.Code, w.Body.String())
+	} else if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "没有 id=999999") {
+		t.Errorf("错误文案应说明记录不存在：%q", msg)
 	}
 
 	if w := mainDo(map[string]any{"action": "agent_start"}); w.Code != http.StatusOK {
