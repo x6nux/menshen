@@ -3,7 +3,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mockLogDetail, mockState } from '../mocks/fixtures'
+import { mockLogDetail, mockRuleAgent, mockState } from '../mocks/fixtures'
 import { NavProbe, renderPage } from '../test/renderPage'
 import { server, startTestServer } from '../test/server'
 import { LogDetailPage } from './LogDetailPage'
@@ -131,6 +131,25 @@ describe('LogDetailPage', () => {
     await screen.findByText('AI 复查')
     expect(screen.queryByRole('button', { name: '联合封禁' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '解除联合封禁' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'AI 写规则' })).not.toBeInTheDocument()
+  })
+
+  it('主管理员可用「AI 写规则」针对本条记录启动规则发现', async () => {
+    const bodies: Record<string, unknown>[] = []
+    server.use(
+      http.post('*/miniapp/api/rules', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>)
+        return HttpResponse.json({ ok: true, agent: mockRuleAgent })
+      }),
+    )
+    renderPage(<LogDetailPage id={9812} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'AI 写规则' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ action: 'agent_start', record_id: 9812 })
+    expect(
+      await screen.findByText('已开始针对本条记录发现规则，可在「我的 → AI 必封规则」查看进度'),
+    ).toBeInTheDocument()
   })
 
   it('用户链接键盘可达：Enter 进用户页', async () => {
@@ -146,7 +165,7 @@ describe('LogDetailPage', () => {
     expect(screen.getByTestId('nav-top').textContent).toBe('user')
   })
 
-  it('主管理员 6 按钮场景底部预留 ≥210（无 ResizeObserver 时用兜底值）', async () => {
+  it('主管理员 7 按钮场景底部预留 ≥210（无 ResizeObserver 时用兜底值）', async () => {
     renderPage(<LogDetailPage id={9812} />)
 
     await screen.findByRole('button', { name: '联合封禁' })

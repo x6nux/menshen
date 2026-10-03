@@ -221,6 +221,7 @@ function AgentCard() {
   const agent = agentQuery.data?.agent
   const running = agent?.running ?? false
   const stepsCount = agent?.steps_count ?? 0
+  const targetLogId = agent?.target_log_id ?? 0
   const status = agentQuery.isError
     ? { label: '失败', tone: 'no' as const }
     : agentStatus(agent)
@@ -286,7 +287,9 @@ function AgentCard() {
           ) : (
             <Typography sx={{ fontSize: 13, color: 'text.secondary', lineHeight: 1.5 }}>
               {running
-                ? `正在从历史封禁里总结必封规则…已执行 ${stepsCount} 步`
+                ? targetLogId > 0
+                  ? `正在针对记录 #${targetLogId} 总结必封规则…已执行 ${stepsCount} 步`
+                  : `正在从历史封禁里总结必封规则…已执行 ${stepsCount} 步`
                 : '让 AI 扫描历史封禁生成规则；无误封的会自动启用（仅作为判定证据）。'}
             </Typography>
           )}

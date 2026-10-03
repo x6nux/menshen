@@ -362,6 +362,7 @@ export const mockRuleAgent: RuleAgent = {
   created_rule_id: 0,
   created_rule_ids: [],
   steps_count: 0,
+  target_log_id: 0,
 }
 
 export const mockRuleTest: RuleTest = {

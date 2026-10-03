@@ -381,6 +381,8 @@ export interface RuleAgent {
   created_rule_ids: number[]
   /** 已执行的步骤数；步骤内容不再下发（前端只显示运行状态）。 */
   steps_count: number
+  /** 本轮重点针对的判定记录 id（指定记录模式）；0 = 全库模式。 */
+  target_log_id: number
 }
 
 export interface RuleAgentStatusResp {

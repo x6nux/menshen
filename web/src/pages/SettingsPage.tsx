@@ -75,6 +75,11 @@ const MASTER_TOGGLES: { key: string; label: string; hint: string }[] = [
   { key: 'antiad_enabled', label: '反广告总开关', hint: '关闭后所有机器人停止判定与处置' },
   { key: 'alert_copy_main', label: '告警抄送主管理员', hint: '命中告警同时私聊主管理员一份' },
   { key: 'gban_enabled', label: '联合封禁', hint: '关闭后联封名单不再自动执行' },
+  {
+    key: 'antiad_rule_auto',
+    label: 'AI 规则发现自动运行',
+    hint: '每小时最多一次：出现现有规则覆盖不到的新广告时自动运行，会调用模型',
+  },
 ]
 
 type ModelWhich = 'so' | 'llm' | 'vision' | 'rule'

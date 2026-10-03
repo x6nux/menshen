@@ -6,7 +6,7 @@ import { Box, Button, Typography } from '@mui/material'
 import type { ReactNode } from 'react'
 import { errorStatus } from '../api/client'
 import { useLog, useMiniState } from '../api/hooks'
-import { useLogactMutation } from '../api/mutations'
+import { useLogactMutation, useRulesMutation } from '../api/mutations'
 import { actionLabel, deciderLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
@@ -68,6 +68,7 @@ export function LogDetailPage({ id }: { id: number }) {
   const state = useMiniState(true)
   const log = useLog(id)
   const act = useLogactMutation()
+  const ruleMut = useRulesMutation()
   const isMain = state.data?.me.main ?? false
   const { barRef, reserved } = useBarReserve(isMain ? BAR_FALLBACK_MAIN : BAR_FALLBACK)
 
@@ -99,6 +100,19 @@ export function LogDetailPage({ id }: { id: number }) {
         },
       )
     }
+  }
+
+  // 针对这条记录跑一轮 AI 规则发现：Agent 围绕本条原文写正则，并用 find /
+  // list_uncovered 等工具搜索同类形态；进度在「我的 → AI 必封规则」里看。
+  const startRuleAgent = () => {
+    ruleMut.mutate(
+      { action: 'agent_start', record_id: id },
+      {
+        onSuccess: () =>
+          toast('已开始针对本条记录发现规则，可在「我的 → AI 必封规则」查看进度'),
+        onError: (err) => toast(err.message),
+      },
+    )
   }
 
   const details: { label: string; value: ReactNode }[] = [
@@ -207,6 +221,17 @@ export function LogDetailPage({ id }: { id: number }) {
               {spec.label}
             </Button>
           ))}
+          {isMain && (
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={act.isPending || ruleMut.isPending}
+              onClick={startRuleAgent}
+              sx={COMPACT_BTN_SX}
+            >
+              AI 写规则
+            </Button>
+          )}
           {isMain &&
             GBAN_ACTIONS.map((spec) => (
               <Button
@@ -223,7 +248,8 @@ export function LogDetailPage({ id }: { id: number }) {
             ))}
         </Box>
         <Typography sx={{ mt: 0.5, fontSize: 11, color: 'text.secondary', lineHeight: 1.5 }}>
-          复查结果发到群里（受群内静默开关约束）；人工标记与群内 /ban 命令同效。
+          复查结果发到群里（受群内静默开关约束）；人工标记与群内 /ban 命令同效；
+          AI 写规则围绕本条原文生成候选。
         </Typography>
       </Box>
     </Box>

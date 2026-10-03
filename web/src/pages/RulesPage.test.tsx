@@ -124,6 +124,29 @@ describe('RulesPage · Agent', () => {
     await waitFor(() => expect(listCalls).toBeGreaterThan(before))
   })
 
+  it('指定记录模式：运行中显示针对的记录号', async () => {
+    const agent: RuleAgent = {
+      ...mockRuleAgent,
+      running: true,
+      started_at: 1700000600,
+      steps_count: 3,
+      target_log_id: 9812,
+    }
+    captureRules((body) => {
+      switch (body.action) {
+        case 'list':
+          return HttpResponse.json({ rules: [] })
+        case 'agent_status':
+          return HttpResponse.json({ agent })
+        default:
+          return ok()
+      }
+    })
+    renderPage(<RulesPage />)
+
+    expect(await screen.findByText(/正在针对记录 #9812 总结必封规则/)).toBeInTheDocument()
+  })
+
   it('竞态：迟到的挂载期 agent_status 不覆盖启动态，轮询继续', async () => {
     let releaseSlow!: () => void
     const slowGate = new Promise<void>((resolve) => {
