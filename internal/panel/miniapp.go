@@ -249,6 +249,18 @@ func miniAuth(sh *core.Shared, w http.ResponseWriter, r *http.Request) (uid int6
 		miniErr(w, http.StatusBadRequest, "未知的 bot")
 		return 0, "", 0, false
 	}
+	// 网页版会话：浏览器没有 initData，带 X-Web: 1 与 HttpOnly cookie。
+	// 未带该头时仍走下面的 initData 校验（Telegram 内的正常路径）。
+	if r.Header.Get(webAuthHeader) == "1" {
+		if c, err := r.Cookie(webSessionCookie); err == nil {
+			if uid, ok := antiad.VerifyAdminSession(sh, c.Value); ok {
+				return uid, "", botID, true
+			}
+		}
+		miniErr(w, http.StatusUnauthorized,
+			"网页版登录已过期，请在 Telegram 私聊里重新获取登录链接")
+		return 0, "", 0, false
+	}
 	uid, username, err := validateMiniInitData(rec.Token, r.Header.Get(miniInitDataHeader))
 	if err != nil {
 		miniErr(w, http.StatusUnauthorized, err.Error())

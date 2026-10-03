@@ -66,6 +66,11 @@ func ShowMainMenu(b *core.Bot, chatID, msgID, uid int64) {
 			[][2]string{{"⚙️ 全局设置", "a:st"}},
 		)
 	}
+	// 网页版入口：签名链接 10 分钟有效，打开即种会话；网页子系统未就绪
+	// （没配 public_url 或缺签名密钥）时不显示。
+	if u := antiad.AdminLoginURL(b.Shared, uid, b.BotID()); u != "" {
+		rows = append(rows, [][2]string{{"🖥 网页版（浏览器打开）", tg.URLBtn(u)}})
+	}
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
