@@ -464,7 +464,11 @@ func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 		return
 	}
 	if target.From.ID == b.BotID() {
-		return // 别把 bot 自己封了
+		// 同 /banad：回复 bot 自己的消息是常见手滑，静默会让人以为命令坏了。
+		groupNotice(b, conf.ChatID, "这条是 bot 自己的消息，不能封 bot。"+
+			"请<b>回复目标的消息</b>发送 /ban，或直接发 "+
+			"<code>/ban &lt;user_id&gt;</code>。", nil, 30*time.Second)
+		return
 	}
 
 	snap := b.Cache.Snap()
@@ -522,7 +526,13 @@ func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 		return
 	}
 	if target.From.ID == b.BotID() {
-		return // 别把 bot 自己的告警标成广告
+		// 管理员很自然地会去回复告警/复查结果卡片（里面带着原文），但那是
+		// bot 自己的消息，标记它等于让 bot 自罚。这里不能静默 return：
+		// 线上真实反馈是「命令没反应」，管理员只能改用别处入口。
+		groupNotice(b, conf.ChatID, "这条是 bot 自己的消息，不能作为标记对象。"+
+			"请<b>回复发广告的那条原消息</b>发送 /banad，或直接发 "+
+			"<code>/banad &lt;user_id&gt;</code>。", nil, 30*time.Second)
+		return
 	}
 
 	snap := b.Cache.Snap()

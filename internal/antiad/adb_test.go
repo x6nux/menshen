@@ -143,8 +143,9 @@ func TestAdbNeedsReply(t *testing.T) {
 	}
 }
 
-// TestAdbIgnoresSelf 确认不会把 bot 自己的告警标成广告。
-// 告警里带着原文，回复它发 /ban 是很自然的手滑。
+// TestAdbIgnoresSelf 确认不会把 bot 自己的告警标成广告，并回一条指路提示。
+// 告警里带着原文，回复它发 /banad 是很自然的手滑；静默失败会被当成
+// 「命令没生效」（线上真实反馈），必须告诉管理员正确用法。
 func TestAdbIgnoresSelf(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -158,6 +159,10 @@ func TestAdbIgnoresSelf(t *testing.T) {
 	}
 	if _, _, _, _, n := lastLog(t, b); n != 0 {
 		t.Errorf("不该落流水，实际 %d 条", n)
+	}
+	c := fake.LastCall("sendMessage")
+	if c == nil || !strings.Contains(c["text"].(string), "/banad") {
+		t.Errorf("应回一条带正确用法的提示，实际 %v", c)
 	}
 }
 
