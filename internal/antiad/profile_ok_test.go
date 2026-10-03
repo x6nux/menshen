@@ -314,7 +314,9 @@ func TestCheckProfileReviewNotShieldedByProfileOK(t *testing.T) {
 		t.Fatal("预置放行失败")
 	}
 
-	// 管理员 /check：此人没有任何留底，走资料复查分支。
+	// 管理员 /check：此人没有任何发言留底，但有入群画像（刚进群还没发过言），
+	// 走资料复查分支。
+	recordJoin(b, -100, 7301, 1700000000)
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 41, "/check 7301"))
 	waitIdle(t, b)
 

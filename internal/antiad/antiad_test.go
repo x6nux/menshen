@@ -763,6 +763,39 @@ func TestCheckResultDisablesPreview(t *testing.T) {
 	}
 }
 
+// TestCheckNoDataUser：/check <user_id> 对数据库里查无此人的目标直接明确
+// 回「未有该用户数据」，不请求模型 —— 随机 ID 查资料既花钱，模型也给不出
+// 可信结论（线上反馈）。
+func TestCheckNoDataUser(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.9, "scam", "message"),
+		llmReply(true, 0.9, "scam", "message"))
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 998877"))
+	waitIdle(t, b)
+
+	var said string
+	for _, p := range fake.Calls("sendMessage") {
+		if s := fmt.Sprint(p["text"]); strings.Contains(s, "未有该用户数据") {
+			said = s
+		}
+	}
+	if said == "" {
+		t.Fatal("查无此人时应明确回复「未有该用户数据」")
+	}
+	if soN.Load() != 0 || llmN.Load() != 0 {
+		t.Errorf("查无此人时不该请求模型（systemone=%d llm=%d）",
+			soN.Load(), llmN.Load())
+	}
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("查无此人时不该有处置，实际 %d 次", n)
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM antiad_log`); n != 0 {
+		t.Errorf("查无此人时不该落判定流水，实际 %d 条", n)
+	}
+}
+
 // TestReviewCleanNoticeHasNoAppealLink：/check 结论是「正常」时，群内提示
 // 不能带 🚫、也不能附「点我申诉」——那个人没被处置，申诉入口对他没有
 // 意义，挂在群里像一张罚单（实测管理员看到「🚫 … 正常 92% + 点我申诉」
@@ -819,9 +852,10 @@ func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 	}
 }
 
-// TestCheckByUsernameAndProfile：/check 支持 @用户名；对方在本群没有留底
-// 时按进群资料复查（而不是回一句「无法复查」）—— 管理员查一个刚进群、
-// 还没发过言的人时正是这种情形。
+// TestCheckByUsernameAndProfile：/check 支持 @用户名；对方有入群画像、只是
+// 在本群没有发言留底时按进群资料复查（而不是回一句「无法复查」）——管理员查
+// 一个刚进群、还没发过言的人时正是这种情形。数据库里三种痕迹都没有的目标
+// 直接回「未有该用户数据」，见 TestCheckNoDataUser。
 func TestCheckByUsernameAndProfile(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -836,12 +870,13 @@ func TestCheckByUsernameAndProfile(t *testing.T) {
 	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "account"),
 		llmReply(true, 0.9, "scam", "account"))
 
-	// @用户名 形式；此人没有任何留底。
+	// @用户名 形式；此人有入群记录、没有任何发言留底。
+	recordJoin(b, -100, 8899, 1700000000)
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 1, 30, "/check @somebody"))
 	waitIdle(t, b)
 
 	if soN.Load()+llmN.Load() == 0 {
-		t.Fatal("没有留底时应按资料复查（两个模型都要跑）")
+		t.Fatal("有入群画像、没有留底时应按资料复查（两个模型都要跑）")
 	}
 	// 按进群限制处理：无限期禁言 + 台账 + 群内通知。
 	if fake.CountCalls("restrictChatMember") == 0 {

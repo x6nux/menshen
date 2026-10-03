@@ -280,11 +280,32 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
 // 一个刷了几千条的号会把单次请求撑成天价。
 const adReviewLimit = 60
 
+// hasUserData 报告本群数据库里有没有这个人的痕迹：发言留底（含纯图）、
+// 判定流水或成员画像。三者皆无才算「查无此人」—— /check 对这种目标不再
+// 请求模型（见 HandleAdCommand）。
+//
+// 查询出错时按「有数据」处理：宁可多花一次模型调用，也不能把真实用户
+// 误报成查无此人。
+func hasUserData(s *store.Store, chatID, uid int64) bool {
+	var n int
+	err := s.Read.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM group_messages WHERE chat_id=? AND user_id=?)
+	  + (SELECT COUNT(*) FROM antiad_log     WHERE chat_id=? AND user_id=?)
+	  + (SELECT COUNT(*) FROM group_members  WHERE chat_id=? AND user_id=?)`,
+		chatID, uid, chatID, uid, chatID, uid).Scan(&n)
+	if err != nil {
+		slog.Error("反广告：查用户数据失败", "chat", chatID, "uid", uid, "err", err)
+		return true
+	}
+	return n > 0
+}
+
 const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
 	"或直接发 <code>/check &lt;user_id&gt;</code> / <code>/check @用户名</code>" +
 	"（频道填 -100 开头的频道 ID）。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查；" +
-	"他还没在本群发过言时按进群资料复查。"
+	"数据库里查无此人时直接回复「未有该用户数据」，不发模型请求；" +
+	"只有入群记录、还没发过言的按进群资料复查。"
 
 // parseAdCommand 识别 /check、/ban、/white、/uad、/jtime 并取出命令名与参数。
 //
@@ -352,8 +373,19 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 
 	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit)
 	if len(hist) == 0 {
-		// 没有留底也能查：进群资料这一类判定本来就只看资料（冷判定的口径）。
-		// 管理员查一个刚进群、还没发过言的人时正是这种情形。
+		// 数据库里连这个人的任何痕迹都没有（发言留底、判定流水、入群画像
+		// 三样皆无）时直接给结论，不请求模型：随机 user_id 查资料既花钱，
+		// 模型也给不出可信结论（线上真实反馈）。
+		if !hasUserData(b.Store, m.Chat.ID, target.ID) {
+			notice := fmt.Sprintf("🔎 <b>复查结果</b>\n未有该用户数据：<code>%d</code> "+
+				"在本群没有发言留底、判定流水或入群记录，未做判定。", target.ID)
+			scheduleAlertCleanup(b, m.Chat.ID,
+				b.SendGetIDNoPreview(m.Chat.ID, notice, nil),
+				time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
+			return
+		}
+		// 有入群画像、只是还没发过言（刚进群的人）：这类人能看的只有资料，
+		// 走冷判定那套提示词与采信线。
 		if !b.AdSubmit(func() { reviewProfileOnly(b, snap, conf, target) }) {
 			sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
 		}
