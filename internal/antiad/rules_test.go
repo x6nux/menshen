@@ -548,3 +548,17 @@ func TestRuleHitNoLLMFallsBackToMatrix(t *testing.T) {
 		t.Errorf("无复判模型时按矩阵定案：action=%q decider=%q", action, decider)
 	}
 }
+
+// TestMatchedRulesSeeQuoted：规则匹配看含引用的完整文本（正文为空、载荷
+// 全在引用里是典型规避形态），与守门处的 enforce/计数口径一致。
+func TestMatchedRulesSeeQuoted(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	insertRule(t, b, "引用广告规则", "引用命中词", "scam", true, false)
+
+	m := testutil.GroupMsg(-100, 42, 1, "看看这个")
+	m.ReplyToMessage = testutil.GroupMsg(-100, 43, 2, "引用命中词")
+	st := buildState(b, b.Cache.Snap(), m, senderProfile{MsgsInGroup: 5})
+	if len(st.MatchedRules) != 1 || st.MatchedRules[0].Name != "引用广告规则" {
+		t.Errorf("引用里的规则命中应进证据：%+v", st.MatchedRules)
+	}
+}

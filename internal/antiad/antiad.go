@@ -1730,7 +1730,11 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 	// 启用的必封规则命中单独成字段：它比形态摘要强，提示词按「强证据」
 	// 对待（见 matchedRulesClause），但仍由模型结合上下文复核后处置。
-	st.MatchedRules = MatchedRuleInfos(snap, text)
+	//
+	// 匹配用 displayText（含引用）：正文为空、载荷全在引用里的规避形态
+	// 同样要命中（与守门处的 enforce/计数口径完全一致）；提示词另有
+	// 「引用他人广告做批评不算」的出口，由复判模型结合语境定案。
+	st.MatchedRules = MatchedRuleInfos(snap, displayText(m))
 	return st
 }
 
