@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -125,6 +126,30 @@ func withPunish(act adAction, ban bool) adAction {
 	return act
 }
 
+// deleteMessageGone 报告 deleteMessage 的失败是不是「消息已经不在了」。
+// Telegram 对已删除或从未存在的消息回 “message to delete not found”；
+// 个别反代与旧版网关回 MESSAGE_ID_INVALID。两者都不是故障：这次处置的
+// 目标就是让这条消息消失，它本来已经不在了。
+func deleteMessageGone(desc string) bool {
+	d := strings.ToLower(desc)
+	return strings.Contains(d, "message to delete not found") ||
+		strings.Contains(d, "message_id_invalid")
+}
+
+// DeleteMessage 删一条消息，并把「消息已经不在了」当成功。
+//
+// 管理员手快、另一个 bot 先删、消息随账号一起消失时，再报「删除失败」
+// 只会给管理员一个点了也没用的补删按钮，还会在汇总里标一个假 ⚠️。
+func DeleteMessage(b *core.Bot, chatID, msgID int64) (bool, string) {
+	ok, desc := b.CallOK("deleteMessage", map[string]any{
+		"chat_id": chatID, "message_id": msgID})
+	if !ok && deleteMessageGone(desc) {
+		slog.Info("反广告：消息已不存在，删除跳过", "chat", chatID, "msg", msgID)
+		return true, ""
+	}
+	return ok, desc
+}
+
 // ApplyAction 执行处置，返回失败说明（全部成功时为空）。
 //
 // dryrun 为真时完整跳过所有群内写操作：试运行期必须能看清 AI 会怎么判，
@@ -138,9 +163,7 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 	}
 	var notes []string
 	if act.Delete {
-		if ok, desc := b.CallOK("deleteMessage", map[string]any{
-			"chat_id": m.Chat.ID, "message_id": m.MessageID,
-		}); !ok {
+		if ok, desc := DeleteMessage(b, m.Chat.ID, m.MessageID); !ok {
 			notes = append(notes, noteDeleteFailed+": "+desc)
 		}
 		if m.MediaGroupID != "" {
@@ -163,15 +186,15 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 		if act.Temp {
 			d = tempMute
 		}
-		if ok, desc := MuteSender(b, m.Chat.ID, m.From.ID, d); !ok {
-			notes = append(notes, noteMuteFailed+": "+desc)
+		if s := muteOrExplain(b, m.Chat.ID, m.From.ID, d); s != "" {
+			notes = append(notes, s)
 		}
 	}
 	// 仅删除档的短禁言。频道身份（负 ID）跳过：MuteSender 对频道走的是
 	// banChatSenderChat，那是永久封频道，比这一档该有的分量重得多。
 	if act.Short && m.From.ID > 0 {
-		if ok, desc := MuteSender(b, m.Chat.ID, m.From.ID, tempMute); !ok {
-			notes = append(notes, noteMuteFailed+": "+desc)
+		if s := muteOrExplain(b, m.Chat.ID, m.From.ID, tempMute); s != "" {
+			notes = append(notes, s)
 		}
 	}
 	if act.Ban {
@@ -198,6 +221,74 @@ func MuteSender(b *core.Bot, chatID, uid int64, d time.Duration) (bool, string) 
 		payload["until_date"] = time.Now().Add(d).Unix()
 	}
 	return b.CallOK("restrictChatMember", payload)
+}
+
+// participantGoneDesc 报告禁言失败的错误文本是否直接说明对方不在群里。
+// 这两种描述出现时 getChatMember 也查不到有效成员，能省一次 TG 往返。
+func participantGoneDesc(desc string) bool {
+	d := strings.ToLower(desc)
+	return strings.Contains(d, "participant_id_invalid") ||
+		strings.Contains(d, "user_not_participant")
+}
+
+// MuteMoot 在禁言失败后做二次判断：这次失败是不是因为「已经不用禁了」——
+// 对方已经退群 / 被踢 / 被封禁出群，或已经处于发不出言的状态。
+// 返回给管理员看的说明；空串表示确实失败，调用方照常上报「禁言失败」。
+//
+// getChatMember 查不成时按「确实失败」处理：宁可多报一次失败，也不能
+// 因为一次 TG 抖动把没禁上的人显示成已处理。
+func MuteMoot(b *core.Bot, chatID, uid int64, desc string) string {
+	if uid <= 0 {
+		return "" // 频道身份没有成员状态可查
+	}
+	if participantGoneDesc(desc) {
+		slog.Info("反广告：禁言跳过（对方已不在群/已被封禁出群）",
+			"chat", chatID, "uid", uid)
+		return "对方已不在群里（可能已被封禁出群）"
+	}
+	raw, err := b.TG.Call("getChatMember", map[string]any{
+		"chat_id": chatID, "user_id": uid,
+	})
+	if err != nil {
+		return ""
+	}
+	var resp tg.ChatMemberResp
+	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
+		return ""
+	}
+	switch resp.Result.Status {
+	case "left":
+		slog.Info("反广告：禁言跳过（对方已退群）", "chat", chatID, "uid", uid)
+		return "对方已退群"
+	case "kicked":
+		slog.Info("反广告：禁言跳过（对方已被封禁出群）", "chat", chatID, "uid", uid)
+		return "对方已被封禁出群"
+	case "restricted":
+		if resp.Result.IsMember != nil && !*resp.Result.IsMember {
+			slog.Info("反广告：禁言跳过（对方已不在群）", "chat", chatID, "uid", uid)
+			return "对方已不在群里"
+		}
+		if resp.Result.CanSendMessages != nil && !*resp.Result.CanSendMessages {
+			slog.Info("反广告：禁言跳过（对方已处于禁言状态）",
+				"chat", chatID, "uid", uid)
+			return "对方已处于禁言状态"
+		}
+	}
+	return ""
+}
+
+// muteOrExplain 禁言并在失败时给出说明：成功返回空串；失败但已经不用禁
+// 返回「无需禁言：…」；其余按「禁言失败」上报。告警按钮只认失败前缀来
+// 放回补刀入口（见 adAlertRows），两种结果的措辞必须分开。
+func muteOrExplain(b *core.Bot, chatID, uid int64, d time.Duration) string {
+	ok, desc := MuteSender(b, chatID, uid, d)
+	if ok {
+		return ""
+	}
+	if why := MuteMoot(b, chatID, uid, desc); why != "" {
+		return "无需禁言：" + why
+	}
+	return noteMuteFailed + ": " + desc
 }
 
 // BanSender 封禁出群（永久）。频道身份走 banChatSenderChat。

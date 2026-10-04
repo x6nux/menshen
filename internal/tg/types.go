@@ -228,6 +228,10 @@ type ChatMemberResp struct {
 	OK     bool `json:"ok"`
 	Result struct {
 		Status string `json:"status"`
+		// IsMember 只在 restricted 状态里出现：被限制但仍在群里。
+		// 只看 status 会把「已被踢走但留下一条受限记录」当成还在群里，
+		// 禁言失败后的二次判断会因此漏掉真正该跳过的场景。
+		IsMember *bool `json:"is_member"`
 		// CanSendMessages 只在 restricted 状态里出现，所以用指针区分
 		// 「字段不存在」与「确实为 false」：普通成员的响应里没有它，
 		// 当成 false 会把所有正常成员都看成被禁言。

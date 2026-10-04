@@ -410,13 +410,19 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "参数无效")
 			return
 		}
-		if !b.CanManageBot(q.From.ID, b.BotID()) {
-			b.AnswerCallback(q.ID, "无权操作")
-			return
+		// 优先用在这个群里工作的 bot；群已不在任何 bot 名下时（遗留的限制
+		// 记录）退回面板所在的 bot —— TG 侧多半解不了，但记录照样要清掉。
+		inst, managed := chatBot(b, q.From.ID, chat)
+		if !managed {
+			if !b.CanManageBot(q.From.ID, b.BotID()) {
+				b.AnswerCallback(q.ID, "无权操作")
+				return
+			}
+			inst = b
 		}
 		all := len(parts) > 6 && parts[6] == "all"
 		note := "已解除"
-		if ok, desc := antiad.ReleaseUserInChat(b, chat, target, q.From.ID); !ok {
+		if ok, desc := antiad.ReleaseUserInChat(inst, chat, target, q.From.ID); !ok {
 			note = desc
 		}
 		b.AnswerCallback(q.ID, note)
@@ -437,18 +443,49 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "记录不存在或已过保留期")
 			return
 		}
-		if !adDispositionAllowed(b, q.From.ID, row) {
+		inst := recordBot(b, row.BotID)
+		if !adDispositionAllowed(inst, q.From.ID, row) {
 			// 静默：与 a: 前缀的既有做法一致，不向无关人员确认按钮存在。
 			b.AnswerCallback(q.ID, "")
 			return
 		}
-		applyAdManualAction(b, q, parts[2], row)
+		applyAdManualAction(b, inst, q, parts[2], row)
 		// 处置后原地重绘：从 /user 列表进来的卡片要保留「返回列表」。
 		redrawAdCard(b, q, id)
 
 	default:
 		b.AnswerCallback(q.ID, "")
 	}
+}
+
+// recordBot 返回处置一条记录该用的 bot：**记录所属的工作 bot**。
+//
+// 面板所在的 bot 常是不入群的主 bot（/log、/user、深链都可能落在它那里），
+// 用它发 restrictChatMember 必然失败，按它的 bot_id 标记流水、撤内容哈希
+// 也一条都对不上 —— 线上表现就是「点了误判 / 解封，人还是发不了言」。
+// 回调应答仍由收到回调的 b 发。实例不在运行时退回 b（多半同样失败，但会如实报错）。
+func recordBot(b *core.Bot, botID int64) *core.Bot {
+	if b.Reg != nil {
+		if inst, ok := b.Reg.LookupID(botID); ok {
+			return inst
+		}
+	}
+	return b
+}
+
+// chatBot 找在 chatID 里工作、且 uid 有权管理的那个 bot 实例（用户记录页的
+// 「解除」只带群号，没有记录可依托）。找不到返回 false。
+func chatBot(b *core.Bot, uid, chatID int64) (*core.Bot, bool) {
+	snap := b.Cache.Snap()
+	for botID := range snap.Bots {
+		if _, ok := snap.ChatConf(botID, chatID); !ok || !b.CanManageBot(uid, botID) {
+			continue
+		}
+		if inst := recordBot(b, botID); inst.BotID() == botID {
+			return inst, true
+		}
+	}
+	return nil, false
 }
 
 // adDispositionAllowed 报告此人能否对这条判定记录做人工处置。
@@ -484,14 +521,14 @@ func IsAdDispositionCallback(data string) bool {
 }
 
 // applyAdManualAction 执行管理员的人工处置。
-func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad.AdLogRow) {
+func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row antiad.AdLogRow) {
 	switch op {
 	case "ok":
 		// 管理员确认判定正确：**绕过老成员免禁言** —— 人已经看过原文并背书，
 		// 不该再按资历只删不罚。按本群处罚方式补一次正式处置（记录里没删过
 		// 的消息连带补删），动作标签与理由同步更新；样本留在正例池里供形态
 		// 总结取用，之后按「误判」仍可走原有的解禁路径。
-		snap := b.Cache.Snap()
+		snap := inst.Cache.Snap()
 		conf, _ := snap.ChatConf(row.BotID, row.ChatID)
 		ban := snap.BanMode(conf)
 		mins := snap.BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
@@ -500,22 +537,26 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		deleted := strings.HasPrefix(row.Action, "deleted") ||
 			strings.HasPrefix(row.Action, "dryrun:deleted")
 		if !deleted && row.MessageID != 0 {
-			if ok2, _ := b.CallOK("deleteMessage", map[string]any{
-				"chat_id": row.ChatID, "message_id": row.MessageID}); ok2 {
+			if ok2, _ := antiad.DeleteMessage(inst, row.ChatID, row.MessageID); ok2 {
 				deleted = true
 			}
 		}
 
-		done, fail := "", ""
+		done, fail, skip := "", "", ""
 		if ban {
-			if ok2, desc := antiad.BanSender(b, row.ChatID, row.UserID); !ok2 {
+			if ok2, desc := antiad.BanSender(inst, row.ChatID, row.UserID); !ok2 {
 				fail = "封禁失败: " + core.TruncateRunes(desc, 60)
 			} else {
 				done = "封禁出群"
 			}
-		} else if ok2, desc := antiad.MuteSender(b, row.ChatID, row.UserID,
+		} else if ok2, desc := antiad.MuteSender(inst, row.ChatID, row.UserID,
 			time.Duration(mins)*time.Minute); !ok2 {
-			fail = "禁言失败: " + core.TruncateRunes(desc, 60)
+			// 人已经退群/被踢/已被禁言时禁言必然失败，这不算故障。
+			if why := antiad.MuteMoot(inst, row.ChatID, row.UserID, desc); why != "" {
+				skip = why
+			} else {
+				fail = "禁言失败: " + core.TruncateRunes(desc, 60)
+			}
 		} else {
 			done = antiad.MuteLabel(mins)
 		}
@@ -523,13 +564,13 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		// 动作标签按实际结果写：误判/解封路径靠它决定怎么解。
 		action := row.Action
 		switch {
-		case fail == "" && ban && deleted:
+		case fail == "" && skip == "" && ban && deleted:
 			action = "deleted_banned"
-		case fail == "" && ban:
+		case fail == "" && skip == "" && ban:
 			action = "banned"
-		case fail == "" && deleted:
+		case fail == "" && skip == "" && deleted:
 			action = "deleted_muted"
-		case fail == "":
+		case fail == "" && skip == "":
 			action = "muted"
 		case deleted:
 			action = "deleted"
@@ -538,78 +579,40 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		if done != "" {
 			note += "：" + done
 		}
+		if skip != "" {
+			note += "；" + skip + "，未追加禁言"
+		}
 		if fail != "" {
 			note += "；" + fail
 		}
-		antiad.UpdateAdLog(b, row.ID, action, appendReason(row.Reason, note))
+		antiad.UpdateAdLog(inst, row.ID, action, appendReason(row.Reason, note))
 		if fail != "" {
 			b.AnswerCallback(q.ID, fail)
+			return
+		}
+		if skip != "" {
+			b.AnswerCallback(q.ID, "已确认判定；"+skip+"，无需禁言")
 			return
 		}
 		b.AnswerCallback(q.ID, "已确认并"+done)
 
 	case "fp":
-		// 误判是整个闭环最值钱的一环：解禁、回退命中数，
-		// 并把样本转入反例池（action=undone 就是反例的判据）。
-		//
-		// 数据侧的两项修正（命中数回退、action 改判）与解禁 API
-		// 调用是否成功无关——即使 TG 一侧解禁失败，样本判据和画像
-		// 也不该继续背着这次误判，但必须如实告诉管理员解禁没做成，
-		// 不能让他们以为用户已经能正常发言了。
-		// 只在 bot 确实禁过言时才解禁。unmute 发的是「十项权限全 true」，
-		// TG 语义上不是「撤销我那次禁言」而是「把权限设成全开」：对没被
-		// 禁过的人等于提权到群默认之上，还会解掉人类管理员因别的原因
-		// 施加的限制。dryrun: 前缀标记的动作从未真实发生，同样不算——
-		// 那是演练模式唯一的漏点。
-		unmuted, desc := true, ""
-		switch row.Action {
-		case "muted", "deleted_muted", "gban_muted":
-			// gban_muted 是联合封禁在发言路径上的禁言（不是名单本身）：
-			// 名单另由下面的 AdminLiftGban 撤，但群里的禁言也得解掉。
-			unmuted, desc = antiad.Unmute(b, row.ChatID, row.UserID)
-		case "banned", "deleted_banned":
-			unmuted, desc = antiad.Unban(b, row.ChatID, row.UserID)
-		}
-		// 同样的内容别再被当成广告直接删（见 antiad 的内容哈希）。
-		antiad.ForgetAdHash(b, row.Text)
-		antiad.BumpAdHits(b, row.ChatID, row.UserID, -1)
-		// 这条判定作废了，由它派生的联合封禁也得一起撤：名单是跨所有接入群
-		// 执行的，留着等于让一条被判错的记录继续全平台封人。
-		//   - 服务管理员：撤全局组 + 自己的专属组；主管理员额外撤**记录所属
-		//     bot 归属人**的专属组（否则误判撤了，人在那个归属人的群里还封着）
-		//   - 群管理员（只是 TG 群管，不是服务管理员）：不动名单，只解本群
-		var lifted []string
-		if b.IsStaff(q.From.ID) {
-			if s := antiad.AdminLiftGban(b.Shared, q.From.ID, row.UserID); s != "" {
-				lifted = append(lifted, s)
-			}
-			if b.IsMain(q.From.ID) {
-				if rec := b.Cache.Snap().Bots[row.BotID]; rec != nil && rec.OwnerID != q.From.ID {
-					if s := antiad.AdminLiftGban(b.Shared, rec.OwnerID, row.UserID); s != "" {
-						lifted = append(lifted, s)
-					}
-				}
-			}
-		}
-		reason := "管理员标记误判"
-		if len(lifted) > 0 {
-			reason += "，已撤除" + strings.Join(lifted, "、")
-		}
-		antiad.UpdateAdLog(b, row.ID, "undone", appendReason(row.Reason, reason))
-		if !unmuted {
+		// 误判是整个闭环最值钱的一环：改判、解禁、撤派生的联合封禁（见
+		// antiad.UndoVerdict）。数据侧改判与 TG 侧解禁是否成功无关，但解禁
+		// 失败必须如实告诉管理员，不能让他们以为用户已经能正常发言了。
+		lifted, ok, desc := antiad.UndoVerdict(inst, row, q.From.ID)
+		if !ok {
 			b.AnswerCallback(q.ID, "已标记误判，但解除限制失败: "+core.TruncateRunes(desc, 40))
 			return
 		}
 		msg := "已标记误判并解除限制"
-		if len(lifted) > 0 {
-			msg += "；已撤除" + strings.Join(lifted, "、")
+		if lifted != "" {
+			msg += "；已撤除" + lifted
 		}
 		b.AnswerCallback(q.ID, msg)
 
 	case "del":
-		if ok, desc := b.CallOK("deleteMessage", map[string]any{
-			"chat_id": row.ChatID, "message_id": row.MessageID,
-		}); !ok {
+		if ok, desc := antiad.DeleteMessage(inst, row.ChatID, row.MessageID); !ok {
 			b.AnswerCallback(q.ID, "删除失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
@@ -619,7 +622,7 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		// undone 是负采样的判据，banned 已经把人请出群了。
 		// TG 侧照常删，只是不改 action 标签，实际动作记进 reason 留痕。
 		if row.Action == "undone" || row.Action == "banned" {
-			antiad.UpdateAdLog(b, row.ID, row.Action, reason)
+			antiad.UpdateAdLog(inst, row.ID, row.Action, reason)
 			b.AnswerCallback(q.ID, "已删除（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return
 		}
@@ -631,20 +634,25 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		if row.Action == "muted" || row.Action == "deleted_muted" {
 			action = "deleted_muted"
 		}
-		antiad.UpdateAdLog(b, row.ID, action, reason)
+		antiad.UpdateAdLog(inst, row.ID, action, reason)
 		b.AnswerCallback(q.ID, "已删除")
 
 	case "mute":
-		minutes := b.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
-		if ok, desc := antiad.MuteSender(b, row.ChatID, row.UserID,
+		minutes := inst.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
+		if ok, desc := antiad.MuteSender(inst, row.ChatID, row.UserID,
 			time.Duration(minutes)*time.Minute); !ok {
+			// 同「确认」分支：人已出群/已被禁言时不再报假失败。
+			if why := antiad.MuteMoot(inst, row.ChatID, row.UserID, desc); why != "" {
+				b.AnswerCallback(q.ID, why+"，无需禁言")
+				return
+			}
 			b.AnswerCallback(q.ID, "禁言失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
 		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(minutes))
 		// 同 del 分支：undone/banned 不能被这次禁言覆盖。
 		if row.Action == "undone" || row.Action == "banned" {
-			antiad.UpdateAdLog(b, row.ID, row.Action, reason)
+			antiad.UpdateAdLog(inst, row.ID, row.Action, reason)
 			b.AnswerCallback(q.ID, "已禁言（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return
 		}
@@ -656,22 +664,22 @@ func applyAdManualAction(b *core.Bot, q *tg.CallbackQuery, op string, row antiad
 		if strings.HasPrefix(row.Action, "deleted") {
 			action = "deleted_muted"
 		}
-		antiad.UpdateAdLog(b, row.ID, action, reason)
+		antiad.UpdateAdLog(inst, row.ID, action, reason)
 		b.AnswerCallback(q.ID, "已禁言")
 
 	case "rel":
 		// 解封（判定维持）：撤掉还在生效的限制、清掉记录，但不动判定本身
 		// —— 与「↩️ 误判」的区别就在这里（样本池、命中数、内容哈希都不动）。
-		did := antiad.ReleaseUser(b, row, q.From.ID)
+		did := antiad.ReleaseUser(inst, row, q.From.ID)
 		b.AnswerCallback(q.ID, "已"+did+"（判定维持不变）")
 
 	case "ban":
 		// banChatMember 是把人请出群，与禁言是两回事。频道身份走 banChatSenderChat。
-		if ok, desc := antiad.BanSender(b, row.ChatID, row.UserID); !ok {
+		if ok, desc := antiad.BanSender(inst, row.ChatID, row.UserID); !ok {
 			b.AnswerCallback(q.ID, "封禁失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
-		antiad.UpdateAdLog(b, row.ID, "banned", appendReason(row.Reason, "管理员封禁出群"))
+		antiad.UpdateAdLog(inst, row.ID, "banned", appendReason(row.Reason, "管理员封禁出群"))
 		b.AnswerCallback(q.ID, "已封禁出群")
 	}
 }

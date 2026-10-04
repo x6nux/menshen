@@ -92,6 +92,64 @@ func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
 	return true, ""
 }
 
+// UndoVerdict 是「误判」：改判为 undone（样本转入反例池，action=undone 就是
+// 反例的判据）、撤内容哈希、回退命中数、撤由它派生的联合封禁，并解除它在
+// 本群施加的限制。
+//
+// 顺序有讲究：**先改判、再撤名单**。撤名单时 gbanLiftRecorded 会跳过「群里
+// 另有生效处罚」的群，这条判定若还挂着，源群里的联合封禁禁言就永远解不开。
+// 解禁走 LiftMute（落「主动解除」标记、清进群限制、标记流水），否则外部
+// 解除复查会把人再禁回去。
+//
+// b 必须是**记录所属的 bot**：restrictChatMember 要由在群里的 bot 发，内容
+// 哈希也按 bot 隔离。actor 是执行人：服务管理员连名单一起撤（主管理员额外
+// 撤记录所属 bot 归属人的专属组），群管理员只解本群。
+//
+// 只在 bot 确实处罚过时才解：unmute 发的是「十项权限全开」，对没被禁过的人
+// 等于提权到群默认之上；dryrun: 前缀的动作从未真实发生，同样不动。
+// 数据侧的改判与 TG 侧是否成功无关；返回撤掉的名单与 TG 侧是否解除成功。
+func UndoVerdict(b *core.Bot, r AdLogRow, actor int64) (lifted string, ok bool, desc string) {
+	reason := appendNote(r.Reason, "管理员标记误判")
+	UpdateAdLog(b, r.ID, "undone", reason)
+	// 同样的内容别再被当成广告直接删（见内容哈希）。
+	ForgetAdHash(b, r.Text)
+	BumpAdHits(b, r.ChatID, r.UserID, -1)
+
+	var names []string
+	if b.IsStaff(actor) {
+		if s := AdminLiftGban(b.Shared, actor, r.UserID); s != "" {
+			names = append(names, s)
+		}
+		if b.IsMain(actor) {
+			if rec := b.Cache.Snap().Bots[r.BotID]; rec != nil && rec.OwnerID != actor {
+				if s := AdminLiftGban(b.Shared, rec.OwnerID, r.UserID); s != "" {
+					names = append(names, s)
+				}
+			}
+		}
+	}
+	if len(names) > 0 {
+		lifted = strings.Join(names, "、")
+		UpdateAdLog(b, r.ID, "undone", reason+"，已撤除"+lifted)
+	}
+
+	ok = true
+	switch r.Action {
+	case "muted", "deleted_muted", "gban_muted", "join_muted":
+		ok, desc = LiftMute(b, r.ChatID, r.UserID)
+	case "banned", "deleted_banned", "gban_banned":
+		if ok, desc = Unban(b, r.ChatID, r.UserID); ok {
+			MarkPenaltiesLifted(b, r.ChatID, r.UserID)
+		}
+	case "deleted":
+		// 先删后判：复判期的临时禁言可能还挂着。
+		LiftTempMuteIfFresh(b, r.ChatID, r.UserID)
+	}
+	slog.Info("反广告：管理员标记误判", "log", r.ID, "chat", r.ChatID,
+		"uid", r.UserID, "bot", b.BotID(), "撤除名单", lifted, "解除成功", ok)
+	return lifted, ok, desc
+}
+
 // appendNote 在理由后面追加一句，保持原有理由在前。
 func appendNote(old, add string) string {
 	old = strings.TrimSpace(old)

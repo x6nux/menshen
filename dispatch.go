@@ -141,8 +141,16 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
-	// /log、/user、/white：记录查询与豁免名单。
+	// /log、/user、/white：记录查询与豁免名单；/uban：在能管的所有群里全解。
 	switch {
+	case text == "/uban" || strings.HasPrefix(text, "/uban ") ||
+		strings.HasPrefix(text, "/uban@"):
+		arg := strings.TrimPrefix(text, "/uban")
+		if strings.HasPrefix(arg, "@") { // /uban@botname <uid>
+			_, arg, _ = strings.Cut(arg, " ")
+		}
+		antiad.HandleUbanCommand(b, m, strings.TrimSpace(arg))
+		return
 	case text == "/log" || strings.HasPrefix(text, "/log ") ||
 		strings.HasPrefix(text, "/log@"):
 		panel.HandleLogCommand(b, m, text)

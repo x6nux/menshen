@@ -450,3 +450,36 @@ func TestAdminLiftGbanScope(t *testing.T) {
 		t.Error("个人简介限制记录应被清掉")
 	}
 }
+
+// TestGbanOwnRemoveUnmutes：专属组撤销与全局组同理 —— unbanChatMember 只解
+// 封禁，禁言档的群当初是 restrictChatMember，要再发一次「权限全开」。
+func TestGbanOwnRemoveUnmutes(t *testing.T) {
+	a, _, fa, fb := sameOwnerPair(t, -100)
+	sh, owner := a.Shared, a.Owner()
+	if err := GbanOwnSetEnabled(sh, owner, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnSetChat(sh, owner, -100, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := GbanOwnAddBan(sh, owner, 888, "测试", 0); err != nil {
+		t.Fatal(err)
+	}
+	EnforceGbanOwn(sh, owner, 888)
+	before := fa.CountCalls("restrictChatMember") + fb.CountCalls("restrictChatMember")
+
+	if err := GbanOwnRemoveBan(sh, owner, 888); err != nil {
+		t.Fatal(err)
+	}
+	if fa.CountCalls("restrictChatMember")+fb.CountCalls("restrictChatMember") == before {
+		t.Error("撤专属组应补发一次解除禁言")
+	}
+	var n int
+	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE user_id=888 AND action='gban_muted' AND lifted_at=0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("撤销后 gban_muted 应标记解除，还剩 %d 条", n)
+	}
+}

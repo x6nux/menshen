@@ -241,6 +241,15 @@ func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 			gbanLogAction(b, chatID, uid, act)
 			return
 		}
+		// 禁言档失败先看人是不是已经不在群里/已经说不了话：这是联合封禁
+		// 扇出的常态（名单里的人多半不在每一个群里），不该刷「执行失败」，
+		// 也不该落一条日后需要解的 gban_muted 流水。
+		if act == "mute" {
+			if why := MuteMoot(b, chatID, uid, desc); why != "" {
+				slog.Info("联合封禁：跳过", "chat", chatID, "uid", uid, "原因", why)
+				return
+			}
+		}
 		lastDesc = desc
 	}
 	if lastDesc != "" {

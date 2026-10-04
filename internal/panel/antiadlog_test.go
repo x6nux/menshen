@@ -370,3 +370,71 @@ func TestUserCardShowsAndLiftsPenalties(t *testing.T) {
 		t.Error("点解除后进群限制记录该被清掉")
 	}
 }
+
+// TestManualDeleteAlreadyGone：管理员点「删除」时消息已被别人先删掉，
+// deleteMessage 报 not found —— 目标已达成，回执应是「已删除」而不是
+// 「删除失败」，记录也要落成 deleted。
+func TestManualDeleteAlreadyGone(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	id := seedLog(t, b, 42, "广告原文", "alerted")
+	fake.Resp["deleteMessage"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: message to delete not found"}`
+
+	HandleAdminCallback(b, cb(1, "a:ad:del:"+itoa(id)))
+
+	p := fake.LastCall("answerCallbackQuery")
+	if p == nil || !strings.Contains(fmt.Sprint(p["text"]), "已删除") {
+		t.Fatalf("回执应为已删除: %v", p)
+	}
+	var action string
+	b.Store.Read.QueryRow(`SELECT action FROM antiad_log WHERE id=?`, id).Scan(&action)
+	if action != "deleted" {
+		t.Errorf("记录动作应变更为 deleted，得到 %q", action)
+	}
+}
+
+// TestManualMuteGoneUser：人已被封禁出群时人工禁言必然失败，
+// 二次判断后回执「无需禁言」，且不把记录改成已禁言。
+func TestManualMuteGoneUser(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	id := seedLog(t, b, 42, "广告原文", "deleted")
+	fake.Resp["restrictChatMember"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: PARTICIPANT_ID_INVALID"}`
+
+	HandleAdminCallback(b, cb(1, "a:ad:mute:"+itoa(id)))
+
+	p := fake.LastCall("answerCallbackQuery")
+	if p == nil || !strings.Contains(fmt.Sprint(p["text"]), "无需禁言") {
+		t.Fatalf("回执应说明无需禁言: %v", p)
+	}
+	var action string
+	b.Store.Read.QueryRow(`SELECT action FROM antiad_log WHERE id=?`, id).Scan(&action)
+	if action != "deleted" {
+		t.Errorf("没禁上就不该把记录改成 deleted_muted，得到 %q", action)
+	}
+}
+
+// TestManualConfirmGoneUserSkipsMute：确认判定正确时若人已出群，
+// 不能把记录标成 deleted_muted（根本没禁上），理由里留痕供回溯。
+func TestManualConfirmGoneUserSkipsMute(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	id := seedLog(t, b, 42, "广告原文", "deleted")
+	fake.Resp["restrictChatMember"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: PARTICIPANT_ID_INVALID"}`
+
+	HandleAdminCallback(b, cb(1, "a:ad:ok:"+itoa(id)))
+
+	p := fake.LastCall("answerCallbackQuery")
+	if p == nil || !strings.Contains(fmt.Sprint(p["text"]), "无需禁言") {
+		t.Fatalf("回执应说明无需禁言: %v", p)
+	}
+	var action, reason string
+	b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log WHERE id=?`, id).Scan(&action, &reason)
+	if action != "deleted" {
+		t.Errorf("禁言没落地，动作不该变成 %q", action)
+	}
+	if !strings.Contains(reason, "未追加禁言") {
+		t.Errorf("理由应写明未追加禁言：%q", reason)
+	}
+}

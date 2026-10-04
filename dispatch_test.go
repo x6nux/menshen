@@ -275,3 +275,29 @@ func TestMainBotStillServesPanel(t *testing.T) {
 		t.Error("管理员私聊 /start 时，主 bot 的管理面板应照常响应")
 	}
 }
+
+// TestUbanCommandRouting：私聊 /uban 只对服务管理员生效（主/次都行），
+// 陌生人发同样的文字不会触发全解 —— 它落到申诉通道，不暴露命令。
+func TestUbanCommandRouting(t *testing.T) {
+	dm := func(uid int64, text string) *tg.Update {
+		return &tg.Update{Message: &tg.Message{MessageID: 1, Date: 1700000000, Text: text,
+			From: &tg.TGUser{ID: uid}, Chat: &tg.Chat{ID: uid, Type: "private"}}}
+	}
+	b, fake, sh := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []int64{777, 888} {
+		fake.Reset()
+		dispatch(b, dm(uid, "/uban"))
+		if p := fake.LastCall("sendMessage"); p == nil || !strings.Contains(p["text"].(string), "/uban") {
+			t.Errorf("管理员 %d 发 /uban 不带参数应得到用法说明，得到 %v", uid, p)
+		}
+	}
+	fake.Reset()
+	dispatch(b, dm(12345, "/uban 555"))
+	if p := fake.LastCall("sendMessage"); p != nil && strings.Contains(p["text"].(string), "解除") &&
+		strings.Contains(p["text"].(string), "555") {
+		t.Errorf("陌生人不该能触发全解：%v", p)
+	}
+}

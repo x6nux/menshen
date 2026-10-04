@@ -579,3 +579,105 @@ func TestSevereAdBeatsVeteranExemption(t *testing.T) {
 		t.Error("阈值设 0 后应回到老人只删")
 	}
 }
+
+// TestDeleteAlreadyGoneIsNotFailure：消息被管理员或别的 bot 先删掉时，
+// deleteMessage 报 “message to delete not found”。目标已经达成，不该
+// 上报「删除失败」——汇总里的假 ⚠️ 与点了也没用的补删按钮都来自它。
+func TestDeleteAlreadyGoneIsNotFailure(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["deleteMessage"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: message to delete not found"}`
+
+	act := adAction{Delete: true, Name: "deleted"}
+	if note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false); note != "" {
+		t.Fatalf("消息本就不在，不该报失败，得到 %q", note)
+	}
+	if n := fake.CountCalls("deleteMessage"); n != 1 {
+		t.Errorf("应尝试过一次删除，实际 %d 次", n)
+	}
+}
+
+// TestDeleteRealFailureStillReported：消息还在但删不掉（超期、没权限）
+// 是真失败，照常上报。
+func TestDeleteRealFailureStillReported(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["deleteMessage"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: message can't be deleted"}`
+
+	act := adAction{Delete: true, Name: "deleted"}
+	note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false)
+	if !strings.Contains(note, noteDeleteFailed) {
+		t.Fatalf("真失败要上报，得到 %q", note)
+	}
+}
+
+// TestMuteGoneByErrorText：PARTICIPANT_ID_INVALID 直接说明对方不在群里，
+// 不必再查 getChatMember，也不再报「禁言失败」。
+func TestMuteGoneByErrorText(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["restrictChatMember"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: PARTICIPANT_ID_INVALID"}`
+
+	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+	note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false)
+	if strings.Contains(note, noteMuteFailed) {
+		t.Fatalf("人已出群，禁言失败不该上报，得到 %q", note)
+	}
+	if n := fake.CountCalls("getChatMember"); n != 0 {
+		t.Errorf("错误文本已经说明对方不在群，不该再查成员，实际 %d 次", n)
+	}
+}
+
+// TestMuteGoneByMemberLookup：错误文本没说清时再查成员状态；已退群、
+// 已被封禁出群、已在禁言状态都视为「无需禁言」。
+func TestMuteGoneByMemberLookup(t *testing.T) {
+	cases := []struct {
+		name, resp string
+	}{
+		{"已退群", `{"ok":true,"result":{"status":"left"}}`},
+		{"已被封禁出群", `{"ok":true,"result":{"status":"kicked"}}`},
+		{"受限记录但已不在群", `{"ok":true,"result":{"status":"restricted","is_member":false}}`},
+		{"已处于禁言状态", `{"ok":true,"result":{"status":"restricted","is_member":true,"can_send_messages":false}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, fake := testutil.NewTestBot(t, 1)
+			testutil.EnableAntiad(t, b, -100)
+			fake.Resp["restrictChatMember"] = `{"ok":false,"error_code":400,` +
+				`"description":"Bad Request: CHAT_ADMIN_REQUIRED"}`
+			fake.Resp["getChatMember"] = c.resp
+
+			act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+			note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false)
+			if strings.Contains(note, noteMuteFailed) {
+				t.Fatalf("无需禁言却报失败，得到 %q", note)
+			}
+		})
+	}
+}
+
+// TestMuteRealFailureStillReported：查不到「不用禁」的理由时照常上报；
+// TG 查询失败也按真失败处理，不能因为一次抖动把没禁上显示成已处理。
+func TestMuteRealFailureStillReported(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["restrictChatMember"] = `{"ok":false,"error_code":400,` +
+		`"description":"Bad Request: CHAT_ADMIN_REQUIRED"}`
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"member"}}`
+
+	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+	note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false)
+	if !strings.Contains(note, noteMuteFailed) {
+		t.Fatalf("真失败要上报，得到 %q", note)
+	}
+
+	// getChatMember 本身失败：没有证据说明不用禁，按失败上报。
+	fake.Resp["getChatMember"] = `{"ok":false,"description":"Internal Server Error"}`
+	note = ApplyAction(b, testutil.GroupMsg(-100, 43, 8, "广告"), act, false)
+	if !strings.Contains(note, noteMuteFailed) {
+		t.Fatalf("成员查询失败时要保守上报，得到 %q", note)
+	}
+}
