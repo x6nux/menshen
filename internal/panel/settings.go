@@ -2,12 +2,12 @@ package panel
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"menshen/internal/antiad"
 	"menshen/internal/core"
@@ -277,9 +277,7 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		key := parts[3]
 		// 白名单：不能让任意 key 被这条路径写成 0/1，
 		// 否则伪造一个 callback 就能把 tz_offset 改成 1。
-		switch key {
-		case "antiad_enabled", "alert_copy_main":
-		default:
+		if !slices.Contains(globalToggles, key) {
 			b.AnswerCallback(q.ID, "未知开关")
 			return
 		}
@@ -287,8 +285,8 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		if b.Cache.Snap().SettingInt(key, 0) == 1 {
 			next = "0"
 		}
-		if err := b.PutSetting(key, next); err != nil {
-			b.AnswerCallback(q.ID, "切换失败")
+		if err := setSetting(b.Shared, q.From.ID, 0, key, next); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "切换失败"))
 			return
 		}
 		b.AnswerCallback(q.ID, "已切换")
@@ -479,79 +477,32 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			return
 		}
 		sp := settingSpecByKey(key)
-		if ssp := stringSpecByKey(key); sp == nil && ssp != nil {
-			val := strings.TrimSpace(text)
-			if key == tzSpec.key {
-				// 时区只认 IANA 名称，其余一律打回重填。
-				if val == "-" {
-					val = "Asia/Shanghai"
-				}
-				if _, err := time.LoadLocation(val); err != nil {
-					b.Send(chatID, "不是有效的 IANA 时区名（如 Asia/Shanghai、"+
-						"Europe/London），请重新输入：", nil)
-					return
-				}
-			} else {
-				// 附加链接是自由文本：填 - 清空；转义留到渲染时做。
-				if val == "-" {
-					val = ""
-				}
-				if len([]rune(val)) > 300 {
-					b.Send(chatID, "附加文本过长（上限 300 字），请重新输入：", nil)
-					return
-				}
-			}
-			b.DropPending(uid)
-			if err := b.PutSetting(key, val); err != nil {
-				b.Send(chatID, "保存失败。", nil)
-				return
-			}
-			b.Send(chatID, "✅ 已更新<b>"+html.EscapeString(ssp.label)+"</b>。", nil)
-			showSettings(b, chatID, 0)
-			return
+		if sp == nil {
+			sp = stringSpecByKey(key)
 		}
 		if sp == nil {
 			b.DropPending(uid)
 			b.Send(chatID, "该设置项已不存在，操作取消。", nil)
 			return
 		}
-		if botID != 0 && !b.CanManageBot(uid, botID) {
-			b.DropPending(uid)
-			return
-		}
-
-		// per-bot 项填 "-" 表示撤销覆盖、回到全局默认。
-		if botID != 0 && text == "-" {
-			b.DropPending(uid)
-			if err := b.PutBotSetting(botID, key,
-				b.Cache.Snap().Setting(key)); err != nil {
-				b.Send(chatID, "保存失败。", nil)
-				return
-			}
-			b.Send(chatID, "✅ 已恢复为全局默认值。", nil)
-			showBotConfig(b, chatID, 0, botID)
-			return
-		}
-
-		v, err := strconv.ParseInt(text, 10, 64)
-		if err != nil || v < sp.min || (sp.max != 0 && v > sp.max) {
-			b.Send(chatID, "取值非法（"+sp.hint+"），请重新输入：", nil)
+		if settingInputFailed(b, chatID, uid, setSetting(b.Shared, uid, botID, key, text)) {
 			return
 		}
 		b.DropPending(uid)
-
-		val := strconv.FormatInt(v, 10)
-		if botID == 0 {
-			err = b.PutSetting(key, val)
-		} else {
-			err = b.PutBotSetting(botID, key, val)
+		snap := b.Cache.Snap()
+		switch {
+		case botID != 0 && text == "-":
+			b.Send(chatID, "✅ 已恢复为全局默认值。", nil)
+		case stringSpecByKey(key) != nil:
+			b.Send(chatID, "✅ 已更新<b>"+html.EscapeString(sp.label)+"</b>。", nil)
+		default:
+			val := snap.Setting(key)
+			if botID != 0 {
+				val = snap.BotSetting(botID, key)
+			}
+			b.Send(chatID, "✅ 已将<b>"+html.EscapeString(sp.label)+
+				"</b>设为 <code>"+html.EscapeString(val)+"</code>", nil)
 		}
-		if err != nil {
-			b.Send(chatID, "保存失败："+html.EscapeString(err.Error()), nil)
-			return
-		}
-		b.Send(chatID, "✅ 已将<b>"+html.EscapeString(sp.label)+
-			"</b>设为 <code>"+val+"</code>", nil)
 		if botID == 0 {
 			showSettings(b, chatID, 0)
 		} else {
@@ -559,86 +510,37 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 		}
 
 	case "st_model":
-		if !b.IsMain(uid) {
-			b.DropPending(uid)
-			return
-		}
-		name := strings.TrimSpace(text)
-		single := p.Target == "antiad_vision_model"
-		if name == "-" {
-			b.DropPending(uid)
-			if single {
-				if err := b.PutSetting(p.Target, ""); err != nil {
-					b.Send(chatID, "保存失败。", nil)
-					return
-				}
-			} else if err := b.PutSetting(p.Target, "[]"); err != nil {
-				b.Send(chatID, "保存失败。", nil)
-				return
-			} else if old := legacyModelKey(p.Target); old != "" {
-				// 旧单值键也要清：回退读会把它当单元素列表捡回来。
-				_ = b.PutSetting(old, "")
-			}
-			b.Send(chatID, "已清空。", nil)
-			showSettings(b, chatID, 0)
-			return
-		}
-		if single {
-			if !checkModelUsable(b, chatID, name) {
-				return // 保留会话让管理员直接重填
-			}
-			b.DropPending(uid)
-			if err := b.PutSetting(p.Target, name); err != nil {
-				b.Send(chatID, "保存失败。", nil)
-				return
-			}
-			b.Send(chatID, "已设为 "+modelLabel(name)+"。", nil)
-			showSettings(b, chatID, 0)
-			return
-		}
-		models, err := parseModelList(b, name)
-		if err != nil {
-			b.Send(chatID, "❌ "+html.EscapeString(err.Error())+"\n\n请重新输入：", nil)
+		if settingInputFailed(b, chatID, uid, setSetting(b.Shared, uid, 0, p.Target, text)) {
 			return
 		}
 		b.DropPending(uid)
-		if err := b.PutSetting(p.Target, modelsJSON(models)); err != nil {
-			b.Send(chatID, "保存失败。", nil)
-			return
+		snap := b.Cache.Snap()
+		switch {
+		case strings.TrimSpace(text) == "-":
+			b.Send(chatID, "已清空。", nil)
+		case slices.Contains(singleModelKeys, p.Target):
+			b.Send(chatID, "已设为 "+modelLabel(snap.Setting(p.Target))+"。", nil)
+		default:
+			so, llm := snap.ModelsFor(0)
+			if p.Target == "antiad_llm_models" {
+				so = llm
+			}
+			b.Send(chatID, "已设为（按重试顺序）："+modelListLabel(so)+"。", nil)
 		}
-		if old := legacyModelKey(p.Target); old != "" {
-			_ = b.PutSetting(old, "")
-		}
-		b.Send(chatID, "已设为（按重试顺序）："+modelListLabel(models)+"。", nil)
 		showSettings(b, chatID, 0)
 
 	case "bot_model_so", "bot_model_llm":
-		if !b.IsMain(uid) {
-			b.DropPending(uid)
-			return
-		}
 		botID, err := strconv.ParseInt(p.Target, 10, 64)
 		if err != nil {
 			b.DropPending(uid)
 			return
 		}
-		which := "so"
-		if p.Op == "bot_model_llm" {
-			which = "llm"
-		}
-		text = strings.TrimSpace(text)
-		var models []string
-		if text != "-" {
-			if models, err = parseModelList(b, text); err != nil {
-				b.Send(chatID, "❌ "+html.EscapeString(err.Error())+"\n\n请重新输入：", nil)
-				return
-			}
-		}
-		b.DropPending(uid)
-		if err := b.SetBotModels(botID, which, models); err != nil {
-			b.Send(chatID, "保存失败。", nil)
+		models, err := setBotModels(b.Shared, uid, botID,
+			strings.TrimPrefix(p.Op, "bot_model_"), text)
+		if settingInputFailed(b, chatID, uid, err) {
 			return
 		}
+		b.DropPending(uid)
 		if len(models) == 0 {
 			b.Send(chatID, "已恢复为全局默认模型。", nil)
 		} else {
@@ -646,40 +548,17 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 		}
 		showBotDetail(b, chatID, 0, uid, botID)
 
-	case "ad_dg_e":
-		if !b.IsMain(uid) {
-			b.DropPending(uid)
+	case "ad_dg_e", "ad_dg_f":
+		fix := p.Op == "ad_dg_f"
+		if settingInputFailed(b, chatID, uid, setDigest(b.Shared, uid, fix, text)) {
 			return
 		}
 		b.DropPending(uid)
-		v := strings.TrimSpace(text)
-		if v == "-" {
-			v = ""
+		if fix {
+			b.Send(chatID, "修正文本已保存。点「立即重新总结」让它生效。", nil)
+		} else {
+			b.Send(chatID, "形态摘要已更新。", nil)
 		}
-		maxLen := int(b.Cache.Snap().SettingInt("antiad_digest_max", 1200))
-		if err := b.PutSetting("antiad_digest", core.TruncateRunes(v, maxLen)); err != nil {
-			b.Send(chatID, "保存失败。", nil)
-			return
-		}
-		b.Send(chatID, "形态摘要已更新。", nil)
-		showSettings(b, chatID, 0)
-
-	case "ad_dg_f":
-		if !b.IsMain(uid) {
-			b.DropPending(uid)
-			return
-		}
-		b.DropPending(uid)
-		v := strings.TrimSpace(text)
-		if v == "-" {
-			v = ""
-		}
-		if err := b.PutSetting("antiad_digest_fix",
-			core.TruncateRunes(v, antiad.DigestFixLimit)); err != nil {
-			b.Send(chatID, "保存失败。", nil)
-			return
-		}
-		b.Send(chatID, "修正文本已保存。点「立即重新总结」让它生效。", nil)
 		showSettings(b, chatID, 0)
 
 	case "bot_add":
@@ -729,8 +608,8 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			showBotDetail(b, chatID, 0, uid, botID)
 			return
 		}
-		if err := addBotChat(b, botID, id); err != nil {
-			b.Send(chatID, "保存失败。", nil)
+		if err := b.AddChat(botID, id, chatTitle(b.Shared, botID, id)); err != nil {
+			b.Send(chatID, opText(err, "保存失败。"), nil)
 			return
 		}
 		b.Send(chatID, fmt.Sprintf(
@@ -817,18 +696,6 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 	}
 }
 
-// checkModelUsable 校验模型名可用，不可用时给出提示并返回 false。
-//
-// 必须校验：配了不存在的模型名，链路会在每条消息上向上游拿回 404，
-// 而 404 在 bot 侧只表现为「判定失败 → 放行」，功能静默失效，
-// 运维完全看不见。
-// parseModelList 解析逗号分隔的模型名列表：逐个校验存在且启用，去重但
-// 保持输入顺序（顺序即重试顺序）。返回的错误直接给管理员看。
-// parseModelList 校验并去重一份逗号分隔的模型列表。
-func parseModelList(b *core.Bot, text string) ([]string, error) {
-	return parseModelListSnap(b.Cache.Snap(), text)
-}
-
 // modelsJSON 把模型列表序列化成设置值。
 func modelsJSON(models []string) string {
 	raw, err := json.Marshal(models)
@@ -849,16 +716,22 @@ func legacyModelKey(listKey string) string {
 	return ""
 }
 
-// checkModelUsable 校验一个单值模型名可用（识图模型用）。
-func checkModelUsable(b *core.Bot, chatID int64, name string) bool {
-	m := b.Cache.Snap().Models[name]
-	if m == nil {
-		b.Send(chatID, "模型不存在，请在「模型定价」里确认名称后重填：", nil)
+// settingInputFailed 处理一次设置输入的失败，返回 true 表示已经处理：
+// 参数问题**保留会话**让人直接重填（一次手误不该让人从头点一遍菜单），
+// 没有权限静默放弃，内部故障放弃并报「保存失败」。
+func settingInputFailed(b *core.Bot, chatID, uid int64, err error) bool {
+	if err == nil {
 		return false
 	}
-	if !m.Enabled {
-		b.Send(chatID, "该模型当前是禁用状态，请先启用它，或换一个：", nil)
-		return false
+	var op *core.OpError
+	switch {
+	case errors.As(err, &op) && op.Denied:
+		b.DropPending(uid)
+	case errors.As(err, &op):
+		b.Send(chatID, "❌ "+html.EscapeString(op.Msg)+"，请重新输入：", nil)
+	default:
+		b.DropPending(uid)
+		b.Send(chatID, opText(err, "保存失败。"), nil)
 	}
 	return true
 }

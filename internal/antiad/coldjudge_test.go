@@ -209,8 +209,7 @@ func TestAppealEntryListsPenalties(t *testing.T) {
 func TestAppealDropsBioCache(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	const stale = "加我微信 abc"
-	b.BioCache.Store(int64(555), bioEntry{
-		bio: stale, expire: time.Now().Add(time.Hour)})
+	cachesOf(b.Shared).bio.Set(555, bioEntry{bio: stale}, time.Hour)
 	setGlobal(t, b, "antiad_llm_model", "llm-model")
 
 	penalties := []appealPenalty{
@@ -223,7 +222,7 @@ func TestAppealDropsBioCache(t *testing.T) {
 	if fake.CountCalls("getChat") == 0 {
 		t.Error("申诉复核时必须重新拉一次资料，不能用缓存里的旧值")
 	}
-	if v, ok := b.BioCache.Load(int64(555)); ok && v.(bioEntry).bio == stale {
+	if e, ok := cachesOf(b.Shared).bio.Get(555); ok && e.bio == stale {
 		t.Error("缓存里仍是旧简介 —— 对方改了也读不到，怎么改都通不过")
 	}
 }

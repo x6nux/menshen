@@ -162,7 +162,7 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 // redeemInChat 在一个群里执行兑换动作（范围只限本群）。
 func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 	// 1) 恢复权限：全部权限置 true，对没被禁言的人没有任何影响。
-	NoteLifted(chatID, ap.UserID)
+	NoteLifted(b.Shared, chatID, ap.UserID)
 	if ok, desc := Unmute(b, chatID, ap.UserID); !ok {
 		slog.Warn("申诉：兑换时解除禁言失败", "chat", chatID,
 			"uid", ap.UserID, "err", desc)
@@ -230,6 +230,15 @@ func writeWhitelistQuiet(sh *core.Shared, botID, chatID, uid int64,
 func AddWhitelist(sh *core.Shared, botID, chatID, uid int64,
 	ttl time.Duration, source string, byUID int64) error {
 	return writeWhitelist(sh, botID, chatID, uid, ttl, source, byUID)
+}
+
+// RemoveWhitelist 删除一条白名单（bot_id=0 是全平台那一条）。
+func RemoveWhitelist(sh *core.Shared, botID, chatID, uid int64) error {
+	if _, err := sh.Store.Write.Exec(`DELETE FROM ad_whitelist
+		WHERE bot_id=? AND chat_id=? AND user_id=?`, botID, chatID, uid); err != nil {
+		return err
+	}
+	return sh.Cache.Reload()
 }
 
 // sendWhitelistNotice 私聊申诉人白名单的期限与提醒。

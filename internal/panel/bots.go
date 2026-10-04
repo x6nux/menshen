@@ -1,10 +1,8 @@
 package panel
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
-	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -485,19 +483,16 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "参数无效")
 			return
 		}
-		if _, err := b.Store.Write.Exec(`DELETE FROM ad_whitelist
-			WHERE bot_id=? AND chat_id=? AND user_id=?`,
-			botID, targetChat, targetUID); err != nil {
-			b.AnswerCallback(q.ID, "移除失败")
+		if err := antiad.RemoveWhitelist(b.Shared, botID, targetChat, targetUID); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "移除失败"))
 			return
 		}
 		// 全平台白名单只有主管理员能撤。
 		if b.IsMain(uid) {
-			b.Store.Write.Exec(`DELETE FROM ad_whitelist
-				WHERE bot_id=0 AND chat_id=? AND user_id=?`, targetChat, targetUID)
-		}
-		if err := b.Cache.Reload(); err != nil {
-			slog.Error("移除白名单后 reload 失败", "err", err)
+			if err := antiad.RemoveWhitelist(b.Shared, 0, targetChat, targetUID); err != nil {
+				b.AnswerCallback(q.ID, opText(err, "移除失败"))
+				return
+			}
 		}
 		b.AnswerCallback(q.ID, "已移除")
 		showBotExempt(b, chatID, 0, botID)
@@ -598,17 +593,19 @@ func handleBotChatCallback(b *core.Bot, q *tg.CallbackQuery, botID int64, parts 
 	}
 
 	c, _ := b.Cache.Snap().ChatConf(botID, targetChat)
+	var p core.ChatPatch
 	switch parts[5] {
 	case "en":
-		err = setChatFlag(b, botID, targetChat, "enabled", !c.Enabled)
+		p.Enabled = ptr(!c.Enabled)
 	case "dry":
-		err = setChatFlag(b, botID, targetChat, "dryrun", !c.Dryrun)
+		p.Dryrun = ptr(!c.Dryrun)
 	case "ga":
-		err = setChatFlag(b, botID, targetChat, "group_alert", !c.GroupAlert)
+		p.GroupAlert = ptr(!c.GroupAlert)
 	case "pn":
-		err = cycleChatPunish(b, botID, targetChat, c.Punish)
+		// 轮换：跟随 bot 设置 → 禁言 → 封禁 → 跟随。
+		p.Punish = ptr(map[int64]int64{-1: 0, 0: 1, 1: -1}[c.Punish])
 	case "del":
-		if err = removeBotChat(b, botID, targetChat); err == nil {
+		if err = b.RemoveChat(botID, targetChat); err == nil {
 			b.AnswerCallback(q.ID, "已移除")
 			showBotDetail(b, chatID, msgID, uid, botID)
 			return
@@ -617,6 +614,9 @@ func handleBotChatCallback(b *core.Bot, q *tg.CallbackQuery, botID int64, parts 
 		b.AnswerCallback(q.ID, "")
 		return
 	}
+	if parts[5] != "del" {
+		_, err = b.UpdateChats(botID, []int64{targetChat}, p)
+	}
 
 	if err != nil {
 		b.AnswerCallback(q.ID, "操作失败")
@@ -624,73 +624,6 @@ func handleBotChatCallback(b *core.Bot, q *tg.CallbackQuery, botID int64, parts 
 	}
 	b.AnswerCallback(q.ID, "已切换")
 	showChatDetail(b, chatID, msgID, botID, targetChat)
-}
-
-// setChatFlag 翻转 bot_chats 上的一个 0/1 列。
-// col 只来自调用处的字面量，不存在注入面。
-func setChatFlag(b *core.Bot, botID, chatID int64, col string, on bool) error {
-	v := 0
-	if on {
-		v = 1
-	}
-	if _, err := b.Store.Write.Exec(
-		`UPDATE bot_chats SET `+col+`=? WHERE bot_id=? AND chat_id=?`,
-		v, botID, chatID); err != nil {
-		return err
-	}
-	return b.Cache.Reload()
-}
-
-// cycleChatPunish 轮换本群的处罚方式：跟随 bot 设置 → 禁言 → 封禁 → 跟随。
-func cycleChatPunish(b *core.Bot, botID, chatID, cur int64) error {
-	next := map[int64]int64{-1: 0, 0: 1, 1: -1}[cur]
-	if _, err := b.Store.Write.Exec(
-		`UPDATE bot_chats SET punish=? WHERE bot_id=? AND chat_id=?`,
-		next, botID, chatID); err != nil {
-		return err
-	}
-	return b.Cache.Reload()
-}
-
-func removeBotChat(b *core.Bot, botID, chatID int64) error {
-	if _, err := b.Store.Write.Exec(
-		`DELETE FROM bot_chats WHERE bot_id=? AND chat_id=?`,
-		botID, chatID); err != nil {
-		return err
-	}
-	return b.Cache.Reload()
-}
-
-// addBotChat 把一个群加到某个 bot 名下。
-//
-// 顺带查一次群标题：面板上全是裸的 chat_id 时，管理多个群基本靠猜。
-// 查不到不算失败 —— bot 还没进群就添加是合法的使用顺序。
-func addBotChat(b *core.Bot, botID, chatID int64) error {
-	if rec := b.Cache.Snap().Bots[botID]; rec != nil && rec.IsMain {
-		// 面板上已经没有这个入口，这里是服务端兜底：主 bot 的群配置
-		// 会在启动时被 ensureMainBot 清掉，加进去也只会立刻消失。
-		return fmt.Errorf("主 bot 不入群、不判定，不能添加生效群")
-	}
-	title := ""
-	if raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID}); err == nil {
-		var resp struct {
-			OK     bool `json:"ok"`
-			Result struct {
-				Title string `json:"title"`
-			} `json:"result"`
-		}
-		if json.Unmarshal(raw, &resp) == nil && resp.OK {
-			title = resp.Result.Title
-		}
-	}
-	if _, err := b.Store.Write.Exec(`INSERT INTO bot_chats
-		(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
-		VALUES (?,?,?,1,1,0,?)
-		ON CONFLICT(bot_id,chat_id) DO UPDATE SET title=excluded.title`,
-		botID, chatID, title, time.Now().Unix()); err != nil {
-		return err
-	}
-	return b.Cache.Reload()
 }
 
 // showBotConfig 渲染某个 bot 的阈值与参数页。
@@ -1026,8 +959,8 @@ func handleGbanCallback(b *core.Bot, q *tg.CallbackQuery) {
 		if antiad.GbanEnabled(b.Shared) {
 			next = "0"
 		}
-		if err := b.PutSetting("gban_enabled", next); err != nil {
-			b.AnswerCallback(q.ID, "切换失败")
+		if err := setSetting(b.Shared, q.From.ID, 0, "gban_enabled", next); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "切换失败"))
 			return
 		}
 		if next == "1" {

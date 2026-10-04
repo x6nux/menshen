@@ -44,8 +44,6 @@ const joinBackfillTimeout = 10 * time.Minute
 const joinBackfillCooldown = 24 * time.Hour
 
 var (
-	// joinBackfillDone 记录 (bot, chat) 上次补全的时间。
-	joinBackfillDone sync.Map // "bot:chat" -> time.Time
 	// joinBackfillRunning 是全局单飞：同一个进程同时只跑一个补全。
 	joinBackfillRunning sync.Mutex
 	// joinBackfillScriptOnce 保证嵌入脚本只落盘一次。
@@ -91,10 +89,8 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 	}
 	key := backfillKey(b.BotID(), chatID)
 	if !force {
-		if v, ok := joinBackfillDone.Load(key); ok {
-			if t, ok := v.(time.Time); ok && time.Since(t) < joinBackfillCooldown {
-				return false, ""
-			}
+		if _, ok := cachesOf(b.Shared).joinBackfillDone.Get(key); ok {
+			return false, ""
 		}
 	}
 	// 先同步拿锁再答应：全局同时只允许一个补全任务（同一个 bot 的 MTProto
@@ -106,7 +102,7 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 		}
 		return false, "已有补全任务在跑，等它跑完再试"
 	}
-	joinBackfillDone.Store(key, time.Now())
+	cachesOf(b.Shared).joinBackfillDone.Set(key, struct{}{}, joinBackfillCooldown)
 
 	// 群名取一下：私有群（没有公开用户名）要靠会话缓存里出现过才能解析，
 	// 有用户名时最稳。
@@ -203,17 +199,9 @@ const (
 	joinLookupErrTTL = 15 * time.Minute
 )
 
-// joinLookupMissRec 是负缓存的一条。
-type joinLookupMissRec struct {
-	at  time.Time
-	ttl time.Duration
-}
-
 var (
 	// joinLookupMu 让单人查询排队：同一个 bot 的 MTProto 会话文件不能并发。
 	joinLookupMu sync.Mutex
-	// joinLookupMiss 是查不到的人的负缓存，避免反复起脚本。
-	joinLookupMiss sync.Map // key -> joinLookupMissRec
 	// joinLookupRunner 是单人查询的实现，测试里替换。
 	joinLookupRunner = runJoinLookupScript
 )
@@ -234,13 +222,10 @@ func ResolveJoinTime(b *core.Bot, chatID, uid int64) (int64, bool) {
 		return 0, false
 	}
 	key := backfillKey(b.BotID(), chatID) + ":" + strconv.FormatInt(uid, 10)
+	misses := &cachesOf(b.Shared).joinLookupMiss
 	missed := func() bool {
-		if v, ok := joinLookupMiss.Load(key); ok {
-			if r, ok := v.(joinLookupMissRec); ok && time.Since(r.at) < r.ttl {
-				return true
-			}
-		}
-		return false
+		_, ok := misses.Get(key)
+		return ok
 	}
 	if missed() {
 		return 0, false
@@ -263,12 +248,12 @@ func ResolveJoinTime(b *core.Bot, chatID, uid int64) (int64, bool) {
 	ts, err := joinLookupRunner(b, chatID, uid)
 	if err != nil {
 		slog.Info("入群时间实时查询：失败", "chat", chatID, "uid", uid, "err", err)
-		joinLookupMiss.Store(key, joinLookupMissRec{at: time.Now(), ttl: joinLookupErrTTL})
+		misses.Set(key, struct{}{}, joinLookupErrTTL)
 		return 0, false
 	}
 	if ts <= 0 {
 		// 脚本正常跑完但没数据：已退群/被踢，短时间内不用再查。
-		joinLookupMiss.Store(key, joinLookupMissRec{at: time.Now(), ttl: joinLookupMissTTL})
+		misses.Set(key, struct{}{}, joinLookupMissTTL)
 		return 0, false
 	}
 	if _, err := b.Store.Write.Exec(`UPDATE group_members SET joined_at=?

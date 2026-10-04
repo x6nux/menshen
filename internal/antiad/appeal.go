@@ -557,7 +557,7 @@ func judgeAppeal(b *core.Bot, snap *store.Snapshot, uid int64,
 
 	// 简介绕开缓存重新拉取：对方可能刚改完资料，读到一小时前的旧值
 	// 会让他无论怎么改都通不过。
-	b.BioCache.Delete(uid)
+	cachesOf(b.Shared).bio.Delete(uid)
 	bio := userBio(b, uid)
 	p := buildProfile(b, &tg.Message{From: &tg.TGUser{ID: uid}}, groupMember{}, time.Now().Unix())
 	p.Bio = bio

@@ -52,25 +52,9 @@ type Shared struct {
 	// 「这个群每分钟送检多少条」，各算各的等于把成本翻倍。
 	AdLimits *ratelimit.Limiter
 
-	// chatAdminCache 缓存「某人是否为某群管理员」，键 "chatID:uid"。
-	// 全量送检时不缓存等于每条群消息一次 getChatMember，
-	// 必然撞上 Telegram 的全局速率限制。
-	ChatAdminCache sync.Map // "chatID:uid" -> chatAdminEntry
-	// bioCache 缓存 TG 个人简介（getChat）。广告号的强特征常写在简介里，
-	// 但全量送检下不缓存就是每条群消息多一次 TG 往返。
-	BioCache sync.Map // int64(uid) -> bioEntry
-	// LinkCache 缓存简介/昵称里挂的频道、群组、bot 查出来的样子，键为小写用户名。
-	// 按用户名共享：群里十个人挂同一个频道也只查一次。
-	LinkCache sync.Map // string -> linkEntry
-	// VisionCache 是识图结果，键为 file_unique_id：刷屏号反复发同一张图、
-	// 群友反复用同一个贴纸，不必每次都花钱。
-	VisionCache sync.Map // string -> visionEntry
-	// DoomedAlbums 记下已判成广告的相册，判定之后才到的那几张照删。
-	DoomedAlbums sync.Map // "chatID:albumID" -> time.Time
-	// ChatHealthCache 缓存面板的群权限自检结果，键 "botID:chatID"，
-	// 值为 panel 包的 chatHealthEntry。面板每次渲染群详情都查一次
-	// getChatMember，而它跑在 bot 的串行更新路径上（TG 慢时最坏 40 秒）。
-	ChatHealthCache sync.Map
+	// ext 是 antiad / panel 挂在这里的进程级缓存与节流记录（见 Ext）。
+	// 类型归各自的包所有，core 不替上层保管状态。
+	ext sync.Map
 
 	// aiClient 专供反广告判定调用上游。http.Client 并发安全，
 	// 共享还能复用连接池。
@@ -98,15 +82,6 @@ type Shared struct {
 	// 共享而不是每个 bot 各建一个：Transport 自带连接池，按 bot 切开会让
 	// 空闲连接数乘以 bot 数量，而它们连的是同一个上游。
 	tgRoundTripper http.RoundTripper
-
-	// unbanGate 是申诉的重试闸，键为 uid。
-	// 不限次数但间隔递增，见 nextUnbanDelay。
-	UnbanGate sync.Map // int64(uid) -> unbanAttempt
-
-	// JoinNotice 把「XXX 已加入群组」服务消息与冷判定结果配对
-	// （见 antiad 的 noteJoinNotice）：命中禁言时那条服务消息也要删掉，
-	// 而它与判定结果谁先到都有可能。键 "chatID:uid"。
-	JoinNotice sync.Map
 
 	// transportFor 非空时用它建传输层，供测试整体替换掉真实 HTTP。
 	TransportFor func(token string) tg.Transport

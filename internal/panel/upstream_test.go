@@ -125,6 +125,9 @@ func TestUpstreamKindCapsPolicy(t *testing.T) {
 		VALUES ('oa','http://x','k',1,1,1,1)`); err != nil {
 		t.Fatal(err)
 	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	var id int64
 	if err := b.Store.Read.QueryRow(
 		`SELECT id FROM upstreams WHERE name='oa'`).Scan(&id); err != nil {

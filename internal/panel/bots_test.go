@@ -22,7 +22,7 @@ func TestMainBotChatCannotBeAdded(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)
 
-	if err := addBotChat(b, b.BotID(), -100777); err == nil {
+	if err := b.AddChat(b.BotID(), -100777, ""); err == nil {
 		t.Error("给主 bot 添加生效群应被拒绝")
 	}
 	if _, ok := b.Cache.Snap().ChatConf(b.BotID(), -100777); ok {

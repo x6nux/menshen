@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -292,15 +291,6 @@ func specMeta(sp settingSpec) map[string]any {
 		"key": sp.key, "label": sp.label, "hint": sp.hint,
 		"min": sp.min, "max": sp.max, "group": sp.group,
 	}
-}
-
-// miniCanManageBot 与面板的 CanManageBot 同一套规则。
-func miniCanManageBot(sh *core.Shared, uid, botID int64) bool {
-	if sh.IsMain(uid) {
-		return true
-	}
-	rec := sh.Cache.Snap().Bots[botID]
-	return rec != nil && rec.OwnerID == uid
 }
 
 // miniAPI 是 /miniapp/api/* 的总分发。
@@ -638,7 +628,7 @@ func miniBotsClause(sh *core.Shared, uid int64, main bool) (string, []any) {
 func miniWhitelistRows(sh *core.Shared, uid int64, main bool) []map[string]any {
 	out := []map[string]any{}
 	for _, w := range sh.Cache.Snap().Whitelist {
-		if !main && w.BotID != 0 && !miniCanManageBot(sh, uid, w.BotID) {
+		if !main && w.BotID != 0 && !sh.CanManageBot(uid, w.BotID) {
 			continue
 		}
 		out = append(out, map[string]any{
@@ -655,7 +645,7 @@ func miniProfileOKRows(sh *core.Shared, uid int64, main bool) []map[string]any {
 	now := time.Now().Unix()
 	out := []map[string]any{}
 	for _, p := range sh.Cache.Snap().ProfileOK {
-		if !main && !miniCanManageBot(sh, uid, p.BotID) {
+		if !main && !sh.CanManageBot(uid, p.BotID) {
 			continue
 		}
 		if p.ExpiresAt != 0 && p.ExpiresAt <= now {
@@ -673,164 +663,10 @@ func miniProfileOKRows(sh *core.Shared, uid int64, main bool) []map[string]any {
 
 // miniSet 改设置：scope=global（仅主管理员）或 bot（按 spec 分组校验）。
 func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	key := miniStr(body, "key")
-	val := strings.TrimSpace(miniStr(body, "value"))
-
-	// 四个布尔开关不走 settingSpecs（面板里是一键切换），单独放行。
-	switch key {
-	case "antiad_enabled", "alert_copy_main", "gban_enabled", "antiad_rule_auto":
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "只有主管理员能改全局开关")
-			return
-		}
-		if val != "0" && val != "1" {
-			miniErr(w, http.StatusBadRequest, "取值必须是 0 或 1")
-			return
-		}
-		if err := sh.PutSetting(key, val); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		miniOK(w, map[string]any{"ok": true})
-		return
-	case "tz_name":
-		// 时区是字符串型（IANA 名称），与整数型 specs 分开校验。
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
-			return
-		}
-		if val == "" || val == "-" {
-			val = "Asia/Shanghai"
-		}
-		if _, err := time.LoadLocation(val); err != nil {
-			miniErr(w, http.StatusBadRequest,
-				"不是有效的 IANA 时区名，如 Asia/Shanghai")
-			return
-		}
-		if err := sh.PutSetting("tz_name", val); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		miniOK(w, map[string]any{"ok": true})
-		return
-	case "antiad_group_footer":
-		// 群内提示尾部的附加文本（自由文本）：填 - 或清空 = 去掉。
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
-			return
-		}
-		if val == "-" {
-			val = ""
-		}
-		if len([]rune(val)) > 300 {
-			miniErr(w, http.StatusBadRequest, "附加文本过长（上限 300 字）")
-			return
-		}
-		if err := sh.PutSetting("antiad_group_footer", val); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		miniOK(w, map[string]any{"ok": true})
-		return
-	case "antiad_so_models", "antiad_llm_models", "antiad_vision_model",
-		"antiad_rule_model":
-		// 全局默认模型（各 bot 不覆盖时用它）：与 TG 面板的「默认模型」同一份数据。
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
-			return
-		}
-		snap := sh.Cache.Snap()
-		if key == "antiad_vision_model" || key == "antiad_rule_model" {
-			if val != "" {
-				if m := snap.Models[val]; m == nil || !m.Enabled {
-					miniErr(w, http.StatusBadRequest, "该模型不在「模型」页里，或已被停用")
-					return
-				}
-			}
-			if err := sh.PutSetting(key, val); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
-			miniOK(w, map[string]any{"ok": true})
-			return
-		}
-		if legacy := map[string]string{
-			"antiad_so_models":  "antiad_so_model",
-			"antiad_llm_models": "antiad_llm_model",
-		}[key]; legacy != "" {
-			// 清掉旧单值键：留着的话，列表被清空后读侧会回退到它，
-			// 出现「面板显示空、实际还跑着旧模型」的错位。
-			if err := sh.PutSetting(legacy, ""); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
-		}
-		if val == "" || val == "-" {
-			if err := sh.PutSetting(key, "[]"); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
-			miniOK(w, map[string]any{"ok": true})
-			return
-		}
-		models, err := parseModelListSnap(snap, val)
-		if err != nil {
-			miniErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := sh.PutSetting(key, modelsJSON(models)); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		miniOK(w, map[string]any{"ok": true})
-		return
-	}
-
-	sp := settingSpecByKey(key)
-	if sp == nil {
-		miniErr(w, http.StatusBadRequest, "未知设置项")
-		return
-	}
-	botID := miniInt(body, "bot_id")
-	if botID != 0 {
-		if sp.group != "antiad" && sp.group != "both" {
-			miniErr(w, http.StatusBadRequest, "该项不能按 bot 覆盖")
-			return
-		}
-		if !miniCanManageBot(sh, uid, botID) {
-			miniErr(w, http.StatusForbidden, "无权管理该 bot")
-			return
-		}
-		if val == "" {
-			// 清空 = 删除覆盖、跟随全局（PutBotSetting 在同值时删行）。
-			val = sh.Cache.Snap().Setting(key)
-		}
-	} else {
-		// 全局值：主管理员可以给 antiad 组设**全局默认**（各 bot 不覆盖时
-		// 用它；此前只有面板的 per-bot 页，全局默认没地方改），其余全局项
-		// 同样只有主管理员能动。
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "只有主管理员能改全局设置")
-			return
-		}
-	}
-	if _, err := strconv.ParseInt(val, 10, 64); err != nil {
-		miniErr(w, http.StatusBadRequest, "取值必须是整数："+sp.hint)
-		return
-	}
-	n, _ := strconv.ParseInt(val, 10, 64)
-	if n < sp.min || (sp.max != 0 && n > sp.max) {
-		miniErr(w, http.StatusBadRequest, "取值非法："+sp.hint)
-		return
-	}
-	var err error
-	if botID == 0 {
-		err = sh.PutSetting(key, val)
-	} else {
-		err = sh.PutBotSetting(botID, key, val)
-	}
-	if err != nil {
-		miniErr(w, http.StatusInternalServerError, "保存失败")
+	// 规则与 TG 面板同一份（见 ops_settings.go）。
+	if err := setSetting(sh, uid, miniInt(body, "bot_id"),
+		miniStr(body, "key"), miniStr(body, "value")); err != nil {
+		miniFail(w, err, "保存失败")
 		return
 	}
 	miniOK(w, map[string]any{"ok": true})
@@ -838,7 +674,7 @@ func miniSet(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 
 func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	botID := miniInt(body, "bot_id")
-	if !miniCanManageBot(sh, uid, botID) {
+	if !sh.CanManageBot(uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权管理该 bot")
 		return
 	}
@@ -890,29 +726,9 @@ func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 			return
 		}
 	case "models":
-		// 与 TG 面板一致（bots.go 的 a:mb:…:m 分支）：模型直接决定判定
-		// 质量与花掉多少钱，只有主管理员能配。
-		if !sh.IsMain(uid) {
-			miniErr(w, http.StatusForbidden, "模型由主管理员配置")
-			return
-		}
-		which := miniStr(body, "which") // so / llm
-		if which != "so" && which != "llm" {
-			miniErr(w, http.StatusBadRequest, "which 必须是 so 或 llm")
-			return
-		}
-		text := miniStr(body, "value")
-		var models []string
-		if text != "" && text != "-" {
-			var err error
-			models, err = parseModelListSnap(sh.Cache.Snap(), text)
-			if err != nil {
-				miniErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
-		if err := sh.SetBotModels(botID, which, models); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
+		if _, err := setBotModels(sh, uid, botID, miniStr(body, "which"),
+			miniStr(body, "value")); err != nil {
+			miniFail(w, err, "保存失败")
 			return
 		}
 	default:
@@ -934,14 +750,14 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			miniErr(w, http.StatusBadRequest, "缺少 bot_id")
 			return
 		}
-		if !miniCanManageBot(sh, uid, botID) {
+		if !sh.CanManageBot(uid, botID) {
 			miniErr(w, http.StatusForbidden, "无权管理该 bot")
 			return
 		}
 		miniChatBulk(sh, w, botID, body)
 		return
 	}
-	if !miniCanManageBot(sh, uid, botID) {
+	if !sh.CanManageBot(uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权管理该 bot")
 		return
 	}
@@ -956,7 +772,7 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			miniErr(w, http.StatusBadRequest, "该 bot 未在运行，无法补全")
 			return
 		}
-		title := miniChatTitle(sh, botID, chatID)
+		title := chatTitle(sh, botID, chatID)
 		started, why := antiad.StartJoinBackfill(inst, chatID, title, true)
 		if !started {
 			if why == "" {
@@ -972,90 +788,55 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	}
 	switch action {
 	case "add", "update":
-		if chatID == 0 {
-			miniErr(w, http.StatusBadRequest, "chat_id 无效")
-			return
-		}
 		if _, ok := sh.Cache.Snap().ChatConf(botID, chatID); !ok {
-			title := miniChatTitle(sh, botID, chatID)
-			if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
-				(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
-				VALUES (?,?,?,1,1,0,?)`, botID, chatID, title, time.Now().Unix()); err != nil {
-				miniErr(w, http.StatusInternalServerError, "添加失败")
+			if err := sh.AddChat(botID, chatID, chatTitle(sh, botID, chatID)); err != nil {
+				miniFail(w, err, "添加失败")
 				return
 			}
 		}
 		// 其余字段按请求里出现的项更新；字段规则与批量更新共用一处。
-		if _, err := updateChatConf(sh, botID, chatID, body); err != nil {
-			if errors.Is(err, errChatPunish) {
-				miniErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			miniErr(w, http.StatusInternalServerError, "保存失败")
+		if _, err := sh.UpdateChats(botID, []int64{chatID}, miniChatPatch(body)); err != nil {
+			miniFail(w, err, "保存失败")
 			return
 		}
 	case "remove":
-		if _, err := sh.Store.Write.Exec(`DELETE FROM bot_chats
-			WHERE bot_id=? AND chat_id=?`, botID, chatID); err != nil {
-			miniErr(w, http.StatusInternalServerError, "删除失败")
+		if err := sh.RemoveChat(botID, chatID); err != nil {
+			miniFail(w, err, "删除失败")
 			return
 		}
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return
 	}
-	if err := sh.Cache.Reload(); err != nil {
-		slog.Error("miniapp：刷新缓存失败", "err", err)
-	}
 	miniOK(w, map[string]any{"ok": true})
 }
 
-// errChatPunish 是 punish 越界的哨兵错误：单条更新与批量更新都据此回 400，
-// 而不是笼统的「保存失败」。
-var errChatPunish = fmt.Errorf("punish 只能是 -1（跟随）、0（禁言）、1（封禁）")
-
-// updateChatConf 收集 fields 里出现的群配置字段并落库，返回实际命中的行数；
-// 没出现的键一律不动（enabled:false 是合法值，不能用零值当哨兵）。
-// 单条 update 与 bulk_update 共用它，字段取值规则只有这一处。
-func updateChatConf(sh *core.Shared, botID, chatID int64, fields map[string]any) (int64, error) {
-	cols := []string{}
-	args := []any{}
-	for _, f := range []string{"enabled", "dryrun", "group_alert"} {
-		if v, ok := fields[f]; ok {
-			on := false
-			switch t := v.(type) {
-			case bool:
-				on = t
-			case float64:
-				on = t != 0
-			}
-			cols = append(cols, f+"=?")
-			args = append(args, boolToInt64(on))
+// miniChatPatch 收集 fields 里出现的群配置字段；没出现的键一律不动
+// （enabled:false 是合法值，不能用零值当哨兵）。取值校验在 UpdateChats。
+func miniChatPatch(fields map[string]any) core.ChatPatch {
+	flag := func(k string) *bool {
+		v, ok := fields[k]
+		if !ok {
+			return nil
 		}
+		on := false
+		switch t := v.(type) {
+		case bool:
+			on = t
+		case float64:
+			on = t != 0
+		}
+		return &on
 	}
+	p := core.ChatPatch{Enabled: flag("enabled"), Dryrun: flag("dryrun"),
+		GroupAlert: flag("group_alert")}
 	if v, ok := fields["title"]; ok {
-		cols = append(cols, "title=?")
-		args = append(args, fmt.Sprint(v))
+		p.Title = ptr(fmt.Sprint(v))
 	}
 	if v, ok := fields["punish"]; ok {
-		p := miniInt(map[string]any{"v": v}, "v")
-		if p < -1 || p > 1 {
-			return 0, errChatPunish
-		}
-		cols = append(cols, "punish=?")
-		args = append(args, p)
+		p.Punish = ptr(miniInt(map[string]any{"v": v}, "v"))
 	}
-	if len(cols) == 0 {
-		return 0, nil
-	}
-	args = append(args, botID, chatID)
-	res, err := sh.Store.Write.Exec(`UPDATE bot_chats SET `+
-		strings.Join(cols, ",")+` WHERE bot_id=? AND chat_id=?`, args...)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return p
 }
 
 // miniChatBulk 批量更新一个 bot 名下的群配置（chat op 的 bulk_update）。
@@ -1080,26 +861,10 @@ func miniChatBulk(sh *core.Shared, w http.ResponseWriter, botID int64, body map[
 			}
 		}
 	}
-	updated := int64(0)
-	seen := map[int64]bool{}
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		n, err := updateChatConf(sh, botID, id, fields)
-		if err != nil {
-			if errors.Is(err, errChatPunish) {
-				miniErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		updated += n
-	}
-	if err := sh.Cache.Reload(); err != nil {
-		slog.Error("miniapp：刷新缓存失败", "err", err)
+	updated, err := sh.UpdateChats(botID, ids, miniChatPatch(fields))
+	if err != nil {
+		miniFail(w, err, "保存失败")
+		return
 	}
 	miniOK(w, map[string]any{"ok": true,
 		"note": fmt.Sprintf("已更新 %d 个群", updated)})
@@ -1152,128 +917,43 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 	action := miniStr(body, "action")
 	switch action {
 	case "add":
-		name := miniStr(body, "name")
-		if err := core.ValidUpstreamName(name); err != nil {
-			miniErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if base := miniStr(body, "base_url"); !strings.HasPrefix(base, "http://") &&
-			!strings.HasPrefix(base, "https://") {
-			miniErr(w, http.StatusBadRequest, "base_url 必须以 http:// 或 https:// 开头")
-			return
-		}
-		kind, err := upstream.ParseKind(miniStr(body, "kind"))
+		p, err := miniUpstreamPatch(body)
 		if err != nil {
 			miniErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// 能力开关按类型收敛：chat-only 类型强制 chat；没传开关时用
-		// 类型默认值（Cloudflare 默认主判定，其余默认 chat）。
-		chat, so := miniBool(body, "supports_chat"), miniBool(body, "supports_systemone")
-		_, hasChat := body["supports_chat"]
-		_, hasSO := body["supports_systemone"]
-		chat, so = kind.ResolveCaps(chat, so, hasChat || hasSO)
-		if _, err := sh.Store.Write.Exec(`INSERT INTO upstreams
-			(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
-			VALUES (?,?,?,?,?,?,?,?)`, name, miniStr(body, "base_url"),
-			miniStr(body, "api_key"), maxInt64(miniInt(body, "weight"), 1),
-			boolToInt64(!miniBool(body, "disabled")),
-			boolToInt64(chat), boolToInt64(so), string(kind)); err != nil {
-			miniErr(w, http.StatusInternalServerError, "添加失败")
+		p.Name, p.BaseURL = ptr(miniStr(body, "name")), ptr(miniStr(body, "base_url"))
+		p.APIKey = ptr(miniStr(body, "api_key"))
+		p.Enabled = ptr(!miniBool(body, "disabled"))
+		if err := sh.AddUpstream(p); err != nil {
+			miniFail(w, err, "添加失败")
 			return
 		}
 	case "update":
-		id := miniInt(body, "id")
-		if name := miniStr(body, "name"); name != "" {
-			if err := sh.RenameUpstream(id, name); err != nil {
-				miniErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		p, err := miniUpstreamPatch(body)
+		if err != nil {
+			miniErr(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		for _, f := range []string{"base_url", "api_key"} {
-			v := miniStr(body, f)
-			if v == "" {
-				continue
-			}
-			if f == "base_url" && !strings.HasPrefix(v, "http://") &&
-				!strings.HasPrefix(v, "https://") {
-				miniErr(w, http.StatusBadRequest, "base_url 必须以 http:// 或 https:// 开头")
-				return
-			}
-			if _, err := sh.Store.Write.Exec(
-				`UPDATE upstreams SET `+f+`=? WHERE id=?`, v, id); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
-		}
-		if _, ok := body["weight"]; ok {
-			if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET weight=? WHERE id=?`,
-				maxInt64(miniInt(body, "weight"), 1), id); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
+		// 空串 = 不改：前端编辑页 api_key 留空表示保留原密钥。
+		for _, f := range []struct {
+			key string
+			dst **string
+		}{{"name", &p.Name}, {"base_url", &p.BaseURL}, {"api_key", &p.APIKey}} {
+			if v := miniStr(body, f.key); v != "" {
+				*f.dst = &v
 			}
 		}
 		if _, ok := body["status"]; ok {
-			if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET status=? WHERE id=?`,
-				boolToInt64(miniBool(body, "status")), id); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
+			p.Enabled = ptr(miniBool(body, "status"))
 		}
-		// 渠道类型：显式传了就更新，但只有**真的换了类型**才重置能力
-		// ——前端每次保存都会回传当前 kind，据此不能把用户的开关覆盖掉。
-		// chat-only 类型无论如何强制只开 chat；只改开关则按请求走。
-		kindChanged := false
-		kind := upstream.Kind("")
-		if cur, err := miniUpstreamKind(sh, id); err == nil {
-			kind = cur
-		}
-		if raw := miniStr(body, "kind"); raw != "" {
-			k, err := upstream.ParseKind(raw)
-			if err != nil {
-				miniErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			if k != kind {
-				if _, err := sh.Store.Write.Exec(`UPDATE upstreams SET kind=? WHERE id=?`,
-					string(k), id); err != nil {
-					miniErr(w, http.StatusInternalServerError, "保存失败")
-					return
-				}
-				kind, kindChanged = k, true
-			}
-		}
-		_, hasChat := body["supports_chat"]
-		_, hasSO := body["supports_systemone"]
-		applyCaps := false
-		chat, so := false, false
-		switch {
-		case kind.ChatOnly():
-			applyCaps, chat, so = true, true, false
-		case kindChanged:
-			chat, so = kind.ResolveCaps(false, false, false)
-			applyCaps = true
-		case hasChat || hasSO:
-			chat, so = miniBool(body, "supports_chat"), miniBool(body, "supports_systemone")
-			applyCaps = true
-		}
-		if applyCaps {
-			if _, err := sh.Store.Write.Exec(
-				`UPDATE upstreams SET supports_chat=?,supports_systemone=? WHERE id=?`,
-				boolToInt64(chat), boolToInt64(so), id); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
-		}
-	case "remove":
-		id := miniInt(body, "id")
-		if names := modelsOfUpstream(sh.Cache.Snap(), id); len(names) > 0 {
-			miniErr(w, http.StatusBadRequest,
-				"该上游名下有模型，请先删除它们："+strings.Join(names, "、"))
+		if err := sh.UpdateUpstream(miniInt(body, "id"), p); err != nil {
+			miniFail(w, err, "保存失败")
 			return
 		}
-		if _, err := sh.Store.Write.Exec(`DELETE FROM upstreams WHERE id=?`, id); err != nil {
-			miniErr(w, http.StatusInternalServerError, "删除失败")
+	case "remove":
+		if err := sh.DeleteUpstream(miniInt(body, "id")); err != nil {
+			miniFail(w, err, "删除失败")
 			return
 		}
 	case "test":
@@ -1300,24 +980,30 @@ func miniUpstream(sh *core.Shared, w http.ResponseWriter, uid int64, body map[st
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return
 	}
-	if err := sh.Cache.Reload(); err != nil {
-		slog.Error("miniapp：刷新缓存失败", "err", err)
-	}
 	miniOK(w, map[string]any{"ok": true})
 }
 
-// miniUpstreamKind 读一个上游的渠道类型；脏值按 openai 处理。
-func miniUpstreamKind(sh *core.Shared, id int64) (upstream.Kind, error) {
-	var raw string
-	if err := sh.Store.Read.QueryRow(
-		`SELECT kind FROM upstreams WHERE id=?`, id).Scan(&raw); err != nil {
-		return "", err
+// miniUpstreamPatch 取 add / update 共有的可选字段：权重、渠道类型、能力
+// 开关，只收请求里出现的键。取值校验在 core。
+func miniUpstreamPatch(body map[string]any) (core.UpstreamPatch, error) {
+	var p core.UpstreamPatch
+	if _, ok := body["weight"]; ok {
+		p.Weight = ptr(miniInt(body, "weight"))
 	}
-	k, err := upstream.ParseKind(raw)
-	if err != nil {
-		return upstream.KindOpenAI, nil
+	if raw := miniStr(body, "kind"); raw != "" {
+		k, err := upstream.ParseKind(raw)
+		if err != nil {
+			return p, err
+		}
+		p.Kind = &k
 	}
-	return k, nil
+	if _, ok := body["supports_chat"]; ok {
+		p.Chat = ptr(miniBool(body, "supports_chat"))
+	}
+	if _, ok := body["supports_systemone"]; ok {
+		p.SystemOne = ptr(miniBool(body, "supports_systemone"))
+	}
+	return p, nil
 }
 
 func miniModel(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
@@ -1325,105 +1011,44 @@ func miniModel(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		miniErr(w, http.StatusForbidden, "只有主管理员能配置模型")
 		return
 	}
-	action := miniStr(body, "action")
 	name := miniStr(body, "name")
-	switch action {
+	var err error
+	switch miniStr(body, "action") {
 	case "add":
-		upName := miniStr(body, "upstream")
-		modelID := miniStr(body, "model_id")
-		if upName == "" || modelID == "" {
-			miniErr(w, http.StatusBadRequest, "新增模型要选上游并填模型 ID")
-			return
-		}
-		if err := core.ValidUpstreamName(upName); err != nil {
-			miniErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if sh.Cache.Snap().Upstreams == nil {
-			miniErr(w, http.StatusBadRequest, "上游不存在")
-			return
-		}
-		found := false
-		for _, u := range sh.Cache.Snap().Upstreams {
-			if u.Name == upName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			miniErr(w, http.StatusBadRequest, "上游 "+upName+" 不存在")
-			return
-		}
-		name = upName + "/" + modelID
-		// callback_data 上限 64 字节：与 TG 面板同一条规则（见 model.go），
-		// 否则模型名超限后 Telegram 的模型页整页发不出去。
-		if len(name)+len("a:md:e:crp:") > 64 {
-			miniErr(w, http.StatusBadRequest, fmt.Sprintf(
-				"模型全名过长（%d 字节），含上游前缀不得超过 %d 字节",
-				len(name), 64-len("a:md:e:crp:")))
-			return
-		}
-		if sh.Cache.Snap().Models[name] != nil {
-			miniErr(w, http.StatusBadRequest, "该模型已存在")
-			return
-		}
-		prices, err := miniPrices(body, "prompt_price", "completion_price",
-			"cache_read_price", "cache_write_price")
-		if err != nil {
-			miniErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if _, err := sh.Store.Write.Exec(`INSERT INTO models
-			(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
-			VALUES (?,?,?,?,?,1)`, name,
-			prices[0], prices[1], prices[2], prices[3]); err != nil {
-			miniErr(w, http.StatusInternalServerError, "添加失败")
-			return
-		}
-	case "update", "remove":
-		if name == "" {
-			miniErr(w, http.StatusBadRequest, "模型名不能为空")
-			return
-		}
-		if sh.Cache.Snap().Models[name] == nil {
-			miniErr(w, http.StatusBadRequest, "模型不存在")
-			return
-		}
-		if action == "remove" {
-			if _, err := sh.Store.Write.Exec(`DELETE FROM models WHERE name=?`, name); err != nil {
-				miniErr(w, http.StatusInternalServerError, "删除失败")
+		var prices [4]float64
+		for i, col := range core.ModelPriceCols {
+			if prices[i], err = miniPrice(body, col); err != nil {
+				miniErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			break
 		}
-		for _, f := range []string{"prompt_price", "completion_price",
-			"cache_read_price", "cache_write_price"} {
-			if _, ok := body[f]; ok {
-				v, err := miniPrice(body, f)
-				if err != nil {
-					miniErr(w, http.StatusBadRequest, err.Error())
-					return
-				}
-				if _, err := sh.Store.Write.Exec(
-					`UPDATE models SET `+f+`=? WHERE name=?`, v, name); err != nil {
-					miniErr(w, http.StatusInternalServerError, "保存失败")
-					return
-				}
+		_, err = sh.AddModel(miniStr(body, "upstream"), miniStr(body, "model_id"), prices)
+	case "remove":
+		err = sh.DeleteModel(name)
+	case "update":
+		var p core.ModelPatch
+		for i, col := range core.ModelPriceCols {
+			if _, ok := body[col]; !ok {
+				continue
 			}
+			v, perr := miniPrice(body, col)
+			if perr != nil {
+				miniErr(w, http.StatusBadRequest, perr.Error())
+				return
+			}
+			p.Prices[i] = &v
 		}
 		if _, ok := body["enabled"]; ok {
-			if _, err := sh.Store.Write.Exec(`UPDATE models SET enabled=? WHERE name=?`,
-				boolToInt64(miniBool(body, "enabled")), name); err != nil {
-				miniErr(w, http.StatusInternalServerError, "保存失败")
-				return
-			}
+			p.Enabled = ptr(miniBool(body, "enabled"))
 		}
+		err = sh.UpdateModel(name, p)
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 		return
 	}
-	if err := sh.Cache.Reload(); err != nil {
-		slog.Error("miniapp：刷新缓存失败", "err", err)
+	if err != nil {
+		miniFail(w, err, "保存失败")
+		return
 	}
 	miniOK(w, map[string]any{"ok": true})
 }
@@ -1554,7 +1179,7 @@ func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 	botID := miniInt(body, "bot_id")
 	chatID := miniInt(body, "chat_id")
 	target := miniInt(body, "user_id")
-	if botID != 0 && !miniCanManageBot(sh, uid, botID) {
+	if botID != 0 && !sh.CanManageBot(uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权管理该 bot")
 		return
 	}
@@ -1578,13 +1203,9 @@ func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 			return
 		}
 	case "remove":
-		if _, err := sh.Store.Write.Exec(`DELETE FROM ad_whitelist
-			WHERE bot_id=? AND chat_id=? AND user_id=?`, botID, chatID, target); err != nil {
-			miniErr(w, http.StatusInternalServerError, "删除失败")
+		if err := antiad.RemoveWhitelist(sh, botID, chatID, target); err != nil {
+			miniFail(w, err, "删除失败")
 			return
-		}
-		if err := sh.Cache.Reload(); err != nil {
-			slog.Error("miniapp：刷新缓存失败", "err", err)
 		}
 	case "unprofile":
 		// 撤销资料放行（复判给的临时放行，见 antiad.GrantProfileOK）。
@@ -1593,13 +1214,9 @@ func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 			miniErr(w, http.StatusBadRequest, "缺少 bot_id 或 user_id")
 			return
 		}
-		if _, err := sh.Store.Write.Exec(`DELETE FROM profile_ok
-			WHERE bot_id=? AND user_id=?`, botID, target); err != nil {
-			miniErr(w, http.StatusInternalServerError, "撤销失败")
+		if err := antiad.RevokeProfileOK(sh, botID, target, "管理员撤销"); err != nil {
+			miniFail(w, err, "撤销失败")
 			return
-		}
-		if err := sh.Cache.Reload(); err != nil {
-			slog.Error("miniapp：撤销资料放行后刷新缓存失败", "err", err)
 		}
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
@@ -1609,29 +1226,26 @@ func miniWhitelist(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 }
 
 func miniDigest(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	if !sh.IsMain(uid) {
-		miniErr(w, http.StatusForbidden, "形态摘要由主管理员维护")
-		return
-	}
+	var err error
 	switch miniStr(body, "action") {
 	case "save":
-		if err := sh.PutSetting("antiad_digest", miniStr(body, "value")); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
+		err = setDigest(sh, uid, false, miniStr(body, "value"))
 	case "save_fix":
 		// 修正文本是写给总结模型的口径说明，与摘要正文分开存：摘要是
 		// 模型写的、可以手工改，修正文本是人写的、每轮总结都会附上。
-		if err := sh.PutSetting("antiad_digest_fix",
-			core.TruncateRunes(strings.TrimSpace(miniStr(body, "value")),
-				antiad.DigestFixLimit)); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
+		err = setDigest(sh, uid, true, miniStr(body, "value"))
 	case "run":
+		if !sh.IsMain(uid) {
+			err = core.Denied("形态摘要由主管理员维护")
+			break
+		}
 		go antiad.RunAdDigest(sh, true)
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
+		return
+	}
+	if err != nil {
+		miniFail(w, err, "保存失败")
 		return
 	}
 	miniOK(w, map[string]any{"ok": true})
@@ -1649,9 +1263,10 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		miniErr(w, http.StatusForbidden, "只有主管理员能维护必封规则")
 		return
 	}
+	id := miniInt(body, "id")
 	switch miniStr(body, "action") {
 	case "list":
-		rules, err := miniRuleList(sh)
+		rules, err := antiad.ListRules(sh)
 		if err != nil {
 			slog.Error("miniapp：读取必封规则失败", "err", err)
 			miniErr(w, http.StatusInternalServerError, "读取失败")
@@ -1659,29 +1274,45 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		}
 		miniOK(w, map[string]any{"rules": rules})
 	case "test":
-		miniRuleTest(sh, w, body)
-	case "save":
-		miniRuleSave(sh, w, uid, body)
-	case "toggle":
-		miniRuleToggle(sh, w, body)
-	case "enforce":
-		miniRuleEnforce(sh, w, body)
-	case "remove":
-		id := miniInt(body, "id")
-		if id == 0 {
-			miniErr(w, http.StatusBadRequest, "缺少规则 id")
-			return
+		// 带 id 用库里的规则（并写回 last_*），只带 pattern 时试跑一条
+		// 不落库的草稿（草稿不要求过严格校验，人工试跑就是它的用途）。
+		var res antiad.RuleTestResult
+		var err error
+		if id != 0 {
+			res, err = antiad.TestRuleByID(sh, id)
+		} else if pattern := miniStr(body, "pattern"); pattern == "" {
+			err = core.Bad("缺少规则正则")
+		} else if res, err = antiad.TestRulePattern(sh, pattern); err != nil {
+			err = core.Bad("测试失败：%s", err.Error())
 		}
-		res, err := sh.Store.Write.Exec(`DELETE FROM ad_rules WHERE id=?`, id)
 		if err != nil {
-			miniErr(w, http.StatusInternalServerError, "删除失败")
+			miniFail(w, err, "测试失败")
 			return
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			miniErr(w, http.StatusBadRequest, "规则不存在")
+		miniOK(w, map[string]any{"test": miniRuleTestJSON(res)})
+	case "save":
+		id, res, err := antiad.SaveRule(sh, uid, id, antiad.RuleInput{
+			Name: miniStr(body, "name"), Pattern: miniStr(body, "pattern"),
+			Category: miniStr(body, "category"), Note: miniStr(body, "note")})
+		if err != nil {
+			miniFail(w, err, "保存失败")
 			return
 		}
-		miniRuleReload(sh)
+		miniOK(w, map[string]any{"ok": true, "id": id, "test": miniRuleTestJSON(res)})
+	case "toggle", "enforce", "remove":
+		var err error
+		switch miniStr(body, "action") {
+		case "toggle":
+			err = antiad.SetRuleEnabled(sh, id, miniBool(body, "enabled"))
+		case "enforce":
+			err = antiad.SetRuleEnforce(sh, id, miniBool(body, "enforce"))
+		default:
+			err = antiad.DeleteRule(sh, id)
+		}
+		if err != nil {
+			miniFail(w, err, "保存失败")
+			return
+		}
 		miniOK(w, map[string]any{"ok": true})
 	case "agent_start":
 		// 启动一轮 AI 规则发现（单飞、后台跑）。失败原因（没有 OpenAI
@@ -1708,290 +1339,6 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 	default:
 		miniErr(w, http.StatusBadRequest, "未知操作")
 	}
-}
-
-// miniRuleList 返回全部规则（含未启用），按 id 升序。
-func miniRuleList(sh *core.Shared) ([]map[string]any, error) {
-	rows, err := sh.Store.Read.Query(`SELECT id,name,pattern,category,note,source,
-		enabled,enforce,hits,last_matched,last_tp,last_fp,last_undone,
-		last_scanned,last_tested_at,last_ads_total,last_kinds,
-		created_at FROM ad_rules ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		var (
-			id, en, enf, hits, lastMatched, tp, fp, undone, scanned, tested,
-			lastAdsTotal, created int64
-			name, pattern, category, note, src, lastKinds string
-		)
-		if err := rows.Scan(&id, &name, &pattern, &category, &note, &src,
-			&en, &enf, &hits, &lastMatched, &tp, &fp, &undone, &scanned,
-			&tested, &lastAdsTotal, &lastKinds, &created); err != nil {
-			return nil, err
-		}
-		out = append(out, map[string]any{
-			"id": id, "name": name, "pattern": pattern, "category": category,
-			"note": note, "source": src,
-			"enabled": en == 1, "enforce": enf == 1,
-			"hits": hits, "last_matched": lastMatched,
-			"last_tp": tp, "last_fp": fp, "last_undone": undone,
-			"last_scanned": scanned, "last_tested_at": tested,
-			"last_ads_total": lastAdsTotal,
-			"last_kinds":     antiad.ParseRuleKindsJSON(lastKinds),
-			"created_at":     created,
-		})
-	}
-	return out, rows.Err()
-}
-
-// miniRuleTest 跑一次全库测试：带 id 用库里的规则（并写回 last_*），
-// 只带 pattern 时试跑一条不落库的草稿。
-func miniRuleTest(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
-	id := miniInt(body, "id")
-	pattern := miniStr(body, "pattern")
-	if id != 0 {
-		p, err := miniRulePattern(sh, id)
-		if err != nil {
-			miniErr(w, http.StatusBadRequest, "规则不存在")
-			return
-		}
-		pattern = p
-	}
-	if pattern == "" {
-		miniErr(w, http.StatusBadRequest, "缺少规则正则")
-		return
-	}
-	res, err := antiad.TestRulePattern(sh, pattern)
-	if err != nil {
-		// 编译失败等校验错误：文案里带原因，管理员能直接改。
-		miniErr(w, http.StatusBadRequest, "测试失败："+err.Error())
-		return
-	}
-	if id != 0 {
-		if err := miniRuleWriteTest(sh, id, res); err != nil {
-			miniErr(w, http.StatusInternalServerError, "写回测试结果失败")
-			return
-		}
-	}
-	miniOK(w, map[string]any{"test": miniRuleTestJSON(res)})
-}
-
-// miniRuleSave 新建或更新一条规则：校验 → 写库 → 自动跑全库测试并写回
-// last_* → 重建快照。source 保持原值，新建默认 'ai'。
-func miniRuleSave(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
-	id := miniInt(body, "id")
-	created := id == 0
-	name := miniStr(body, "name")
-	pattern := miniStr(body, "pattern")
-	category := miniStr(body, "category")
-	note := miniStr(body, "note")
-
-	if n := len([]rune(name)); n < 1 || n > 60 {
-		miniErr(w, http.StatusBadRequest, "名称需为 1~60 个字符")
-		return
-	}
-	// 严格校验：空串、超长、编译失败、能匹配空文本的规则都在这里拒掉。
-	// test action 不要求过这一关（人工试跑草稿是它的用途）。
-	if _, err := antiad.CompileRulePattern(pattern); err != nil {
-		miniErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if len([]rune(category)) > 20 {
-		miniErr(w, http.StatusBadRequest, "分类最多 20 个字符")
-		return
-	}
-	if len([]rune(note)) > 300 {
-		miniErr(w, http.StatusBadRequest, "备注最多 300 个字符")
-		return
-	}
-
-	// 同一条正则在库里只允许存在一份：重复规则在命中时会产生两条流水，
-	// 计数与处置也会重复评估，没有意义。
-	var dup int64
-	if err := sh.Store.Read.QueryRow(
-		`SELECT COUNT(*) FROM ad_rules WHERE pattern=? AND id<>?`,
-		pattern, id).Scan(&dup); err != nil {
-		miniErr(w, http.StatusInternalServerError, "校验失败")
-		return
-	}
-	if dup > 0 {
-		miniErr(w, http.StatusBadRequest, "已存在相同正则的规则")
-		return
-	}
-
-	if id == 0 {
-		res, err := sh.Store.Write.Exec(`INSERT INTO ad_rules
-			(name,pattern,category,note,source,enabled,enforce,created_at,created_by)
-			VALUES (?,?,?,?, 'ai', 0, 0, ?, ?)`,
-			name, pattern, category, note, time.Now().Unix(), uid)
-		if err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		id, _ = res.LastInsertId()
-	} else {
-		// 改了 pattern 就同时把 enforce 置 0：enforce 的前提是「这一版
-		// pattern 的全库测试 fp=0」，新 pattern 的测试还没跑，旧结论不能
-		// 沿用（否则改规则绕过防误封不变量）。只改 name/note 时保留 enforce。
-		// SQLite 的 SET 表达式取旧行值，`pattern<>?` 比较的是库里的旧 pattern。
-		res, err := sh.Store.Write.Exec(`UPDATE ad_rules
-			SET name=?,pattern=?,category=?,note=?,
-			    enforce=CASE WHEN pattern<>? THEN 0 ELSE enforce END
-			WHERE id=?`,
-			name, pattern, category, note, pattern, id)
-		if err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			// 规则存在但值完全没变时 RowsAffected 为 0；先查一次存在性再下结论。
-			if !miniRuleExists(sh, id) {
-				miniErr(w, http.StatusBadRequest, "规则不存在")
-				return
-			}
-		}
-	}
-
-	// 保存即测：enforce 的前提数据必须是这一版 pattern 的真实结果，
-	// 不能沿用改规则之前的那一轮。
-	res, err := antiad.TestRulePattern(sh, pattern)
-	if err != nil {
-		miniErr(w, http.StatusBadRequest, "测试失败："+err.Error())
-		return
-	}
-	if err := miniRuleWriteTest(sh, id, res); err != nil {
-		miniErr(w, http.StatusInternalServerError, "写回测试结果失败")
-		return
-	}
-	// 新建且无误封：默认启用（命中只作为判定证据，强制仍需管理员手动开启）。
-	// 更新已有规则时不动 enabled，避免保存备注把管理员停用的规则又打开。
-	if created && res.FP == 0 && res.Undone == 0 {
-		if _, err := sh.Store.Write.Exec(
-			`UPDATE ad_rules SET enabled=1 WHERE id=?`, id); err != nil {
-			miniErr(w, http.StatusInternalServerError, "保存失败")
-			return
-		}
-	}
-	miniRuleReload(sh)
-	miniOK(w, map[string]any{
-		"ok": true, "id": id, "test": miniRuleTestJSON(res)})
-}
-
-// miniRuleToggle 启用/停用。停用时同时清掉 enforce：再次启用必须重新
-// 通过全库测试，不能靠一个 toggle 把最高档处置直接放回来。
-func miniRuleToggle(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
-	id := miniInt(body, "id")
-	if id == 0 {
-		miniErr(w, http.StatusBadRequest, "缺少规则 id")
-		return
-	}
-	on := miniBool(body, "enabled")
-	var (
-		res sql.Result
-		err error
-	)
-	if on {
-		res, err = sh.Store.Write.Exec(`UPDATE ad_rules SET enabled=1 WHERE id=?`, id)
-	} else {
-		res, err = sh.Store.Write.Exec(
-			`UPDATE ad_rules SET enabled=0,enforce=0 WHERE id=?`, id)
-	}
-	if err != nil {
-		miniErr(w, http.StatusInternalServerError, "保存失败")
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 && !miniRuleExists(sh, id) {
-		miniErr(w, http.StatusBadRequest, "规则不存在")
-		return
-	}
-	miniRuleReload(sh)
-	miniOK(w, map[string]any{"ok": true})
-}
-
-// miniRuleEnforce 开关强制。打开前必须 enabled=1、跑过全库测试
-// （last_tested_at>0），且那一轮没有误封（last_fp=0 且 last_undone=0）；
-// 关闭随时允许。
-func miniRuleEnforce(sh *core.Shared, w http.ResponseWriter, body map[string]any) {
-	id := miniInt(body, "id")
-	if id == 0 {
-		miniErr(w, http.StatusBadRequest, "缺少规则 id")
-		return
-	}
-	on := miniBool(body, "enforce")
-	if on {
-		var en, fp, undone, tested int64
-		err := sh.Store.Read.QueryRow(
-			`SELECT enabled,last_fp,last_undone,last_tested_at FROM ad_rules
-			WHERE id=?`, id).Scan(&en, &fp, &undone, &tested)
-		if errors.Is(err, sql.ErrNoRows) {
-			miniErr(w, http.StatusBadRequest, "规则不存在")
-			return
-		}
-		if err != nil {
-			miniErr(w, http.StatusInternalServerError, "读取失败")
-			return
-		}
-		if en != 1 {
-			miniErr(w, http.StatusBadRequest, "规则未启用，不能开启强制")
-			return
-		}
-		// 从未跑过全库测试（含 AI 直接写库的候选）不允许打开强制：
-		// last_fp 的默认 0 只代表「没测出误封」，不代表「测过且干净」。
-		if tested == 0 {
-			miniErr(w, http.StatusBadRequest, "规则还没跑过全库测试，请先跑一次测试再开启强制")
-			return
-		}
-		if fp != 0 || undone != 0 {
-			// undone 已计入 fp；db 被手改时单独兜一下，避免文案报「0 条」。
-			n := fp
-			if undone > n {
-				n = undone
-			}
-			miniErr(w, http.StatusBadRequest, fmt.Sprintf(
-				"规则尚未通过全库测试（疑似误封 %d 条），不能开启强制", n))
-			return
-		}
-	}
-	res, err := sh.Store.Write.Exec(
-		`UPDATE ad_rules SET enforce=? WHERE id=?`, boolToInt64(on), id)
-	if err != nil {
-		miniErr(w, http.StatusInternalServerError, "保存失败")
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 && !miniRuleExists(sh, id) {
-		miniErr(w, http.StatusBadRequest, "规则不存在")
-		return
-	}
-	miniRuleReload(sh)
-	miniOK(w, map[string]any{"ok": true})
-}
-
-// miniRulePattern 读一条规则的 pattern。
-func miniRulePattern(sh *core.Shared, id int64) (string, error) {
-	var pattern string
-	err := sh.Store.Read.QueryRow(
-		`SELECT pattern FROM ad_rules WHERE id=?`, id).Scan(&pattern)
-	return pattern, err
-}
-
-func miniRuleExists(sh *core.Shared, id int64) bool {
-	var one int64
-	return sh.Store.Read.QueryRow(
-		`SELECT 1 FROM ad_rules WHERE id=?`, id).Scan(&one) == nil
-}
-
-// miniRuleWriteTest 把一轮全库测试的统计写回规则行。
-// last_matched（最近命中时刻）不在这里动：它由判定路径的 BumpRuleHits 维护。
-func miniRuleWriteTest(sh *core.Shared, id int64, r antiad.RuleTestResult) error {
-	_, err := sh.Store.Write.Exec(`UPDATE ad_rules
-		SET last_tested_at=?,last_scanned=?,last_tp=?,last_fp=?,last_undone=?,
-		    last_ads_total=?,last_kinds=?
-		WHERE id=?`, time.Now().Unix(), r.Scanned, r.TP, r.FP, r.Undone,
-		r.AdsTotal, antiad.RuleKindsJSON(r.Kinds), id)
-	return err
 }
 
 // miniRuleTestJSON 把测试结果转成前端契约形状。
@@ -2021,13 +1368,6 @@ func miniRuleTestJSON(r antiad.RuleTestResult) map[string]any {
 		"tp_samples":     samples(r.TPSamples),
 		"fp_samples":     samples(r.FPSamples),
 		"undone_samples": samples(r.UndoneSamples),
-	}
-}
-
-// miniRuleReload 规则写操作后重建快照，判定路径立即生效。
-func miniRuleReload(sh *core.Shared) {
-	if err := sh.Cache.Reload(); err != nil {
-		slog.Error("miniapp：必封规则写库后刷新缓存失败", "err", err)
 	}
 }
 
@@ -2086,7 +1426,7 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64
 		// 「无权查看该 bot 的数据」。
 		botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
 	}
-	if botID == 0 || !miniCanManageBot(sh, uid, botID) {
+	if botID == 0 || !sh.CanManageBot(uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权查看该 bot 的数据")
 		return
 	}
@@ -2267,7 +1607,7 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			miniErr(w, http.StatusForbidden, "联合封禁只有主管理员能操作")
 			return
 		}
-	} else if !miniCanManageBot(sh, uid, botID) {
+	} else if !sh.CanManageBot(uid, botID) {
 		miniErr(w, http.StatusForbidden, "无权管理该 bot")
 		return
 	}
@@ -2476,17 +1816,6 @@ func miniAppealact(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 
 // ---- 小工具 ----
 
-func miniFloat(body map[string]any, key string) float64 {
-	switch v := body[key].(type) {
-	case float64:
-		return v
-	case string:
-		f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		return f
-	}
-	return 0
-}
-
 // miniPrice 读取一个价格字段：缺省按 0 处理，出现负价、NaN、非数字一律拒绝。
 // 负价会让开销核算变成负数，NaN 会让面板上的数字直接变成 NaN。
 func miniPrice(body map[string]any, key string) (float64, error) {
@@ -2515,61 +1844,9 @@ func miniPrice(body map[string]any, key string) (float64, error) {
 	return f, nil
 }
 
-// miniPrices 按顺序读取多个价格字段，缺省项按 0 处理。
-func miniPrices(body map[string]any, keys ...string) ([]float64, error) {
-	out := make([]float64, 0, len(keys))
-	for _, k := range keys {
-		f, err := miniPrice(body, k)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, nil
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func boolToInt64(v bool) int64 {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-// miniChatTitle 通过该 bot 的实例查群标题；实例不在运行或查询失败返回空串。
-// 查不到不算失败 —— bot 还没进群就添加 chat_id 是合法的使用顺序。
-func miniChatTitle(sh *core.Shared, botID, chatID int64) string {
-	if sh.Reg == nil {
-		return ""
-	}
-	b, ok := sh.Reg.LookupID(botID)
-	if !ok {
-		return ""
-	}
-	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID})
-	if err != nil {
-		return ""
-	}
-	var resp struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			Title string `json:"title"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
-		return ""
-	}
-	return resp.Result.Title
-}
-
-// parseModelListSnap 与 parseModelList 同规则，但不依赖 bot 实例。
-func parseModelListSnap(snap *store.Snapshot, text string) ([]string, error) {
+// parseModelList 解析逗号分隔的模型名列表：逐个校验存在且启用，去重但
+// 保持输入顺序（顺序即重试顺序）。返回的错误直接给管理员看。
+func parseModelList(snap *store.Snapshot, text string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
 	for _, raw := range strings.Split(text, ",") {

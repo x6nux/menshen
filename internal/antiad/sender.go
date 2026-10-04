@@ -28,11 +28,6 @@ type linkInfo struct {
 	AdKnown bool `json:"ad_known,omitempty"`
 }
 
-type linkEntry struct {
-	info   linkInfo
-	expire time.Time
-}
-
 const (
 	// profileLinkMax 是一个人最多解析的链接数。每个都是一次 getChat，
 	// 资料里塞几十个用户名的号不值得全查。
@@ -101,10 +96,8 @@ func resolveProfileLinks(b *core.Bot, p senderProfile) []linkInfo {
 // resolveLink 查一个公开用户名是什么，结果按小写用户名缓存。
 func resolveLink(b *core.Bot, handle string) linkInfo {
 	key := strings.ToLower(handle)
-	if v, ok := b.LinkCache.Load(key); ok {
-		if e := v.(linkEntry); time.Now().Before(e.expire) {
-			return e.info
-		}
+	if info, ok := cachesOf(b.Shared).link.Get(key); ok {
+		return info
 	}
 	info := linkInfo{Handle: handle, Kind: "unknown"}
 	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": "@" + handle})
@@ -145,7 +138,7 @@ func resolveLink(b *core.Bot, handle string) linkInfo {
 		info.About = core.TruncateRunes(info.About, 300)
 	}
 	// 查不到也缓存：私有群、已删号每条消息都重查一遍只是白白撞速率限制。
-	b.LinkCache.Store(key, linkEntry{info: info, expire: time.Now().Add(linkTTL)})
+	cachesOf(b.Shared).link.Set(key, info, linkTTL)
 	return info
 }
 
@@ -221,17 +214,6 @@ func fetchBotAbout(handle string) string {
 		return ""
 	}
 	return core.TruncateRunes(desc, 300)
-}
-
-// GCLinkCache 清理过期条目，防止 map 无限增长。
-func GCLinkCache(sh *core.Shared) {
-	now := time.Now()
-	sh.LinkCache.Range(func(k, v any) bool {
-		if now.After(v.(linkEntry).expire) {
-			sh.LinkCache.Delete(k)
-		}
-		return true
-	})
 }
 
 var mentionRe = regexp.MustCompile(`@([A-Za-z][A-Za-z0-9_]{3,31})`)

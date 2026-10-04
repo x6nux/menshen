@@ -3,8 +3,6 @@ package panel
 import (
 	"fmt"
 	"html"
-	"log/slog"
-	"math"
 	"strconv"
 	"strings"
 
@@ -17,16 +15,16 @@ import (
 // 列表分页大小。TG 单条消息容得下 10 条模型的四项价格。
 const modelPageSize = 10
 
-// modelPriceFields 把 callback 里的短码映射到 DB 列与展示名。
-// 短码刻意用 2-3 字符，为 callback_data 里的模型名腾出预算。
+// modelPriceFields 把 callback 里的短码映射到价格序号（同 core.ModelPriceCols）
+// 与展示名。短码刻意用 2-3 字符，为 callback_data 里的模型名腾出预算。
 var modelPriceFields = map[string]struct {
-	col   string
+	idx   int
 	label string
 }{
-	"pp":  {"prompt_price", "输入"},
-	"cp":  {"completion_price", "补全"},
-	"crp": {"cache_read_price", "缓存读取"},
-	"cwp": {"cache_write_price", "缓存创建"},
+	"pp":  {0, "输入"},
+	"cp":  {1, "补全"},
+	"crp": {2, "缓存读取"},
+	"cwp": {3, "缓存创建"},
 }
 
 // handleModelCallback 处理 a:md:*。模型名放在 callback_data 的最后一段，
@@ -96,8 +94,13 @@ func handleModelCallback(b *core.Bot, q *tg.CallbackQuery) {
 				"</b>价（$ / 1M tokens，非负数）：")
 
 	case "s": // a:md:s:<name> - 启用/停用
-		if err := toggleModelEnabled(b, arg); err != nil {
-			b.AnswerCallback(q.ID, "切换失败")
+		m := b.Cache.Snap().Models[arg]
+		if m == nil {
+			b.AnswerCallback(q.ID, "模型不存在")
+			return
+		}
+		if err := b.UpdateModel(arg, core.ModelPatch{Enabled: ptr(!m.Enabled)}); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "切换失败"))
 			return
 		}
 		b.AnswerCallback(q.ID, "已切换")
@@ -114,13 +117,9 @@ func handleModelCallback(b *core.Bot, q *tg.CallbackQuery) {
 			))
 
 	case "dy": // a:md:dy:<name> - 确认后执行删除
-		if _, err := b.Store.Write.Exec(`DELETE FROM models WHERE name=?`, arg); err != nil {
-			slog.Error("删除模型失败", "name", arg, "err", err)
-			b.AnswerCallback(q.ID, "删除失败")
+		if err := b.DeleteModel(arg); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "删除失败"))
 			return
-		}
-		if err := b.Cache.Reload(); err != nil {
-			slog.Error("删除模型后 reload 失败", "name", arg, "err", err)
 		}
 		b.AnswerCallback(q.ID, "已删除")
 		showModelList(b, chatID, msgID, 1)
@@ -291,28 +290,11 @@ func handleModelNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 	chatID := m.Chat.ID
 
 	if p.Op == "md_new_name" {
-		id := strings.TrimSpace(text)
-		if id == "" {
-			b.Send(chatID, "模型 ID 不能为空，请重新输入：", nil)
-			return
-		}
-		if strings.ContainsAny(p.Target, "/:") {
-			b.DropPending(m.From.ID)
-			b.Send(chatID, "上游名含 / 或 :，拼不出模型名前缀。请先到「🔌 上游渠道」给它改名。", nil)
-			return
-		}
-		full := p.Target + "/" + id
-		// callback_data 上限 64 字节，"a:md:e:crp:" + name 是最长形式
-		if len(full)+len("a:md:e:crp:") > 64 {
-			b.DropPending(m.From.ID)
-			b.Send(chatID, fmt.Sprintf(
-				"模型全名过长（%d 字节）。受 Telegram callback_data 64 字节限制，"+
-					"含上游前缀的模型名不得超过 %d 字节。", len(full), 64-len("a:md:e:crp:")), nil)
-			return
-		}
-		if b.Cache.Snap().Models[full] != nil {
-			b.DropPending(m.From.ID)
-			b.Send(chatID, "该模型已存在，请到列表中编辑它。", nil)
+		// 先校验一遍名字（与最终落库同一套规则），错了当场重填，
+		// 不必等四个价格都填完才知道。
+		full, err := core.NewModelName(b.Cache.Snap(), p.Target, text)
+		if err != nil {
+			b.Send(chatID, "❌ "+html.EscapeString(opText(err, "校验失败"))+"，请重新输入：", nil)
 			return
 		}
 		b.AskInput(chatID, m.From.ID, "md_new_pp", full,
@@ -350,8 +332,7 @@ func handleModelNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			b.Send(chatID, "会话数据异常，请重新点击「新增模型」。", nil)
 			return
 		}
-		name := fields[0]
-		prices := make([]float64, 4)
+		var prices [4]float64
 		for i := range prices {
 			v, err := parsePrice(fields[i+1])
 			if err != nil {
@@ -360,18 +341,11 @@ func handleModelNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			}
 			prices[i] = v
 		}
-
-		_, err := b.Store.Write.Exec(
-			`INSERT INTO models (name,prompt_price,completion_price,
-			 cache_read_price,cache_write_price,enabled) VALUES (?,?,?,?,?,1)`,
-			name, prices[0], prices[1], prices[2], prices[3])
+		upName, modelID := upstream.SplitModelName(fields[0])
+		name, err := b.AddModel(upName, modelID, prices)
 		if err != nil {
-			slog.Error("新增模型失败", "name", name, "err", err)
-			b.Send(chatID, "新增失败："+html.EscapeString(err.Error()), nil)
+			b.Send(chatID, "新增失败："+html.EscapeString(opText(err, "内部错误")), nil)
 			return
-		}
-		if err := b.Cache.Reload(); err != nil {
-			slog.Error("新增模型后 reload 失败", "name", name, "err", err)
 		}
 		b.Send(chatID, "✅ 模型 <code>"+html.EscapeString(name)+"</code> 已添加并启用。", nil)
 		showModelDetail(b, chatID, 0, name)
@@ -401,39 +375,14 @@ func handleModelEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, text 
 	}
 	b.DropPending(m.From.ID)
 
-	// f.col 取自 modelPriceFields 的字面量，不存在注入面。
-	if _, err := b.Store.Write.Exec(
-		`UPDATE models SET `+f.col+`=? WHERE name=?`, price, name); err != nil {
-		slog.Error("更新模型价格失败", "name", name, "col", f.col, "err", err)
-		b.Send(chatID, "更新失败："+html.EscapeString(err.Error()), nil)
+	var patch core.ModelPatch
+	patch.Prices[f.idx] = &price
+	if err := b.UpdateModel(name, patch); err != nil {
+		b.Send(chatID, "更新失败："+html.EscapeString(opText(err, "内部错误")), nil)
 		return
-	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("改模型价格后 reload 失败", "name", name, "err", err)
 	}
 	b.Send(chatID, "✅ 已更新"+f.label+"价为 $"+formatPrice(price)+" /M tokens。", nil)
 	showModelDetail(b, chatID, 0, name)
-}
-
-func toggleModelEnabled(b *core.Bot, name string) error {
-	var cur int64
-	if err := b.Store.Read.QueryRow(
-		`SELECT enabled FROM models WHERE name=?`, name).Scan(&cur); err != nil {
-		return err
-	}
-	next := int64(0)
-	if cur == 0 {
-		next = 1
-	}
-	if _, err := b.Store.Write.Exec(
-		`UPDATE models SET enabled=? WHERE name=?`, next, name); err != nil {
-		return err
-	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("切换模型启用状态后 reload 失败", "name", name, "err", err)
-		return err
-	}
-	return nil
 }
 
 // legacyModelCount 数一下没有上游前缀的旧格式模型。
@@ -451,13 +400,10 @@ func legacyModelCount(snap *store.Snapshot) int {
 // 核算变成负数，是配置事故而非合法用法。
 func parsePrice(s string) (float64, error) {
 	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+	if err != nil {
 		return 0, fmt.Errorf("价格格式错误，需为非负数字")
 	}
-	if v < 0 {
-		return 0, fmt.Errorf("价格必须为非负数")
-	}
-	return v, nil
+	return v, core.CheckPrice(v)
 }
 
 // formatPrice 去掉尾随 0，让 0.1500 显示为 0.15、3.0000 显示为 3。

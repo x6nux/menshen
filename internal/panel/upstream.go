@@ -1,14 +1,13 @@
 package panel
 
 import (
+	"errors"
 	"fmt"
 	"html"
-	"log/slog"
 	"strconv"
 	"strings"
 
 	"menshen/internal/core"
-	"menshen/internal/store"
 	"menshen/internal/tg"
 	"menshen/internal/upstream"
 )
@@ -123,7 +122,7 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 		// 名下有模型时拒绝：模型名里嵌着上游名，删掉上游会留下一批
 		// 「绑定的上游不存在」的死引用 —— 判定每次都失败，而面板上
 		// 看不出原因。
-		if names := modelsOfUpstream(b.Cache.Snap(), id); len(names) > 0 {
+		if names := core.ModelsOfUpstream(b.Cache.Snap(), id); len(names) > 0 {
 			show := names
 			if len(show) > 10 {
 				show = append(show[:10:10], "……")
@@ -136,12 +135,9 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 				tg.InlineKB([][2]string{{"◀️ 返回", fmt.Sprintf("a:up:%d", id)}}))
 			return
 		}
-		if _, err := b.Store.Write.Exec(`DELETE FROM upstreams WHERE id=?`, id); err != nil {
-			b.AnswerCallback(q.ID, "删除失败")
+		if err := b.DeleteUpstream(id); err != nil {
+			b.AnswerCallback(q.ID, opText(err, "删除失败"))
 			return
-		}
-		if err := b.Cache.Reload(); err != nil {
-			slog.Error("删除上游后 reload 失败", "id", id, "err", err)
 		}
 		b.AnswerCallback(q.ID, "已删除")
 		showUpstreamList(b, chatID, msgID)
@@ -297,11 +293,11 @@ func handleUpstreamNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, tex
 			"请输入 base_url（需含协议头 http:// 或 https://）：")
 
 	case "up_new_url":
-		if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
-			b.Send(chatID, "base_url 必须以 http:// 或 https:// 开头，请重新输入：", nil)
+		text, err := core.CleanBaseURL(text)
+		if err != nil {
+			b.Send(chatID, err.Error()+"，请重新输入：", nil)
 			return
 		}
-		text = strings.TrimSuffix(text, "/")
 		// 用 \x00 分隔已填字段，串联到最后一步一次性 INSERT
 		b.AskInput(chatID, m.From.ID, "up_new_key", p.Target+"\x00"+text, "请输入 api_key：")
 
@@ -412,18 +408,12 @@ func createUpstreamFromDraft(b *core.Bot, q *tg.CallbackQuery, chatID, msgID, ui
 		b.AnswerCallback(q.ID, "数据异常")
 		return false
 	}
-	if _, err := b.Store.Write.Exec(
-		`INSERT INTO upstreams (name,base_url,api_key,weight,status,
-		 supports_chat,supports_systemone,kind) VALUES (?,?,?,1,1,?,?,?)`,
-		dp[0], dp[1], dp[2], boolToInt(chat), boolToInt(so), string(kind)); err != nil {
-		slog.Error("新增上游失败", "err", err, "kind", kind)
+	if err := b.AddUpstream(core.UpstreamPatch{Name: &dp[0], BaseURL: &dp[1],
+		APIKey: &dp[2], Kind: &kind, Chat: &chat, SystemOne: &so}); err != nil {
 		b.AnswerCallback(q.ID, "新增失败")
-		b.Edit(chatID, msgID, "新增失败："+html.EscapeString(err.Error()),
+		b.Edit(chatID, msgID, "新增失败："+html.EscapeString(opText(err, "内部错误")),
 			tg.InlineKB([][2]string{{"◀️ 返回", "a:up"}}))
 		return false
-	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("新增上游后 reload 失败", "err", err)
 	}
 	b.AnswerCallback(q.ID, "✅ 已添加")
 	showUpstreamList(b, chatID, msgID)
@@ -484,36 +474,8 @@ func handleUpstreamNewType(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "至少选一种端点")
 			return
 		}
-		raw, ok := b.UpstreamNewDraft.Load(uid)
-		if !ok {
-			b.AnswerCallback(q.ID, "会话已过期，请重新添加")
-			b.Edit(chatID, msgID, "会话已过期，请重新点击「新增上游」。",
-				tg.InlineKB([][2]string{{"◀️ 返回", "a:up"}}))
-			return
-		}
-		b.UpstreamNewDraft.Delete(uid)
-		dp := strings.Split(raw.(string), "\x00")
-		if len(dp) != 3 {
-			b.AnswerCallback(q.ID, "数据异常")
-			return
-		}
-		_, err := b.Store.Write.Exec(
-			`INSERT INTO upstreams (name,base_url,api_key,weight,status,
-			 supports_chat,supports_systemone,kind) VALUES (?,?,?,1,1,?,?,?)`,
-			dp[0], dp[1], dp[2], boolToInt(mask&1 != 0), boolToInt(mask&2 != 0),
-			string(upstream.KindOpenAI))
-		if err != nil {
-			slog.Error("新增上游失败", "err", err)
-			b.AnswerCallback(q.ID, "新增失败")
-			b.Edit(chatID, msgID, "新增失败："+html.EscapeString(err.Error()),
-				tg.InlineKB([][2]string{{"◀️ 返回", "a:up"}}))
-			return
-		}
-		if err := b.Cache.Reload(); err != nil {
-			slog.Error("新增上游后 reload 失败", "err", err)
-		}
-		b.AnswerCallback(q.ID, "✅ 已添加")
-		showUpstreamList(b, chatID, msgID)
+		createUpstreamFromDraft(b, q, chatID, msgID, uid, upstream.KindOpenAI,
+			mask&1 != 0, mask&2 != 0)
 		return
 	}
 
@@ -528,13 +490,6 @@ func handleUpstreamNewType(b *core.Bot, q *tg.CallbackQuery) {
 	showUpstreamTypePicker(b, chatID, msgID, uid, mask^(1<<bit))
 }
 
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
 func handleUpstreamEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, text string) {
 	chatID := m.Chat.ID
 	id, err := strconv.ParseInt(p.Target, 10, 64)
@@ -544,169 +499,85 @@ func handleUpstreamEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, te
 		return
 	}
 
-	// col 是要更新的列，val 是已校验的值。校验失败一律 return 并保留
-	// 会话，让管理员直接重填。
-	var col string
-	var val any
-
+	var patch core.UpstreamPatch
+	done := "✅ 已更新"
 	switch p.Op {
 	case "up_edit_url":
-		if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
-			b.Send(chatID, "base_url 必须以 http:// 或 https:// 开头，请重新输入：", nil)
-			return
-		}
-		col, val = "base_url", strings.TrimSuffix(text, "/")
-
+		patch.BaseURL = &text
 	case "up_edit_name":
-		name := strings.TrimSpace(text)
-		if err := core.ValidUpstreamName(name); err != nil {
-			b.Send(chatID, "❌ "+err.Error()+"，请重新输入：", nil)
-			return
-		}
-		if err := b.RenameUpstream(id, name); err != nil {
-			b.Send(chatID, "改名失败："+html.EscapeString(err.Error()), nil)
-			return
-		}
-		b.DropPending(m.From.ID)
-		b.Send(chatID, "✅ 已改名。引用它的模型名与默认模型设置已一并更新。", nil)
-		showUpstreamDetail(b, chatID, 0, id)
-		return
-
+		patch.Name = &text
+		done = "✅ 已改名。引用它的模型名与默认模型设置已一并更新。"
 	case "up_edit_key":
-		if text == "" {
-			b.Send(chatID, "api_key 不能为空，请重新输入：", nil)
-			return
-		}
-		col, val = "api_key", text
-
+		patch.APIKey = &text
 	case "up_edit_weight":
 		w, err := strconv.ParseInt(text, 10, 64)
-		if err != nil || w <= 0 {
-			// 权重 0 会让候选池总权重为 0，加权选择退化成除零，必须拒绝
+		if err != nil {
 			b.Send(chatID, "权重必须是正整数（&gt;0），请重新输入：", nil)
 			return
 		}
-		col, val = "weight", w
-
+		patch.Weight = &w
 	default:
 		b.DropPending(m.From.ID)
 		return
 	}
-
-	b.DropPending(m.From.ID)
-	// col 只可能取上面几个字面量，不存在注入面。
-	if _, err := b.Store.Write.Exec(
-		`UPDATE upstreams SET `+col+`=? WHERE id=?`, val, id); err != nil {
-		b.Send(chatID, "更新失败："+html.EscapeString(err.Error()), nil)
+	if err := b.UpdateUpstream(id, patch); err != nil {
+		var op *core.OpError
+		if errors.As(err, &op) {
+			// 输入不合法：保留会话，让管理员直接重填。
+			b.Send(chatID, "❌ "+html.EscapeString(op.Msg)+"，请重新输入：", nil)
+			return
+		}
+		b.DropPending(m.From.ID)
+		b.Send(chatID, opText(err, "更新失败。"), nil)
 		return
 	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("改上游后 reload 失败", "id", id, "col", col, "err", err)
-	}
-	b.Send(chatID, "✅ 已更新", nil)
+	b.DropPending(m.From.ID)
+	b.Send(chatID, done, nil)
 	showUpstreamDetail(b, chatID, 0, id)
 }
 
-// modelsOfUpstream 返回绑在这个上游名下的模型名（全名，稳定排序）。
-func modelsOfUpstream(snap *store.Snapshot, id int64) []string {
-	var name string
-	for _, u := range snap.Upstreams {
-		if u.ID == id {
-			name = u.Name
-			break
-		}
-	}
-	if name == "" {
-		return nil
-	}
-	var out []string
-	for full := range snap.Models {
-		if up, _ := upstream.SplitModelName(full); up == name {
-			out = append(out, full)
-		}
-	}
-	sortStrings(out)
-	return out
-}
-
+// toggleUpstreamSupports 翻转一个端点开关。chat-only 渠道的能力是类型
+// 决定的，开关按钮在详情里也不显示；这里再挡一道，防止旧消息里的按钮
+// 回调绕过 UI（UpdateUpstream 会把它静默收敛回只开 chat）。
 func toggleUpstreamSupports(b *core.Bot, id int64, which string) error {
-	// chat-only 渠道的能力是类型决定的，开关按钮在详情里也不显示；
-	// 这里再挡一道，防止旧消息里的按钮回调绕过 UI。
-	if kind, err := upstreamKindByID(b, id); err != nil {
-		return err
-	} else if kind.ChatOnly() {
-		return fmt.Errorf("%s 只能用于复判（chat），没有可切换的端点", kind.Label())
+	u := upstreamOf(b, id)
+	if u == nil {
+		return core.Bad("上游不存在")
 	}
-	var field string
+	if kind := u.EffectiveKind(); kind.ChatOnly() {
+		return core.Bad("%s 只能用于复判（chat），没有可切换的端点", kind.Label())
+	}
 	switch which {
 	case "chat":
-		field = "supports_chat"
+		return b.UpdateUpstream(id, core.UpstreamPatch{Chat: ptr(!u.SupportsChat)})
 	case "so":
-		field = "supports_systemone"
-	default:
-		return fmt.Errorf("未知字段: %s", which)
+		return b.UpdateUpstream(id, core.UpstreamPatch{SystemOne: ptr(!u.SupportsSystemOne)})
 	}
-	return toggleUpstreamColumn(b, id, field)
+	return core.Bad("未知字段: %s", which)
 }
 
-// upstreamKindByID 读某个上游的渠道类型；脏值按 openai 处理。
-func upstreamKindByID(b *core.Bot, id int64) (upstream.Kind, error) {
-	var raw string
-	if err := b.Store.Read.QueryRow(
-		`SELECT kind FROM upstreams WHERE id=?`, id).Scan(&raw); err != nil {
-		return "", err
-	}
-	k, err := upstream.ParseKind(raw)
-	if err != nil {
-		return upstream.KindOpenAI, nil
-	}
-	return k, nil
-}
-
-// setUpstreamKind 切换渠道类型并按类型重置能力：Cloudflare 默认
-// chat=0 / systemone=1，其余类型默认 chat=1 / systemone=0；
-// OpenAI Completions 与 Cloudflare 之后可在详情里改开关。
+// setUpstreamKind 切换渠道类型；能力按新类型重置（见 UpdateUpstream）。
 func setUpstreamKind(b *core.Bot, id int64, raw string) error {
 	kind, err := upstream.ParseKind(raw)
 	if err != nil {
-		return err
+		return core.Bad("%s", err.Error())
 	}
-	chat, so := kind.ResolveCaps(false, false, false)
-	if _, err := b.Store.Write.Exec(
-		`UPDATE upstreams SET kind=?,supports_chat=?,supports_systemone=? WHERE id=?`,
-		string(kind), boolToInt(chat), boolToInt(so), id); err != nil {
-		return err
-	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("切换渠道类型后 reload 失败", "id", id, "kind", kind, "err", err)
-		return err
-	}
-	return nil
+	return b.UpdateUpstream(id, core.UpstreamPatch{Kind: &kind})
 }
 
 func toggleUpstreamStatus(b *core.Bot, id int64) error {
-	return toggleUpstreamColumn(b, id, "status")
+	u := upstreamOf(b, id)
+	if u == nil {
+		return core.Bad("上游不存在")
+	}
+	return b.UpdateUpstream(id, core.UpstreamPatch{Enabled: ptr(u.Status == 0)})
 }
 
-// toggleUpstreamColumn 翻转一个 0/1 列。field 只来自上面两个函数里的
-// 字面量，不存在注入面。
-func toggleUpstreamColumn(b *core.Bot, id int64, field string) error {
-	var cur int64
-	if err := b.Store.Read.QueryRow(
-		`SELECT `+field+` FROM upstreams WHERE id=?`, id).Scan(&cur); err != nil {
-		return err
-	}
-	next := int64(0)
-	if cur == 0 {
-		next = 1
-	}
-	if _, err := b.Store.Write.Exec(
-		`UPDATE upstreams SET `+field+`=? WHERE id=?`, next, id); err != nil {
-		return err
-	}
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("切换上游开关后 reload 失败", "id", id, "field", field, "err", err)
-		return err
+func upstreamOf(b *core.Bot, id int64) *upstream.Upstream {
+	for _, u := range b.Cache.Snap().Upstreams {
+		if u.ID == id {
+			return u
+		}
 	}
 	return nil
 }

@@ -70,15 +70,9 @@ func runHourly(sh *core.Shared) {
 }
 
 func tickMinute(sh *core.Shared, reg *core.Registry) {
-	antiad.GCChatAdminCache(sh) // 群管理员缓存过期条目
-	antiad.GCBioCache(sh)       // 个人简介缓存过期条目
-	antiad.GCLinkCache(sh)      // 简介链接解析缓存过期条目
-	antiad.GCVisionCache(sh)    // 识图结果缓存
-	antiad.GCDoomedAlbums(sh)   // 已判成广告的相册
+	antiad.GCCaches(sh)         // 反广告的全部内存缓存与节流记录（见 antiad/caches.go）
 	panel.GCChatHealthCache(sh) // 面板的群权限自检结果
 	sh.AdLimits.GC()            // 反广告护栏窗口：回收长期无人问津的 key
-	antiad.GCUnbanGate(sh)      // 申诉的重试记录
-	antiad.GCJoinNotices(sh)    // 入群服务消息与判定结果的配对条目
 	sh.GCShard(time.Now())      // 同群多 bot 的发言人认领
 	if reg == nil {
 		return

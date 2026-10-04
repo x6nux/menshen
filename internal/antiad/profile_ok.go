@@ -92,19 +92,23 @@ func GrantProfileOK(b *core.Bot, p senderProfile, hours int, reason string) int6
 // DropProfileOK 撤销某个人的资料放行。资料本身又判成广告号时用它：
 // 那份资料重新成了广告证据，之前的放行不该继续挡着。
 func DropProfileOK(b *core.Bot, uid int64, why string) {
-	res, err := b.Store.Write.Exec(
-		`DELETE FROM profile_ok WHERE bot_id=? AND user_id=?`, b.BotID(), uid)
-	if err != nil {
+	if err := RevokeProfileOK(b.Shared, b.BotID(), uid, why); err != nil {
 		slog.Error("反广告：撤销资料放行失败", "uid", uid, "err", err)
-		return
+	}
+}
+
+// RevokeProfileOK 撤销某个 bot 给某人的资料放行（面板上的「撤销」也走这里）。
+func RevokeProfileOK(sh *core.Shared, botID, uid int64, why string) error {
+	res, err := sh.Store.Write.Exec(
+		`DELETE FROM profile_ok WHERE bot_id=? AND user_id=?`, botID, uid)
+	if err != nil {
+		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return
+		return nil
 	}
-	slog.Info("反广告：撤销资料放行", "uid", uid, "原因", why)
-	if err := b.Cache.Reload(); err != nil {
-		slog.Error("反广告：撤销资料放行后刷新缓存失败", "err", err)
-	}
+	slog.Info("反广告：撤销资料放行", "bot", botID, "uid", uid, "原因", why)
+	return sh.Cache.Reload()
 }
 
 // markProfileOK 把「资料已放行」标进画像，提示词据此不再凭资料判广告。

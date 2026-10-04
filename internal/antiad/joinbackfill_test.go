@@ -1,7 +1,6 @@
 package antiad
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -116,7 +115,6 @@ func TestResolveJoinTime(t *testing.T) {
 		VALUES (-100,5001,0,0,1,0,0)`); err != nil {
 		t.Fatal(err)
 	}
-	joinLookupMiss = sync.Map{}
 
 	ts := time.Now().Add(-40 * 24 * time.Hour).Unix()
 	calls := 0
@@ -176,7 +174,6 @@ func TestJoinBackfillNotTriggeredOnAdminGrant(t *testing.T) {
 		return nil, nil
 	}
 	defer func() { backfillRunner = oldRunner }()
-	joinBackfillDone = sync.Map{}
 	testutil.EnableAntiad(t, b, -100)
 	fake := b.TG.(*testutil.FakeTG)
 	fake.Resp["getChat"] = `{"ok":true,"result":{"id":-100,"type":"supergroup","username":"testgroup"}}`

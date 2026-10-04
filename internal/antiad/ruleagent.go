@@ -1510,25 +1510,15 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 		return msg
 	}
 
+	// 与面板保存同一套校验与查重（见 rules_admin.go）；分类与备注由模型
+	// 随手写，截断而不是拒绝。
 	name := strings.TrimSpace(in.Name)
-	if name == "" {
-		return fail("创建失败：规则名称不能为空。")
+	check := RuleInput{Name: name, Pattern: in.Pattern}
+	if err := validateRule(check); err != nil {
+		return fail("创建失败：" + err.Error() + "。")
 	}
-	if len([]rune(name)) > 60 {
-		return fail("创建失败：规则名称超过 60 字，请缩短。")
-	}
-	if _, err := CompileRulePattern(in.Pattern); err != nil {
-		return fail("创建失败：正则未通过严格校验（" + err.Error() + "）。")
-	}
-
-	// 同一条正则在库里只允许存在一份，避免重复命中产生双份流水。
-	var dup int64
-	if err := r.sh.Store.Read.QueryRow(
-		`SELECT COUNT(*) FROM ad_rules WHERE pattern=?`, in.Pattern).Scan(&dup); err != nil {
-		return fail("创建失败：查重失败（" + err.Error() + "）。")
-	}
-	if dup > 0 {
-		return fail("创建失败：已存在完全相同的正则规则，请勿重复创建。")
+	if err := checkRuleDup(r.sh, in.Pattern, 0); err != nil {
+		return fail("创建失败：" + err.Error() + "，请勿重复创建。")
 	}
 
 	res, err := testRulePatternCtx(ctx, r.sh, in.Pattern)

@@ -628,7 +628,7 @@ func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 				slog.Error("进群限制：清除失败", "chat", chatID, "uid", uid, "err", err)
 				continue
 			}
-			NoteLifted(chatID, uid)
+			NoteLifted(sh, chatID, uid)
 		}
 		n++
 	}

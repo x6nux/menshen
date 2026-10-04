@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -45,17 +44,14 @@ const tempMute = 5 * time.Minute
 // 消息大。存内存即可 —— 复判一结束就在同一条路径上处理，进程重启后
 // 最多再挂几分钟自己到期。
 
-// tempMutes 记下我们刚上的临时禁言：键 chat:uid → 施加时刻。
-var tempMutes sync.Map
-
 func tempMuteKey(chatID, uid int64) string {
 	return fmt.Sprintf("%d:%d", chatID, uid)
 }
 
 // NoteTempMute 记下这次临时禁言（dryrun 下不曾真的禁言，不要记）。
-func NoteTempMute(chatID, uid int64) {
+func NoteTempMute(sh *core.Shared, chatID, uid int64) {
 	if uid > 0 {
-		tempMutes.Store(tempMuteKey(chatID, uid), time.Now())
+		cachesOf(sh).tempMutes.Set(tempMuteKey(chatID, uid), struct{}{}, tempMute)
 	}
 }
 
@@ -76,7 +72,7 @@ func LiftTempMute(b *core.Bot, chatID, uid int64) bool {
 		slog.Warn("反广告：解除临时禁言失败", "chat", chatID, "uid", uid, "tg_error", desc)
 		return false
 	}
-	tempMutes.Delete(tempMuteKey(chatID, uid))
+	cachesOf(b.Shared).tempMutes.Delete(tempMuteKey(chatID, uid))
 	slog.Info("反广告：复判正常，已解除临时禁言", "chat", chatID, "uid", uid)
 	return true
 }
@@ -85,13 +81,7 @@ func LiftTempMute(b *core.Bot, chatID, uid int64) bool {
 // 且没超过临时禁言时长。人工复查（/check）走这一支 —— 复查时那个人可能
 // 正被另一条消息的正式处罚禁着，那种不该动。
 func LiftTempMuteIfFresh(b *core.Bot, chatID, uid int64) bool {
-	v, ok := tempMutes.Load(tempMuteKey(chatID, uid))
-	if !ok {
-		return false
-	}
-	t, ok := v.(time.Time)
-	if !ok || time.Since(t) > tempMute {
-		tempMutes.Delete(tempMuteKey(chatID, uid))
+	if _, ok := cachesOf(b.Shared).tempMutes.Get(tempMuteKey(chatID, uid)); !ok {
 		return false
 	}
 	return LiftTempMute(b, chatID, uid)
@@ -236,25 +226,14 @@ func albumKey(chatID int64, album string) string { return fmt.Sprintf("%d:%s", c
 // 相册的配文只挂在其中一张上，只删判定的那条，其余图片（常常就是二维码、
 // 联系方式截图）会留在群里。
 func deleteAlbum(b *core.Bot, m *tg.Message) (bool, string) {
-	b.DoomedAlbums.Store(albumKey(m.Chat.ID, m.MediaGroupID), time.Now().Add(albumDoomTTL))
+	cachesOf(b.Shared).doomedAlbums.Set(albumKey(m.Chat.ID, m.MediaGroupID), struct{}{}, albumDoomTTL)
 	return deleteMessages(b, m.Chat.ID, gmsgIDs(b,
 		`chat_id=? AND user_id=? AND media_group=?`, m.Chat.ID, m.From.ID, m.MediaGroupID))
 }
 
 func albumDoomed(b *core.Bot, chatID int64, album string) bool {
-	v, ok := b.DoomedAlbums.Load(albumKey(chatID, album))
-	return ok && time.Now().Before(v.(time.Time))
-}
-
-// GCDoomedAlbums 清理过期条目，防止 map 无限增长。
-func GCDoomedAlbums(sh *core.Shared) {
-	now := time.Now()
-	sh.DoomedAlbums.Range(func(k, v any) bool {
-		if now.After(v.(time.Time)) {
-			sh.DoomedAlbums.Delete(k)
-		}
-		return true
-	})
+	_, ok := cachesOf(b.Shared).doomedAlbums.Get(albumKey(chatID, album))
+	return ok
 }
 
 // gmsgIDs 按条件取留底里的消息 ID。where 只来自本包的字面量。

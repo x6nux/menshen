@@ -142,7 +142,7 @@ func TestAppealEntrySweepsWhenNoPenalty(t *testing.T) {
 		}
 		return "", false
 	}
-	residualSwept.Delete(777)
+	cachesOf(b.Shared).residualSwept.Delete(777)
 
 	if !showAppealEntry(b, 777, 777, "appeal") {
 		t.Fatal("带 payload 的申诉入口应被接管")

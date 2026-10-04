@@ -3,7 +3,6 @@ package antiad
 import (
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -34,13 +33,6 @@ const (
 	reassertLimit = 3
 )
 
-var (
-	// justLifted 记下「这是我们主动解除的」：键 chat:uid。
-	justLifted sync.Map // string -> time.Time
-	// reasserts 记重新施加的时间点（限流用）：键 chat:uid。
-	reasserts sync.Map // string -> []time.Time
-)
-
 func reassertKey(chatID, uid int64) string {
 	return fmt.Sprintf("%d:%d", chatID, uid)
 }
@@ -48,8 +40,8 @@ func reassertKey(chatID, uid int64) string {
 // NoteLifted 记下「这是我们主动解除的限制」，外部解除复查会跳过这个
 // 群里的这个人一小段时间。解除路径（申诉、解禁码、人工放行、白名单）
 // 都要调它。
-func NoteLifted(chatID, uid int64) {
-	justLifted.Store(reassertKey(chatID, uid), time.Now())
+func NoteLifted(sh *core.Shared, chatID, uid int64) {
+	cachesOf(sh).justLifted.Set(reassertKey(chatID, uid), struct{}{}, reassertTTL)
 }
 
 // canSpeak 报告这个成员状态是否代表「现在能发言」。
@@ -95,25 +87,23 @@ func activeMute(b *core.Bot, chatID, uid int64) (time.Duration, string, bool) {
 }
 
 // reassertAllowed 做限流：同一个人每小时最多重新施加 reassertLimit 次。
-func reassertAllowed(chatID, uid int64) bool {
+func reassertAllowed(sh *core.Shared, chatID, uid int64) bool {
+	reasserts := &cachesOf(sh).reasserts
 	key := reassertKey(chatID, uid)
 	now := time.Now()
 	cut := now.Add(-time.Hour)
 	var kept []time.Time
-	if v, ok := reasserts.Load(key); ok {
-		if list, ok := v.([]time.Time); ok {
-			for _, t := range list {
-				if t.After(cut) {
-					kept = append(kept, t)
-				}
-			}
+	list, _ := reasserts.Get(key)
+	for _, t := range list {
+		if t.After(cut) {
+			kept = append(kept, t)
 		}
 	}
 	if len(kept) >= reassertLimit {
-		reasserts.Store(key, kept)
+		reasserts.Set(key, kept, time.Hour)
 		return false
 	}
-	reasserts.Store(key, append(kept, now))
+	reasserts.Set(key, append(kept, now), time.Hour)
 	return true
 }
 
@@ -135,10 +125,8 @@ func reassertMute(b *core.Bot, conf store.BotChat, cu *tg.ChatMemberUpdated) {
 		return
 	}
 	chatID := cu.Chat.ID
-	if v, ok := justLifted.Load(reassertKey(chatID, u.ID)); ok {
-		if t, ok := v.(time.Time); ok && time.Since(t) < reassertTTL {
-			return // 我们自己刚解除的，不反弹
-		}
+	if _, ok := cachesOf(b.Shared).justLifted.Get(reassertKey(chatID, u.ID)); ok {
+		return // 我们自己刚解除的，不反弹
 	}
 	if b.Cache.Snap().Whitelisted(b.BotID(), chatID, u.ID, time.Now().Unix()) {
 		return // 管理员明确放行
@@ -147,7 +135,7 @@ func reassertMute(b *core.Bot, conf store.BotChat, cu *tg.ChatMemberUpdated) {
 	if !ok {
 		return // 库里没有我们的限制：这限制是别人的事
 	}
-	if !reassertAllowed(chatID, u.ID) {
+	if !reassertAllowed(b.Shared, chatID, u.ID) {
 		slog.Warn("反广告：禁言被反复外部解除，本轮不再重新施加",
 			"chat", chatID, "uid", u.ID, "限制", why)
 		return
@@ -202,16 +190,14 @@ func ReassertActiveMutes(sh *core.Shared) {
 		if rec.Cache.Snap().Whitelisted(it.botID, it.chatID, it.uid, now) {
 			continue
 		}
-		if v, ok := justLifted.Load(reassertKey(it.chatID, it.uid)); ok {
-			if t, ok := v.(time.Time); ok && time.Since(t) < reassertTTL {
-				continue
-			}
+		if _, ok := cachesOf(sh).justLifted.Get(reassertKey(it.chatID, it.uid)); ok {
+			continue
 		}
 		st := chatMemberState([]*core.Bot{rec}, it.chatID, it.uid)
 		if st == nil || !st.Member || !st.Muted {
 			continue // 已经不在了，或者本来就不能发言（还在限制里）
 		}
-		if !reassertAllowed(it.chatID, it.uid) {
+		if !reassertAllowed(sh, it.chatID, it.uid) {
 			continue
 		}
 		if ok2, desc := MuteSender(rec, it.chatID, it.uid, 0); !ok2 {

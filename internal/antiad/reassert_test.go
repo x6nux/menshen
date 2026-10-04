@@ -141,7 +141,7 @@ func TestReassertMuteThrottled(t *testing.T) {
 	}
 	base := fake.CountCalls("restrictChatMember")
 	for i := 0; i < reassertLimit+2; i++ {
-		justLifted.Delete(reassertKey(-100, u.ID))
+		cachesOf(b.Shared).justLifted.Delete(reassertKey(-100, u.ID))
 		unrestrict()
 	}
 	got := fake.CountCalls("restrictChatMember") - base

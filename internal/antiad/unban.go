@@ -122,14 +122,7 @@ func dropJoinMute(b *core.Bot, chatID, uid int64) {
 	}
 	// 这是我们主动解除的：外部解除复查别把它当成「被别的 bot 抹掉了」
 	// 又给施加回去（解除要发 TG 调用，chat_member 更新回流有几秒延迟）。
-	NoteLifted(chatID, uid)
-}
-
-func bumpJoinAttempts(b *core.Bot, chatID, uid int64) {
-	if _, err := b.Store.Write.Exec(`UPDATE join_mutes SET attempts = attempts + 1
-		WHERE chat_id=? AND user_id=?`, chatID, uid); err != nil {
-		slog.Error("冷判定：更新尝试次数失败", "chat", chatID, "uid", uid, "err", err)
-	}
+	NoteLifted(b.Shared, chatID, uid)
 }
 
 // unbanAttempt 是自助解除的重试状态，只存内存。
@@ -163,11 +156,10 @@ func nextUnbanDelay(base time.Duration, n int) time.Duration {
 
 // unbanGateCheck 报告此人现在能否发起一次解除尝试，不能时返回还要等多久。
 func unbanGateCheck(sh *core.Shared, uid int64) (bool, time.Duration) {
-	v, ok := sh.UnbanGate.Load(uid)
+	a, ok := cachesOf(sh).unbanGate.Get(uid)
 	if !ok {
 		return true, 0
 	}
-	a := v.(unbanAttempt)
 	if wait := time.Until(a.next); wait > 0 {
 		return false, wait
 	}
@@ -178,29 +170,19 @@ func unbanGateCheck(sh *core.Shared, uid int64) (bool, time.Duration) {
 func unbanGateBump(sh *core.Shared, uid int64) {
 	base := time.Duration(
 		sh.Cache.Snap().SettingInt("antiad_unban_base", 60)) * time.Second
+	gate := &cachesOf(sh).unbanGate
 	n := 1
-	if v, ok := sh.UnbanGate.Load(uid); ok {
-		n = v.(unbanAttempt).n + 1
+	if a, ok := gate.Get(uid); ok {
+		n = a.n + 1
 	}
-	sh.UnbanGate.Store(uid, unbanAttempt{n: n, next: time.Now().Add(nextUnbanDelay(base, n))})
+	// 多留一小时：刚到点就忘掉的话，一个人隔几分钟试一次，
+	// 每次都被当成「第一次」，退避就永远不会增长。
+	delay := nextUnbanDelay(base, n)
+	gate.Set(uid, unbanAttempt{n: n, next: time.Now().Add(delay)}, delay+time.Hour)
 }
 
 // unbanGateClear 在成功解除后清掉计数，下次再被限制时从头开始。
-func unbanGateClear(sh *core.Shared, uid int64) { sh.UnbanGate.Delete(uid) }
-
-// gcUnbanGate 清理早已过期的重试记录，防止 map 无限增长。
-func GCUnbanGate(sh *core.Shared) {
-	now := time.Now()
-	sh.UnbanGate.Range(func(k, v any) bool {
-		a := v.(unbanAttempt)
-		// 多留一小时：刚过期就删的话，一个人隔几分钟试一次，
-		// 每次都被当成「第一次」，退避就永远不会增长。
-		if now.After(a.next.Add(time.Hour)) {
-			sh.UnbanGate.Delete(k)
-		}
-		return true
-	})
-}
+func unbanGateClear(sh *core.Shared, uid int64) { cachesOf(sh).unbanGate.Delete(uid) }
 
 // HandleStartPayload 与验证码流程已由申诉通道取代（见 appeal.go）：
 // deep link 现在进入「列出有效限制 → 写理由/直接申诉 → AI 复判 → 网页验证」。
@@ -210,7 +192,7 @@ func GCUnbanGate(sh *core.Shared) {
 func liftJoinMute(b *core.Bot, dmChat, groupID int64, u *tg.TGUser,
 	rec joinMuteRec, note string) {
 
-	NoteLifted(groupID, u.ID)
+	NoteLifted(b.Shared, groupID, u.ID)
 	ok, desc := Unmute(b, groupID, u.ID)
 	if !ok {
 		// 如实告诉对方没做成，别让他以为已经能说话了。

@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -34,9 +33,6 @@ const (
 	residualMaxChats = 50
 )
 
-// residualSwept 记录每个人上次复查的开始时间。进程内即可：重启后重扫无害。
-var residualSwept sync.Map // uid -> time.Time
-
 // residualResult 是一次复查的结论。
 type residualResult struct {
 	Checked int      // 真问到状态的群数
@@ -51,12 +47,12 @@ func residualSweepAsync(b *core.Bot, dmChat, uid int64) bool {
 	if uid <= 0 || b.Shared.Reg == nil {
 		return false
 	}
-	if v, ok := residualSwept.Load(uid); ok {
-		if t, ok := v.(time.Time); ok && time.Since(t) < residualCooldown {
-			return false
-		}
+	// 进程内即可：重启后重扫无害。
+	swept := &cachesOf(b.Shared).residualSwept
+	if _, ok := swept.Get(uid); ok {
+		return false
 	}
-	residualSwept.Store(uid, time.Now())
+	swept.Set(uid, struct{}{}, residualCooldown)
 	return b.AdSubmit(func() {
 		b.Send(dmChat, residualSummary(residualSweep(b, uid)), nil)
 	})

@@ -252,7 +252,7 @@ func TestJoinNoticePairedEitherOrder(t *testing.T) {
 	if n := fake3.CountCalls("deleteMessage"); n != 0 {
 		t.Errorf("没有禁言就不该删服务消息，删了 %d 次", n)
 	}
-	GCJoinNotices(b3.Shared) // 不 panic 即可
+	GCCaches(b3.Shared) // 不 panic 即可
 }
 
 // TestAppealViewJSONArraysNeverNull：申诉详情的数组字段必须序列化成 []，

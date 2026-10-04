@@ -210,7 +210,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	snap := b.Cache.Snap()
 	// 进群是低频事件，简介必须拿最新的：对方可能刚改过资料（上一次被判、
 	// 改完简介再进来），用 1 小时缓存会把旧简介的结论原样重演一遍。
-	b.BioCache.Delete(u.ID)
+	cachesOf(b.Shared).bio.Delete(u.ID)
 	bio := userBio(b, u.ID)
 
 	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 0) == 1 {
@@ -414,46 +414,37 @@ func joinProfileText(u *tg.TGUser, bio string, v adVerdict) string {
 type joinNoticeEntry struct {
 	msgID int64
 	muted bool
-	at    time.Time
 }
+
+// joinNoticeTTL 是配对的等待上限：超过它还没配上，多半永远配不上了。
+const joinNoticeTTL = 10 * time.Minute
 
 // noteJoinNotice 记下入群服务消息的 ID；判定已先命中时当场删掉它。
 func noteJoinNotice(b *core.Bot, chatID, uid, msgID int64) {
 	key := fmt.Sprintf("%d:%d", chatID, uid)
-	if v, ok := b.Shared.JoinNotice.Load(key); ok {
-		if v.(joinNoticeEntry).muted {
-			b.TG.Call("deleteMessage", map[string]any{
-				"chat_id": chatID, "message_id": msgID})
-			b.Shared.JoinNotice.Delete(key)
-			return
-		}
+	notices := &cachesOf(b.Shared).joinNotice
+	if e, ok := notices.Get(key); ok && e.muted {
+		b.TG.Call("deleteMessage", map[string]any{
+			"chat_id": chatID, "message_id": msgID})
+		notices.Delete(key)
+		return
 	}
-	b.Shared.JoinNotice.Store(key, joinNoticeEntry{msgID: msgID, at: time.Now()})
+	notices.Set(key, joinNoticeEntry{msgID: msgID}, joinNoticeTTL)
 }
 
 // deleteJoinNotice 在冷判定命中禁言时调用：已知服务消息就删掉，
 // 否则留下标记，消息到达时由 noteJoinNotice 删。
 func deleteJoinNotice(b *core.Bot, chatID, uid int64) {
 	key := fmt.Sprintf("%d:%d", chatID, uid)
-	if v, ok := b.Shared.JoinNotice.LoadAndDelete(key); ok {
-		if e := v.(joinNoticeEntry); e.msgID != 0 {
+	notices := &cachesOf(b.Shared).joinNotice
+	if e, ok := notices.Take(key); ok {
+		if e.msgID != 0 {
 			b.TG.Call("deleteMessage", map[string]any{
 				"chat_id": chatID, "message_id": e.msgID})
 		}
 		return
 	}
-	b.Shared.JoinNotice.Store(key, joinNoticeEntry{muted: true, at: time.Now()})
-}
-
-// GCJoinNotices 清掉 10 分钟没配上的条目，防止 map 无限增长。
-func GCJoinNotices(sh *core.Shared) {
-	cut := time.Now().Add(-10 * time.Minute)
-	sh.JoinNotice.Range(func(k, v any) bool {
-		if v.(joinNoticeEntry).at.Before(cut) {
-			sh.JoinNotice.Delete(k)
-		}
-		return true
-	})
+	notices.Set(key, joinNoticeEntry{muted: true}, joinNoticeTTL)
 }
 
 // joinMuteNotice 渲染群内那条告知消息：一行「uid + 原因」，尾部跟文本链接

@@ -23,7 +23,7 @@ func TestParseModelListValidates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := parseModelList(b, " a/m1 , b/m2 ,a/m1")
+	got, err := parseModelList(b.Cache.Snap(), " a/m1 , b/m2 ,a/m1")
 	if err != nil {
 		t.Fatalf("合法列表被拒: %v", err)
 	}
@@ -31,10 +31,10 @@ func TestParseModelListValidates(t *testing.T) {
 		t.Errorf("应保留顺序并去重，得到 %v", got)
 	}
 
-	if _, err := parseModelList(b, "a/m1, nope"); err == nil {
+	if _, err := parseModelList(b.Cache.Snap(), "a/m1, nope"); err == nil {
 		t.Error("不存在的模型应被拒")
 	}
-	if _, err := parseModelList(b, "  "); err == nil {
+	if _, err := parseModelList(b.Cache.Snap(), "  "); err == nil {
 		t.Error("空列表应被拒")
 	}
 
@@ -45,7 +45,7 @@ func TestParseModelListValidates(t *testing.T) {
 	if err := b.Cache.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parseModelList(b, "b/m2"); err == nil {
+	if _, err := parseModelList(b.Cache.Snap(), "b/m2"); err == nil {
 		t.Error("停用的模型应被拒")
 	}
 }

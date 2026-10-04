@@ -46,22 +46,28 @@ func adTodayStats(b *core.Bot) (checked, hits, fps, cost int64) {
 // 是不是管理员」这种低频变化足够实时——权限刚变完重开一次面板就是最新值。
 const chatHealthTTL = 2 * time.Minute
 
-type chatHealthEntry struct {
-	text   string
-	expire time.Time
+// panelCaches 是面板挂在 Shared 上的内存缓存（见 core.Ext）。
+type panelCaches struct {
+	// chatHealth 缓存群权限自检结果，键 "botID:chatID"。面板每次渲染群详情
+	// 都查一次 getChatMember，而它跑在 bot 的串行更新路径上（TG 慢时最坏 40 秒）。
+	chatHealth core.TTLMap[string, string]
+}
+
+type panelCachesKey struct{}
+
+func panelCachesOf(sh *core.Shared) *panelCaches {
+	return core.Ext(sh, panelCachesKey{}, func() *panelCaches { return &panelCaches{} })
 }
 
 // adChatHealth 检查 bot 在该群的权限，返回一句人话（结果缓存两分钟）。
 func adChatHealth(b *core.Bot, chatID int64) string {
 	key := fmt.Sprintf("%d:%d", b.BotID(), chatID)
-	if v, ok := b.ChatHealthCache.Load(key); ok {
-		if e, ok := v.(chatHealthEntry); ok && time.Now().Before(e.expire) {
-			return e.text
-		}
+	cache := &panelCachesOf(b.Shared).chatHealth
+	if text, ok := cache.Get(key); ok {
+		return text
 	}
 	text := queryChatHealth(b, chatID)
-	b.ChatHealthCache.Store(key, chatHealthEntry{
-		text: text, expire: time.Now().Add(chatHealthTTL)})
+	cache.Set(key, text, chatHealthTTL)
 	return text
 }
 
@@ -87,15 +93,7 @@ func queryChatHealth(b *core.Bot, chatID int64) string {
 }
 
 // GCChatHealthCache 清理过期的自检结果，防止 map 无限增长。
-func GCChatHealthCache(sh *core.Shared) {
-	now := time.Now()
-	sh.ChatHealthCache.Range(func(k, v any) bool {
-		if e, ok := v.(chatHealthEntry); ok && now.After(e.expire) {
-			sh.ChatHealthCache.Delete(k)
-		}
-		return true
-	})
-}
+func GCChatHealthCache(sh *core.Shared) { panelCachesOf(sh).chatHealth.GC(time.Now()) }
 
 func modelLabel(v string) string {
 	if v == "" {
@@ -323,8 +321,8 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "正在总结，稍候刷新查看")
 			go antiad.RunAdDigest(b.Shared, true) // 忽略样本数阈值，立刻跑一轮
 		case "c":
-			if err := b.PutSetting("antiad_digest", ""); err != nil {
-				b.AnswerCallback(q.ID, "清空失败")
+			if err := setDigest(b.Shared, q.From.ID, false, ""); err != nil {
+				b.AnswerCallback(q.ID, opText(err, "清空失败"))
 				return
 			}
 			b.AnswerCallback(q.ID, "已清空")

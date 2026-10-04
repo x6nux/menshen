@@ -2,7 +2,6 @@ package antiad
 
 import (
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -109,7 +108,6 @@ func TestJtimeUnknownSaysWhy(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	// 实时查询固定返回「查不到」，用例只关心渲染。
-	joinLookupMiss = sync.Map{}
 	old := joinLookupRunner
 	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) { return 0, nil }
 	defer func() { joinLookupRunner = old }()
@@ -145,7 +143,6 @@ func TestJtimeResolvesOnDemand(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
-	joinLookupMiss = sync.Map{}
 	ts := time.Now().Add(-30 * 24 * time.Hour).Unix()
 	calls := 0
 	old := joinLookupRunner

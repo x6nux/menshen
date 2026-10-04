@@ -74,11 +74,6 @@ func visionOn(snap *store.Snapshot) bool {
 	return strings.TrimSpace(snap.Setting("antiad_vision_model")) != ""
 }
 
-type visionEntry struct {
-	desc   string
-	expire time.Time
-}
-
 // visionSpend 是识图花掉的钱，并进这条消息的判定开销。
 type visionSpend struct {
 	Usage billing.Usage
@@ -117,8 +112,8 @@ func seeVisual(b *core.Bot, snap *store.Snapshot, m *tg.Message, st adState,
 // describeVisual 让识图模型把图里的文字与内容写出来，返回进正文的那一行。
 // 命中缓存时开销为零。
 func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, visionSpend, error) {
-	if e, ok := b.VisionCache.Load(v.uniqueID); ok && time.Now().Before(e.(visionEntry).expire) {
-		return v.label + e.(visionEntry).desc, visionSpend{}, nil
+	if desc, ok := cachesOf(b.Shared).vision.Get(v.uniqueID); ok {
+		return v.label + desc, visionSpend{}, nil
 	}
 	img, err := fetchTGFile(b, v.fileID)
 	if err != nil {
@@ -171,7 +166,7 @@ func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, vision
 		}
 		if desc != "" {
 			desc = core.TruncateRunes(desc, visionDescMax)
-			b.VisionCache.Store(v.uniqueID, visionEntry{desc, time.Now().Add(visionTTL)})
+			cachesOf(b.Shared).vision.Set(v.uniqueID, desc, visionTTL)
 			return v.label + desc, spend, nil
 		}
 		if attempt == 0 {
@@ -207,17 +202,6 @@ func visionReplyText(raw json.RawMessage) (content, thinking string, err error) 
 
 // oneLine 压成一行：换行会让后面几行看起来像不带前缀的正文。
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-// GCVisionCache 清理过期条目，防止 map 无限增长。
-func GCVisionCache(sh *core.Shared) {
-	now := time.Now()
-	sh.VisionCache.Range(func(k, v any) bool {
-		if now.After(v.(visionEntry).expire) {
-			sh.VisionCache.Delete(k)
-		}
-		return true
-	})
-}
 
 // fetchTGFile 用 getFile 换出文件路径再下载。
 func fetchTGFile(b *core.Bot, fileID string) ([]byte, error) {
