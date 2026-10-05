@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"menshen/internal/testutil"
+	"menshen/internal/tg"
 )
 
 // TestProfileShape 守归一化表：链接/数字/@/零宽都折叠成同一形状；
@@ -30,9 +31,12 @@ func TestProfileShape(t *testing.T) {
 				c.name, c.bio, got, c.want)
 		}
 	}
-	// bio 为空时退回昵称：同模板批量号的昵称也成套。
-	if got := profileShape(senderProfile{FirstName: "免押小额洗资"}); got != "免押小额洗资" {
-		t.Errorf("bio 为空应退回昵称，得到 %q", got)
+	// 只学 bio：昵称是低熵文本，做成形状误伤面太大，bio 为空一律不参与。
+	if got := profileShape(senderProfile{FirstName: "免押小额洗资"}); got != "" {
+		t.Errorf("bio 为空时不该用昵称兜底形状，得到 %q", got)
+	}
+	if got := profileShape(senderProfile{FirstName: "Robert Williamson"}); got != "" {
+		t.Errorf("常见人名不该成为形状，得到 %q", got)
 	}
 }
 
@@ -58,6 +62,32 @@ func TestDropJoinMuteRemovesProfileShape(t *testing.T) {
 	}
 	if _, ok := lookupProfileShape(b.Store, shape); ok {
 		t.Fatal("限制解除应连带删除资料形状")
+	}
+}
+
+// phash 处罚也要把形状写进 join_mutes.shape：受限账号被撤销/申诉解除时
+// 按它反查删除模板，否则一个被推翻的判定会继续零 AI 误伤同模板的后来者。
+func TestShapeMuteLiftRemovesShape(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	shape := profileShape(senderProfile{Bio: "免押小额洗资 https://t.me/+aaa"})
+	learnProfileShape(b.Store, shape, "promo", "样本", time.Now().Unix())
+
+	ok, muted := shapeMute(b, conf, &tg.TGUser{ID: 694},
+		senderProfile{Bio: "免押小额洗资 https://t.me/+bbb"}, "正文", "资料形态命中", true)
+	if !ok || !muted {
+		t.Fatalf("同模板应零 AI 命中并禁言：ok=%v muted=%v", ok, muted)
+	}
+	rec, has := loadJoinMute(b.Store, -100, 694)
+	if !has || rec.Shape != shape {
+		t.Fatalf("phash 处罚应把形状写入 join_mutes.shape：has=%v shape=%q 期望 %q",
+			has, rec.Shape, shape)
+	}
+
+	dropJoinMute(b, -100, 694)
+	if _, ok := lookupProfileShape(b.Store, shape); ok {
+		t.Fatal("phash 处罚被解除后应连带删除学习到的形状模板")
 	}
 }
 

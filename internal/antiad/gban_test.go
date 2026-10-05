@@ -487,3 +487,29 @@ func TestGbanOwnRemoveUnmutes(t *testing.T) {
 		t.Errorf("撤销后 gban_muted 应标记解除，还剩 %d 条", n)
 	}
 }
+
+// dropJoinMutesFor 在群里没有在跑的 bot 时也要清形状：那条限制已经没有人
+// 执行，直接 DELETE join_mutes 不会走 dropJoinMute 的反查删除，被推翻的
+// 模板会继续零 AI 误伤同模板的后来者。
+func TestDropJoinMutesForNoBotCleansShape(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	// -200 未挂在任何在跑 bot 名下（没有 EnableAntiad）→ 走无 bot 分支。
+	shape := profileShape(senderProfile{Bio: "免押小额洗资 https://t.me/+aaa"})
+	learnProfileShape(sh.Store, shape, "promo", "样本", time.Now().Unix())
+	saveJoinMute(b, -200, 903, kindProfile, "资料广告", 0)
+	if _, err := sh.Store.Write.Exec(`UPDATE join_mutes SET shape=?
+		WHERE chat_id=? AND user_id=?`, shape, -200, 903); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := dropJoinMutesFor(sh, 903, 777); n != 1 {
+		t.Fatalf("应清掉 1 个群的限制，得到 %d", n)
+	}
+	if _, ok := loadJoinMute(sh.Store, -200, 903); ok {
+		t.Fatal("限制记录应被删除")
+	}
+	if _, ok := lookupProfileShape(sh.Store, shape); ok {
+		t.Fatal("无在跑 bot 的分支也应删除形状模板")
+	}
+}

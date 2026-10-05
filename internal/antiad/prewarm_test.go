@@ -1723,6 +1723,43 @@ func TestPrewarmSweepProfileRuleEvidenceInPayload(t *testing.T) {
 	}
 }
 
+// 未变的命中资料重扫：非 enforce 规则命中只在真正送 AI 判定时计一次。
+// 旧实现把规则门放在指纹门之前且对所有命中计数，这份资料没变、也不该
+// 再判，却每上一档就给 ad_rules 记一次，计数被无限吹大。
+func TestPrewarmSweepRuleHitsNotInflatedOnRescan(t *testing.T) {
+	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	ruleID := insertRule(t, b, "资料广告_重扫", `免押小额洗资`, "promo", true, false)
+	addSweepMember(t, b, chat, 683, 25*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{683: {bio: "免押小额洗资 私聊"}})
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	ai1 := soN.Load() + llmN.Load()
+	if ai1 == 0 {
+		t.Fatal("首次判定的资料应走 AI")
+	}
+	if hits := countRows(t, b, `SELECT hits FROM ad_rules WHERE id=?`, ruleID); hits != 1 {
+		t.Fatalf("首次判定应计一次规则命中，得到 %d", hits)
+	}
+
+	// 资料没变，把它推回到期：重扫应命中指纹门直接推时间，不判也不计数。
+	_, _, h := sweepSchedule(t, b, chat, 683)
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 683, now-1800, now-1, h)
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if hits := countRows(t, b, `SELECT hits FROM ad_rules WHERE id=?`, ruleID); hits != 1 {
+		t.Fatalf("未变的命中资料重扫不该再计规则命中，得到 %d", hits)
+	}
+	if ai2 := soN.Load() + llmN.Load(); ai2 != ai1 {
+		t.Fatalf("未变的命中资料重扫不该再花 AI：%d → %d", ai1, ai2)
+	}
+}
+
 // 形状复用：一号 AI 判广告后学习形状，二号同模板换链接零 AI 直接禁言，
 // 流水 decider=phash，命中计数递增。
 func TestPrewarmSweepProfileShapeReuse(t *testing.T) {
