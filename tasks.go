@@ -71,6 +71,7 @@ func runHourly(sh *core.Shared) {
 
 func tickMinute(sh *core.Shared, reg *core.Registry) {
 	antiad.GCCaches(sh)         // 反广告的全部内存缓存与节流记录（见 antiad/caches.go）
+	antiad.PrewarmSweep(sh)     // 前置号复查：新成员 10 分钟一轮 / 老成员每日（只 SQL + 入队）
 	panel.GCChatHealthCache(sh) // 面板的群权限自检结果
 	sh.AdLimits.GC()            // 反广告护栏窗口：回收长期无人问津的 key
 	sh.GCShard(time.Now())      // 同群多 bot 的发言人认领
@@ -102,7 +103,6 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 
 func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
-	antiad.PrewarmSweep(sh)
 	// 规则发现自动运行只负责「发车」：同步扫一遍游标后就起后台 goroutine。
 	// 放在小时任务最前面，避免被下面可能长达几十分钟的禁言复查/形态总结堵住
 	// ——它一旦在下一小时 tick 时还没跑完，整轮小时任务都会被跳过。
