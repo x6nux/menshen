@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	version   = "2.4.0"
+	version   = "2.4.1"
 	buildTime = "unknown" // 由构建脚本通过 ldflags 注入
 )
 
