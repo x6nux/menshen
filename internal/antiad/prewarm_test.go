@@ -665,6 +665,13 @@ func TestPrewarmSweepInterval(t *testing.T) {
 	}
 }
 
+// expirePrewarmInflight 模拟「互斥 TTL 已过」：多阶段用例手动把 next_at
+// 拨回过去、重演下一档时，这一步对应生产里下一档 (≥30min) 已超过
+// prewarmInflightTTL (10min)，否则会被互斥直接跳过。
+func expirePrewarmInflight(b *core.Bot, chat, uid int64) {
+	cachesOf(b.Shared).prewarmInflight.Delete(fmt.Sprintf("%d:%d", chat, uid))
+}
+
 // sweepProfile 是假 getChat 给某个 uid 返回的资料。
 type sweepProfile struct {
 	first string
@@ -938,6 +945,7 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 	// 手动把下一次推到过去：到点后重新进候选；指纹未变 → 零 AI。
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 665, checked, now-1, hash)
+	expirePrewarmInflight(b, chat, 665)
 	fake.Reset()
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
@@ -984,6 +992,7 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 661, checked, now-1, oldH)
+	expirePrewarmInflight(b, chat, 661)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1046,6 +1055,7 @@ func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
 	cachesOf(b.Shared).prewarmAI.Set(key,
 		time.Now().Add(-prewarmAIInterval-time.Minute), prewarmAIInterval)
 	setSweepSchedule(t, b, chat, 668, checked, now-1, oldH)
+	expirePrewarmInflight(b, chat, 668)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1085,6 +1095,7 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	bio2 := "免押小额洗资：https://t.me/+abcdef"
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{662: {bio: bio2}})
 	setSweepSchedule(t, b, chat, 662, now, now-1, h1)
+	expirePrewarmInflight(b, chat, 662)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n != ai1 {
@@ -1108,6 +1119,7 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 662, checked, now-1, h1)
+	expirePrewarmInflight(b, chat, 662)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n == 0 {
@@ -1456,7 +1468,7 @@ func TestPrewarmSweepPerBotCap(t *testing.T) {
 	}
 	fakeSweepProfiles(t, fake, nil)
 
-	// 资料为空：首查只落空指纹不送检，300 条上限跑得很快。
+	// 拉取全空：只推时间不送检，300 条上限跑得很快。
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1526,5 +1538,95 @@ func TestPrewarmSweepBelowLineNote(t *testing.T) {
 	}
 	if !strings.Contains(note, "延迟复查（低于采信线，未处置）") {
 		t.Fatalf("低于采信线的结论应注明未处置，得到 %q", note)
+	}
+}
+
+// 资料拉取全空不算首查完成：不落指纹、不花 AI，只推 next_at；恢复后
+// 同一份广告资料会被判并禁言（防线上 429 风暴把广告永久吞掉）。
+func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
+	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, chat, 670, 25*3600, 0)
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 670, now-1800, now-1, "")
+	// getChat 全空（首次拉取被限流/失败）：名字、用户名、简介都没有。
+	fakeSweepProfiles(t, fake, nil)
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	checked, next, hash := sweepSchedule(t, b, chat, 670)
+	if hash != "" {
+		t.Fatalf("空资料不能算首查完成落指纹，得到 %q", hash)
+	}
+	if checked < now || next <= now {
+		t.Fatalf("空拉取应推时间和下一次：checked=%d next=%d", checked, next)
+	}
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("空拉取不该花 AI，跑了 %d 次", n)
+	}
+
+	// 恢复：拉取返回真实广告资料；下一档（互斥 TTL 已过）应判并禁言。
+	bio := "免押小额洗资：https://t.me/+abcdef"
+	newH := profileHash(senderProfile{Bio: bio})
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{670: {bio: bio}})
+	setSweepSchedule(t, b, chat, 670, checked, now-1, "")
+	expirePrewarmInflight(b, chat, 670)
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("恢复后应判广告并禁言 1 次，得到 %d", got)
+	}
+	if _, _, hash := sweepSchedule(t, b, chat, 670); hash != newH {
+		t.Fatalf("判定成功后应落新指纹 %q，得到 %q", newH, hash)
+	}
+}
+
+// 互斥：同一 uid 的一个复查还在处理中时，第二个投递立即返回，不再做
+// 任何 TG 工作（队列积压导致抢占 hold 过期时的兜底）。
+func TestPrewarmSweepInflightSkipsDuplicate(t *testing.T) {
+	b, fake, chat, _, _ := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, chat, 671, 25*3600, 0)
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 671, now-1800, now-1, "")
+
+	started := make(chan struct{}, 4)
+	release := make(chan struct{}, 4)
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method == "getChat" {
+			started <- struct{}{}
+			<-release
+			return `{"ok":true,"result":{"id":671,"first_name":"某广告",` +
+				`"bio":"免押小额洗资：https://t.me/+abcdef"}}`, true
+		}
+		return "", false
+	}
+
+	first := make(chan struct{})
+	go func() { prewarmRecheck(b, chat, 671); close(first) }()
+	<-started
+
+	// 第二个同 uid 的投递必须立即返回（互斥命中），不进任何 TG 调用。
+	second := make(chan struct{})
+	go func() { prewarmRecheck(b, chat, 671); close(second) }()
+	immediate := false
+	select {
+	case <-second:
+		immediate = true
+	case <-time.After(2 * time.Second):
+	}
+	release <- struct{}{}
+	release <- struct{}{} // 互斥缺失时第二个也卡在 getChat，这里放它出来
+	<-first
+	<-second
+	if !immediate {
+		t.Fatal("同一 uid 的第二个复查没有立即返回（互斥缺失）")
+	}
+	if got := fake.CountCalls("getChat"); got != 1 {
+		t.Fatalf("同一 uid 只应有 1 次资料拉取，得到 %d 次", got)
 	}
 }

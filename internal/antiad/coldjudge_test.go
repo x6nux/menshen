@@ -297,6 +297,38 @@ func TestColdJudgeLogsJoinChecked(t *testing.T) {
 	}
 }
 
+// TestApplyJoinMuteNotifyIdempotent：已在进群类限制里的人再施加一次
+// 是无操作——不再 restrict、不再发通知、不再写流水；kind 也不被改写。
+func TestApplyJoinMuteNotifyIdempotent(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	saveJoinMute(b, -100, 555, kindPrewarm, "已有前置号限制", 0)
+	const logs = `SELECT COUNT(*) FROM antiad_log
+		WHERE chat_id=-100 AND user_id=555`
+	before := countRows(t, b, logs)
+
+	applyJoinMuteNotify(b, conf, &tg.TGUser{ID: 555, FirstName: "广告号"},
+		adVerdict{IsAd: true, Confidence: 0.99, Reason: "资料广告"},
+		joinMuteSpec{Kind: kindProfile, Action: actionJoinMuted,
+			Note: "延迟复查发现资料广告", Body: "x", Reason: "资料广告",
+			Announce: true})
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("已有进群限制不该重复禁言，得到 %d 次", got)
+	}
+	if got := fake.CountCalls("sendMessage"); got != 0 {
+		t.Fatalf("无操作不该发群内通知，得到 %d 次", got)
+	}
+	if got := countRows(t, b, logs); got != before {
+		t.Fatalf("无操作不该写新流水：%d -> %d", before, got)
+	}
+	rec, ok := loadJoinMute(b.Store, -100, 555)
+	if !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("原有记录不该被改写：ok=%v kind=%q", ok, rec.Kind)
+	}
+}
+
 // TestJoinMuteNoticeOneLine：群内限制通知一行化——uid + 原因，昵称与
 // 用户名照旧不贴；它受「群内展示」开关控制，发了就安排到点自动撤回。
 func TestJoinMuteNoticeOneLine(t *testing.T) {
