@@ -26,8 +26,8 @@ const MAX_UNIX_SECONDS = 8.64e12
 // 时区的实例，与「非法回退本地」的行为一致。
 const formatterCache = new Map<string, Intl.DateTimeFormat>()
 
-function formatterFor(tzName?: string): Intl.DateTimeFormat {
-  const key = tzName ?? ''
+function formatterFor(tzName?: string, withSeconds = false): Intl.DateTimeFormat {
+  const key = (tzName ?? '') + (withSeconds ? '|s' : '')
   const cached = formatterCache.get(key)
   if (cached) return cached
   const options: Intl.DateTimeFormatOptions = {
@@ -35,6 +35,7 @@ function formatterFor(tzName?: string): Intl.DateTimeFormat {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    ...(withSeconds ? { second: '2-digit' as const } : {}),
     // 固定 24 小时制（h23），避免个别本地化的午夜显示成 24:xx。
     hourCycle: 'h23',
   }
@@ -60,6 +61,30 @@ export function fmtTS(at: number, tzName?: string): string {
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((p) => p.type === type)?.value ?? ''
   return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
+}
+
+/**
+ * fmtTSFull 在 fmtTS 的「MM-DD HH:mm」上补秒，给运行日志用 —— 同一分钟内
+ * 往往连着好几条，只有秒能看出先后。非法值同样显示 —。
+ */
+export function fmtTSFull(at: number, tzName?: string): string {
+  if (!Number.isFinite(at) || at <= 0 || at > MAX_UNIX_SECONDS) return '—'
+  const parts = formatterFor(tzName, true).formatToParts(new Date(at * 1000))
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? ''
+  return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`
+}
+
+const LOG_LEVEL_LABELS: Record<string, string> = {
+  DEBUG: '调试',
+  INFO: '信息',
+  WARN: '警告',
+  ERROR: '错误',
+}
+
+/** logLevelLabel 运行日志级别文案；未知值原样返回。 */
+export function logLevelLabel(level: string): string {
+  return LOG_LEVEL_LABELS[level] || level
 }
 
 const VERDICT_LABELS: Record<string, string> = {

@@ -9,6 +9,7 @@ import type {
   RuleTest,
   Spec,
   State,
+  SysLogRow,
   UserDossier,
 } from '../api/types'
 
@@ -244,6 +245,26 @@ export const mockLogDetail: LogRow = {
   ...mockLogs[0],
   text: '（mock）加我兼职日结，先交押金。详情接口的正文比列表更完整。',
 }
+
+/** mockSysLogs 覆盖四档级别，含一条带结构化字段的错误行。 */
+export const mockSysLogs: SysLogRow[] = [
+  {
+    seq: 4,
+    at: 1700000300,
+    level: 'ERROR',
+    message: '（mock）上游连续失败',
+    attrs: [{ k: 'err', v: 'context deadline exceeded' }, { k: 'upstream', v: 'demo' }],
+  },
+  { seq: 3, at: 1700000200, level: 'WARN', message: '（mock）判定失败，按放行处理', attrs: [] },
+  {
+    seq: 2,
+    at: 1700000100,
+    level: 'INFO',
+    message: '（mock）webhook 已注册',
+    attrs: [{ k: 'bot', v: 'menshen_demo_bot' }],
+  },
+  { seq: 1, at: 1700000000, level: 'DEBUG', message: '（mock）读取 bot 简介失败', attrs: [] },
+]
 
 export const mockUser: UserDossier = {
   user_id: 555,

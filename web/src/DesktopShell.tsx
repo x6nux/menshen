@@ -38,6 +38,7 @@ const MANAGE: { page: Page; label: string }[] = [
   { page: { k: 'upstreams' }, label: '上游渠道' },
   { page: { k: 'models' }, label: '模型定价' },
   { page: { k: 'rules' }, label: 'AI 必封规则' },
+  { page: { k: 'syslog' }, label: '运行日志' },
   { page: { k: 'settings' }, label: '全局设置' },
 ]
 

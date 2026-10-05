@@ -20,6 +20,7 @@ export type Page =
   | { k: 'rules' }
   | { k: 'rule'; id: number }
   | { k: 'settings' }
+  | { k: 'syslog' }
 
 export interface NavValue {
   tab: TabKey

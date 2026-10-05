@@ -1,7 +1,7 @@
 // msw handlers：读接口返回 fixtures，写接口统一回成功。
 // 开发（VITE_MOCK=1）与测试可复用；真实校验逻辑属于后端测试范围。
 import { HttpResponse, http } from 'msw'
-import type { LogRow } from '../api/types'
+import type { LogRow, SysLogCounts, SysLogRow } from '../api/types'
 import {
   mockAppealDetail,
   mockAppeals,
@@ -11,6 +11,7 @@ import {
   mockRuleTest,
   mockRules,
   mockState,
+  mockSysLogs,
   mockUser,
 } from './fixtures'
 
@@ -51,6 +52,34 @@ const LOG_PAGE_SIZE = 20
 /** 未结申诉状态（与后端 store.AppealOpenStatusesSQL 一致），mock 列表筛选用。 */
 const APPEAL_OPEN_STATUSES = ['statement', 'ai', 'web', 'noweb', 'code']
 
+const SYSLOG_PAGE_SIZE = 50
+
+/** 级别名 -> 序数，用于「不低于」下限筛选（与后端 logbuf.ParseLevel 同口径）。 */
+const SYSLOG_LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 }
+
+function sysLogMatches(row: SysLogRow, q: string): boolean {
+  const needle = q.trim().toLowerCase()
+  if (!needle) return true
+  return `${row.message} ${row.attrs.map((a) => `${a.k} ${a.v}`).join(' ')}`
+    .toLowerCase()
+    .includes(needle)
+}
+
+/** 与后端一致：级别是「不低于」下限；counts 只受搜索影响、不受下限影响。 */
+function filterSysLogs(level: string, q: string): { rows: SysLogRow[]; counts: SysLogCounts } {
+  const searched = mockSysLogs.filter((row) => sysLogMatches(row, q))
+  const counts: SysLogCounts = { debug: 0, info: 0, warn: 0, error: 0 }
+  for (const row of searched) {
+    const key = String(row.level).toLowerCase() as keyof SysLogCounts
+    if (key in counts) counts[key] += 1
+  }
+  const floor = SYSLOG_LEVEL_RANK[level.trim().toLowerCase()] ?? 0
+  const rows = searched.filter(
+    (row) => (SYSLOG_LEVEL_RANK[String(row.level).toLowerCase()] ?? 0) >= floor,
+  )
+  return { rows, counts }
+}
+
 export const handlers = [
   http.post('*/miniapp/api/state', () => HttpResponse.json(mockState)),
   http.post('*/miniapp/api/logs', async ({ request }) => {
@@ -66,6 +95,18 @@ export const handlers = [
     })
   }),
   http.post('*/miniapp/api/log', () => HttpResponse.json(mockLogDetail)),
+  http.post('*/miniapp/api/syslog', async ({ request }) => {
+    const body = await bodyOf(request)
+    const { rows, counts } = filterSysLogs(String(body.level ?? ''), String(body.q ?? ''))
+    const page = Math.max(1, Number(body.page ?? 1) || 1)
+    const start = (page - 1) * SYSLOG_PAGE_SIZE
+    return HttpResponse.json({
+      logs: rows.slice(start, start + SYSLOG_PAGE_SIZE),
+      page,
+      total: rows.length,
+      counts,
+    })
+  }),
   http.post('*/miniapp/api/user', async ({ request }) => {
     const body = await bodyOf(request)
     const all = body.filter === 'all'

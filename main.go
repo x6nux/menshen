@@ -18,6 +18,7 @@ import (
 	"menshen/internal/antiad"
 	"menshen/internal/config"
 	"menshen/internal/core"
+	"menshen/internal/logbuf"
 	"menshen/internal/panel"
 	"menshen/internal/store"
 )
@@ -57,6 +58,15 @@ func main() {
 	}
 
 	sh := core.NewShared(cfg, db, cache)
+
+	// 运行日志：slog 同时写标准输出与进程内环形缓冲，网页版面板的
+	// 「运行日志」页读缓冲。控制台保持 INFO，缓冲从 DEBUG 起采 —— 网页上
+	// 能看到标准输出里没有的调试上下文。装在这里之后启动流程的日志
+	//（迁移、注册 webhook、后台任务）都会进缓冲。
+	slog.SetDefault(slog.New(logbuf.NewHandler(sh.Logs,
+		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		slog.LevelDebug)))
+
 	stop := make(chan struct{})
 	reg := core.NewRegistry(sh, stop, dispatch)
 

@@ -71,6 +71,12 @@ export function MinePage() {
               chevron
               onClick={() => nav.push({ k: 'rules' })}
             />
+            <ListRow
+              primary="运行日志"
+              secondary="最近的运行日志，按级别筛选与搜索"
+              chevron
+              onClick={() => nav.push({ k: 'syslog' })}
+            />
           </>
         )}
       </SectionCard>

@@ -1,6 +1,6 @@
 // 列表行状态徽标的文案与色调（机器人/群组/记录/申诉共用，避免各页各写一套）。
 import type { Bot, Chat } from '../api/types'
-import { apAI, apStatus, verdictLabel } from './format'
+import { apAI, apStatus, logLevelLabel, verdictLabel } from './format'
 
 /** StatusTone 与 ui/Badge 的 BadgeTone 结构一致，避免 lib 依赖组件层。 */
 export type StatusTone = 'ok' | 'no' | 'warn' | 'neutral'
@@ -38,4 +38,22 @@ export function appealStatusInfo(status: string): StatusInfo {
 export function appealSummary(aiResult: string, aiReason: string): string {
   const head = apAI(aiResult)
   return aiReason ? `${head} · ${aiReason.slice(0, 40)}` : head
+}
+
+/**
+ * logLevelInfo：运行日志级别徽标。错误红、警告黄、信息绿、调试中性 ——
+ * 一眼扫过去先看到红黄，正是分级想达到的效果。
+ */
+export function logLevelInfo(level: string): StatusInfo {
+  const label = logLevelLabel(level)
+  switch (level) {
+    case 'ERROR':
+      return { label, tone: 'no' }
+    case 'WARN':
+      return { label, tone: 'warn' }
+    case 'INFO':
+      return { label, tone: 'ok' }
+    default:
+      return { label, tone: 'neutral' }
+  }
 }

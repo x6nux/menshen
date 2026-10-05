@@ -15,6 +15,7 @@ import type {
   RuleAgentStatusResp,
   RulesResp,
   State,
+  SysLogsResp,
   UserDossier,
 } from './types'
 
@@ -33,6 +34,8 @@ export const miniQueryKeys = {
   logsInfinite: (filter: string, q: string) => ['logs', 'infinite', filter, q] as const,
   userInfinite: (id: number, filter: string) => ['user', 'infinite', id, filter] as const,
   appealsInfinite: (filter: string) => ['appeals', 'infinite', filter] as const,
+  // 运行日志是进程内缓冲，进程重启即变，没有写操作会失效它；刷新靠 refetch。
+  sysLogsInfinite: (level: string, q: string) => ['syslog', 'infinite', level, q] as const,
 }
 
 /**
@@ -223,6 +226,37 @@ export function useInfiniteUserLogs(userId: number, filter = 'act', enabled = tr
       return loaded < last.shown ? pages.length + 1 : undefined
     },
     enabled: enabled && userId > 0,
+    placeholderData: keepPreviousData,
+  })
+}
+
+// ---- 运行日志（主管理员专属）----
+
+export interface InfiniteSysLogsParams {
+  /** 级别下限：''/all（默认，不过滤）/ debug / info / warn / error。 */
+  level?: string
+  q?: string
+  enabled?: boolean
+}
+
+/**
+ * useInfiniteSysLogs 拉取进程内运行日志（新→旧）。只有主管理员能读，
+ * 调用方必须在确认 me.main 后才 enabled（次管不发请求）。日志是内存缓冲、
+ * 不落库，写操作失效不适用；需要看最新的靠 refetch。
+ */
+export function useInfiniteSysLogs(params: InfiniteSysLogsParams = {}) {
+  const level = params.level ?? ''
+  const q = params.q ?? ''
+  return useInfiniteQuery({
+    queryKey: miniQueryKeys.sysLogsInfinite(level, q),
+    queryFn: ({ pageParam, signal }) =>
+      api<SysLogsResp>('syslog', { level, q, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
+      return loaded < last.total ? pages.length + 1 : undefined
+    },
+    enabled: params.enabled ?? true,
     placeholderData: keepPreviousData,
   })
 }

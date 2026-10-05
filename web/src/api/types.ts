@@ -402,6 +402,41 @@ export interface RuleSaveResp {
   test: RuleTest
 }
 
+// ---- 运行日志（主管理员专属）----
+
+/** SysLogLevel 是 slog 的四档级别；后端还有未知级别时按字符串兜底。 */
+export type SysLogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+
+/** SysLogAttr 是一条日志的结构化字段，v 已由后端渲染成字符串。 */
+export interface SysLogAttr {
+  k: string
+  v: string
+}
+
+/** SysLogRow 是运行日志的一行；seq 单调递增，供列表 key 用。 */
+export interface SysLogRow {
+  seq: number
+  at: number
+  level: SysLogLevel | string
+  message: string
+  attrs: SysLogAttr[]
+}
+
+/** SysLogCounts 是搜索命中里的各档条数（不受级别筛选影响）。 */
+export interface SysLogCounts {
+  debug: number
+  info: number
+  warn: number
+  error: number
+}
+
+export interface SysLogsResp {
+  logs: SysLogRow[]
+  page: number
+  total: number
+  counts: SysLogCounts
+}
+
 // ---- 写操作 ----
 
 /** OkResp 是大多数写操作的返回；note 是服务端给用户看的提示文案。 */

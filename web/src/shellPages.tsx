@@ -16,6 +16,7 @@ import { OverviewPage } from './pages/OverviewPage'
 import { RecordsPage } from './pages/RecordsPage'
 import { RuleDetailPage, RulesPage } from './pages/RulesPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { SysLogPage } from './pages/SysLogPage'
 import { UpstreamDetailPage, UpstreamsPage } from './pages/UpstreamsPage'
 import { UserPage } from './pages/UserPage'
 
@@ -43,6 +44,7 @@ export const PAGE_NAMES: Record<Page['k'], string> = {
   rules: 'AI 必封规则',
   rule: '规则详情',
   settings: '全局设置',
+  syslog: '运行日志',
 }
 
 /** renderTabPage 是一级 Tab 的页面映射。 */
@@ -91,6 +93,8 @@ export function renderStackPage(page: Page): ReactNode {
       return <RuleDetailPage key={page.id} id={page.id} />
     case 'settings':
       return <SettingsPage />
+    case 'syslog':
+      return <SysLogPage />
   }
 }
 

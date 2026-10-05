@@ -343,6 +343,8 @@ func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string)
 		miniLogDetail(sh, w, uid, body)
 	case "logact":
 		miniLogact(sh, w, r, uid, body)
+	case "syslog":
+		miniSysLog(sh, w, uid, body)
 	case "appeals":
 		miniAppeals(sh, w, uid, body)
 	case "appeal":

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"menshen/internal/config"
+	"menshen/internal/logbuf"
 	"menshen/internal/ratelimit"
 	"menshen/internal/store"
 	"menshen/internal/tg"
@@ -51,6 +52,11 @@ type Shared struct {
 	// 跨 bot 共享是有意的：两个 bot 同在一个群时，护栏该拦的是
 	// 「这个群每分钟送检多少条」，各算各的等于把成本翻倍。
 	AdLimits *ratelimit.Limiter
+
+	// Logs 是进程内运行日志环形缓冲（网页版「运行日志」页读它）。进程级而
+	// 非 bot 级：slog 只有一份默认 logger，日志本就混着所有 bot 的上下文。
+	// main 启动时用 logbuf.Handler 把它接进 slog（见 main.go）。
+	Logs *logbuf.Buffer
 
 	// ext 是 antiad / panel 挂在这里的进程级缓存与节流记录（见 Ext）。
 	// 类型归各自的包所有，core 不替上层保管状态。
@@ -97,6 +103,7 @@ type Shared struct {
 func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 	return &Shared{Cfg: cfg, Store: s, Cache: c,
 		AdLimits:  ratelimit.New(),
+		Logs:      logbuf.New(logbuf.DefaultCapacity),
 		reviewSem: make(chan struct{}, adReviewConcurrency),
 		// 两类出网请求各用各的代理：TG 常被墙，而 AI 上游往往是国内
 		// 可达的中转，把它也绕一圈只是白多一跳。两者都可留空。
