@@ -232,14 +232,14 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	// 之前——预筛省的是 AI，规则比 AI 还便宜，不该被预筛吞掉；enforce
 	// 命中按账号级广告直接禁言，与消息路径同档。
 	if handled, _ := enforceProfileRule(b, snap, conf, u, p,
-		joinProfileText(u, bio, adVerdict{}), "资料命中必封规则"); handled {
+		joinProfileText(u, bio, adVerdict{}), "资料命中必封规则", false); handled {
 		return
 	}
 
 	// 资料形状命中模板：零 AI 直接禁言（同模板批量号从第二个起不再花
 	// AI）。排在预筛之前——预筛省的是 AI，形状命中比 AI 更省。
 	if handled, _ := shapeMute(b, conf, u, p,
-		joinProfileText(u, bio, adVerdict{}), "资料形态命中"); handled {
+		joinProfileText(u, bio, adVerdict{}), "资料形态命中", false); handled {
 		return
 	}
 
@@ -383,6 +383,9 @@ type joinMuteSpec struct {
 	// join_mutes.shape 并学习进 profile_shapes，供同模板账号零 AI 复用；
 	// 撤销限制时按它反查删除。
 	Shape string
+	// Quiet 为真时跳过群内通知（批量探测的禁言只落流水与私聊汇总），
+	// 处置本身照常。
+	Quiet bool
 }
 
 func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
@@ -394,6 +397,18 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		Shape: profileShape(senderProfile{Username: u.Username,
 			FirstName: u.FirstName, LastName: u.LastName, Bio: bio}),
 	})
+}
+
+// noticeAllowed 做群内通知的按群限速（同一群 5 秒最多一条）：扫描高峰
+// 的 sendMessage 429 主要来自成批通知。返回 true 表示这条可以发。
+func noticeAllowed(b *core.Bot, chatID int64) bool {
+	now := time.Now()
+	at := &cachesOf(b.Shared).prewarmNoticeAt
+	if last, ok := at.Get(chatID); ok && now.Sub(last) < prewarmNoticeMinGap {
+		return false
+	}
+	at.Set(chatID, now, prewarmNoticeMinGap)
+	return true
 }
 
 // applyJoinMuteNotify 是进群类限制的执行：禁言 + 落库 + 群内通知 + 申诉入口。
@@ -435,7 +450,7 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	logID := logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
 		From: u, MessageID: spec.MsgID, Text: spec.Body}, v, spec.Action, spec.Note)
 
-	if spec.Announce {
+	if spec.Announce && !spec.Quiet && noticeAllowed(b, conf.ChatID) {
 		groupText := verdictBrief(v)
 		if groupText == "" {
 			groupText = reason
@@ -502,10 +517,11 @@ func profileRuleGate(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
 }
 
 // enforceProfileRule 处置资料 enforce 规则命中：按账号级广告直接禁言，
-// 零 AI；演练群只落 dryrun 流水。返回 (是否命中, 是否已落入 join_mutes)：
-// 调用方（前置号复查）据此决定指纹落库与重试。
+// 零 AI；演练群只落 dryrun 流水。quiet=true 用于批量探测（不发群通知）。
+// 返回 (是否命中, 是否已落入 join_mutes)：调用方（前置号复查）据此决定
+// 指纹落库与重试。
 func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
-	u *tg.TGUser, p senderProfile, body, note string) (bool, bool) {
+	u *tg.TGUser, p senderProfile, body, note string, quiet bool) (bool, bool) {
 	r, ok := profileRuleGate(b, snap, u, p.Bio)
 	if !ok {
 		return false, false
@@ -522,6 +538,7 @@ func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Kind: kindProfile, Action: actionJoinMuted, Note: note,
 		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
 		Shape: profileShape(p),
+		Quiet: quiet,
 	})
 	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)
 	return true, muted

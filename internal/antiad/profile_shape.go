@@ -167,13 +167,14 @@ func removeProfileShape(s *store.Store, shape string) {
 }
 
 // shapeMute 在资料形状命中已学习模板时直接禁言（零 AI）。演练群只落
-// dryrun 流水。返回 (是否命中, 是否已落入 join_mutes)。
+// dryrun 流水；quiet=true 用于批量探测（不发群通知）。返回 (是否命中,
+// 是否已落入 join_mutes)。
 //
 // 这里不把 Shape 再交给 applyJoinMuteNotify：命中路径已经 bump 过计数，
 // 触发方是既有模板而不是这条资料；让 join_mutes.shape 留空，撤销这条
 // 限制时也不会把模板本身删掉。
 func shapeMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, p senderProfile,
-	body, note string) (bool, bool) {
+	body, note string, quiet bool) (bool, bool) {
 	shape := profileShape(p)
 	if shape == "" {
 		return false, false
@@ -196,6 +197,7 @@ func shapeMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, p senderProfile,
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: note,
 		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
+		Quiet: quiet,
 	})
 	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)
 	return true, muted

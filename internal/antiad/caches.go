@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"sync"
 	"time"
 
 	"menshen/internal/core"
@@ -54,6 +55,16 @@ type caches struct {
 	// 键 "chatID:uid"。入队抢占的 5 分钟 hold 会在队列积压时过期，
 	// 这里兜底：TTL 覆盖最坏处理时长，重复投递直接退出。
 	prewarmInflight core.TTLMap[string, struct{}]
+	// prewarmProbeOnce 保证低优先级探测协程进程内只起一份。
+	prewarmProbeOnce sync.Once
+	// prewarmProbeStop 让测试能停掉探测协程（生产一直跑到进程退出）。
+	prewarmProbeStop chan struct{}
+	// prewarmProbeCursor 是轮转游标（最后处理过的 "botID:chatID"）：
+	// 每次探测从它的下一个群开始，避免总盯着一两个群。
+	prewarmProbeCursor string
+	// prewarmNoticeAt 做群内通知的按群限速，键 chatID，值上次通知时刻。
+	// 扫描高峰的 429 主要来自成批 sendMessage。
+	prewarmNoticeAt core.TTLMap[int64, time.Time]
 }
 
 type cachesKey struct{}
@@ -82,4 +93,5 @@ func GCCaches(sh *core.Shared) {
 	c.residualSwept.GC(now)
 	c.prewarmAI.GC(now)
 	c.prewarmInflight.GC(now)
+	c.prewarmNoticeAt.GC(now)
 }
