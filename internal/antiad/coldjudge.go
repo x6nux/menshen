@@ -359,6 +359,10 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 
 // applyJoinMuteNotify 是进群类限制的执行：禁言 + 落库 + 群内通知 + 申诉入口。
 //
+// 禁言是**无限期**的（不给 until_date），因为解除的条件是「本人改正
+// 账号资料」而不是「等够时间」。给时限的话，广告号只要熬过去就能开工，
+// 而改正过的人却还要继续等。
+//
 // 原来的入参是「正文渲染固定 + action 固定」；现在由调用方传 joinMuteSpec，
 // 前置号识别复用同一套执行但 kind/action/正文不同。
 func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,

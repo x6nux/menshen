@@ -551,12 +551,12 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 		soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	now := time.Now().Unix()
-	addSweepMember(t, b, chat, 601, 25*3600, 0, 0)  // 命中：资料变广告
-	addSweepMember(t, b, chat, 602, 2*3600, 0, 0)   // 进群 <24h：不查
+	addSweepMember(t, b, chat, 601, 25*3600, 0, 0)   // 命中：资料变广告
+	addSweepMember(t, b, chat, 602, 2*3600, 0, 0)    // 进群 <24h：不查
 	addSweepMember(t, b, chat, 603, 8*24*3600, 0, 0) // 进群 >7d：不查
-	addSweepMember(t, b, chat, 604, 25*3600, 0, 1)  // 白名单：不查
-	addSweepMember(t, b, chat, 605, 25*3600, 3, 0)  // 发言 3 条：不查
-	addSweepMember(t, b, chat, 606, 25*3600, 0, 0)  // 已查过：不查
+	addSweepMember(t, b, chat, 604, 25*3600, 0, 1)   // 白名单：不查
+	addSweepMember(t, b, chat, 605, 25*3600, 3, 0)   // 发言 3 条：不查
+	addSweepMember(t, b, chat, 606, 25*3600, 0, 0)   // 已查过：不查
 	old606 := now - 3600
 	b.Store.Write.Exec(`UPDATE group_members SET prewarm_checked_at=?
 		WHERE chat_id=? AND user_id=606`, old606, chat)
