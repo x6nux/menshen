@@ -464,6 +464,16 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	// 拿最新资料：对方可能刚把广告写进昵称或简介。
 	cachesOf(b.Shared).bio.Delete(uid)
 	info := userInfo(b, uid)
+	// getChat 全空（名字、用户名、简介都没有）说明这次拉取失败或被限流
+	// 了——真实用户至少有个名字。不能当成「资料本来就空」落指纹，否则
+	// 第一眼看到的空壳会被永久记住，之后指纹不变、广告资料永远漏判
+	// （线上实证：429 风暴里首查成功落空指纹）。只推下一次，下一档重试。
+	if info.bio == "" && info.username == "" && info.firstName == "" && info.lastName == "" {
+		slog.Warn("前置号复查：资料拉取全空，不算首查完成，下一档重试",
+			"chat", chatID, "uid", uid)
+		markPrewarmChecked(b, chatID, uid, interval)
+		return
+	}
 	u = &tg.TGUser{ID: uid, Username: info.username,
 		FirstName: info.firstName, LastName: info.lastName}
 	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
