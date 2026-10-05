@@ -156,7 +156,10 @@ var settingDefaults = map[string]string{
 	// 新人进群时不等他发言，先就账号画像（昵称/用户名/简介）判一次，
 	// 判为广告号即无限期限制发言，由本人改正后自助解除。默认关：
 	// 它对每个进群的人都要花一次 AI 的钱。
-	"antiad_cold": "0",
+	"antiad_cold":          "0",
+	"antiad_prewarm":       "0",
+	"antiad_prewarm_sweep": "0",
+	"antiad_prewarm_conf":  "85",
 	// 群内静默：打开后这个 bot 在群里不发任何消息（告警、限制通知、
 	// 兑换回执、命令回复都不发），判定与处置照常。默认关。
 	"antiad_group_silent": "0",
