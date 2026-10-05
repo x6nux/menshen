@@ -368,7 +368,7 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 		"chat_id": conf.ChatID, "user_id": u.ID,
 		"permissions": MutedPermissions(),
 	}); !ok {
-		slog.Warn("冷判定：限制发言失败",
+		slog.Warn("反广告：限制发言失败",
 			"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "tg", desc)
 		return
 	}
@@ -395,7 +395,7 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	saveJoinMute(b, conf.ChatID, u.ID, spec.Kind, reason, 0)
 	deleteJoinNotice(b, conf.ChatID, u.ID)
 
-	slog.Info("反广告：资料判定已限制发言",
+	slog.Info("反广告：已限制发言",
 		"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "置信度", v.Confidence)
 }
 

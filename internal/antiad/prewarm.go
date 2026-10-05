@@ -44,6 +44,15 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 	if m == nil || m.From == nil || edited {
 		return false
 	}
+	if m.From.IsBot {
+		return false
+	}
+	// 只圈纯文字：配文（Caption）与引用/转发载荷都可能藏着广告，应交回
+	// 普通判定（识图与引用口径在那里），不能在候选门里被吞掉。
+	if m.ReplyToMessage != nil || m.ExternalReply != nil ||
+		m.Quote != nil || len(m.ForwardOrigin) > 0 {
+		return false
+	}
 	if snap.BotSettingInt(b.BotID(), "antiad_prewarm", 0) != 1 {
 		return false
 	}
@@ -53,7 +62,7 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 	if time.Since(time.Unix(gm.JoinedAt, 0)) > prewarmJoinWindow {
 		return false
 	}
-	text := strings.TrimSpace(msgText(m))
+	text := strings.TrimSpace(m.Text)
 	if text == "" || len([]rune(strings.Trim(text, prewarmTrimCut))) > prewarmTextMax {
 		return false
 	}
@@ -165,6 +174,11 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	// 消息判定理解载荷。
 	state.PrewarmCheck = true
 	enrichSender(b, &state.Sender)
+	// 与 judgeAndAct 同一次硬规则复查：这里刚拿到简介，命中直接封禁
+	// 出群，不查头像、不送 AI（与 coldjudge.go 的顺序一致）。
+	if leaderGateWorker(b, snap, conf, m, state.Sender) {
+		return
+	}
 	if photos, ok := userPhotoCount(b, m.From.ID); ok {
 		state.Sender.Photos, state.Sender.PhotoKnown = &photos, true
 	}
@@ -174,9 +188,11 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	if err != nil {
 		slog.Warn("前置号复核：判定失败，回落消息判定",
 			"chat", m.Chat.ID, "uid", m.From.ID, "err", err)
-		// 回落的是普通消息判定：清掉复核标记，别把 prewarm_check 混进
-		// 消息判定的载荷（提示词并不认识它）。
+		// 回落的是普通消息判定：清掉复核标记与只属于前置号复核的头像
+		// 字段，别把它们混进消息判定的载荷（提示词并不认识）。
 		state.PrewarmCheck = false
+		state.Sender.Photos = nil
+		state.Sender.PhotoKnown = false
 		judgeAndAct(b, snap, conf, m, state.Sender, state)
 		return
 	}

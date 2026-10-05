@@ -86,6 +86,39 @@ func TestPrewarmCandidate(t *testing.T) {
 		t.Error("带链接的消息不该命中")
 	}
 
+	// 以下必须交回普通判定（识图/引用/转发/robot 豁免口径在那里），
+	// 不能在候选门里被吞掉。
+	captionOnly := msg("")
+	captionOnly.Caption = "哈喽"
+	if prewarmCandidate(b, snap, gm, captionOnly, false) {
+		t.Error("纯配文（无正文）不该命中")
+	}
+	reply := msg("哈喽")
+	reply.ReplyToMessage = &tg.Message{MessageID: 2}
+	if prewarmCandidate(b, snap, gm, reply, false) {
+		t.Error("回复消息不该命中")
+	}
+	external := msg("哈喽")
+	external.ExternalReply = &tg.ExternalReplyInfo{}
+	if prewarmCandidate(b, snap, gm, external, false) {
+		t.Error("跨聊天引用消息不该命中")
+	}
+	quoted := msg("哈喽")
+	quoted.Quote = &tg.TextQuote{}
+	if prewarmCandidate(b, snap, gm, quoted, false) {
+		t.Error("带手动引文的消息不该命中")
+	}
+	forwarded := msg("哈喽")
+	forwarded.ForwardOrigin = []byte(`{"type":"user"}`)
+	if prewarmCandidate(b, snap, gm, forwarded, false) {
+		t.Error("转发消息不该命中")
+	}
+	fromBot := msg("哈喽")
+	fromBot.From.IsBot = true
+	if prewarmCandidate(b, snap, gm, fromBot, false) {
+		t.Error("bot 消息不该命中")
+	}
+
 	// 开关关闭：一律不圈。
 	b2, _ := testutil.NewTestBot(t, 2)
 	testutil.EnableAntiad(t, b2, -100)
@@ -175,6 +208,57 @@ func TestPrewarmBelowLine(t *testing.T) {
 	sendPrewarmMessage(t, b, uid, chat)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("低于采信线不该禁言，得到 %d 次", got)
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, uid).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != actionPrewarmChecked {
+		t.Fatalf("低于采信线也应完成复核并落流水，action = %q", action)
+	}
+}
+
+// 简介里冒用国家领导人：走与 judgeAndAct 同一条硬规则，直接封禁出群；
+// 头像查询与两级 AI 都不该跑（零额外开销）。
+func TestPrewarmLeaderBioBansWithoutAI(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_prewarm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	soN, llmN := fakeAIWith(t, b,
+		soReply("clean", 0.9, "none", "account"),
+		llmReply(false, 0.9, "none", "account"))
+	// 昵称与用户名都正常，只有简介命中（简介是异步段 getChat 才拿到的）。
+	fake.Resp["getChat"] = `{"ok":true,"result":{"first_name":"张三","bio":"我的偶像邓小平"}}`
+	fake.Resp["getUserProfilePhotos"] = `{"ok":true,"result":{"total_count":0}}`
+
+	recordJoin(b, -100, 555, time.Now().Unix()-3600)
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "哈喽"))
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("banChatMember"); n != 1 {
+		t.Fatalf("资料冒用领导人应封禁出群 1 次，得到 %d", n)
+	}
+	var action, kind string
+	if err := b.Store.Read.QueryRow(`SELECT action,ad_kind FROM antiad_log
+		WHERE chat_id=-100 AND user_id=555 ORDER BY id DESC LIMIT 1`).
+		Scan(&action, &kind); err != nil {
+		t.Fatal(err)
+	}
+	if action != "deleted_banned" || kind != "impersonate" {
+		t.Fatalf("action/kind = %q/%q，期望 deleted_banned/impersonate", action, kind)
+	}
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("硬规则命中不该送 AI，跑了 %d 次", n)
+	}
+	if n := fake.CountCalls("getUserProfilePhotos"); n != 0 {
+		t.Fatalf("硬规则命中不该查头像，得到 %d 次", n)
+	}
+	if _, ok := loadJoinMute(b.Store, -100, 555); ok {
+		t.Fatal("硬规则封禁不该写 join_mutes")
 	}
 }
 
