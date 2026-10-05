@@ -92,7 +92,8 @@ func TestMigrateOldDB(t *testing.T) {
 		{"bots", "is_main"}, {"upstreams", "kind"},
 		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
 		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},
-		{"group_members", "profile_hash"}, {"group_members", "prewarm_next_at"}} {
+		{"group_members", "profile_hash"}, {"group_members", "prewarm_next_at"},
+		{"join_mutes", "shape"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
@@ -141,6 +142,15 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	if jmKind != "profile" {
 		t.Errorf("老 join_mutes.kind 应为 profile，得到 %q", jmKind)
+	}
+	// 老限制没有形状记录：默认空串，不参与形状复用。
+	var jmShape string
+	if err := s.Read.QueryRow(`SELECT shape FROM join_mutes
+		WHERE chat_id=-100 AND user_id=555`).Scan(&jmShape); err != nil {
+		t.Fatalf("读老 join_mutes.shape 失败: %v", err)
+	}
+	if jmShape != "" {
+		t.Errorf("老 join_mutes.shape 默认应为空串，得到 %q", jmShape)
 	}
 	// 索引必须建在 migrate 补出来的 bot_id 上，且不能因为老库没有这一列
 	// 而让启动失败（Open 已经返回成功，这里再确认索引真的在）。

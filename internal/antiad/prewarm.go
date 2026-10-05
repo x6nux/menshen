@@ -233,6 +233,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Reason:   "疑似批量注册的广告前置号",
 		Announce: conf.GroupAlert,
 		MsgID:    m.MessageID,
+		Shape:    profileShape(state.Sender),
 	})
 }
 
@@ -521,6 +522,19 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		return
 	}
 
+	// 资料形状命中已学习模板：零 AI 直接禁言（同模板批量号从第二个起
+	// 不再花 AI）。放在指纹门之后——没变的资料上一档已经查过形状，
+	// 不必每档重算。
+	if handled, muted := shapeMute(b, conf, u, p,
+		joinProfileText(u, p.Bio, adVerdict{}), "资料形态命中"); handled {
+		if muted || conf.Dryrun {
+			markPrewarmCheckedHash(b, chatID, uid, h, interval)
+		} else {
+			markPrewarmChecked(b, chatID, uid, interval)
+		}
+		return
+	}
+
 	// 首次见到该成员：本地预筛不中就不花 AI——绝大多数正常人的资料
 	// 平平无奇。指纹这时落库，下次起走「未变即跳过」。
 	if gm.ProfileHash == "" {
@@ -594,6 +608,7 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		Body:     joinProfileText(u, p.Bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: conf.GroupAlert,
+		Shape:    profileShape(p),
 	})
 	// 禁言失败（TG 抖动）不是定案：保留旧指纹、下一档重试，否则一次
 	// restrictChatMember 失败就把这份「化妆」永久吞掉。

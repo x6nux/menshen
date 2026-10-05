@@ -236,6 +236,13 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		return
 	}
 
+	// 资料形状命中模板：零 AI 直接禁言（同模板批量号从第二个起不再花
+	// AI）。排在预筛之前——预筛省的是 AI，形状命中比 AI 更省。
+	if handled, _ := shapeMute(b, conf, u, p,
+		joinProfileText(u, bio, adVerdict{}), "资料形态命中"); handled {
+		return
+	}
+
 	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 0) == 1 {
 		ok, hits := coldSuspicious(u, bio)
 		if !ok {
@@ -372,6 +379,10 @@ type joinMuteSpec struct {
 	// MsgID 是被处置的原消息号（前置号删掉的那条招呼）；0 = 无对应消息。
 	// 挂上它，申诉页的留底才能把这条招呼标成「被拦」。
 	MsgID int64
+	// Shape 是这条限制对应的资料形状哈希（profileShape）。非空时落库
+	// join_mutes.shape 并学习进 profile_shapes，供同模板账号零 AI 复用；
+	// 撤销限制时按它反查删除。
+	Shape string
 }
 
 func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
@@ -380,6 +391,8 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		Body:     joinProfileText(u, bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: conf.GroupAlert,
+		Shape: profileShape(senderProfile{Username: u.Username,
+			FirstName: u.FirstName, LastName: u.LastName, Bio: bio}),
 	})
 }
 
@@ -432,6 +445,17 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	}
 	saveJoinMute(b, conf.ChatID, u.ID, spec.Kind, reason, 0)
 	deleteJoinNotice(b, conf.ChatID, u.ID)
+	// 形状落库 + 学习：限制成立才学，撤销时按 join_mutes.shape 反查删除。
+	if spec.Shape != "" {
+		if _, err := b.Store.Write.Exec(`UPDATE join_mutes SET shape=?
+			WHERE chat_id=? AND user_id=?`,
+			spec.Shape, conf.ChatID, u.ID); err != nil {
+			slog.Warn("反广告：写入限制形状失败",
+				"chat", conf.ChatID, "uid", u.ID, "err", err)
+		}
+		learnProfileShape(b.Store, spec.Shape, spec.Kind, spec.Body,
+			time.Now().Unix())
+	}
 
 	slog.Info("反广告：已限制发言",
 		"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "置信度", v.Confidence)
@@ -497,6 +521,7 @@ func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: note,
 		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
+		Shape: profileShape(p),
 	})
 	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)
 	return true, muted

@@ -804,6 +804,10 @@ func CleanupData(sh *core.Shared) {
 	if _, err := deleteBatched(sh, "ad_hashes", "last_hit_at < ?", cut); err != nil {
 		slog.Error("清理内容哈希失败", "err", err)
 	}
+	// 资料形状与内容哈希同寿：只保留还在复用的模板形状。
+	if _, err := deleteBatched(sh, "profile_shapes", "last_hit < ?", cut); err != nil {
+		slog.Error("清理资料形状失败", "err", err)
+	}
 	// 待撤回告警里 bot 已被删掉、没人去撤的残留行。
 	if _, err := deleteBatched(sh, "alert_cleanup", "due_at < ?", cut); err != nil {
 		slog.Error("清理待撤回告警失败", "err", err)

@@ -88,6 +88,7 @@ type joinMuteRec struct {
 	Reason    string
 	NoticeMsg int64
 	Attempts  int64
+	Shape     string
 	CreatedAt int64
 }
 
@@ -115,9 +116,9 @@ func saveJoinMute(b *core.Bot, chatID, uid int64, kind, reason string,
 func loadJoinMute(s *store.Store, chatID, uid int64) (joinMuteRec, bool) {
 	var r joinMuteRec
 	err := s.Read.QueryRow(`SELECT chat_id,user_id,bot_id,kind,reason,notice_msg,
-		attempts,created_at FROM join_mutes WHERE chat_id=? AND user_id=?`,
+		attempts,shape,created_at FROM join_mutes WHERE chat_id=? AND user_id=?`,
 		chatID, uid).Scan(&r.ChatID, &r.UserID, &r.BotID, &r.Kind, &r.Reason,
-		&r.NoticeMsg, &r.Attempts, &r.CreatedAt)
+		&r.NoticeMsg, &r.Attempts, &r.Shape, &r.CreatedAt)
 	if err != nil {
 		return r, false
 	}
@@ -125,10 +126,16 @@ func loadJoinMute(s *store.Store, chatID, uid int64) (joinMuteRec, bool) {
 }
 
 func dropJoinMute(b *core.Bot, chatID, uid int64) {
+	// 先读出这条限制的形状：限制被推翻（申诉通过/撤销/人工解除）后形状
+	// 不该继续复用，否则同一模板的后续账号还会被零 AI 误伤。
+	rec, had := loadJoinMute(b.Store, chatID, uid)
 	if _, err := b.Store.Write.Exec(
 		`DELETE FROM join_mutes WHERE chat_id=? AND user_id=?`,
 		chatID, uid); err != nil {
 		slog.Error("冷判定：清除限制记录失败", "chat", chatID, "uid", uid, "err", err)
+	}
+	if had {
+		removeProfileShape(b.Store, rec.Shape)
 	}
 	// 这是我们主动解除的：外部解除复查别把它当成「被别的 bot 抹掉了」
 	// 又给施加回去（解除要发 TG 调用，chat_member 更新回流有几秒延迟）。

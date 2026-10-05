@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS join_mutes (
   reason     TEXT    NOT NULL DEFAULT '',
   notice_msg INTEGER NOT NULL DEFAULT 0,
   attempts   INTEGER NOT NULL DEFAULT 0,
+  shape      TEXT    NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   PRIMARY KEY (chat_id, user_id)
 );
@@ -236,6 +237,20 @@ CREATE TABLE IF NOT EXISTS ad_hashes (
   created_at  INTEGER NOT NULL,
   last_hit_at INTEGER NOT NULL,
   PRIMARY KEY (bot_id, hash)
+);
+
+-- profile_shapes 是同模板批量账号的「资料形状」指纹：资料文本归一化后
+-- （链接/数字/@用户名占位、去零宽与标点）的形态。第一个账号被判广告后
+-- 学习下来，后续同形状账号零 AI 直接禁言。全局表，不按 bot 隔离：
+-- 账号资料模板是攻击者侧的公开复用，跨租户命中是收益。
+-- last_hit 兼作过期依据（CleanupData 按保留期清理）。
+CREATE TABLE IF NOT EXISTS profile_shapes (
+  shape      TEXT PRIMARY KEY,
+  kind       TEXT    NOT NULL DEFAULT '',
+  hits       INTEGER NOT NULL DEFAULT 0,
+  last_hit   INTEGER NOT NULL DEFAULT 0,
+  sample     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
 );
 
 -- 申诉单：一个用户对一个 bot 的一次申诉。状态机见 docs/superpowers/specs
@@ -447,6 +462,9 @@ func migrate(db *sql.DB) error {
 		// 复查过，立刻进一次候选；到点选中后由 worker 按进群时长的
 		// 阶梯（1/5/10/30/60min）覆盖。
 		{"group_members", "prewarm_next_at", "INTEGER NOT NULL DEFAULT 0"},
+		// shape：这条进群限制对应的资料形状哈希（profile_shapes.shape）。
+		// 解除限制时按它反查删除，避免误伤解掉之后形状还在复用。
+		{"join_mutes", "shape", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

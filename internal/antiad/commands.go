@@ -539,5 +539,6 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 		Body:     joinProfileText(u, p.Bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: true,
+		Shape:    profileShape(p),
 	})
 }
