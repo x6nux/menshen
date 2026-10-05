@@ -517,6 +517,14 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	if !conf.Dryrun {
 		DropProfileOK(b, u.ID, "资料复查判为广告号")
 	}
+	// 已经在进群类限制里：applyJoinMuteNotify 会 no-op，但管理员显式发起
+	// 的复查不能一声不吭（线上反馈「命令像没生效」）。给一条说明回执即可，
+	// 不重复禁言、不重复流水。
+	if _, ok := loadJoinMute(b.Store, chatID, u.ID); ok {
+		sendGroup(b, chatID, "🔒 <b>资料复查结果</b>\n<code>"+
+			fmt.Sprintf("%d", u.ID)+"</code> 已在进群类限制中，未重复处置。", nil)
+		return
+	}
 	// 处置与进群冷判定同档，但回执必须发：这是管理员显式发的命令，而群内
 	// 展示默认关，靠 applyJoinMute 的自动通知会一条回执都没有，命令看起来
 	// 像没生效（线上真实反馈）。

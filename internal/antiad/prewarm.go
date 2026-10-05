@@ -247,10 +247,14 @@ const (
 	prewarmQueueHighWater = 256
 	// prewarmClaimHold 是入队前的原子抢占时长：worker 还没按阶梯写回
 	// next_at 时，挡住同一 tick 的多 bot 与积压重跑重复选中同一人。
-	prewarmClaimHold = time.Minute
+	// 5 分钟要盖住队列在 AI 压力下的等待时长（60s 实测会被超过）。
+	prewarmClaimHold = 5 * time.Minute
 	// prewarmAIInterval：同一 (群, 人) 两次账号 AI 的最小间隔。资料反复
 	// 改名时冷却期内只推后 next_at，不判也不落新指纹，冷却到点再判。
 	prewarmAIInterval = 10 * time.Minute
+	// prewarmInflightTTL 是「正在处理」标记的存活时长：要盖住一条队列
+	// 任务最坏的排队 + 判定时长，重复投递在它过期前都直接退出。
+	prewarmInflightTTL = 10 * time.Minute
 	// prewarmUnknownAge 是 joined_at=0（bot 部署前已在群）的年龄占位，
 	// 归入最老一档（1h），不把存量成员当刚进门的号高频重扫。
 	prewarmUnknownAge = 8 * 24 * time.Hour
@@ -443,6 +447,16 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
+	// 同一个 (群, 人) 同时只允许一个 worker 在跑：入队抢占的 hold 会在
+	// 队列积压时过期，重复投递（积压重跑、并发 tick）到这里直接退出。
+	// 不 mark：正在跑的那个 worker 结束时会写 next_at。
+	inflightKey := fmt.Sprintf("%d:%d", chatID, uid)
+	if _, busy := cachesOf(b.Shared).prewarmInflight.Get(inflightKey); busy {
+		slog.Info("前置号复查：该成员正在处理中，跳过重复投递",
+			"chat", chatID, "uid", uid)
+		return
+	}
+	cachesOf(b.Shared).prewarmInflight.Set(inflightKey, struct{}{}, prewarmInflightTTL)
 	conf, ok := chatActive(b, chatID)
 	if !ok {
 		// 群中途被停用也要推下一次：下次轮询不再重复选中。

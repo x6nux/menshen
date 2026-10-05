@@ -371,6 +371,14 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	v adVerdict, spec joinMuteSpec) {
 
+	// 已经有进群类限制在身：重复施加只会多一条流水与群通知——线上出现过
+	// 25 分钟内 228 条 join_muted 流水只有 91 个唯一用户（复查与冷判定
+	// 并发各写一遍）。这里 no-op；外部被解除后的修复走 MuteSender
+	// （reassert.go），不经过本函数，所以修复能力不受影响。
+	if _, ok := loadJoinMute(b.Store, conf.ChatID, u.ID); ok {
+		return
+	}
+
 	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
 		"chat_id": conf.ChatID, "user_id": u.ID,
 		"permissions": MutedPermissions(),
