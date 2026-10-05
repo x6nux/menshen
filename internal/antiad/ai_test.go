@@ -43,6 +43,7 @@ func TestPromptsCoverServiceListAd(t *testing.T) {
 	for name, p := range map[string]string{
 		"so": soInstructions, "llm": llmSystemPrompt,
 		"cold": coldInstructions, "coldLLM": coldLLMPrompt,
+		"prewarm": prewarmInstructions, "prewarmLLM": prewarmLLMPrompt,
 	} {
 		if !strings.Contains(p, "业务清单") || !strings.Contains(p, "没有标价也算") {
 			t.Errorf("%s 提示词缺少「资料写成业务清单也是招揽」的口径", name)

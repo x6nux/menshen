@@ -296,13 +296,16 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	applyJoinMute(b, conf, u, v, bio)
 }
 
-// judgeJoin 是冷判定的判定编排：与消息判定同构，但两级都换成冷判定的
-// 提示词。systemone 不可用时同样回落到大模型。
-func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error) {
-	so, soErr := judgeSystemOne(b, snap, st, coldInstructions)
+// judgeAccountCheck 是「账号资料类」判定的两级编排：systemone 主判，
+// 低于采信线转大模型复判；systemone 不可用时大模型顶替。冷判定与前置号
+// 复核共用，label 只进日志。
+func judgeAccountCheck(b *core.Bot, snap *store.Snapshot, st adState,
+	soInstr, llmPrompt, label string) (adVerdict, error) {
+
+	so, soErr := judgeSystemOne(b, snap, st, soInstr)
 	if soErr != nil {
-		slog.Warn("冷判定：systemone 不可用，回落到大模型", "err", soErr)
-		v, err := judgeLLM(b, snap, st, adVerdict{}, coldLLMPrompt)
+		slog.Warn(label+"：systemone 不可用，回落到大模型", "err", soErr)
+		v, err := judgeLLM(b, snap, st, adVerdict{}, llmPrompt)
 		if err != nil {
 			return adVerdict{}, fmt.Errorf("systemone: %v; llm: %v", soErr, err)
 		}
@@ -318,7 +321,7 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 		return so, nil // 没配复判模型，原样采信
 	}
 
-	llm, err := judgeLLM(b, snap, st, so, coldLLMPrompt)
+	llm, err := judgeLLM(b, snap, st, so, llmPrompt)
 	if err != nil {
 		so.Cost += llm.Cost
 		so.Usage = billing.MergeUsage(so.Usage, llm.Usage)
@@ -328,6 +331,11 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 	llm.Cost += so.Cost
 	llm.Usage = billing.MergeUsage(llm.Usage, so.Usage)
 	return llm, nil
+}
+
+// judgeJoin 是冷判定的判定编排。
+func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error) {
+	return judgeAccountCheck(b, snap, st, coldInstructions, coldLLMPrompt, "冷判定")
 }
 
 // joinMuteSpec 描述一次进群类限制的落库与呈现差异。

@@ -1,9 +1,14 @@
 package antiad
 
 import (
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"menshen/internal/core"
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
 )
@@ -86,6 +91,241 @@ func TestPrewarmCandidate(t *testing.T) {
 	testutil.EnableAntiad(t, b2, -100)
 	if prewarmCandidate(b2, b2.Cache.Snap(), gm, msg("哈喽"), false) {
 		t.Error("开关关闭时不该命中")
+	}
+}
+
+// setupPrewarm 建好群、开关与假上游，并造一条「新成员首条招呼」。
+func setupPrewarm(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeTG, int64, int64) {
+	t.Helper()
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	for k, v := range map[string]string{"antiad_prewarm": "1", "antiad_cold_conf": "85"} {
+		if err := b.PutSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getUserProfilePhotos"] = `{"ok":true,"result":{"total_count":0,"photos":[]}}`
+	if so != "" || llm != "" {
+		fakeAIWith(t, b, so, llm)
+	}
+	return b, fake, 555, -100
+}
+
+func sendPrewarmMessage(t *testing.T, b *core.Bot, uid, chatID int64) {
+	t.Helper()
+	recordJoin(b, chatID, uid, time.Now().Unix()-3600)
+	HandleGroupMessage(b, testutil.GroupMsg(chatID, uid, 1, "哈喽"))
+	waitIdle(t, b)
+}
+
+// 命中：删招呼 + 无限期禁言 + kind=prewarm + 流水 prewarm_muted。
+func TestPrewarmHitMutes(t *testing.T) {
+	b, fake, uid, chat := setupPrewarm(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	sendPrewarmMessage(t, b, uid, chat)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("应禁言 1 次，得到 %d", got)
+	}
+	if got := fake.CountCalls("deleteMessage"); got == 0 {
+		t.Fatal("应删除招呼消息")
+	}
+	rec, ok := loadJoinMute(b.Store, chat, uid)
+	if !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("join_mutes = (%v,%q)，期望存在且 kind=prewarm", ok, rec.Kind)
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, uid).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != actionPrewarmMuted {
+		t.Fatalf("action = %q，期望 %q", action, actionPrewarmMuted)
+	}
+}
+
+// 未命中：只落 prewarm_checked，不禁言。
+func TestPrewarmCleanOnlyLogs(t *testing.T) {
+	b, fake, uid, chat := setupPrewarm(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	sendPrewarmMessage(t, b, uid, chat)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("正常用户不该禁言，得到 %d 次", got)
+	}
+	var verdict, action string
+	if err := b.Store.Read.QueryRow(`SELECT verdict,action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, uid).Scan(&verdict, &action); err != nil {
+		t.Fatal(err)
+	}
+	if verdict != "clean" || action != actionPrewarmChecked {
+		t.Fatalf("verdict/action = %q/%q，期望 clean/prewarm_checked", verdict, action)
+	}
+}
+
+// 低于采信线不处置。
+func TestPrewarmBelowLine(t *testing.T) {
+	b, fake, uid, chat := setupPrewarm(t,
+		soReply("ad", 0.5, "promo", "account"), "")
+	sendPrewarmMessage(t, b, uid, chat)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("低于采信线不该禁言，得到 %d 次", got)
+	}
+}
+
+// 演练群：只落 dryrun:prewarm_muted，不删消息、不禁言、不写 join_mutes。
+func TestPrewarmDryrunOnlyLogs(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiadMode(t, b, -100, true)
+	if err := b.PutSetting("antiad_prewarm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getUserProfilePhotos"] = `{"ok":true,"result":{"total_count":0}}`
+	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	recordJoin(b, -100, 555, time.Now().Unix()-3600)
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "哈喽"))
+	waitIdle(t, b)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("演练不该禁言，得到 %d 次", got)
+	}
+	if got := fake.CountCalls("deleteMessage"); got != 0 {
+		t.Fatalf("演练不该删消息，得到 %d 次", got)
+	}
+	if _, ok := loadJoinMute(b.Store, -100, 555); ok {
+		t.Fatal("演练不该写 join_mutes")
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=-100 AND user_id=555 ORDER BY id DESC LIMIT 1`).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != "dryrun:"+actionPrewarmMuted {
+		t.Fatalf("action = %q，期望 dryrun:prewarm_muted", action)
+	}
+}
+
+// 头像查询失败仍送检：photo_known=false 不得当成无头像，正常结论照落。
+func TestPrewarmPhotoFailureStillJudges(t *testing.T) {
+	b, fake, uid, chat := setupPrewarm(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getUserProfilePhotos" {
+			return `{"ok":false,"description":"boom"}`, true
+		}
+		return "", false
+	}
+	sendPrewarmMessage(t, b, uid, chat)
+	if n := fake.CountCalls("getUserProfilePhotos"); n == 0 {
+		t.Fatal("头像查询应被调用")
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, uid).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != actionPrewarmChecked {
+		t.Fatalf("头像失败也应完成复核，action = %q", action)
+	}
+}
+
+// systemone 失败（返回缺 is_ad 的响应）：落到大模型并仍能定案。
+func TestPrewarmSystemoneDownUsesLLM(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_prewarm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getUserProfilePhotos"] = `{"ok":true,"result":{"total_count":0}}`
+	var llmN atomic.Int32
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			w.Write([]byte(`{"answers":{}}`)) // 解析失败 → judgeSystemOne 报错
+			return
+		}
+		llmN.Add(1)
+		w.Write([]byte(llmReply(true, 0.95, "promo", "account")))
+	})
+	recordJoin(b, -100, 555, time.Now().Unix()-3600)
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "哈喽"))
+	waitIdle(t, b)
+
+	if llmN.Load() == 0 {
+		t.Fatal("systemone 失败应回落大模型")
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("大模型判 ad 应禁言 1 次，得到 %d", got)
+	}
+}
+
+// 两级判定都失败：回落普通消息判定（也失败则按既有「判定失败放行」）。
+func TestPrewarmAIErrorFallsBackToMessageJudge(t *testing.T) {
+	b, _, uid, chat := setupPrewarm(t, "", "") // 未配模型：两条路都会失败
+	sendPrewarmMessage(t, b, uid, chat)
+
+	var action, note string
+	if err := b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, uid).Scan(&action, &note); err != nil {
+		t.Fatal(err)
+	}
+	// 回落路径必须真的跑过消息判定：它留下 action=none 的失败流水。
+	if action != "none" {
+		t.Fatalf("回落消息判定应落 action=none，得到 %q", action)
+	}
+}
+
+// 提示词必须带上共用条款（业务清单/资料链接/资料放行/摘要口径），
+// 并说明 prewarm_check 与 photo_known。
+func TestPrewarmPromptsShareClauses(t *testing.T) {
+	for name, p := range map[string]string{
+		"prewarm": prewarmInstructions, "prewarmLLM": prewarmLLMPrompt,
+	} {
+		for _, want := range []string{"prewarm_check", "photo_known", "业务清单",
+			"没有标价也算", "known_ad_patterns", "不是此人的资料"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s 提示词缺少 %q", name, want)
+			}
+		}
+	}
+}
+
+// 载荷必须带 prewarm_check=true，否则提示词口径与模型看到的输入对不上。
+func TestPrewarmPayloadCarriesFlag(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_prewarm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fake.Resp["getUserProfilePhotos"] = `{"ok":true,"result":{"total_count":0}}`
+	var saw atomic.Bool
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"prewarm_check":true`) {
+			saw.Store(true)
+		}
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
+			return
+		}
+		w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+	})
+	recordJoin(b, -100, 555, time.Now().Unix()-3600)
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 555, 1, "哈喽"))
+	waitIdle(t, b)
+	if !saw.Load() {
+		t.Fatal("送检载荷里应带 prewarm_check=true")
 	}
 }
 
