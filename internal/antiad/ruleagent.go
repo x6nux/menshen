@@ -514,12 +514,12 @@ func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 		Model:       modelID,
 		Temperature: &zero,
 	}
-	if sh.AIClient != nil {
-		// 复用判定链路的客户端：同样的代理配置、连接池与 100 秒总超时。
-		cfg.HTTPClient = sh.AIClient
-	} else {
-		cfg.Timeout = 60 * time.Second
-	}
+	// 复用判定链路的客户端（同样的代理配置、连接池与总超时），并在传输层
+	// 套一层流式转换：Eino 的 Generate 发的是非流式请求，这里把请求改成
+	// stream=true、把 SSE 响应重建成非流式 JSON 再交给 SDK（见 eino_stream.go）。
+	// 这样规则发现的线上请求也是流式的，而 SDK 看到的仍是普通 completion，
+	// tool_calls / usage / 回调都不受影响。
+	cfg.HTTPClient = einoStreamHTTPClient(sh.AIClient)
 	m, err := einoopenai.NewChatModel(context.Background(), cfg)
 	if err != nil {
 		return nil, err
