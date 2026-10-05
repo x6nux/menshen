@@ -504,6 +504,17 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 			From: u, Text: leaderNoticeText(u, p.Bio, hit, where)}, hit, where)
 		return
 	}
+	// 资料必封规则门（零 AI）：放在指纹门之前——资料没变也要抓新启用的
+	// 规则。enforce 命中直接禁言；非 enforce 命中只作证据，随载荷送 AI。
+	if handled, muted := enforceProfileRule(b, snap, conf, u, p,
+		joinProfileText(u, p.Bio, adVerdict{}), "资料命中必封规则"); handled {
+		if muted || conf.Dryrun {
+			markPrewarmCheckedHash(b, chatID, uid, h, interval)
+		} else {
+			markPrewarmChecked(b, chatID, uid, interval)
+		}
+		return
+	}
 	// 指纹没变：还是上次看过的那份资料，只推时间，不花 AI。
 	if gm.ProfileHash != "" && h == gm.ProfileHash {
 		markPrewarmChecked(b, chatID, uid, interval)
@@ -542,6 +553,8 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 
 	st := adState{Chat: adChatInfo{ID: chatID, Title: conf.Title},
 		Sender: p, JoinCheck: true}
+	// 非 enforce 的资料规则命中作为强证据送 AI（enforce 已零 AI 处置）。
+	st.MatchedRules = MatchedRuleInfos(snap, profileRuleText(u, p.Bio))
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 
 	v, err := judgeJoin(b, snap, st)

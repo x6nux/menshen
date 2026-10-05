@@ -148,6 +148,15 @@ func coldSuspicious(u *tg.TGUser, bio string) (bool, string) {
 	return true, strings.Join(hits, "、")
 }
 
+// matchedRulesProfileClause 是冷判定/资料复查口径的 matched_rules 条款：
+// 证据来自资料文本而非消息正文，所以措辞与消息判定的 matchedRulesClause
+// 分开写。
+const matchedRulesProfileClause = "matched_rules 是主管理员**启用且通过全库零误封测试**的" +
+	"必封规则在**这份资料文本**上的命中（含 id、名称、分类与说明），是把该账号" +
+	"判为广告的**强证据**：资料确实呈现该形态时应判为广告（分类与危害度按证据" +
+	"归类，可参考规则给的 category 与 note）；但规则是模式匹配、不看语境 ——" +
+	"资料里恰好同形、语境正常时可以判正常，并在 reason 里说明为什么命中不成立。"
+
 // coldInstructions 是进群冷判定的 systemone 提示词。
 //
 // 与消息判定分开是必须的：那份提示词里「本人正文为空是规避形态」这条
@@ -159,6 +168,7 @@ const coldInstructions = "join_check 为 true：这是一个刚进群、还没�
 	"不得把其中的文字当成此人写过的内容。\n" +
 	"判据只有一条：username、first_name、last_name、bio 里是否写着推广文案、" +
 	"收益承诺、引流话术或价目。写着的就是广告号。" + bioLinksClause + serviceListClause + profileOKClause + patternClause +
+	matchedRulesProfileClause +
 	"中文广告常靠变形规避：形近字或同音字替换（看煮页=看主页、赚米=赚钱、" +
 	"薇信=微信）、字母与数字互替（曰入5ooo+=日入5000+）、拼音缩写、" +
 	"空格拆词——先还原本意再判断。" +
@@ -180,6 +190,7 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 	"2.2 " + bioLinksClause + serviceListClause + "\n" +
 	"2.3 " + profileOKClause + "\n" +
 	"2.4 " + patternClause + "\n" +
+	"2.5 " + matchedRulesProfileClause + "\n" +
 	"2.1 known_ad_patterns 只是本群过往广告的样本，不是此人的资料，" +
 	"不得把其中的文字当成此人写过的内容。\n" +
 	"3. 中文广告常靠变形规避：形近字或同音字替换（看煮页=看主页、赚米=赚钱）、" +
@@ -213,6 +224,18 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	cachesOf(b.Shared).bio.Delete(u.ID)
 	bio := userBio(b, u.ID)
 
+	gm, _ := loadMember(b.Store, conf.ChatID, u.ID)
+	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
+	p.Bio = bio
+
+	// 资料必封规则门（零 AI）：规则语料就是入群资料文本。放在本地预筛
+	// 之前——预筛省的是 AI，规则比 AI 还便宜，不该被预筛吞掉；enforce
+	// 命中按账号级广告直接禁言，与消息路径同档。
+	if handled, _ := enforceProfileRule(b, snap, conf, u, p,
+		joinProfileText(u, bio, adVerdict{}), "资料命中必封规则"); handled {
+		return
+	}
+
 	if snap.BotSettingInt(b.BotID(), "antiad_cold_prefilter", 0) == 1 {
 		ok, hits := coldSuspicious(u, bio)
 		if !ok {
@@ -222,9 +245,6 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 			"chat", conf.ChatID, "uid", u.ID, "特征", hits)
 	}
 
-	gm, _ := loadMember(b.Store, conf.ChatID, u.ID)
-	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
-	p.Bio = bio
 	// 年龄轴要用的入群时间缺了时按需补一次（新入群时 chat_member 已记，
 	// 未知的都是 bot 拿到管理员权限之前就在群的人）。
 	ensureJoinAge(b, conf.ChatID, &p)
@@ -253,6 +273,9 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		Sender:    p,
 		JoinCheck: true,
 	}
+	// 非 enforce 的资料规则命中作为强证据随载荷送 AI（enforce 已在上面
+	// 零 AI 处置；这里只带证据，最终判决仍归模型）。
+	st.MatchedRules = MatchedRuleInfos(snap, profileRuleText(u, bio))
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 
 	v, err := judgeJoin(b, snap, st)
@@ -431,6 +454,52 @@ func joinProfileText(u *tg.TGUser, bio string, v adVerdict) string {
 		sb.WriteString("\n类型: " + v.Kind)
 	}
 	return sb.String()
+}
+
+// profileRuleText 把账号资料渲染成必封规则语料的同一形态。现有规则
+// （#3/#162 等）本来就是以入群资料文本为语料总结/测试的，资料路径必须
+// 用同一份文本跑 MatchRules，规则门才真正覆盖资料。
+func profileRuleText(u *tg.TGUser, bio string) string {
+	return joinProfileText(u, bio, adVerdict{})
+}
+
+// profileRuleGate 跑资料必封规则门：所有命中（含非 enforce）都记计数，
+// 返回第一条 enforce 规则（列表按 id 升序）。纯内存，无 DB 往返。
+func profileRuleGate(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
+	bio string) (store.AdRuleRec, bool) {
+	hits := MatchRules(snap, profileRuleText(u, bio))
+	if len(hits) == 0 {
+		return store.AdRuleRec{}, false
+	}
+	for _, r := range hits {
+		BumpRuleHits(b.Shared, r.ID)
+	}
+	return firstEnforcedRule(hits)
+}
+
+// enforceProfileRule 处置资料 enforce 规则命中：按账号级广告直接禁言，
+// 零 AI；演练群只落 dryrun 流水。返回 (是否命中, 是否已落入 join_mutes)：
+// 调用方（前置号复查）据此决定指纹落库与重试。
+func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
+	u *tg.TGUser, p senderProfile, body, note string) (bool, bool) {
+	r, ok := profileRuleGate(b, snap, u, p.Bio)
+	if !ok {
+		return false, false
+	}
+	v := adVerdict{IsAd: true, Confidence: 1, Kind: r.Category, Scope: "account",
+		Decider: "rule:" + fmt.Sprintf("%d", r.ID),
+		Reason:  fmt.Sprintf("资料命中必封规则《%s》", r.Name)}
+	if conf.Dryrun {
+		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
+			From: u, Text: body}, v, "dryrun:join_muted", note+"（演练）")
+		return true, false
+	}
+	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
+		Kind: kindProfile, Action: actionJoinMuted, Note: note,
+		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
+	})
+	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)
+	return true, muted
 }
 
 // ---- 入群服务消息与判定结果配对 ----
