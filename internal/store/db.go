@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS join_mutes (
   chat_id    INTEGER NOT NULL,
   user_id    INTEGER NOT NULL,
   bot_id     INTEGER NOT NULL,
+  kind       TEXT    NOT NULL DEFAULT 'profile',
   reason     TEXT    NOT NULL DEFAULT '',
   notice_msg INTEGER NOT NULL DEFAULT 0,
   attempts   INTEGER NOT NULL DEFAULT 0,
@@ -165,6 +166,7 @@ CREATE TABLE IF NOT EXISTS group_members (
   last_msg_at INTEGER NOT NULL DEFAULT 0,
   ad_hits     INTEGER NOT NULL DEFAULT 0,
   whitelisted INTEGER NOT NULL DEFAULT 0,
+  prewarm_checked_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, user_id)
 );
 
@@ -428,6 +430,12 @@ func migrate(db *sql.DB) error {
 		{"antiad_log", "lifted_at", "INTEGER NOT NULL DEFAULT 0"},
 		// kind：渠道类型。老库一律按 openai 处理，行为与升级前完全一致。
 		{"upstreams", "kind", "TEXT NOT NULL DEFAULT 'openai'"},
+		// kind：进群类限制的来源。profile = 冷判定/延迟复查（资料里有广告），
+		// prewarm = 前置号识别（空壳+招呼的综合特征）。申诉提示词与解除
+		// 口径按它分流。
+		{"join_mutes", "kind", "TEXT NOT NULL DEFAULT 'profile'"},
+		// prewarm_checked_at：前置号延迟复查的节流时间戳，一人只查一次。
+		{"group_members", "prewarm_checked_at", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

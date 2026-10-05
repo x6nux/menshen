@@ -68,6 +68,12 @@ func TestMigrateOldDB(t *testing.T) {
 			created_at INTEGER NOT NULL DEFAULT 0,
 			created_by INTEGER NOT NULL DEFAULT 0)`,
 		`INSERT INTO ad_rules (name,pattern) VALUES ('old','old')`,
+		// 老形状的 join_mutes：没有 kind（migrate 才补），老行要按 profile 处理。
+		`CREATE TABLE join_mutes (chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+			bot_id INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '',
+			notice_msg INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, PRIMARY KEY (chat_id, user_id))`,
+		`INSERT INTO join_mutes (chat_id,user_id,bot_id,created_at) VALUES (-100,555,1,0)`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatalf("造老库失败: %v", err)
@@ -83,7 +89,8 @@ func TestMigrateOldDB(t *testing.T) {
 	for _, c := range [][2]string{{"bot_chats", "punish"},
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
 		{"bots", "is_main"}, {"upstreams", "kind"},
-		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"}} {
+		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
+		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
@@ -105,6 +112,15 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	if kind != "openai" {
 		t.Errorf("老上游的 kind 应为 openai，得到 %q", kind)
+	}
+	// 老 join_mutes 行迁移后一律按资料类（profile）处理，申诉口径不变。
+	var jmKind string
+	if err := s.Read.QueryRow(`SELECT kind FROM join_mutes
+		WHERE chat_id=-100 AND user_id=555`).Scan(&jmKind); err != nil {
+		t.Fatalf("读老 join_mutes.kind 失败: %v", err)
+	}
+	if jmKind != "profile" {
+		t.Errorf("老 join_mutes.kind 应为 profile，得到 %q", jmKind)
 	}
 	// 索引必须建在 migrate 补出来的 bot_id 上，且不能因为老库没有这一列
 	// 而让启动失败（Open 已经返回成功，这里再确认索引真的在）。
