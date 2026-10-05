@@ -449,6 +449,25 @@ func TestColdJudgeProfileEnforceRuleZeroAI(t *testing.T) {
 	}
 }
 
+// v.Kind 为空时形状表退回限制类型：绝不能落一个空类别，phash 流水
+// 至少显示 profile/prewarm 而不是空白。
+func TestProfileShapeLearnKindFallback(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	conf := testutil.ChatConfOf(t, b, -100)
+	shape := profileShape(senderProfile{Bio: "免押小额洗资 https://t.me/+ccc"})
+	applyJoinMuteNotify(b, conf, &tg.TGUser{ID: 558},
+		adVerdict{IsAd: true, Confidence: 0.9, Reason: "x"}, // Kind 为空
+		joinMuteSpec{Kind: kindProfile, Action: actionJoinMuted, Note: "n",
+			Body: "b", Reason: "x", Shape: shape})
+
+	rec, ok := lookupProfileShape(b.Store, shape)
+	if !ok || rec.Kind != kindProfile {
+		t.Fatalf("v.Kind 为空应退回限制类型 %q：ok=%v rec=%+v",
+			kindProfile, ok, rec)
+	}
+}
+
 // 批量（探测）禁言 Quiet：不发群内通知，但流水与 join_mutes 照常，
 // 私聊汇总照常包含；非 Quiet 通知受按群 5 秒限速。
 func TestApplyJoinMuteQuietAndNoticePacing(t *testing.T) {

@@ -1727,8 +1727,8 @@ func TestPrewarmSweepProfileRuleEvidenceInPayload(t *testing.T) {
 // 流水 decider=phash，命中计数递增。
 func TestPrewarmSweepProfileShapeReuse(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
-		soReply("ad", 0.96, "promo", "account"),
-		llmReply(true, 0.95, "promo", "account"))
+		soReply("ad", 0.96, "scam", "account"),
+		llmReply(true, 0.95, "scam", "account"))
 	bio1 := "免押小额洗资 https://t.me/+aaa"
 	addSweepMember(t, b, chat, 690, 25*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{690: {bio: bio1}})
@@ -1748,6 +1748,10 @@ func TestPrewarmSweepProfileShapeReuse(t *testing.T) {
 	if !ok || rec.Hits != 1 {
 		t.Fatalf("一号禁言后应学习形状且 hits=1：ok=%v rec=%+v", ok, rec)
 	}
+	// 形状记的是广告内容类别（scam），不是限制类型 profile/prewarm。
+	if rec.Kind != "scam" {
+		t.Fatalf("形状应记广告类别 scam，得到 %q", rec.Kind)
+	}
 
 	// 二号：同模板换个邀请链接 → 形状命中，零 AI。
 	addSweepMember(t, b, chat, 691, 25*3600, 0)
@@ -1766,14 +1770,18 @@ func TestPrewarmSweepProfileShapeReuse(t *testing.T) {
 	if !ok || rec.Hits != 2 {
 		t.Fatalf("形状命中计数应为 2：ok=%v rec=%+v", ok, rec)
 	}
-	var decider string
-	if err := b.Store.Read.QueryRow(`SELECT decider FROM antiad_log
+	var decider, adKind string
+	if err := b.Store.Read.QueryRow(`SELECT decider,ad_kind FROM antiad_log
 		WHERE chat_id=? AND user_id=691 ORDER BY id DESC LIMIT 1`, chat).
-		Scan(&decider); err != nil {
+		Scan(&decider, &adKind); err != nil {
 		t.Fatal(err)
 	}
 	if decider != "phash" {
 		t.Fatalf("形状命中流水 decider = %q，期望 phash", decider)
+	}
+	// phash 流水必须显示内容类别，不能是限制类型 profile。
+	if adKind != "scam" {
+		t.Fatalf("phash 流水 ad_kind = %q，期望 scam（不是限制类型）", adKind)
 	}
 }
 

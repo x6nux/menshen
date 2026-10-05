@@ -461,6 +461,9 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	saveJoinMute(b, conf.ChatID, u.ID, spec.Kind, reason, 0)
 	deleteJoinNotice(b, conf.ChatID, u.ID)
 	// 形状落库 + 学习：限制成立才学，撤销时按 join_mutes.shape 反查删除。
+	// 形状表记的是**广告内容类别**（v.Kind，如 promo/scam），不是限制类型
+	// （spec.Kind 是 profile/prewarm）；phash 命中时会把它作 ad_kind 写进
+	// 流水，记成限制类型会让记录显示成 "profile"。v.Kind 为空才退回它。
 	if spec.Shape != "" {
 		if _, err := b.Store.Write.Exec(`UPDATE join_mutes SET shape=?
 			WHERE chat_id=? AND user_id=?`,
@@ -468,7 +471,11 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 			slog.Warn("反广告：写入限制形状失败",
 				"chat", conf.ChatID, "uid", u.ID, "err", err)
 		}
-		learnProfileShape(b.Store, spec.Shape, spec.Kind, spec.Body,
+		shapeKind := strings.TrimSpace(v.Kind)
+		if shapeKind == "" {
+			shapeKind = spec.Kind
+		}
+		learnProfileShape(b.Store, spec.Shape, shapeKind, spec.Body,
 			time.Now().Unix())
 	}
 
