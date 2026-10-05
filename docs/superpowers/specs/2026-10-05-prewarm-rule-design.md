@@ -137,8 +137,8 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 
 ```go
 // 仅前置号复核路径填充；申诉路径用载荷顶层 photo_count（见 §3.2），
-// 其余路径不填（PhotoKnown=false）。
-Photos     int  `json:"photos,omitempty"`      // 头像张数
+// 其余路径不填（PhotoKnown=false）。指针让 0 张也能进载荷。
+Photos     *int `json:"photos,omitempty"`      // 头像张数
 PhotoKnown bool `json:"photo_known,omitempty"` // 头像数是否查到了
 ```
 
@@ -319,16 +319,27 @@ ORDER BY joined_at LIMIT 20
 
 `appealSystemPrompt` 增加一条：
 
-> prewarm 类（前置号识别）看当前资料是否已补齐：**头像、用户名、简介
-> 三项中至少有一项已经完善**，且整体没有推广引流迹象的，应当撤销；
-> 三项仍是全空，或仍有推广引流内容的，维持。
+> prewarm 类（前置号识别）看当前资料是否已补齐，以下三项至少一项成立
+> 才应当撤销：1) 顶层 photo_count > 0（已补头像；缺失表示头像数未知，
+> 不得当作无头像，与 Layer 1 的 photo_known=false 同口径）；2) username
+> 已是像真名的常规用户名（不再是 tpiw33abik 这类无词形的随机串，可与
+> original_reason 记录的处罚时资料对照）；3) bio 有正常内容（非空且
+> 没有推广引流迹象）。first_name/last_name 在处罚时就存在、非空不算
+> 补齐，只作为「整体是否有推广引流迹象」的语境；以上都不成立或仍有
+> 推广引流内容的，维持。
 
-`judgeAppeal` 的载荷增加 `photo_count`：
+`judgeAppeal` 的载荷增加 `photo_count`，并把 sender 的资料补齐：
 
+- 现在 `sender` 由 `buildProfile(&tg.Message{From: &tg.TGUser{ID: uid}}, ...)`
+  构造，用户名与昵称恒为空；改为先用 `userInfo(b, uid)` 取回
+  `username/first_name/last_name` 再构造，让「只补了用户名」这一种
+  申诉出口也能被模型看见；
 - 先 `cachesOf(b.Shared).photo.Delete(uid)` 再调 `userPhotoCount`
   （与现有 `cachesOf(b.Shared).bio.Delete(uid)` 同款；`judgeAppeal`
   没有 `sh` 参数），保证用户刚补的头像当场可见，不能吃 24h 旧缓存；
-- `photo_known=false` 时不带该字段，模型不得当「无头像」。
+- 查到了才带 `photo_count`；`ok=false` 时不带该字段，模型不得当
+  「无头像」。提示词条款里明确点名 `photo_count` 与 sender 的用户名/
+  昵称字段。
 
 `penaltyJSON` 的 type 随 `appealPenalty.Type` 原样带出（含 `prewarm`）。
 
