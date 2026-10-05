@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -516,5 +517,211 @@ func TestUserPhotoCount(t *testing.T) {
 	}
 	if got := fake.CountCalls("getUserProfilePhotos"); got != 2 {
 		t.Fatalf("失败不应缓存，应查 2 次，得到 %d", got)
+	}
+}
+
+// setupPrewarmSweep 用真 Registry 起装：PrewarmSweep 以 sh.Reg 遍历 bot，
+// 普通 NewTestBot 没有 Registry，整轮会被 nil 守卫跳过。
+func setupPrewarmSweep(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeTG, int64) {
+	t.Helper()
+	_, b := testutil.NewTestRegistry(t, nil)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_prewarm_sweep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fakeAIWith(t, b, so, llm)
+	return b, fake, -100
+}
+
+func addSweepMember(t *testing.T, b *core.Bot, chat, uid, joinedAgo, msgs, whitelisted int64) {
+	t.Helper()
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
+		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits,whitelisted)
+		VALUES (?,?,?,?,?,0,0,?)`,
+		chat, uid, now-joinedAgo, now-joinedAgo, msgs, whitelisted); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 窗口/白名单/发言数/已查过/已禁言的筛选，以及重复 sweep 的幂等。
+func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	now := time.Now().Unix()
+	addSweepMember(t, b, chat, 601, 25*3600, 0, 0)  // 命中：资料变广告
+	addSweepMember(t, b, chat, 602, 2*3600, 0, 0)   // 进群 <24h：不查
+	addSweepMember(t, b, chat, 603, 8*24*3600, 0, 0) // 进群 >7d：不查
+	addSweepMember(t, b, chat, 604, 25*3600, 0, 1)  // 白名单：不查
+	addSweepMember(t, b, chat, 605, 25*3600, 3, 0)  // 发言 3 条：不查
+	addSweepMember(t, b, chat, 606, 25*3600, 0, 0)  // 已查过：不查
+	old606 := now - 3600
+	b.Store.Write.Exec(`UPDATE group_members SET prewarm_checked_at=?
+		WHERE chat_id=? AND user_id=606`, old606, chat)
+	addSweepMember(t, b, chat, 607, 25*3600, 0, 0) // 已在 prewarm 禁言：标记但不重复禁
+	saveJoinMute(b, chat, 607, kindPrewarm, "已有前置号限制", 0)
+	addSweepMember(t, b, chat, 609, 25*3600, 0, 0) // 资料为空：跳过不判（空壳归 Layer 1）
+
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method == "getChat" {
+			uid := int64(p["chat_id"].(float64))
+			bio := ""
+			if uid == 601 {
+				bio = "免押小额洗资：https://t.me/+abcdef"
+			}
+			return fmt.Sprintf(`{"ok":true,"result":{"id":%d,"bio":%q}}`, uid, bio), true
+		}
+		return "", false
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("应只禁 601 一个人，得到 %d 次", got)
+	}
+	checked := map[int64]int64{}
+	rows, err := b.Store.Read.Query(`SELECT user_id,prewarm_checked_at
+		FROM group_members WHERE chat_id=?`, chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var uid, at int64
+		if rows.Scan(&uid, &at) == nil {
+			checked[uid] = at
+		}
+	}
+	rows.Close()
+	for _, uid := range []int64{602, 603, 604, 605} {
+		if checked[uid] != 0 {
+			t.Errorf("uid %d 不该被查，checked=%d", uid, checked[uid])
+		}
+	}
+	if checked[606] != old606 {
+		t.Errorf("已查过的 606 时间戳被改写：%d -> %d", old606, checked[606])
+	}
+	if checked[601] == 0 || checked[607] == 0 || checked[609] == 0 {
+		t.Errorf("601/607/609 应标记已查，得到 %d/%d/%d",
+			checked[601], checked[607], checked[609])
+	}
+
+	// 再跑一轮：不产生第二次禁言，kind 不被覆盖成 profile。
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("重复 sweep 不应再禁，得到 %d 次", got)
+	}
+	if rec, ok := loadJoinMute(b.Store, chat, 607); !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("607 的 kind = %q,%v，应保持 prewarm", rec.Kind, ok)
+	}
+}
+
+// 资料已被复判放行且没改过：跳过，不重复吃同一个结论。
+func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, chat, 608, 25*3600, 0, 0)
+	bio := "免押小额洗资：https://t.me/+abcdef"
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return fmt.Sprintf(`{"ok":true,"result":{"id":608,"bio":%q}}`, bio), true
+		}
+		return "", false
+	}
+	// 指纹只看用户名/昵称/简介；这里三项与 prewarmRecheck 组装的一致。
+	if GrantProfileOK(b, senderProfile{UserID: 608, Bio: bio}, 6, "测试放行") == 0 {
+		t.Fatal("测试前置放行失败")
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("资料已放行的不该禁言，得到 %d 次", got)
+	}
+}
+
+// 演练群：只落 dryrun:join_muted，不动人。
+func TestPrewarmSweepDryrunOnlyLogs(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	testutil.EnableAntiadMode(t, b, -100, true)
+	if err := b.PutSetting("antiad_prewarm_sweep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	fake := b.TG.(*testutil.FakeTG)
+	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, -100, 601, 25*3600, 0, 0)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":601,"bio":"洗资"}}`, true
+		}
+		return "", false
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("演练不该禁言，得到 %d 次", got)
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=-100 AND user_id=601 ORDER BY id DESC LIMIT 1`).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != "dryrun:join_muted" {
+		t.Fatalf("action = %q，期望 dryrun:join_muted", action)
+	}
+}
+
+// 复查判为正常：落 join_checked，不禁言。
+func TestPrewarmSweepCleanLogsJoinChecked(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	addSweepMember(t, b, chat, 610, 25*3600, 0, 0)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":610,"bio":"喜欢摄影"}}`, true
+		}
+		return "", false
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("正常资料不该禁言，得到 %d 次", got)
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=? AND user_id=610 ORDER BY id DESC LIMIT 1`,
+		chat).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != "join_checked" {
+		t.Fatalf("action = %q，期望 join_checked", action)
+	}
+}
+
+// 全局急停时不跑。
+func TestPrewarmSweepHonorsGlobalStop(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t, soReply("ad", 0.99, "promo", "account"), "")
+	addSweepMember(t, b, chat, 601, 25*3600, 0, 0)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":601,"bio":"洗资"}}`, true
+		}
+		return "", false
+	}
+	if err := b.PutSetting("antiad_enabled", "0"); err != nil {
+		t.Fatal(err)
+	}
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("急停时不该动手，得到 %d 次", got)
 	}
 }

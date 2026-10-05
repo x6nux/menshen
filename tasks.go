@@ -102,6 +102,7 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 
 func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
+	antiad.PrewarmSweep(sh)
 	// 规则发现自动运行只负责「发车」：同步扫一遍游标后就起后台 goroutine。
 	// 放在小时任务最前面，避免被下面可能长达几十分钟的禁言复查/形态总结堵住
 	// ——它一旦在下一小时 tick 时还没跑完，整轮小时任务都会被跳过。

@@ -223,3 +223,145 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Announce: conf.GroupAlert,
 	})
 }
+
+const (
+	// prewarmSweepWindow：只复查进群 7 天内的新成员，再老不再是「前置养号」。
+	prewarmSweepWindow = 7 * 24 * time.Hour
+	// prewarmSweepDelay：进群满 24h 才复查，给正常人的首日活跃留出空间；
+	// 不足 24h 的由 Layer 1 负责。
+	prewarmSweepDelay = 24 * time.Hour
+	// prewarmSweepBatch：每群每轮最多复查的人数，防止一次性打满 TG 速率。
+	prewarmSweepBatch = 20
+)
+
+// PrewarmSweep 是前置号延迟复查（小时任务）：对进群 24h~7d、发言 ≤2 条、
+// 尚未检查过的成员重拉一次资料；资料已经变成广告的按账号广告禁言。
+//
+// 与冷判定的分工：冷判定管进群那一刻；这里管「进群时干净、事后化妆、
+// 并且再也不说话」的静默号。全平台急停时整轮跳过。
+func PrewarmSweep(sh *core.Shared) {
+	snap := sh.Cache.Snap()
+	if sh.Reg == nil || snap.SettingInt("antiad_enabled", 0) != 1 {
+		return
+	}
+	now := time.Now().Unix()
+	sh.Reg.Each(func(b *core.Bot) {
+		if snap.BotSettingInt(b.BotID(), "antiad_prewarm_sweep", 0) != 1 {
+			return
+		}
+		for _, c := range snap.ChatsOf(b.BotID()) {
+			if c.Enabled {
+				sweepChat(b, c.ChatID, now)
+			}
+		}
+	})
+}
+
+// sweepChat 圈出该群的候选并投进判定 worker。
+func sweepChat(b *core.Bot, chatID, now int64) {
+	rows, err := b.Store.Read.Query(`SELECT user_id FROM group_members
+		WHERE chat_id=? AND joined_at > ? AND joined_at <= ?
+		  AND msg_count <= 2 AND whitelisted=0 AND prewarm_checked_at=0
+		ORDER BY joined_at LIMIT ?`,
+		chatID, now-int64(prewarmSweepWindow/time.Second),
+		now-int64(prewarmSweepDelay/time.Second), prewarmSweepBatch)
+	if err != nil {
+		slog.Error("前置号复查：查询候选失败", "chat", chatID, "err", err)
+		return
+	}
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if rows.Scan(&uid) == nil {
+			uids = append(uids, uid)
+		}
+	}
+	rows.Close()
+	for _, uid := range uids {
+		uid := uid
+		if !b.AdSubmit(func() { prewarmRecheck(b, chatID, uid) }) {
+			slog.Warn("前置号复查：判定队列已满，本轮停止", "chat", chatID)
+			return
+		}
+	}
+}
+
+// markPrewarmChecked 记下复查时间戳，保证一人只查一次（失败也不重查，
+// 失败方向是放行）。
+func markPrewarmChecked(b *core.Bot, chatID, uid int64) {
+	if _, err := b.Store.Write.Exec(`UPDATE group_members
+		SET prewarm_checked_at=? WHERE chat_id=? AND user_id=?`,
+		time.Now().Unix(), chatID, uid); err != nil {
+		slog.Error("前置号复查：标记检查时间失败", "chat", chatID, "uid", uid, "err", err)
+	}
+}
+
+// prewarmRecheck 复查一个静默成员的最新资料。
+func prewarmRecheck(b *core.Bot, chatID, uid int64) {
+	markPrewarmChecked(b, chatID, uid)
+
+	// 已在进群类禁言中：不再判、不再禁，避免重复禁言或把 prewarm
+	// 限制覆盖成 profile 改变申诉口径。
+	if _, ok := loadJoinMute(b.Store, chatID, uid); ok {
+		return
+	}
+	conf, ok := chatActive(b, chatID)
+	if !ok {
+		return
+	}
+	snap := b.Cache.Snap()
+
+	// 拿最新资料：对方可能刚把广告写进简介。
+	cachesOf(b.Shared).bio.Delete(uid)
+	info := userInfo(b, uid)
+	if strings.TrimSpace(info.bio) == "" {
+		return // 空壳由 Layer 1 负责；这里只抓资料里已有的广告
+	}
+
+	u := &tg.TGUser{ID: uid, Username: info.username,
+		FirstName: info.firstName, LastName: info.lastName}
+	gm, _ := loadMember(b.Store, chatID, uid)
+	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
+	p.Bio = info.bio
+	p.BioLinks = resolveProfileLinks(b, p)
+
+	if hit, where := leaderProfileHit(u, p.Bio); hit != "" {
+		leaderBan(b, conf, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
+			From: u, Text: leaderNoticeText(u, p.Bio, hit, where)}, hit, where)
+		return
+	}
+	if b.Cache.Snap().ProfileAllowed(b.BotID(), uid,
+		profileHash(p), time.Now().Unix()) > 0 {
+		return
+	}
+
+	st := adState{Chat: adChatInfo{ID: chatID, Title: conf.Title},
+		Sender: p, JoinCheck: true}
+	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
+
+	v, err := judgeJoin(b, snap, st)
+	if err != nil {
+		slog.Warn("前置号复查：判定失败，放行", "chat", chatID, "uid", uid, "err", err)
+		return
+	}
+	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
+	if !v.IsAd || v.Confidence*100 < line {
+		logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
+			From: u, Text: joinProfileText(u, p.Bio, v)}, v, "join_checked", "延迟复查（正常）")
+		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {
+			GrantProfileOK(b, p, v.ProfileOKHours, "延迟复查放行："+v.Reason)
+		}
+		return
+	}
+	if conf.Dryrun {
+		logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
+			From: u, Text: joinProfileText(u, p.Bio, v)}, v, "dryrun:join_muted", "延迟复查（演练）")
+		return
+	}
+	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
+		Kind: kindProfile, Action: actionJoinMuted, Note: "延迟复查发现资料广告",
+		Body:     joinProfileText(u, p.Bio, v),
+		Reason:   "账号资料中含有推广或引流内容",
+		Announce: conf.GroupAlert,
+	})
+}
