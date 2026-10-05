@@ -494,15 +494,22 @@ ORDER BY joined_at LIMIT 20
 - 选人：`WHERE chat_id=? AND whitelisted=0 AND prewarm_next_at <= now
   ORDER BY prewarm_next_at LIMIT ?`，索引
   `idx_gmember_pwnext(chat_id, prewarm_next_at)`。
-- 分档函数 `prewarmSweepInterval(age)` 与 `prewarm_next_at` 同步写入：
-  每次复查结束（含所有跳过路径）都更新
+- 分档函数 `prewarmSweepInterval(age)`；`joined_at=0` 用命名常量
+  `prewarmUnknownAge` 归入 1h 档。每次复查结束（含所有跳过路径）都更新
   `prewarm_checked_at=now`、`prewarm_next_at=now+interval`。
-- 每群每轮上限 `prewarmSweepBatch = 120`；每 bot 每轮上限
-  `prewarmSweepPerBot = 240`；`b.AdBusy() >= prewarmQueueHighWater (256)`
-  时停止本轮（沿用）。
+- **入队前原子抢占**：选到候选后先执行
+  `UPDATE group_members SET prewarm_next_at=now+1min WHERE chat_id=?
+  AND user_id=? AND prewarm_next_at<=now`，只有 `RowsAffected=1` 才
+  入队。否则同一 tick 内多 bot、或上一条还在队列里时，会重复选中同
+  一人（worker 还没来得及写 `next_at`）。worker 完成后按阶梯覆盖
+  `next_at`。
+- 每群每轮上限 `prewarmSweepBatch = 150`；每 bot 每轮上限
+  `prewarmSweepPerBot = 300`；`b.AdBusy() >= prewarmQueueHighWater (256)`
+  时停止本轮（沿用）。进群高峰时 1min 档会自然退化成 1–2min，属可接受
+  的优雅降级。
 - 容量核对（dev 实测 4513 名成员、3088 名 7 天内新进）：稳态约
-  190 次 getChat/分钟（≈3.2 次/秒，低于 TG 30 次/秒），AI 只在资料
-  指纹变化时触发。
+  190 次 getChat/分钟（另有一次 10 分钟缓存的 `getChatMember` 管理员
+  检查），AI 只在资料指纹变化时触发。
 
 ### 9.3 资料指纹与 AI 省流
 
@@ -519,8 +526,14 @@ ORDER BY joined_at LIMIT 20
 5. 硬规则（领导人）在指纹门之前先跑，零成本；
 6. `ProfileAllowed`、join_mutes 判重、adExempt、dryrun 全部沿用。
 
-指纹在判定开始前落库（失败不重刷；新成员 10 分钟后会再查，老成员
-次日再查）。
+**指纹落库时机与重试**：新指纹在**判定完成后**才落库；`judgeJoin` 失败
+（上游抖动）时保留旧指纹并用本次档位推后 `next_at`，下一档会重试，
+不会因为一次失败就永久错过「化妆」。
+
+**AI 冷却**：同一 `(群, 人)` 每 10 分钟最多跑一次账号 AI
+（`prewarmAIInterval`，进程内 TTLMap）。资料反复改名时，冷却期内只推后
+`next_at`、**不落新指纹也不判**，冷却到点再判——既不放大开销，也不把
+未判的广告指纹吞掉。首次见到该成员（存量指纹为空）不受冷却限制。
 
 ### 9.4 迁移与索引
 
@@ -532,15 +545,22 @@ ORDER BY joined_at LIMIT 20
   查询只按 (chat_id, user_id) 单行读，不需要索引。
 - `groupMember` 增加 `ProfileHash`、`PrewarmNextAt` 字段，
   `loadMember` 读出（后者用于测试断言与排查，选人走 SQL）。
+- `recordJoin` 的 upsert 在更新 `joined_at` 时顺带把
+  `prewarm_next_at` 清零：退群重进的人按新成员节奏复查，而不是继承
+  旧的高档位间隔。
 
 ### 9.5 测试
 
 - 阶梯：`prewarmSweepInterval` 五个边界（59min/1h01/11h59/12h01/
   23h59/24h01/6d23h/7d01、`joined_at=0`）逐一断言；
-- 调度：`prewarm_next_at` 未到不重复查、到点再查；跳过路径（白名单/
-  豁免/join_mutes）也会把 next_at 推到未来，不会每分钟重扫；
+- 调度：`prewarm_next_at` 未到不重复查、到点再查；**抢占**：不跑 worker
+  连续两轮 sweep 只入队一次；跳过路径（白名单/豁免/join_mutes）也会把
+  next_at 推到未来，不会每分钟重扫；`msg_count>0` 的成员仍是候选；
+  `chatActive` 关闭的群跳过；重进（recordJoin）清零 next_at；
 - 指纹：未变 → 零 AI 调用；首查正常资料 → 零 AI；首查可疑资料 →
   AI + 命中禁言；**昵称-only 变化（bio 为空）→ 仍会 AI 判定**；
+  **判定失败保留旧指纹、下一档重试**；**10 分钟冷却期内翻转资料不重复
+  花 AI，冷却后仍会判**；
 - 沿用：白名单/豁免跳过、join_mutes 判重、dryrun、队列高水位、
   每 bot 预算、全局急停；
 - 迁移与索引：老库补两列、默认值正确；`idx_gmember_pwnext` 存在。
