@@ -1,6 +1,7 @@
 package antiad
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -86,8 +87,7 @@ func TestPrewarmCandidate(t *testing.T) {
 		t.Error("带链接的消息不该命中")
 	}
 
-	// 以下必须交回普通判定（识图/引用/转发/robot 豁免口径在那里），
-	// 不能在候选门里被吞掉。
+	// 以下必须交回普通判定（识图/引用口径在那里），不能在候选门里被吞掉。
 	captionOnly := msg("")
 	captionOnly.Caption = "哈喽"
 	if prewarmCandidate(b, snap, gm, captionOnly, false) {
@@ -113,6 +113,25 @@ func TestPrewarmCandidate(t *testing.T) {
 	if prewarmCandidate(b, snap, gm, forwarded, false) {
 		t.Error("转发消息不该命中")
 	}
+	// 载荷藏在按钮/联系人卡片里的短招呼：msgText 会把载荷计入长度，把
+	// 消息撑出候选线，交回普通判定。
+	withButton := &tg.Message{From: &tg.TGUser{ID: 555}}
+	if err := json.Unmarshal([]byte(`{"message_id":10,"text":"哈喽",`+
+		`"reply_markup":{"inline_keyboard":[[{"text":"点这里",`+
+		`"url":"https://t.me/adchannel"}]]}}`), withButton); err != nil {
+		t.Fatal(err)
+	}
+	if prewarmCandidate(b, snap, gm, withButton, false) {
+		t.Error("短招呼带内联按钮载荷不该命中")
+	}
+	withContact := msg("哈喽")
+	withContact.MsgPayload = tg.MsgPayload{Contact: &tg.Contact{
+		FirstName: "客服", PhoneNumber: "13800138000"}}
+	if prewarmCandidate(b, snap, gm, withContact, false) {
+		t.Error("短招呼带联系人卡片载荷不该命中")
+	}
+	// bot 不走账号级无限期禁言（与 coldJudge 一致）；普通路径按
+	// antiad_judge_bots 的配置照常判它。
 	fromBot := msg("哈喽")
 	fromBot.From.IsBot = true
 	if prewarmCandidate(b, snap, gm, fromBot, false) {

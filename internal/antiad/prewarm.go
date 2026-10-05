@@ -44,11 +44,12 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 	if m == nil || m.From == nil || edited {
 		return false
 	}
+	// bot 不走账号级无限期禁言（与 coldJudge 一致）：普通消息路径按
+	// antiad_judge_bots 的配置照常判它，这里只是不圈进前置号复核。
 	if m.From.IsBot {
 		return false
 	}
-	// 只圈纯文字：配文（Caption）与引用/转发载荷都可能藏着广告，应交回
-	// 普通判定（识图与引用口径在那里），不能在候选门里被吞掉。
+	// 引用/转发载荷交回普通判定（引用口径在那里），不在候选门里被吞掉。
 	if m.ReplyToMessage != nil || m.ExternalReply != nil ||
 		m.Quote != nil || len(m.ForwardOrigin) > 0 {
 		return false
@@ -62,8 +63,11 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 	if time.Since(time.Unix(gm.JoinedAt, 0)) > prewarmJoinWindow {
 		return false
 	}
-	text := strings.TrimSpace(m.Text)
-	if text == "" || len([]rune(strings.Trim(text, prewarmTrimCut))) > prewarmTextMax {
+	if strings.TrimSpace(m.Text) == "" {
+		return false // 说明只在 Caption 里的媒体消息（图片/文件）交回普通判定
+	}
+	text := strings.TrimSpace(msgText(m)) // 按钮/联系人等载荷计入长度，避免短招呼带着载荷混进候选
+	if len([]rune(strings.Trim(text, prewarmTrimCut))) > prewarmTextMax {
 		return false
 	}
 	for _, e := range m.Entities {
