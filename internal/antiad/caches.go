@@ -46,6 +46,10 @@ type caches struct {
 	joinLookupMiss core.TTLMap[string, struct{}]
 	// residualSwept 记录每个人上次残留限制复查的开始，键 uid。
 	residualSwept core.TTLMap[int64, struct{}]
+	// prewarmAI 记录前置号复查上次跑账号 AI 的时间，键 "chatID:uid"。
+	// 同一人 10 分钟内最多判一次：资料反复改名时冷却期内只推后 next_at，
+	// 不重复烧 AI；首次见到该成员不受它限制。
+	prewarmAI core.TTLMap[string, time.Time]
 }
 
 type cachesKey struct{}
@@ -72,4 +76,5 @@ func GCCaches(sh *core.Shared) {
 	c.joinBackfillDone.GC(now)
 	c.joinLookupMiss.GC(now)
 	c.residualSwept.GC(now)
+	c.prewarmAI.GC(now)
 }

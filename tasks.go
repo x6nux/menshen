@@ -71,7 +71,7 @@ func runHourly(sh *core.Shared) {
 
 func tickMinute(sh *core.Shared, reg *core.Registry) {
 	antiad.GCCaches(sh)         // 反广告的全部内存缓存与节流记录（见 antiad/caches.go）
-	antiad.PrewarmSweep(sh)     // 前置号复查：新成员 10 分钟一轮 / 老成员每日（只 SQL + 入队）
+	antiad.PrewarmSweep(sh)     // 前置号资料复查：按进群阶梯 1/5/10/30/60min 到期取人（只 SQL + 抢占入队）
 	panel.GCChatHealthCache(sh) // 面板的群权限自检结果
 	sh.AdLimits.GC()            // 反广告护栏窗口：回收长期无人问津的 key
 	sh.GCShard(time.Now())      // 同群多 bot 的发言人认领

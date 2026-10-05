@@ -436,14 +436,16 @@ func migrate(db *sql.DB) error {
 		// prewarm = 前置号识别（空壳+招呼的综合特征）。申诉提示词与解除
 		// 口径按它分流。
 		{"join_mutes", "kind", "TEXT NOT NULL DEFAULT 'profile'"},
-		// prewarm_checked_at：前置号复查的节流时间戳（上次复查时间）。
-		// 新成员 10 分钟一轮、老成员 24 小时一轮，由它按人节流。
+		// prewarm_checked_at：前置号复查的上次执行时间。复查按进群时长的
+		// 阶梯（1/5/10/30/60min）预排在 prewarm_next_at，这个字段只做展示
+		// 与排查。
 		{"group_members", "prewarm_checked_at", "INTEGER NOT NULL DEFAULT 0"},
 		// profile_hash：上次复查时落下的资料指纹（profileHash，见
 		// antiad/profile_ok.go）。指纹没变就不花 AI 重判；空串表示还没查过。
 		{"group_members", "profile_hash", "TEXT NOT NULL DEFAULT ''"},
 		// prewarm_next_at：前置号复查的下次到期时间（预排）。0 = 从未
-		// 复查过，立刻进一次候选；之后按进群时长的阶梯推后。
+		// 复查过，立刻进一次候选；到点选中后由 worker 按进群时长的
+		// 阶梯（1/5/10/30/60min）覆盖。
 		{"group_members", "prewarm_next_at", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {

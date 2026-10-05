@@ -131,8 +131,9 @@ func isMemberStatus(s string) bool {
 	return false
 }
 
-// recordJoin 写入进群时刻。已有记录则只更新 joined_at，
-// 不动 msg_count —— 退群重进的人，历史发言量仍是有效画像。
+// recordJoin 写入进群时刻。已有记录则更新 joined_at 并把 prewarm_next_at
+// 清零——退群重进的人按新成员节奏复查，而不是继承旧的高档位间隔；不动
+// msg_count —— 退群重进的人，历史发言量仍是有效画像。
 //
 // 返回更新后的画像（含 whitelisted）：进群路径接着就要判白名单与豁免，
 // RETURNING 顺手带回来，省掉一次单查。
@@ -141,7 +142,8 @@ func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
 	err := b.Store.Write.QueryRow(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
 		VALUES (?,?,?,?,0,0,0)
-		ON CONFLICT(chat_id,user_id) DO UPDATE SET joined_at=excluded.joined_at
+		ON CONFLICT(chat_id,user_id) DO UPDATE SET joined_at=excluded.joined_at,
+		  prewarm_next_at=0
 		RETURNING joined_at,first_seen,msg_count,last_msg_at,ad_hits,whitelisted`,
 		chatID, uid, at, at).
 		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
