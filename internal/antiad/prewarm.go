@@ -237,33 +237,53 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 }
 
 const (
-	// prewarmNewWindow 是「新成员」的年龄上限：进群 24h 内按 10 分钟高频
-	// 复查——线上实证的号进群几分钟就把资料改成广告。
-	prewarmNewWindow = 24 * time.Hour
-	// prewarmNewInterval 是新成员两次复查的最小间隔。分钟级轮询保证新成员
-	// 在进群后 ~10 分钟内必被查一次。
-	prewarmNewInterval = 10 * time.Minute
-	// prewarmDailyInterval 是老成员（含 joined_at=0 的存量成员）的复查间隔。
-	// 按 prewarm_checked_at 升序轮转，全群每天恰好扫一遍。
-	prewarmDailyInterval = 24 * time.Hour
-	// prewarmSweepBatch：每群每轮每个档位最多复查的人数，防止一次性打满
-	// TG 速率。
-	prewarmSweepBatch = 20
-	// prewarmSweepPerBot：每 bot 每轮最多提交的复查数。群多时 20/档 × 2 档
-	// × N 会一次性灌满共享判定队列，饿死实时消息判定。
-	prewarmSweepPerBot = 60
+	// prewarmSweepBatch：每群每轮最多复查的人数，防止一次性打满 TG 速率。
+	prewarmSweepBatch = 120
+	// prewarmSweepPerBot：每 bot 每轮最多提交的复查数。群多时 120/群 × N
+	// 会一次性灌满共享判定队列，饿死实时消息判定。
+	prewarmSweepPerBot = 240
 	// prewarmQueueHighWater：判定任务积压到这个数就不再提交复查。复查是
 	// 后台低优先级工作，实时消息判定优先。
 	prewarmQueueHighWater = 256
 )
 
-// PrewarmSweep 是前置号复查（分钟任务）：新成员 10 分钟一轮、老成员每日
-// 一轮，重拉资料后按资料指纹决定要不要花 AI；资料已变成广告的按账号广告
-// 禁言。
+// prewarmSweepInterval 按进群时长给出下一次复查间隔（§9.2 的阶梯）：
+// 进群越久资料越稳定，查得越稀。
+func prewarmSweepInterval(age time.Duration) time.Duration {
+	switch {
+	case age <= time.Hour:
+		return time.Minute
+	case age <= 12*time.Hour:
+		return 5 * time.Minute
+	case age <= 24*time.Hour:
+		return 10 * time.Minute
+	case age <= 7*24*time.Hour:
+		return 30 * time.Minute
+	default:
+		return time.Hour
+	}
+}
+
+// prewarmAge 把 joined_at 换算成进群时长。进群时间未知（0，bot 部署前
+// 已在群）按最老一档处理，避免把存量成员当刚进门的号高频重扫。
+func prewarmAge(now, joinedAt int64) time.Duration {
+	if joinedAt <= 0 {
+		return 8 * 24 * time.Hour
+	}
+	if age := time.Duration(now-joinedAt) * time.Second; age > 0 {
+		return age
+	}
+	return 0
+}
+
+// PrewarmSweep 是前置号复查（分钟任务）：按进群时长的阶梯（1min/5min/
+// 10min/30min/1h）到点复查，重拉资料后按资料指纹决定要不要花 AI；资料已
+// 变成广告的按账号广告禁言。
 //
 // 与冷判定的分工：冷判定管进群那一刻；这里管「进群时干净、事后化妆、
 // 并且再也不说话」的静默号——规则只看消息正文，0 发言的号只有这里能抓。
-// 只做 SQL 与入队（重活都在判定 worker 上），全平台急停时整轮跳过。
+// 选人只看预排的 prewarm_next_at（老成员不会被每分钟全表扫），只做 SQL
+// 与入队（重活都在判定 worker 上）；全平台急停时整轮跳过。
 func PrewarmSweep(sh *core.Shared) {
 	snap := sh.Cache.Snap()
 	if sh.Reg == nil || snap.SettingInt("antiad_enabled", 0) != 1 {
@@ -294,44 +314,24 @@ func PrewarmSweep(sh *core.Shared) {
 	})
 }
 
-// sweepChat 圈出该群两个档位的候选并投进判定 worker；max 是本 bot 本轮
-// 的剩余名额，返回实际提交数。候选里的白名单/豁免由 prewarmRecheck 再拦。
+// sweepChat 圈出该群到期的候选并投进判定 worker；max 是本 bot 本轮的剩余
+// 名额，返回实际提交数。候选里的白名单/豁免由 prewarmRecheck 再拦。
 func sweepChat(b *core.Bot, chatID, now int64, max int) int {
 	if max <= 0 {
 		return 0
 	}
-	newMax := prewarmSweepBatch
-	if max < newMax {
-		newMax = max
+	limit := prewarmSweepBatch
+	if max < limit {
+		limit = max
 	}
-	// 新成员优先：进门即成妆的窗口就在头 24h，排在老成员轮转前面。
+	// 一步选人：只看预排的到期时间，年龄档位在复查结束时写回。
 	uids := sweepCohort(b, chatID, `SELECT user_id FROM group_members
-		WHERE chat_id=? AND joined_at > ?
-		  AND (prewarm_checked_at=0 OR prewarm_checked_at <= ?)
-		  AND whitelisted=0
-		ORDER BY joined_at DESC LIMIT ?`,
-		chatID, now-int64(prewarmNewWindow/time.Second),
-		now-int64(prewarmNewInterval/time.Second), newMax)
-	n := submitRechecks(b, chatID, uids, max)
-	if n >= max {
-		return n
-	}
-	oldMax := prewarmSweepBatch
-	if max-n < oldMax {
-		oldMax = max - n
-	}
-	// 老成员（含 joined_at=0 的存量成员）按上次复查时间升序轮转。
-	uids = sweepCohort(b, chatID, `SELECT user_id FROM group_members
-		WHERE chat_id=? AND joined_at <= ?
-		  AND (prewarm_checked_at=0 OR prewarm_checked_at <= ?)
-		  AND whitelisted=0
-		ORDER BY prewarm_checked_at ASC LIMIT ?`,
-		chatID, now-int64(prewarmNewWindow/time.Second),
-		now-int64(prewarmDailyInterval/time.Second), oldMax)
-	return n + submitRechecks(b, chatID, uids, max-n)
+		WHERE chat_id=? AND whitelisted=0 AND prewarm_next_at <= ?
+		ORDER BY prewarm_next_at LIMIT ?`, chatID, now, limit)
+	return submitRechecks(b, chatID, uids, max)
 }
 
-// sweepCohort 执行一档候选查询，返回 user_id 列表。
+// sweepCohort 执行候选查询，返回 user_id 列表。
 func sweepCohort(b *core.Bot, chatID int64, q string, args ...any) []int64 {
 	rows, err := b.Store.Read.Query(q, args...)
 	if err != nil {
@@ -376,23 +376,26 @@ func submitRechecks(b *core.Bot, chatID int64, uids []int64, max int) int {
 	return n
 }
 
-// markPrewarmChecked 只推复查时间戳（跳过路径与指纹未变的路径用），保证
-// 下一轮轮询按档位间隔不再选中同一人。
-func markPrewarmChecked(b *core.Bot, chatID, uid int64) {
+// markPrewarmChecked 推复查时间并按阶梯预排下一次（跳过路径与指纹未变的
+// 路径用），保证下一轮不再选中同一人。
+func markPrewarmChecked(b *core.Bot, chatID, uid int64, interval time.Duration) {
+	now := time.Now().Unix()
 	if _, err := b.Store.Write.Exec(`UPDATE group_members
-		SET prewarm_checked_at=? WHERE chat_id=? AND user_id=?`,
-		time.Now().Unix(), chatID, uid); err != nil {
+		SET prewarm_checked_at=?, prewarm_next_at=? WHERE chat_id=? AND user_id=?`,
+		now, now+int64(interval/time.Second), chatID, uid); err != nil {
 		slog.Error("前置号复查：标记检查时间失败", "chat", chatID, "uid", uid, "err", err)
 	}
 }
 
-// markPrewarmCheckedHash 记下复查时间与资料指纹，在判定开始前落库：
-// 一次 TG/AI 闪断不该让同一份资料 10 分钟后（新成员）或次日（老成员）
-// 再走一遍。
-func markPrewarmCheckedHash(b *core.Bot, chatID, uid int64, hash string) {
+// markPrewarmCheckedHash 记下复查时间、下次到期时间与资料指纹，在判定
+// 开始前落库：一次 TG/AI 闪断不该让同一份资料等下一个阶梯点再走一遍。
+func markPrewarmCheckedHash(b *core.Bot, chatID, uid int64, hash string,
+	interval time.Duration) {
+	now := time.Now().Unix()
 	if _, err := b.Store.Write.Exec(`UPDATE group_members
-		SET profile_hash=?, prewarm_checked_at=? WHERE chat_id=? AND user_id=?`,
-		hash, time.Now().Unix(), chatID, uid); err != nil {
+		SET profile_hash=?, prewarm_checked_at=?, prewarm_next_at=?
+		WHERE chat_id=? AND user_id=?`,
+		hash, now, now+int64(interval/time.Second), chatID, uid); err != nil {
 		slog.Error("前置号复查：标记检查时间与指纹失败",
 			"chat", chatID, "uid", uid, "err", err)
 	}
@@ -402,16 +405,22 @@ func markPrewarmCheckedHash(b *core.Bot, chatID, uid int64, hash string) {
 //
 // 顺序按代价排：已在禁言/不在生效群/豁免直接跳过；硬规则零成本先跑；
 // 资料指纹没变不花 AI；首次见到的人先过本地预筛。指纹在判定前落库，
-// 失败方向是放行。
+// 失败方向是放行。**每条出口都预排下次时间**（按进群时长的阶梯），
+// 跳过的路径也一样——否则下一分钟又会被选中。
 func prewarmRecheck(b *core.Bot, chatID, uid int64) {
+	gm, _ := loadMember(b.Store, chatID, uid)
+	interval := prewarmSweepInterval(prewarmAge(time.Now().Unix(), gm.JoinedAt))
+
 	// 已在进群类禁言中：不再判、不再禁，避免重复禁言或把 prewarm
 	// 限制覆盖成 profile 改变申诉口径。推一次时间，本轮不再选中他。
 	if _, ok := loadJoinMute(b.Store, chatID, uid); ok {
-		markPrewarmChecked(b, chatID, uid)
+		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
 	conf, ok := chatActive(b, chatID)
 	if !ok {
+		// 群中途被停用也要推下一次：下次轮询不再重复选中。
+		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
 	snap := b.Cache.Snap()
@@ -421,9 +430,8 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	// antiad_exempt_users、主管理员/归属人与群管理员都要在这里拦住，
 	// 且不该为一次注定跳过的复查吃 getChat。
 	u := &tg.TGUser{ID: uid}
-	gm, _ := loadMember(b.Store, chatID, uid)
 	if adExempt(b, snap, chatID, u, gm.Whitelisted) {
-		markPrewarmChecked(b, chatID, uid)
+		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
 
@@ -438,18 +446,18 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 
 	// 硬规则零成本先跑：资料里出现国家领导人姓名直接封禁出群，不送检。
 	if hit, where := leaderProfileHit(u, p.Bio); hit != "" {
-		markPrewarmCheckedHash(b, chatID, uid, h)
+		markPrewarmCheckedHash(b, chatID, uid, h, interval)
 		leaderBan(b, conf, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
 			From: u, Text: leaderNoticeText(u, p.Bio, hit, where)}, hit, where)
 		return
 	}
 	// 指纹没变：还是上次看过的那份资料，只推时间，不花 AI。
 	if gm.ProfileHash != "" && h == gm.ProfileHash {
-		markPrewarmChecked(b, chatID, uid)
+		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
 	// 先把指纹与时间落库：判定失败也不该重刷。
-	markPrewarmCheckedHash(b, chatID, uid, h)
+	markPrewarmCheckedHash(b, chatID, uid, h, interval)
 
 	// 首次见到该成员：本地预筛不中就不花 AI——绝大多数正常人的资料
 	// 平平无奇。指纹已经落下，下次起走「未变即跳过」。
