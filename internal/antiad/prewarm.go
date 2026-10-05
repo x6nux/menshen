@@ -245,7 +245,7 @@ const (
 	// 复查是后台低优先级工作，实时消息判定优先。
 	prewarmQueueHighWater = 256
 	// prewarmClaimHold 是选人时的原子抢占时长：worker 还没按阶梯写回
-	// next_at 时，挡住同一 tick 的多处重复选中同一人。要盖住探测 +
+	// next_at 时，挡住并发探测/重复 tick 重复选中同一人。要盖住探测 +
 	// 判定池排队在 AI 压力下的等待时长（60s 实测会被超过）。
 	prewarmClaimHold = 5 * time.Minute
 	// prewarmAIInterval：同一 (群, 人) 两次账号 AI 的最小间隔。资料反复
@@ -361,9 +361,14 @@ func prewarmTargets(snap *store.Snapshot, reg *core.Registry) []prewarmTarget {
 	return out
 }
 
-// prewarmProbeOnce 跑一轮探测：按游标轮转群，选第一个有到点候选的群，
-// 原子抢占一个候选并在本协程里做轻量段。返回本轮处理的候选数（0/1）。
-// 每次最多一个候选：200ms 的节奏即全局 ~5 次/秒，不会打出 429。
+// prewarmProbeScan 是每 tick 最多检查的群数：空闲时游标也照样推进轮转，
+// 群多时不会每分钟把所有启用群空扫一遍。
+const prewarmProbeScan = 3
+
+// prewarmProbeOnce 跑一轮探测：按游标轮转群（每轮最多检查 prewarmProbeScan
+// 个），选第一个有到点候选的群，原子抢占一个候选并在本协程里做轻量段。
+// 返回本轮处理的候选数（0/1）。每次最多一个候选：200ms 的节奏即全局
+// ~5 次/秒，不会打出 429。
 func prewarmProbeOnce(sh *core.Shared) int {
 	snap := sh.Cache.Snap()
 	if sh.Reg == nil || snap.SettingInt("antiad_enabled", 0) != 1 {
@@ -384,10 +389,12 @@ func prewarmProbeOnce(sh *core.Shared) int {
 			}
 		}
 	}
-	for i := 0; i < len(targets); i++ {
+	for i := 0; i < len(targets) && i < prewarmProbeScan; i++ {
 		t := targets[(start+i)%len(targets)]
-		if prewarmProbeChat(t.bot, t.chatID, now) {
-			c.prewarmProbeCursor = t.key()
+		hit := prewarmProbeChat(t.bot, t.chatID, now)
+		// 无论有没有候选都推进游标：空闲 tick 也轮转，不重复扫同一批群。
+		c.prewarmProbeCursor = t.key()
+		if hit {
 			return 1
 		}
 	}
@@ -466,7 +473,6 @@ func markPrewarmDefer(b *core.Bot, chatID, uid, nextAt int64) {
 // 写回。互斥锁随 item 交给 worker 释放。
 type prewarmItem struct {
 	conf     store.BotChat
-	gm       groupMember
 	u        *tg.TGUser
 	p        senderProfile
 	h        string
@@ -619,7 +625,7 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
-	item := prewarmItem{conf: conf, gm: gm, u: u, p: p, h: h, interval: interval}
+	item := prewarmItem{conf: conf, u: u, p: p, h: h, interval: interval}
 	if !b.AdSubmit(func() { judgePrewarmItem(b, item) }) {
 		slog.Warn("前置号复查：判定队列已满，下一档重试", "chat", chatID, "uid", uid)
 		markPrewarmChecked(b, chatID, uid, interval)
@@ -634,12 +640,19 @@ func judgePrewarmItem(b *core.Bot, it prewarmItem) {
 	defer cachesOf(b.Shared).prewarmInflight.Delete(
 		fmt.Sprintf("%d:%d", it.conf.ChatID, it.u.ID))
 
+	// 探测到入队之间群可能被停用：worker 再核一次生效状态，不处置。
+	// 锁定由 defer 释放；claim 的 next_at 会在 hold 后自然到期重排。
+	if _, ok := chatActive(b, it.conf.ChatID); !ok {
+		return
+	}
+
 	chatID, uid := it.conf.ChatID, it.u.ID
 	snap := b.Cache.Snap()
 	st := adState{Chat: adChatInfo{ID: chatID, Title: it.conf.Title},
 		Sender: it.p, JoinCheck: true}
-	// 非 enforce 的资料规则命中作为强证据送 AI（enforce 已零 AI 处置）。
-	st.MatchedRules = MatchedRuleInfos(snap, profileRuleText(it.u, it.p.Bio))
+	// 非 enforce 的资料规则命中作为强证据送 AI；到这里才计规则命中
+	// （探测段的 enforce 门只计 enforce，避免未变资料每档重复计数）。
+	st.MatchedRules = profileRuleEvidence(b, snap, it.u, it.p.Bio)
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 
 	v, err := judgeJoin(b, snap, st)

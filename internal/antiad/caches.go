@@ -51,9 +51,10 @@ type caches struct {
 	// 同一人 10 分钟内最多判一次：资料反复改名时冷却期内只推后 next_at，
 	// 不重复烧 AI；首次见到该成员不受它限制。
 	prewarmAI core.TTLMap[string, time.Time]
-	// prewarmInflight 标记某个 (群, 人) 正在被一个复查 worker 处理，
-	// 键 "chatID:uid"。入队抢占的 5 分钟 hold 会在队列积压时过期，
-	// 这里兜底：TTL 覆盖最坏处理时长，重复投递直接退出。
+	// prewarmInflight 标记某个 (群, 人) 正在被一个处理者占用，键
+	// "chatID:uid"：选人抢占的 5 分钟 hold 会在探测/判定排队时过期，
+	// 这里兜底挡住重复投递。正常出口都会 defer 释放，TTL 只在进程
+	// 崩溃/卡死时兜底。
 	prewarmInflight core.TTLMap[string, struct{}]
 	// prewarmProbeOnce 保证低优先级探测协程进程内只起一份。
 	prewarmProbeOnce sync.Once

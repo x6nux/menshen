@@ -281,8 +281,8 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		JoinCheck: true,
 	}
 	// 非 enforce 的资料规则命中作为强证据随载荷送 AI（enforce 已在上面
-	// 零 AI 处置；这里只带证据，最终判决仍归模型）。
-	st.MatchedRules = MatchedRuleInfos(snap, profileRuleText(u, bio))
+	// 零 AI 处置；这里顺便记一次规则命中计数——冷判定每次进群只跑一遍）。
+	st.MatchedRules = profileRuleEvidence(b, snap, u, bio)
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 
 	v, err := judgeJoin(b, snap, st)
@@ -509,18 +509,43 @@ func profileRuleText(u *tg.TGUser, bio string) string {
 	return joinProfileText(u, bio, adVerdict{})
 }
 
-// profileRuleGate 跑资料必封规则门：所有命中（含非 enforce）都记计数，
-// 返回第一条 enforce 规则（列表按 id 升序）。纯内存，无 DB 往返。
-func profileRuleGate(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
+// profileEnforceGate 跑资料必封规则门的 enforce 部分：只有 enforce 命中
+// 才记计数（BumpRuleHits 要写库），返回第一条 enforce 规则（列表按 id
+// 升序）。非 enforce 命中不在这里计数：探测每档都会跑这个门，按未变的
+// 资料反复计数会让 ad_rules 膨胀；它们到真正判定时再由
+// profileRuleEvidence 计一次。
+func profileEnforceGate(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
 	bio string) (store.AdRuleRec, bool) {
-	hits := MatchRules(snap, profileRuleText(u, bio))
-	if len(hits) == 0 {
-		return store.AdRuleRec{}, false
-	}
-	for _, r := range hits {
+	var first store.AdRuleRec
+	found := false
+	for _, r := range MatchRules(snap, profileRuleText(u, bio)) {
+		if !r.Enforce {
+			continue
+		}
 		BumpRuleHits(b.Shared, r.ID)
+		if !found {
+			first, found = r, true
+		}
 	}
-	return firstEnforcedRule(hits)
+	return first, found
+}
+
+// profileRuleEvidence 返回命中的非 enforce 规则并记计数：只在资料真的要
+// 送 AI 时调用（指纹已变/首查预筛命中），保证一次实际判定里每条规则最多
+// 计数一次。enforce 命中在 profileEnforceGate 就处置了，不会到这里。
+func profileRuleEvidence(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
+	bio string) []MatchedRule {
+	var out []MatchedRule
+	for _, r := range MatchRules(snap, profileRuleText(u, bio)) {
+		if r.Enforce {
+			continue
+		}
+		BumpRuleHits(b.Shared, r.ID)
+		out = append(out, MatchedRule{
+			ID: r.ID, Name: r.Name, Category: r.Category, Note: r.Note,
+		})
+	}
+	return out
 }
 
 // enforceProfileRule 处置资料 enforce 规则命中：按账号级广告直接禁言，
@@ -529,7 +554,7 @@ func profileRuleGate(b *core.Bot, snap *store.Snapshot, u *tg.TGUser,
 // 指纹落库与重试。
 func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	u *tg.TGUser, p senderProfile, body, note string, quiet bool) (bool, bool) {
-	r, ok := profileRuleGate(b, snap, u, p.Bio)
+	r, ok := profileEnforceGate(b, snap, u, p.Bio)
 	if !ok {
 		return false, false
 	}
