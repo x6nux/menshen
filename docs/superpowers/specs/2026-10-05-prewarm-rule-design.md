@@ -278,7 +278,11 @@ ORDER BY joined_at LIMIT 20
   `joined_at <= now-24h`（`prewarmSweepDelay`）——进群不足 24h 的交给
   Layer 1，不抢跑；每群每轮最多 20 人（`prewarmSweepBatch`）；
 - 每个候选**先**把 `prewarm_checked_at` 置为 now（一人只查一次），
-  再处理；处理失败不重查（失败方向是放行，符合项目口径）。
+  再处理；处理失败不重查（失败方向是放行，符合项目口径）；
+- 控量：每 bot 每轮最多提交 `prewarmSweepPerBot = 50` 个复查（跨群共享
+  预算），单群单轮最多 `prewarmSweepBatch = 20`；提交前检查
+  `b.AdBusy() >= prewarmQueueHighWater`（256）就停止本轮，避免整点把
+  共享判定队列塞满、让群里的实时消息判定被「队列已满，本条放行」。
 
 ### 2.2 复查判定
 
@@ -288,6 +292,10 @@ ORDER BY joined_at LIMIT 20
    禁言中，Layer 2 只标记跳过，**不再判、不再禁言**（防止 Layer 1
    刚禁的人被重复禁言、或把 `join_mutes.kind` 从 `prewarm` 覆盖成
    `profile` 改变申诉口径）；
+0.5 与冷判定同一道豁免门：构建 `u`/`gm` 后调
+   `adExempt(b, snap, chatID, u, gm.Whitelisted)`，命中（永久白名单、
+   `antiad_exempt_users`、主管理员/归属人、群管理员）就跳过 —— 白名单
+   的语义是「此人不再被本服务处置」，延迟复查不能绕过它；
 1. `cachesOf(sh).bio.Delete(uid)` 后重拉 `userInfo`（对方可能刚改完
    资料，必须拿最新值）；
 2. `info.bio == ""` → 跳过（空壳号由 Layer 1 负责；Layer 2 只抓
