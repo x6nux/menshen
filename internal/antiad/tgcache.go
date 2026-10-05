@@ -117,3 +117,12 @@ func userInfo(b *core.Bot, uid int64) bioEntry {
 
 // userBio 取此人的 Telegram 个人简介（见 userInfo）。
 func userBio(b *core.Bot, uid int64) string { return userInfo(b, uid).bio }
+
+// photoTTL 是头像查询结果的缓存时长。头像很少变，但申诉复核必须看到
+// 刚补的头像，所以不做永久缓存（申诉路径会先 Delete 再查）。
+const photoTTL = 24 * time.Hour
+
+// photoEntry 是缓存里的头像张数。
+type photoEntry struct {
+	count int
+}

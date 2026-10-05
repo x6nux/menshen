@@ -16,6 +16,9 @@ type caches struct {
 	// bio 缓存 TG 个人资料（getChat）。广告号的强特征常写在简介里，
 	// 但全量送检下不缓存就是每条群消息多一次 TG 往返。
 	bio core.TTLMap[int64, bioEntry]
+	// photo 缓存 getUserProfilePhotos 的结果（头像张数），键 uid。
+	// 前置号/申诉路径才查；头像数很少变，查一次管一天。
+	photo core.TTLMap[int64, photoEntry]
 	// link 缓存简介/昵称里挂的频道、群组、bot 查出来的样子，键为小写用户名。
 	// 按用户名共享：群里十个人挂同一个频道也只查一次。
 	link core.TTLMap[string, linkInfo]
@@ -57,6 +60,7 @@ func GCCaches(sh *core.Shared) {
 	c := cachesOf(sh)
 	c.chatAdmin.GC(now)
 	c.bio.GC(now)
+	c.photo.GC(now)
 	c.link.GC(now)
 	c.vision.GC(now)
 	c.doomedAlbums.GC(now)
