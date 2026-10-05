@@ -279,11 +279,24 @@ func extractJSONObject(s string) string {
 //
 // 与 judge 的「低置信才升级」刻意不同 —— 复查是人主动发起的二次判断，
 // 目的就是拿到两方结论互相印证；省那一次调用等于把复查降级成重判一遍。
-func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error) {
-	so, soErr := judgeSystemOne(b, snap, st, soInstructions)
+// 消息复查与资料复查共用，提示词由调用方按口径各给一份。
+//
+// report 在每级跑完后被调一次（stage 为 "so"/"llm"，带该级结论或错误），
+// 调用方用它把中间结论编辑进进度消息；为 nil 时静默。回调之后才有合并
+// 与兜底，所以两级看到的是各自的原始结论。
+func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState,
+	soInstr, llmPrompt string, report func(stage string, v adVerdict, err error)) (adVerdict, error) {
+
+	so, soErr := judgeSystemOne(b, snap, st, soInstr)
+	if report != nil {
+		report("so", so, soErr)
+	}
 	// 即使 soErr 非空也照样跑大模型：so 此时是零值，judgeLLM 会自动
 	// 略过 prior_verdict，退化成「只有大模型」的判定而不是整体失败。
-	llm, llmErr := judgeLLM(b, snap, st, so, llmSystemPrompt)
+	llm, llmErr := judgeLLM(b, snap, st, so, llmPrompt)
+	if report != nil {
+		report("llm", llm, llmErr)
+	}
 
 	switch {
 	case soErr != nil && llmErr != nil:

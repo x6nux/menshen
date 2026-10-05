@@ -3,6 +3,7 @@ package antiad
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -884,9 +885,9 @@ func TestGroupNoticeDisablesPreview(t *testing.T) {
 	}
 }
 
-// TestCheckResultDisablesPreview：群内复查结果也要关掉链接预览——它带申诉
-// deep link，客户端会挂一张预览卡片（bot 链接常带 START 按钮）。这是唯一
-// 没走 sendGroup 的群内消息，漏了它等于「新加的 bot 群里还是弹预览」。
+// TestCheckResultDisablesPreview：/check 的多步响应从初始消息到每一步编辑
+// 都要关掉链接预览——状态块与复查结果都带 deep link（申诉入口、解除深链），
+// 客户端会挂一张预览卡片（bot 链接常带 START 按钮），把消息撑成好几行。
 func TestCheckResultDisablesPreview(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -896,20 +897,32 @@ func TestCheckResultDisablesPreview(t *testing.T) {
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 555"))
 	waitIdle(t, b)
 
-	var found bool
+	var sent bool
 	for _, p := range fake.Calls("sendMessage") {
-		if int64(p["chat_id"].(float64)) != -100 ||
-			!strings.Contains(fmt.Sprint(p["text"]), "复查结果") {
+		if int64(p["chat_id"].(float64)) != -100 {
 			continue
 		}
-		found = true
+		sent = true
 		opts, ok := p["link_preview_options"].(map[string]any)
 		if !ok || opts["is_disabled"] != true {
-			t.Errorf("复查结果应关掉链接预览，得到 %v", p["link_preview_options"])
+			t.Errorf("初始状态消息应关掉链接预览，得到 %v", p["link_preview_options"])
 		}
 	}
-	if !found {
-		t.Fatal("没有发出复查结果消息")
+	if !sent {
+		t.Fatal("没有发出初始状态消息")
+	}
+	edits := checkEdits(fake)
+	if len(edits) == 0 {
+		t.Fatal("多步响应应至少编辑一次消息")
+	}
+	for i, p := range fake.Calls("editMessageText") {
+		opts, ok := p["link_preview_options"].(map[string]any)
+		if !ok || opts["is_disabled"] != true {
+			t.Errorf("第 %d 次编辑应关掉链接预览，得到 %v", i+1, p["link_preview_options"])
+		}
+	}
+	if last := edits[len(edits)-1]; !strings.Contains(last, "复查结果") {
+		t.Errorf("最后一次编辑应是复查结果，得到：%s", last)
 	}
 }
 
@@ -946,19 +959,17 @@ func TestCheckNoDataUser(t *testing.T) {
 	}
 }
 
-// TestReviewCleanNoticeHasNoAppealLink：/check 结论是「正常」时，群内提示
-// 不能带 🚫、也不能附「点我申诉」——那个人没被处置，申诉入口对他没有
-// 意义，挂在群里像一张罚单（实测管理员看到「🚫 … 正常 92% + 点我申诉」
+// TestReviewCleanNoticeHasNoAppealLink：/check 结论是「正常」时，最终
+// 复查结果不能带 🚫、也不能附「点我申诉」——那个人没被处置，申诉入口对他
+// 没有意义，挂在群里像一张罚单（实测管理员看到「🚫 … 正常 92% + 点我申诉」
 // 以为是自己误判了）。判成广告时仍要给出申诉入口。
 func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 	groupNotice := func(fake *testutil.FakeTG) string {
-		var out []string
-		for _, p := range fake.Calls("sendMessage") {
-			if s := fmt.Sprint(p["text"]); strings.Contains(s, "复查结果") {
-				out = append(out, s)
-			}
+		edits := checkEdits(fake)
+		if len(edits) == 0 {
+			return ""
 		}
-		return strings.Join(out, "\n")
+		return edits[len(edits)-1]
 	}
 
 	// 正常结论。
@@ -1052,6 +1063,129 @@ func TestCheckByUsernameNotFound(t *testing.T) {
 	}
 	if !found {
 		t.Error("查不到的用户名该回一句说明")
+	}
+}
+
+// TestCheckMultiStepEdits：/check 是多步响应 —— 命令一收到先发「当前状态」，
+// 之后每完成一级（规则 → 初判 → 复判 → 复查结果）就把小节追加编辑进
+// 同一条消息，而不是干等几十秒后蹦出一条最终结果。
+func TestCheckMultiStepEdits(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAI(t, b, nil) // 两级都判广告
+	recordMessage(b, -100, 1, 555, "加微信买号 日入5000", 1700000000, "")
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 555"))
+	waitIdle(t, b)
+
+	// 初始消息只带状态，不带判定小节。
+	var initial string
+	for _, p := range fake.Calls("sendMessage") {
+		if int64(p["chat_id"].(float64)) == -100 {
+			initial = fmt.Sprint(p["text"])
+		}
+	}
+	if !strings.Contains(initial, "当前没有生效中的限制") {
+		t.Errorf("先响应的应是当前用户状态，得到：%s", initial)
+	}
+	if strings.Contains(initial, "初判") || strings.Contains(initial, "规则检查") {
+		t.Errorf("初始消息不该已经带判定小节：%s", initial)
+	}
+
+	edits := checkEdits(fake)
+	if len(edits) < 3 {
+		t.Fatalf("规则/初判/复判至少各编辑一次，实际 %d 次：\n%s",
+			len(edits), strings.Join(edits, "\n---\n"))
+	}
+	// 所有编辑都作用于同一条消息，文本逐级追加。
+	calls := fake.Calls("editMessageText")
+	msgID := calls[0]["message_id"]
+	for i, p := range calls {
+		if p["message_id"] != msgID {
+			t.Errorf("第 %d 次编辑应作用于同一条消息：%v vs %v",
+				i+1, p["message_id"], msgID)
+		}
+	}
+	for i := 1; i < len(edits); i++ {
+		if !strings.Contains(edits[i], edits[i-1]) {
+			t.Errorf("第 %d 次编辑应保留之前的全部小节（追加式，不重写）", i+1)
+		}
+	}
+	final := edits[len(edits)-1]
+	for _, want := range []string{
+		"① <b>规则检查</b>", "② <b>初判</b>", "③ <b>复判</b>", "复查结果",
+	} {
+		if !strings.Contains(final, want) {
+			t.Errorf("最终消息缺小节 %q：\n%s", want, final)
+		}
+	}
+}
+
+// TestCheckBypassesProfileOKAndBioCache：/check 绕过所有缓存 ——
+// 送检载荷里不得出现资料放行信号（profile_ok，缓存个人简介通过），
+// 哪怕上一轮复查刚给过 24 小时放行；简介必须取 getChat 的最新值，
+// 而不是缓存里的旧值。放行本身照常落库：那是复查的功能，只是复查
+// 自己不得消费它。
+func TestCheckBypassesProfileOKAndBioCache(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// getChat 回改过之后的简介；先把缓存预热成旧值，验证复查拿到的是最新值。
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":555,"type":"private",` +
+				`"first_name":"新人","username":"fresh","bio":"改过之后的简介"}}`, true
+		}
+		return "", false
+	}
+	cachesOf(b.Shared).bio.Set(555, bioEntry{bio: "缓存里的旧简介"}, time.Hour)
+
+	var soPayloads []string
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			body, _ := io.ReadAll(r.Body)
+			soPayloads = append(soPayloads, string(body))
+			w.Write([]byte(soReply("clean", 0.92, "none", "message")))
+			return
+		}
+		// 复判给 24 小时资料放行：下一轮复查必须无视它。
+		w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"{\"is_ad\":false,\"confidence\":0.92,\"kind\":\"none\",\"scope\":\"message\",` +
+			`\"profile_ok_hours\":24,\"reason\":\"正常\"}"}}]}`))
+	})
+
+	recordMessage(b, -100, 1, 555, "普通发言", 1700000000, "")
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 9, "/check 555"))
+	waitIdle(t, b)
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 10, "/check 555"))
+	waitIdle(t, b)
+
+	if len(soPayloads) != 2 {
+		t.Fatalf("两次复查应各送检一次 systemone，实际 %d 次", len(soPayloads))
+	}
+	for i, raw := range soPayloads {
+		var req struct {
+			State struct {
+				Sender senderProfile `json:"sender"`
+			} `json:"state"`
+		}
+		if err := json.Unmarshal([]byte(raw), &req); err != nil {
+			t.Fatalf("第 %d 次送检载荷解析失败: %v", i+1, err)
+		}
+		if req.State.Sender.Bio != "改过之后的简介" {
+			t.Errorf("第 %d 次复查应取最新简介而不是缓存值，得到 %q",
+				i+1, req.State.Sender.Bio)
+		}
+		// profile_ok 字样本身出现在提示词里，不能拿原文 Contains 判断；
+		// 解码后的字段为 false（且无放行到期时间）才是载荷真的没带信号。
+		if req.State.Sender.ProfileOK || req.State.Sender.ProfileOKUntil != "" {
+			t.Errorf("第 %d 次复查的送检载荷不该带资料放行信号：%+v",
+				i+1, req.State.Sender)
+		}
+	}
+	var n int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM profile_ok WHERE user_id=555`).Scan(&n)
+	if n == 0 {
+		t.Error("复判给的资料放行应照常落库（复查只是不消费它）")
 	}
 }
 

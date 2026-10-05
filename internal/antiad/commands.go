@@ -105,8 +105,9 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 		}
 		// 有入群画像、只是还没发过言（刚进群的人）：这类人能看的只有资料，
 		// 走冷判定那套提示词与采信线。
-		if !b.AdSubmit(func() { reviewProfileOnly(b, snap, conf, target) }) {
-			sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
+		p := newCheckProgress(b, m.Chat.ID, target.ID)
+		if !b.AdSubmit(func() { reviewProfileOnly(b, snap, conf, target, p) }) {
+			p.busy(alertTTLOf(b, snap))
 		}
 		return
 	}
@@ -147,12 +148,15 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 			core.CtxMsg{Name: senderName(target), Text: t, At: h.At})
 	}
 
+	// 多步响应先发「当前状态」，之后每完成一级编辑一次（见 check_progress.go）。
+	p := newCheckProgress(b, m.Chat.ID, target.ID)
 	if !b.AdSubmit(func() {
-		// 复查同样按需补入群时间：worker 上查，不拖更新处理。
-		ensureJoinAge(b, m.Chat.ID, &state.Sender)
-		reviewAndAct(b, snap, conf, tgt, profile, state)
+		// 复查同样按需补入群时间：worker 上查，不拖更新处理；负缓存清掉，
+		// 给一次全新的实时查询。
+		ensureJoinAgeFresh(b, m.Chat.ID, target.ID, &state.Sender)
+		reviewAndAct(b, snap, conf, tgt, profile, state, p)
 	}) {
-		sendGroup(b, m.Chat.ID, "判定通道繁忙，请稍后再试。", nil)
+		p.busy(alertTTLOf(b, snap))
 	}
 }
 
@@ -359,28 +363,46 @@ func resolveUIDArg(b *core.Bot, arg string) (int64, bool) {
 	return 0, false
 }
 
-// reviewAndAct 跑复查并按处置矩阵动作，结果贴回群里。
+// alertTTLOf 是群内复查卡片的存活时间（与告警同一配置）。
+func alertTTLOf(b *core.Bot, snap *store.Snapshot) time.Duration {
+	return time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+}
+
+// reviewAndAct 跑复查并按处置矩阵动作，结果逐步编辑进进度消息。
 func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg.Message,
-	profile senderProfile, state adState) {
+	profile senderProfile, state adState, p *checkProgress) {
 
 	chatID := conf.ChatID
-	// 管理员复查：对方很可能刚按结论改过资料，简介要拿最新的（申诉路径
-	// 同样先清缓存），否则 1 小时缓存会把旧简介的结论再判一遍。
-	cachesOf(b.Shared).bio.Delete(state.Sender.UserID)
-	enrichSender(b, &state.Sender)
+	// 复查绕过全部缓存：简介与资料挂链取最新，资料放行不套用
+	// （见 enrichSenderFresh）—— 复查审的就是资料本身，不能被之前
+	// 「缓存个人简介通过」挡成维持原判。
+	enrichSenderFresh(b, &state.Sender)
 	// 同上：定案与资料放行都用补全过的画像。
 	profile = state.Sender
+	ttl := alertTTLOf(b, snap)
 
-	// 硬规则：人工复查同样先过一遍（模型对冒用角色扮演会判正常，管理员
-	// 复查这种人时不该被模型带偏）。
-	if leaderGateWorker(b, snap, conf, tgt, state.Sender) {
+	// ① 硬规则最先判：人工复查同样先过一遍（模型对冒用角色扮演会判正常，
+	// 管理员复查这种人时不该被模型带偏）。
+	if hit, where := leaderGateWorker(b, snap, conf, tgt, state.Sender); hit != "" {
+		p.finish(leaderHitSection(hit, where, conf.Dryrun), nil, ttl)
 		return
 	}
+	rules := "① <b>规则检查</b>：未命中。"
+	if len(state.MatchedRules) > 0 {
+		names := make([]string, 0, len(state.MatchedRules))
+		for _, r := range state.MatchedRules {
+			names = append(names, fmt.Sprintf("#%d %s", r.ID, r.Name))
+		}
+		rules += fmt.Sprintf("另有 %d 条非强制必封规则命中（%s），已作为强证据随两级模型复核。",
+			len(state.MatchedRules), html.EscapeString(strings.Join(names, "、")))
+	}
+	p.step(rules)
 
-	v, err := judgeBoth(b, snap, state)
+	// ② 初判 → ③ 复判：每级跑完就把结论编辑进进度消息。
+	v, err := judgeBoth(b, snap, state, soInstructions, llmSystemPrompt, p.judgeStep)
 	if err != nil {
 		slog.Warn("反广告：复查失败", "chat", chatID, "uid", tgt.From.ID, "err", err)
-		b.Send(chatID, "复查失败："+html.EscapeString(publicError(err)), nil)
+		p.finish("🔎 <b>复查结果</b>\n❌ 复查失败："+html.EscapeString(publicError(err)), nil, ttl)
 		return
 	}
 
@@ -430,19 +452,20 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	} else {
 		text = renderReviewClean(b, tgt, v, lifted)
 	}
-	// 状态检查：写清楚他现在被什么限制着、在哪个群、什么原因；联合封禁
-	// 给出前往对应 bot 解除的链接（全局组 → 主 bot，专属组 → 归属人的
-	// bot）。没有任何限制时也明说一句，省得管理员再猜。
+	// 处置之后限制状态可能变了（这次上的禁言/封禁、顺手解掉的临时禁言）：
+	// 与初始响应里的状态不一样才补一段，没变就不重复。
 	status, linkRows := RestrictionStatusText(b.Shared, b.BotID(), tgt.From.ID)
 	if status == "" {
 		status = "✅ 当前没有生效中的限制。"
 	}
+	section := "🔎 <b>复查结果</b>\n" + text
+	if status != p.status {
+		section += "\n\n" + status
+	}
 	for _, row := range linkRows {
 		kb = tg.KBAppend(kb, [][2]string{row})
 	}
-	scheduleAlertCleanup(b, chatID, b.SendGetIDNoPreview(chatID,
-		"🔎 <b>复查结果</b>\n"+text+"\n\n"+status, kb),
-		time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300))*time.Second)
+	p.finish(section, kb, ttl)
 }
 
 // resolveUsernameID 把 @username 换成 user_id。群成员记住的往往是用户名
@@ -476,46 +499,52 @@ func resolveUsernameID(b *core.Bot, name string) (int64, bool) {
 // 用的是进群冷判定那一套提示词与采信线：他还没在本群发过言，能看的只有
 // 资料，而冷判定本来就是干这个的。命中且过了采信线就按进群限制处理，
 // 与自动链路完全一致（含群内通知与申诉入口）。
-func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u *tg.TGUser) {
+//
+// 判定编排与消息复查同一路（judgeBoth）：初判与复判都跑、互相印证，
+// 每级跑完编辑一次进度消息。
+func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
+	u *tg.TGUser, p *checkProgress) {
+
 	chatID := conf.ChatID
 	msg := &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title}, From: u}
 	gm, _ := loadMember(b.Store, chatID, u.ID)
-	p := buildProfile(b, msg, gm, time.Now().Unix())
-	// 复查的是「人」，简介必须拿最新的：对方可能刚改过资料。
-	cachesOf(b.Shared).bio.Delete(u.ID)
-	enrichSender(b, &p)
-	// 显式复查的对象就是资料本身，不能被既有的资料放行挡住：放行是给常规
-	// 消息判定用的（资料免罪、正文照判），在资料复查里沿用等于让复查永远
-	// 维持原判、还把放行续期（线上真实漏过：管理员 /check 一份明显的 VPS
-	// 广告资料，反被从 6 小时续到了 72 小时）。
-	p.ProfileOK, p.ProfileOKUntil = false, ""
-	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
-	ensureJoinAge(b, chatID, &p)
+	prof := buildProfile(b, msg, gm, time.Now().Unix())
+	// 复查绕过全部缓存：简介与挂链取最新、资料放行不套用（见
+	// enrichSenderFresh）—— 对方可能刚改过资料，且显式复查的对象就是
+	// 资料本身。
+	enrichSenderFresh(b, &prof)
+	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）；
+	// 「查不到」的负缓存同样清掉，给一次全新的实时查询。
+	ensureJoinAgeFresh(b, chatID, u.ID, &prof)
+	ttl := alertTTLOf(b, snap)
 
-	// 硬规则（冒用国家领导人）同样先过一遍：资料命中直接封禁。
-	if leaderGateWorker(b, snap, conf, msg, p) {
+	// ① 硬规则（冒用国家领导人）同样最先判：资料命中直接封禁。
+	if hit, where := leaderGateWorker(b, snap, conf, msg, prof); hit != "" {
+		p.finish(leaderHitSection(hit, where, conf.Dryrun), nil, ttl)
 		return
 	}
+	p.step("① <b>规则检查</b>：未命中。")
 
 	st := adState{Chat: adChatInfo{ID: chatID, Title: conf.Title},
-		Sender: p, JoinCheck: true}
+		Sender: prof, JoinCheck: true}
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
 
-	v, err := judgeJoin(b, snap, st)
+	// ② 初判 → ③ 复判。
+	v, err := judgeBoth(b, snap, st, coldInstructions, coldLLMPrompt, p.judgeStep)
 	if err != nil {
 		slog.Warn("反广告：资料复查失败", "chat", chatID, "uid", u.ID, "err", err)
-		sendGroup(b, chatID, "复查失败："+html.EscapeString(publicError(err)), nil)
+		p.finish("🔎 <b>资料复查结果</b>\n❌ 复查失败："+html.EscapeString(publicError(err)), nil, ttl)
 		return
 	}
 	// 采信线与进群冷判定同一根：资料证据比一条消息少得多。
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
 		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {
-			GrantProfileOK(b, p, v.ProfileOKHours, "资料复查放行："+v.Reason)
+			GrantProfileOK(b, prof, v.ProfileOKHours, "资料复查放行："+v.Reason)
 		}
 		// 与消息路径的正常结论同一份渲染：不带 🚫、不附申诉入口。
-		sendGroup(b, chatID, "🔎 <b>资料复查结果</b>\n"+
-			renderReviewClean(b, msg, v, false), nil)
+		p.finish("🔎 <b>资料复查结果</b>\n"+
+			renderReviewClean(b, msg, v, false), nil, ttl)
 		return
 	}
 	// 复查判成广告号：之前的资料放行作废 —— 那份资料重新成了广告证据。
@@ -523,11 +552,11 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 		DropProfileOK(b, u.ID, "资料复查判为广告号")
 	}
 	// 已经在进群类限制里：applyJoinMuteNotify 会 no-op，但管理员显式发起
-	// 的复查不能一声不吭（线上反馈「命令像没生效」）。给一条说明回执即可，
+	// 的复查不能一声不吭（线上反馈「命令像没生效」）。给一条说明收尾即可，
 	// 不重复禁言、不重复流水。
 	if _, ok := loadJoinMute(b.Store, chatID, u.ID); ok {
-		sendGroup(b, chatID, "🔒 <b>资料复查结果</b>\n<code>"+
-			fmt.Sprintf("%d", u.ID)+"</code> 已在进群类限制中，未重复处置。", nil)
+		p.finish("🔎 <b>资料复查结果</b>\n🔒 "+userLink(u.ID)+
+			" 已在进群类限制中，未重复处置。", nil, ttl)
 		return
 	}
 	// 处置与进群冷判定同档，但回执必须发：这是管理员显式发的命令，而群内
@@ -535,9 +564,15 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	// 像没生效（线上真实反馈）。
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: "资料复查",
-		Body:     joinProfileText(u, p.Bio, v),
+		Body:     joinProfileText(u, prof.Bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: true,
-		Shape:    profileShape(p),
+		Shape:    profileShape(prof),
 	})
+	if _, ok := loadJoinMute(b.Store, chatID, u.ID); ok {
+		p.finish(fmt.Sprintf("🔎 <b>资料复查结果</b>\n🔒 %s 已按进群资料限制处置（%s，置信度 %.0f%%）。",
+			userLink(u.ID), html.EscapeString(adKindLabel(v.Kind)), v.Confidence*100), nil, ttl)
+	} else {
+		p.finish("🔎 <b>资料复查结果</b>\n⚠️ 限制发言失败，详见流水与日志。", nil, ttl)
+	}
 }

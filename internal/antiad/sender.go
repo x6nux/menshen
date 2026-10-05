@@ -66,6 +66,14 @@ func profileHandles(p senderProfile) []string {
 // 简介里挂自己的频道/群组/bot 是正常的（UP 主、开发者都这样做），只给
 // 用户名的话模型分不清「挂自己的技术频道」和「挂刷单群」，实测误判过。
 func enrichSender(b *core.Bot, p *senderProfile) {
+	applyChatInfo(b, p)
+	p.BioLinks = resolveProfileLinks(b, *p)
+	// 简介与链接解析完才有完整资料，指纹也在这之后算。
+	markProfileOK(b, p)
+}
+
+// applyChatInfo 补个人简介与昵称/用户名（getChat，带缓存）。
+func applyChatInfo(b *core.Bot, p *senderProfile) {
 	info := userInfo(b, p.UserID)
 	p.Bio = info.bio
 	// /check <uid> 没有消息可依托，昵称与用户名是空的：用 getChat 的结果补上。
@@ -79,9 +87,24 @@ func enrichSender(b *core.Bot, p *senderProfile) {
 	if p.Username == "" {
 		p.Username = info.username
 	}
+}
+
+// enrichSenderFresh 是 /check 复查专用的画像补全：绕过全部缓存。
+//
+// 复查是人对机器结论的仲裁，要看到的是此刻的真实资料：简介缓存（1 小时）
+// 清掉重查，资料里挂的频道/群组/bot 缓存（6 小时）逐个清掉重解析；资料
+// 放行（profile_ok，「缓存个人简介通过」）不套用 —— 复查审的正是资料本身，
+// 之前的放行若还挡在这里，复查就永远维持原判（线上真实漏过：管理员 /check
+// 一份明显的 VPS 广告资料，反被从 6 小时续到了 72 小时）。
+func enrichSenderFresh(b *core.Bot, p *senderProfile) {
+	cachesOf(b.Shared).bio.Delete(p.UserID)
+	applyChatInfo(b, p)
+	// 链接解析要等简介补全（@xxx 藏在简介里），所以清缓存放在这之后。
+	for _, h := range profileHandles(*p) {
+		cachesOf(b.Shared).link.Delete(strings.ToLower(h))
+	}
 	p.BioLinks = resolveProfileLinks(b, *p)
-	// 简介与链接解析完才有完整资料，指纹也在这之后算。
-	markProfileOK(b, p)
+	p.ProfileOK, p.ProfileOKUntil = false, ""
 }
 
 // resolveProfileLinks 逐个查清资料里挂的频道/群组/bot 是什么。

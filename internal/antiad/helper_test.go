@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"menshen/internal/core"
+	"menshen/internal/testutil"
 	"menshen/internal/tg"
 )
 
@@ -132,3 +134,13 @@ func fakeAIWith(t *testing.T, b *core.Bot, so, llm string) (soN, llmN *atomic.In
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// checkEdits 取 /check 多步响应里 editMessageText 的全部文本（按编辑顺序）。
+// 初始那条 sendMessage 不在这里：它只带当前状态，判定小节靠逐步编辑追加。
+func checkEdits(fake *testutil.FakeTG) []string {
+	var out []string
+	for _, p := range fake.Calls("editMessageText") {
+		out = append(out, fmt.Sprint(p["text"]))
+	}
+	return out
+}

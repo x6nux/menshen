@@ -278,6 +278,15 @@ func ensureJoinAge(b *core.Bot, chatID int64, p *senderProfile) {
 	}
 }
 
+// ensureJoinAgeFresh 是 /check 复查用的入群时间补全：先清掉「查不到」的
+// 负缓存再查，给一次全新的实时查询机会。复查绕过所有缓存 —— 负缓存也
+// 是缓存。库里的 joined_at 是事实不是缓存，已有值不受影响。
+func ensureJoinAgeFresh(b *core.Bot, chatID, uid int64, p *senderProfile) {
+	cachesOf(b.Shared).joinLookupMiss.Delete(
+		backfillKey(b.BotID(), chatID) + ":" + strconv.FormatInt(uid, 10))
+	ensureJoinAge(b, chatID, p)
+}
+
 // runJoinLookupScript 起一次单人查询，返回入群时间（0 表示查不到）。
 func runJoinLookupScript(b *core.Bot, chatID, uid int64) (int64, error) {
 	script, err := ensureJoinBackfillScript(b)

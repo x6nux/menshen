@@ -190,7 +190,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	enrichSender(b, &state.Sender)
 	// 与 judgeAndAct 同一次硬规则复查：这里刚拿到简介，命中直接封禁
 	// 出群，不查头像、不送 AI（与 coldjudge.go 的顺序一致）。
-	if leaderGateWorker(b, snap, conf, m, state.Sender) {
+	if hit, _ := leaderGateWorker(b, snap, conf, m, state.Sender); hit != "" {
 		return
 	}
 	if photos, ok := userPhotoCount(b, m.From.ID); ok {

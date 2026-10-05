@@ -163,16 +163,19 @@ func leaderGate(b *core.Bot, conf store.BotChat, m *tg.Message, bio string) bool
 
 // leaderGateWorker 是判定 worker 里的第二次前置判断：这里刚好拿到简介
 // （判定本来就要取，没有额外开销），顺手把简介也过一遍规则。正文不看。
+//
+// 返回命中内容与位置（空串 = 未命中）；命中时封禁已在函数内执行完毕，
+// 调用方只需收尾展示（/check 的多步响应要用它写清命中了什么）。
 func leaderGateWorker(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
-	m *tg.Message, p senderProfile) bool {
+	m *tg.Message, p senderProfile) (hit, where string) {
 
 	// 用画像而不是消息里的 From：/check <uid> 的昵称与用户名是从
 	// getChat 补进画像的（见 enrichSender）。
 	if hit, where := leaderProfileFields(p.FirstName, p.LastName, p.Username, p.Bio); hit != "" {
 		leaderBan(b, conf, m, hit, where)
-		return true
+		return hit, where
 	}
-	return false
+	return "", ""
 }
 
 // leaderKindLabel 是这条硬规则的分类中文名（adKindLabels 与 Mini App 共用一份口径）。

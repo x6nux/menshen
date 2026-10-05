@@ -313,7 +313,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	profile = state.Sender
 
 	// 第二次前置判断：这里刚好拿到简介（判定本来就要取，零额外开销）。
-	if leaderGateWorker(b, snap, conf, m, state.Sender) {
+	if hit, _ := leaderGateWorker(b, snap, conf, m, state.Sender); hit != "" {
 		return
 	}
 
