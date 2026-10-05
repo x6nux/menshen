@@ -810,6 +810,12 @@ func TestPrewarmSweepQueueHighWater(t *testing.T) {
 	// 只有 defer 的 close 才让计数回落。
 
 	PrewarmSweep(b.Shared)
+	// 直接盯计数：若在满水位上还提交了复查，AdBusy 会变成 257 —— 所有
+	// worker 都卡在 <-release 上，没有任务能结束把计数降回去。
+	if got := b.AdBusy(); got != prewarmQueueHighWater {
+		t.Fatalf("队列积压时不该再提交复查：AdBusy = %d，期望 %d",
+			got, prewarmQueueHighWater)
+	}
 	if got := countRows(t, b, `SELECT COUNT(*) FROM group_members
 		WHERE prewarm_checked_at > 0`); got != 0 {
 		t.Fatalf("队列积压时不该提交复查，得到 %d 条已查标记", got)
