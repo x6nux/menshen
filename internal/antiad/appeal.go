@@ -48,7 +48,7 @@ var appealOpenStatuses = store.AppealOpenStatuses
 
 // appealPenalty 是一条有效限制。
 type appealPenalty struct {
-	Type   string // join_profile / message / gban / gban_own
+	Type   string // join_profile / prewarm / message / gban / gban_own
 	ChatID int64
 	Text   string
 	Reason string
@@ -136,13 +136,17 @@ func updateAppeal(sh *core.Shared, id int64, sets string, args ...any) {
 func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 	var out []appealPenalty
 
-	rows, err := sh.Store.Read.Query(`SELECT chat_id,reason,created_at FROM join_mutes
+	rows, err := sh.Store.Read.Query(`SELECT chat_id,kind,reason,created_at FROM join_mutes
 		WHERE bot_id=? AND user_id=?`, botID, uid)
 	if err == nil {
 		for rows.Next() {
 			var p appealPenalty
+			var kind string
 			p.Type = "join_profile"
-			if rows.Scan(&p.ChatID, &p.Reason, &p.At) == nil {
+			if rows.Scan(&p.ChatID, &kind, &p.Reason, &p.At) == nil {
+				if kind == kindPrewarm {
+					p.Type = "prewarm"
+				}
 				out = append(out, p)
 			}
 		}
@@ -190,7 +194,7 @@ func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 
 // PenaltyInfo 是一条仍在生效的限制（面板 /user 卡片展示与解除用）。
 type PenaltyInfo struct {
-	Type   string // join_profile / message / gban / gban_own
+	Type   string // join_profile / prewarm / message / gban / gban_own
 	ChatID int64
 	Reason string
 	At     int64
@@ -307,6 +311,8 @@ func penaltyLines(penalties []appealPenalty) string {
 		switch p.Type {
 		case "join_profile":
 			fmt.Fprintf(&sb, "• 进群资料审核限制（群 <code>%d</code>）\n", p.ChatID)
+		case "prewarm":
+			fmt.Fprintf(&sb, "• 前置号识别限制（群 <code>%d</code>）\n", p.ChatID)
 		case "message":
 			fmt.Fprintf(&sb, "• 消息判定处置（群 <code>%d</code>）\n", p.ChatID)
 		case "gban":
@@ -556,12 +562,19 @@ func judgeAppeal(b *core.Bot, snap *store.Snapshot, uid int64,
 	}
 
 	// 简介绕开缓存重新拉取：对方可能刚改完资料，读到一小时前的旧值
-	// 会让他无论怎么改都通不过。
+	// 会让他无论怎么改都通不过。昵称与用户名一并取回：prewarm 的
+	// 「补齐任意一项」出口需要看见它们。
 	cachesOf(b.Shared).bio.Delete(uid)
-	bio := userBio(b, uid)
-	p := buildProfile(b, &tg.Message{From: &tg.TGUser{ID: uid}}, groupMember{}, time.Now().Unix())
-	p.Bio = bio
+	info := userInfo(b, uid)
+	p := buildProfile(b, &tg.Message{From: &tg.TGUser{ID: uid,
+		Username: info.username, FirstName: info.firstName,
+		LastName: info.lastName}}, groupMember{}, time.Now().Unix())
+	p.Bio = info.bio
 	p.BioLinks = resolveProfileLinks(b, p)
+
+	// 头像同样绕缓存：用户可能刚补了头像来申诉。
+	cachesOf(b.Shared).photo.Delete(uid)
+	photos, photoOK := userPhotoCount(b, uid)
 
 	penaltyJSON := make([]map[string]any, 0, len(penalties))
 	for _, pen := range penalties {
@@ -577,6 +590,9 @@ func judgeAppeal(b *core.Bot, snap *store.Snapshot, uid int64,
 		"penalties": penaltyJSON,
 		"sender":    p,
 		"statement": statement,
+	}
+	if photoOK {
+		payload["photo_count"] = photos
 	}
 	if hist := appealHistory(b, penalties, uid); len(hist) > 0 {
 		payload["recent_history"] = hist
@@ -664,6 +680,14 @@ const appealSystemPrompt = "你是 Telegram 群组的反广告审核员，现在
 	"判断要点：\n" +
 	"1. join_profile 类（进群资料审核）只看 sender 的**当前**资料：" +
 	"推广、引流、招揽内容已经删除的，应当撤销；仍在的，维持。\n" +
+	"1.1 prewarm 类（前置号识别）看当前资料是否已补齐，以下三项至少一项" +
+	"成立才应当撤销：1) 顶层 photo_count > 0（已补头像；缺失表示头像数" +
+	"未知，不得当作无头像，与 Layer 1 的 photo_known=false 同口径）；" +
+	"2) username 已是像真名的常规用户名（不再是 tpiw33abik 这类无词形的" +
+	"随机串，可与 original_reason 里记录的处罚时资料对照）；3) bio 有" +
+	"正常内容（非空且没有推广引流迹象）。注意：first_name/last_name 在" +
+	"处罚时就存在、非空不算补齐，只作为「整体是否有推广引流迹象」的语境。" +
+	"以上都不成立，或仍有推广引流内容的，维持。\n" +
 	"2. message 类要结合上下文重判那条消息：批评、警示、询问广告，" +
 	"以及长期成员的正常分享，属于误判形态，应当撤销。\n" +
 	"3. statement 是申诉人的一面之词，不是证据；只有与原文、资料、留底" +
@@ -684,7 +708,7 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 	hadGban := false
 	for _, p := range penalties {
 		switch p.Type {
-		case "join_profile":
+		case "join_profile", "prewarm":
 			if ok, desc := LiftMute(b, p.ChatID, uid); !ok {
 				slog.Warn("申诉：解除禁言失败", "chat", p.ChatID, "uid", uid, "err", desc)
 				continue

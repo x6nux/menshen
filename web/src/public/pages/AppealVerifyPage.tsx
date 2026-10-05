@@ -10,6 +10,7 @@ import { loadTurnstile } from '../turnstile'
 
 const LIMIT_LABEL: Record<string, string> = {
   join_profile: '进群资料审核限制',
+  prewarm: '前置号识别限制',
   message: '消息判定处置',
   gban: '联合封禁 · 全平台',
   gban_own: '联合封禁 · 本 bot 名下群组',

@@ -36,6 +36,9 @@ func RestrictionStatusText(sh *core.Shared, botID, uid int64) (string, [][2]stri
 		case "join_profile":
 			fmt.Fprintf(&sb, "• 进群限制（按个人简介判）｜ %s ｜ 群 %s\n  <i>%s</i>\n",
 				when, chatRef(snap, p.ChatID), reason)
+		case "prewarm":
+			fmt.Fprintf(&sb, "• 前置号识别（批量注册特征）｜ %s ｜ 群 %s\n  <i>%s</i>\n",
+				when, chatRef(snap, p.ChatID), reason)
 		case "message":
 			fmt.Fprintf(&sb, "• %s ｜ %s ｜ 群 %s\n  <i>%s</i>\n",
 				messagePenaltyName(p.Action), when, chatRef(snap, p.ChatID), reason)

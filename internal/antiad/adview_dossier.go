@@ -76,6 +76,8 @@ func penaltyLabel(t string) string {
 	switch t {
 	case "join_profile":
 		return "进群资料审核"
+	case "prewarm":
+		return "前置号识别"
 	case "message":
 		return "消息判定"
 	case "gban":
@@ -191,14 +193,15 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	// 处罚记录：最近 20 条。生效中的已经单列一张卡（还含联合封禁），这里
 	// 只留不再生效的历史，免得同一条罚款在页面上出现两遍。
 	rows, err = sh.Store.Read.Query(`SELECT type,chat_id,text,reason,at FROM (
-			SELECT 'join_profile' AS type, chat_id, '' AS text, reason, created_at AS at
+			SELECT CASE WHEN kind=? THEN 'prewarm' ELSE 'join_profile' END AS type,
+			       chat_id, '' AS text, reason, created_at AS at
 			FROM join_mutes WHERE bot_id=? AND user_id=?
 			UNION ALL
 			SELECT 'message', chat_id, text, reason, created_at
 			FROM antiad_log WHERE bot_id=? AND user_id=?
 			AND action IN ('deleted_muted','muted','deleted_banned','banned')
 		) ORDER BY at DESC LIMIT ?`,
-		ap.BotID, ap.UserID, ap.BotID, ap.UserID, dossierPenaLimit)
+		kindPrewarm, ap.BotID, ap.UserID, ap.BotID, ap.UserID, dossierPenaLimit)
 	if err == nil {
 		for rows.Next() {
 			var p appealViewPenalty

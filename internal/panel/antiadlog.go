@@ -804,8 +804,8 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 			suffix = ":all"
 		}
 		sb.WriteString("⚠️ <b>生效中的限制</b>\n")
-		sb.WriteString("<i>「进群限制」是按个人简介判出来的；解封时把限制记录一并清掉，" +
-			"否则复查任务会按记录再禁回去。</i>\n")
+		sb.WriteString("<i>「进群限制」包括按个人简介判出的资料限制与前置号" +
+			"识别限制；解封时把限制记录一并清掉，否则复查任务会按记录再禁回去。</i>\n")
 		var chatOrder []int64
 		seen := map[int64]bool{}
 		for _, p := range pens {
@@ -819,6 +819,10 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 			switch p.Type {
 			case "join_profile":
 				fmt.Fprintf(&sb, "• 群 %s ｜ 进群限制（个人简介）｜ %s\n<i>%s</i>\n",
+					chatTag(b, p.ChatID), when,
+					html.EscapeString(core.TruncateRunes(p.Reason, 120)))
+			case "prewarm":
+				fmt.Fprintf(&sb, "• 群 %s ｜ 前置号识别限制 ｜ %s\n<i>%s</i>\n",
 					chatTag(b, p.ChatID), when,
 					html.EscapeString(core.TruncateRunes(p.Reason, 120)))
 			case "message":

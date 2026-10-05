@@ -42,6 +42,12 @@ func TestRestrictionStatusText(t *testing.T) {
 		b.BotID(), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO join_mutes
+		(chat_id,user_id,bot_id,kind,reason,notice_msg,attempts,created_at)
+		VALUES (-101,556,?, 'prewarm','疑似批量注册的广告前置号',0,0,?)`,
+		b.BotID(), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
 
 	text, links := RestrictionStatusText(sh, b.BotID(), 555)
 	for _, want := range []string{"全局联合封禁", "专属联合封禁", "进群限制", "跨群发广告"} {
@@ -61,9 +67,14 @@ func TestRestrictionStatusText(t *testing.T) {
 	if !mainLink || !ownLink {
 		t.Errorf("应分别给出主 bot 与归属人 bot 的解除链接，得到 %v", links)
 	}
-	// 没有任何限制时不返回状态块。
-	if s, rows := RestrictionStatusText(sh, b.BotID(), 556); s != "" || len(rows) != 0 {
+	// 没有任何限制时不返回状态块。原空状态探针从 556 改为 557：
+	// 556 现在有一条 prewarm 记录，会被打穿。
+	if s, rows := RestrictionStatusText(sh, b.BotID(), 557); s != "" || len(rows) != 0 {
 		t.Errorf("没有限制不该有状态块：%q %v", s, rows)
+	}
+	prewarmText, _ := RestrictionStatusText(sh, b.BotID(), 556)
+	if !strings.Contains(prewarmText, "前置号识别") {
+		t.Errorf("prewarm 限制应显示为前置号识别：\n%s", prewarmText)
 	}
 	// deep link 往返。
 	if uid, ok := ParseUserPayload(UserPayload(123)); !ok || uid != 123 {

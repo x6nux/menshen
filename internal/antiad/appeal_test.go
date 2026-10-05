@@ -113,7 +113,7 @@ func TestAppealLiftsOwnGban(t *testing.T) {
 func TestAppealAIOverturnsAndLifts(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, false, "资料已改正")
-	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindPrewarm, "疑似批量注册的广告前置号", 88)
 
 	if !HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1)) {
 		t.Fatal("申诉入口应被接管")
@@ -449,5 +449,25 @@ func TestUserPayloadNonStaffGoesToOwnAppeal(t *testing.T) {
 	}
 	if strings.Contains(text, "6001") {
 		t.Errorf("不该展示深链里那个人的信息：%s", text)
+	}
+}
+
+// prewarm 类限制要能被申诉认出来，撤销时同样解除。
+func TestAppealPrewarmPenaltyRecognized(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	saveJoinMute(b, -100, 555, kindPrewarm, "疑似批量注册的广告前置号", 0)
+	pens := effectivePenalties(b.Shared, b.BotID(), 555)
+	if len(pens) != 1 || pens[0].Type != "prewarm" {
+		t.Fatalf("effectivePenalties = %+v，期望 1 条 prewarm", pens)
+	}
+	if got := penaltyLabel("prewarm"); got != "前置号识别" {
+		t.Fatalf("penaltyLabel(prewarm) = %q", got)
+	}
+}
+
+func TestAppealPromptCoversPrewarm(t *testing.T) {
+	if !strings.Contains(appealSystemPrompt, "prewarm") ||
+		!strings.Contains(appealSystemPrompt, "photo_count") {
+		t.Error("申诉提示词未覆盖 prewarm 类与 photo_count")
 	}
 }
