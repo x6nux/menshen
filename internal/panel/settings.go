@@ -60,6 +60,9 @@ func stringSpecByKey(k string) *settingSpec {
 // 豁免名单是列表项，走专门的增删入口。
 var settingSpecs = []settingSpec{
 	{"log_retention_days", "记录保留天数", "正整数，至少 1；同时作用于判定流水与群消息留底", 1, 0, ""},
+	// 日志文件在数据库同目录（data.db → data.log），单文件写满滚成 .1 备份。
+	{"log_file_max_mb", "日志单文件上限（MB）", "非负整数；单个日志文件写到这么大就滚成备份。0 = 关闭文件日志", 0, 0, ""},
+	{"log_file_total_mb", "日志总大小上限（MB）", "非负整数；当前文件加全部备份超过它就从最旧的备份删起。0 = 关闭文件日志", 0, 0, ""},
 	{"max_bots_per_admin", "每人 bot 数上限", "非负整数，0 = 不限；主管理员不受限", 0, 0, ""},
 	{"antiad_digest_min", "形态总结触发样本数", "非负整数，0 = 关闭自动总结", 0, 0, ""},
 	{"antiad_digest_max", "形态摘要字数上限", "正整数，它会乘以每一条群消息的成本", 1, 0, ""},
@@ -151,7 +154,7 @@ var settingSections = []struct {
 	}},
 	{"护栏与成本", []string{
 		"antiad_rpm_chat", "antiad_cmd_rpm",
-		"log_retention_days", "max_bots_per_admin",
+		"log_retention_days", "log_file_max_mb", "log_file_total_mb", "max_bots_per_admin",
 		"antiad_upstream_alert_after", "antiad_upstream_alert_minutes",
 	}},
 	{"学习与名单", []string{

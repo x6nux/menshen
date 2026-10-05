@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"menshen/internal/core"
+	"menshen/internal/logbuf"
 	"menshen/internal/testutil"
 )
 
@@ -222,5 +227,31 @@ func TestWebhookServerTimeouts(t *testing.T) {
 		srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 {
 		t.Errorf("HTTP 超时不全: header=%v read=%v write=%v idle=%v",
 			srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout)
+	}
+}
+
+// TestInstallLoggingWritesFileNextToDB：slog 接上 installLogging 后，
+// 一条 INFO 要同时进缓冲与数据库同目录的日志文件（data.db → data.log）。
+// slog 默认 logger 是进程级的，测完恢复，避免污染同包其他测试。
+func TestInstallLoggingWritesFileNextToDB(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	buf := logbuf.New(10)
+	sink := installLogging(buf, dbPath, func() (int64, int64) { return 1 << 20, 1 << 20 })
+	defer sink.Close()
+
+	slog.Info("落盘探测", "probe", "yes")
+	if n := buf.Len(); n != 1 {
+		t.Errorf("INFO 应进缓冲 1 条，得到 %d", n)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "data.log"))
+	if err != nil {
+		t.Fatalf("日志文件应与数据库同目录：%v", err)
+	}
+	if !strings.Contains(string(data), "落盘探测") || !strings.Contains(string(data), "probe=yes") {
+		t.Errorf("日志文件应含消息与字段，得到 %q", data)
 	}
 }

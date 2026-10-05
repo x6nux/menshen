@@ -157,7 +157,8 @@ export function SysLogPage() {
       )}
 
       <Typography sx={{ px: 1.5, mt: 1, fontSize: 12, color: 'text.secondary', lineHeight: 1.7 }}>
-        只保留最近若干条运行日志，进程重启后清空；完整日志仍以服务端标准输出为准。
+        这里只保留最近若干条，进程重启后清空；完整日志落在数据库同目录
+        （data.db → data.log），单文件与总大小上限在「全局设置 → 护栏与成本」调整。
       </Typography>
     </Box>
   )

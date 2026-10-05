@@ -111,7 +111,8 @@ describe('SettingsPage 主题折叠卡（智能控件）', () => {
     // global 是生产形状：铺满了代码默认值（antiad_so_trust=95、
     // antiad_hedge_minutes=5…）；settings_set 只列 fixture 显式配置的键。
     expect(screen.getByText('已设置 2 项')).toBeInTheDocument()
-    expect(screen.getAllByText('已设置 0 项')).toHaveLength(2)
+    // 其余分段（判定与模型 / 其他 / 护栏与成本）的键在 global 里都是默认值。
+    expect(screen.getAllByText('已设置 0 项')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: /判定与模型/ }))
     // 默认值行照常展示，但不计入「已设置」

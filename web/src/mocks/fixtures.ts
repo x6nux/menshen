@@ -21,6 +21,8 @@ const SPECS: Spec[] = [
   { key: 'antiad_hedge_minutes', label: '并发模式持续（分钟）', hint: '1-1440 的整数', min: 1, max: 1440, group: 'both' },
   { key: 'antiad_alert_every', label: '私聊汇总间隔（分钟）', hint: '1-1440 的整数', min: 1, max: 1440, group: 'antiad' },
   { key: 'log_retention_days', label: '记录保留天数', hint: '正整数，至少 1', min: 1, max: 0, group: '' },
+  { key: 'log_file_max_mb', label: '日志单文件上限（MB）', hint: '非负整数，0 = 关闭文件日志', min: 0, max: 0, group: '' },
+  { key: 'log_file_total_mb', label: '日志总大小上限（MB）', hint: '非负整数，0 = 关闭文件日志', min: 0, max: 0, group: '' },
 ]
 
 export const mockState: State = {
@@ -87,6 +89,7 @@ export const mockState: State = {
       specs: SPECS.filter((s) => ['antiad_so_trust', 'antiad_hedge_minutes'].includes(s.key)),
     },
     { name: '其他', specs: SPECS.filter((s) => ['antiad_cold', 'antiad_alert_every', 'log_retention_days'].includes(s.key)) },
+    { name: '护栏与成本', specs: SPECS.filter((s) => ['log_file_max_mb', 'log_file_total_mb'].includes(s.key)) },
   ],
   stats: { checked: 1284, hits: 12, cost: 42, cost_text: '$0.42', chats: 8 },
   todo: { open_appeals: 3, dryrun_chats: 1, disabled_bots: 1 },
@@ -100,6 +103,8 @@ export const mockState: State = {
     tz_name: 'Asia/Shanghai',
     tz_offset: '8',
     log_retention_days: '30',
+    log_file_max_mb: '10',
+    log_file_total_mb: '50',
     antiad_enabled: '1',
     antiad_so_models: '[]',
     antiad_llm_models: '[]',

@@ -59,6 +59,10 @@ var settingDefaults = map[string]string{
 	"tz_name":            "Asia/Shanghai",
 	"tz_offset":          "8",
 	"log_retention_days": "30",
+	// 运行日志文件（与数据库同目录，data.db → data.log）的大小上限（MB）。
+	// 任一为 0 关闭文件日志；总上限小于单文件时按单文件算（不留备份）。
+	"log_file_max_mb":   "10",
+	"log_file_total_mb": "50",
 
 	// ---- 全局（主管理员）----
 	// antiad_enabled 是全平台急停：关掉它，所有 bot 的所有群一起停判。

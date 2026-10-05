@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -59,13 +60,14 @@ func main() {
 
 	sh := core.NewShared(cfg, db, cache)
 
-	// 运行日志：slog 同时写标准输出与进程内环形缓冲，网页版面板的
-	// 「运行日志」页读缓冲。控制台保持 INFO，缓冲从 DEBUG 起采 —— 网页上
-	// 能看到标准输出里没有的调试上下文。装在这里之后启动流程的日志
-	//（迁移、注册 webhook、后台任务）都会进缓冲。
-	slog.SetDefault(slog.New(logbuf.NewHandler(sh.Logs,
-		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}),
-		slog.LevelDebug)))
+	// 日志三路输出：标准输出、日志文件与进程内环形缓冲。上限从设置现读，
+	// 面板上改小立刻生效；文件写不进去只丢这一行并退避重试，绝不打断业务。
+	fileSink := installLogging(sh.Logs, cfg.DBPath, func() (int64, int64) {
+		snap := cache.Snap()
+		return snap.SettingInt("log_file_max_mb", 10) << 20,
+			snap.SettingInt("log_file_total_mb", 50) << 20
+	})
+	defer fileSink.Close()
 
 	stop := make(chan struct{})
 	reg := core.NewRegistry(sh, stop, dispatch)
@@ -105,6 +107,25 @@ func main() {
 		defer cancel()
 		srv.Shutdown(ctx)
 	}
+}
+
+// installLogging 把 slog 默认 logger 接到三路输出上：标准输出、与数据库
+// 同目录的滚动日志文件（data.db → data.log，备份 .1/.2/…）与进程内环形
+// 缓冲（网页版「运行日志」页读它）。控制台与文件保持 INFO，缓冲从 DEBUG
+// 起采 —— 网页上能看到两边都没有的调试上下文。装完之后启动流程的日志
+// （迁移、注册 webhook、后台任务）三处都有。
+//
+// 单文件与总大小上限经 limits 每次写入时现读（main 传的是全局设置
+// log_file_max_mb / log_file_total_mb，MB）：面板上改小立刻生效并清理
+// 旧备份，任一为 0 关闭文件日志。返回文件写入器，退出时 Close。
+func installLogging(buf *logbuf.Buffer, dbPath string,
+	limits func() (maxFileBytes, maxTotalBytes int64)) *logbuf.RotatingFile {
+	fileSink := logbuf.NewRotatingFile(logbuf.LogPathFor(dbPath), limits)
+	slog.SetDefault(slog.New(logbuf.NewHandler(buf,
+		slog.NewTextHandler(io.MultiWriter(os.Stderr, fileSink),
+			&slog.HandlerOptions{Level: slog.LevelInfo}),
+		slog.LevelDebug)))
+	return fileSink
 }
 
 // ensureMainBot 把配置里的 bot_token 登记进 bots 表并标记为主 bot。
