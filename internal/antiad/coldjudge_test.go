@@ -407,3 +407,93 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 		t.Error("群内展示关闭时不应发群内通知")
 	}
 }
+
+// 进群冷判定同样先跑资料规则门：enforce 命中零 AI 直接禁言，流水带
+// rule:<id>，kind 仍是 profile。
+func TestColdJudgeProfileEnforceRuleZeroAI(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	ruleID := insertRule(t, b, "资料广告_冷判定", `免押小额洗资`, "promo", true, true)
+	soN, llmN := fakeAIWith(t, b,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":681,"first_name":"张三",` +
+				`"bio":"免押小额洗资 私聊"}}`, true
+		}
+		return "", false
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	coldJudge(b, conf, &tg.TGUser{ID: 681, FirstName: "张三"})
+
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("enforce 命中不该花 AI，跑了 %d 次", n)
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("enforce 命中应禁言 1 次，得到 %d", got)
+	}
+	if _, ok := loadJoinMute(b.Store, -100, 681); !ok {
+		t.Fatal("应写 join_mutes")
+	}
+	var decider, action string
+	if err := b.Store.Read.QueryRow(`SELECT decider,action FROM antiad_log
+		WHERE chat_id=-100 AND user_id=681 ORDER BY id DESC LIMIT 1`).
+		Scan(&decider, &action); err != nil {
+		t.Fatal(err)
+	}
+	if decider != fmt.Sprintf("rule:%d", ruleID) || action != actionJoinMuted {
+		t.Fatalf("decider/action = %q/%q，期望 rule:%d/join_muted",
+			decider, action, ruleID)
+	}
+}
+
+// 批量（探测）禁言 Quiet：不发群内通知，但流水与 join_mutes 照常，
+// 私聊汇总照常包含；非 Quiet 通知受按群 5 秒限速。
+func TestApplyJoinMuteQuietAndNoticePacing(t *testing.T) {
+	b, fake, _ := testutil.NewTestBotOwned(t, 1, 100)
+	testutil.EnableAntiad(t, b, -100)
+	if _, err := b.Store.Write.Exec(
+		`UPDATE bot_chats SET group_alert=1 WHERE chat_id=-100`); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	conf := testutil.ChatConfOf(t, b, -100)
+	v := adVerdict{IsAd: true, Confidence: 0.99, Kind: "promo", Reason: "批量模板"}
+	FlushAdSummary(b, time.Now()) // 初始化汇总游标
+
+	// Quiet：只落流水/限制，不发群通知。
+	applyJoinMuteNotify(b, conf, &tg.TGUser{ID: 555}, v, joinMuteSpec{
+		Kind: kindProfile, Action: actionJoinMuted, Note: "延迟复查发现资料广告",
+		Body: "x", Reason: "账号资料中含有推广或引流内容",
+		Announce: true, Quiet: true,
+	})
+	if got := fake.CountCalls("sendMessage"); got != 0 {
+		t.Fatalf("Quiet 批量禁言不该发群内通知，得到 %d 条", got)
+	}
+	if _, ok := loadJoinMute(b.Store, -100, 555); !ok {
+		t.Fatal("Quiet 禁言也要写 join_mutes")
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM antiad_log
+		WHERE chat_id=-100 AND user_id=555 AND action='join_muted'`); n != 1 {
+		t.Fatalf("Quiet 禁言应落一条 join_muted 流水，得到 %d", n)
+	}
+	FlushAdSummary(b, time.Now())
+	if got := dmCount(fake, 100); got != 1 {
+		t.Fatalf("批量禁言应进私聊汇总，得到 %d 条私信", got)
+	}
+
+	// 非 Quiet 通知按群 5 秒限速：紧接着两条只发一条群通知。
+	fake.Reset()
+	for _, uid := range []int64{556, 557} {
+		applyJoinMuteNotify(b, conf, &tg.TGUser{ID: uid}, v, joinMuteSpec{
+			Kind: kindProfile, Action: actionJoinMuted, Note: "进群冷判定",
+			Body: "y", Reason: "账号资料中含有推广或引流内容", Announce: true})
+	}
+	if got := fake.CountCalls("sendMessage"); got != 1 {
+		t.Fatalf("同群 5 秒内只应发一条通知，得到 %d", got)
+	}
+}

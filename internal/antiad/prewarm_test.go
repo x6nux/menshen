@@ -564,8 +564,8 @@ func TestUserPhotoCount(t *testing.T) {
 	}
 }
 
-// setupPrewarmSweep 用真 Registry 起装：PrewarmSweep 以 sh.Reg 遍历 bot，
-// 普通 NewTestBot 没有 Registry，整轮会被 nil 守卫跳过。返回的计数器用来
+// setupPrewarmSweep 用真 Registry 起装：探测以 sh.Reg 遍历 bot，普通
+// NewTestBot 没有 Registry，整轮会被 nil 守卫跳过。返回的计数器用来
 // 断言「哪些路径一个 AI 都没花」。
 func setupPrewarmSweep(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeTG, int64,
 	*atomic.Int32, *atomic.Int32) {
@@ -578,6 +578,18 @@ func setupPrewarmSweep(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeT
 	fake := b.TG.(*testutil.FakeTG)
 	soN, llmN := fakeAIWith(t, b, so, llm)
 	return b, fake, -100, soN, llmN
+}
+
+// runPrewarmProbes 反复跑低优先级探测直到没有到期候选（每次最多处理
+// 一个），等价于旧测试里的「跑一轮 sweep + 等判定跑空」。
+func runPrewarmProbes(t *testing.T, sh *core.Shared) {
+	t.Helper()
+	for i := 0; i < 10000; i++ {
+		if prewarmProbeOnce(sh) == 0 {
+			return
+		}
+	}
+	t.Fatal("探测没有收敛")
 }
 
 // addSweepMember 造一个成员画像。joinedAgo < 0 表示入群时间未知
@@ -708,7 +720,7 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 		608: {bio: "喜欢摄影"},
 	})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -750,7 +762,7 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 		checked, next, hash := sweepSchedule(t, b, chat, uid)
 		checks[uid] = sched{checked, next, hash}
 	}
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
 		t.Fatalf("重复 sweep 不应再禁，得到 %d 次", got)
@@ -790,7 +802,7 @@ func TestPrewarmSweepNextAtScheduling(t *testing.T) {
 		621: {bio: "喜欢摄影"}, 623: {bio: "喜欢摄影"},
 	})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if n := soN.Load() + llmN.Load(); n != 0 {
@@ -836,7 +848,7 @@ func TestPrewarmSweepNextAtScheduling(t *testing.T) {
 		before[uid] = nx
 	}
 	fake.Reset()
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("getChat"); got != 0 {
 		t.Fatalf("未到点不该拉资料，得到 %d 次 getChat", got)
@@ -848,15 +860,15 @@ func TestPrewarmSweepNextAtScheduling(t *testing.T) {
 	}
 }
 
-// 入队前原子抢占（端到端）：worker 被占住、任务还没跑时，连续两轮
-// PrewarmSweep 只应入队一次，不重复复查同一人。
+// 入队前原子抢占（端到端）：worker 被占住、任务还没跑时，连续跑探测
+// 只应复查一次，不重复入队同一人。
 func TestPrewarmSweepClaimEnqueuesOnce(t *testing.T) {
 	b, fake, chat, _, _ := setupPrewarmSweep(t,
 		soReply("clean", 0.9, "none", "message"), "")
 	addSweepMember(t, b, chat, 660, 2*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{660: {bio: "喜欢摄影"}})
 
-	// 占住全部 worker 与部分队列：复查任务排在后面，两轮 sweep 之间没有
+	// 占住全部 worker 与部分队列：复查任务排在后面，两轮探测之间没有
 	// worker 会写回 next_at，专测抢占本身（这正是积压重跑/多 bot 的场景）。
 	release := make(chan struct{}, 64)
 	for i := 0; i < 64; i++ {
@@ -865,8 +877,8 @@ func TestPrewarmSweepClaimEnqueuesOnce(t *testing.T) {
 		}
 	}
 
-	PrewarmSweep(b.Shared)
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
+	runPrewarmProbes(t, b.Shared)
 
 	// 抢占已把 next_at 推到 now+1min：第二轮 select 不该再看到它。
 	if _, next, _ := sweepSchedule(t, b, chat, 660); next <= time.Now().Unix() {
@@ -878,7 +890,7 @@ func TestPrewarmSweepClaimEnqueuesOnce(t *testing.T) {
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("getChat"); got != 1 {
-		t.Fatalf("连续两轮 sweep 只应复查 1 次，得到 %d 次 getChat", got)
+		t.Fatalf("连续两轮探测只应复查 1 次，得到 %d 次 getChat", got)
 	}
 	// worker 完成后覆盖成真实档位（进群 2h → 5min），而不是 1min 抢占值。
 	checked, next, _ := sweepSchedule(t, b, chat, 660)
@@ -890,26 +902,17 @@ func TestPrewarmSweepClaimEnqueuesOnce(t *testing.T) {
 	}
 }
 
-// 入队前原子抢占（旧候选重投）：第二次拿同一份过期候选列表必须抢不到，
-// 不会重复入队与重复 getChat——多 bot/积压重跑时的真实竞态。
-func TestPrewarmSweepClaimRejectsStaleCandidate(t *testing.T) {
-	b, fake, chat, _, _ := setupPrewarmSweep(t,
-		soReply("clean", 0.9, "none", "message"), "")
+// 原子抢占：同一 uid 的第二次条件 UPDATE 必须 RowsAffected=0——并发
+// 探测/积压重跑时只有一个能抢到。
+func TestPrewarmClaimAtomic(t *testing.T) {
+	b, _, chat, _, _ := setupPrewarmSweep(t, "", "")
 	addSweepMember(t, b, chat, 661, 2*3600, 0)
-	fakeSweepProfiles(t, fake, map[int64]sweepProfile{661: {bio: "喜欢摄影"}})
 	now := time.Now().Unix()
-
-	// 第一份候选列表抢占成功并入队。
-	if got := submitRechecks(b, chat, []int64{661}, 10, now); got != 1 {
-		t.Fatalf("第一次应抢占并入队 1 个，得到 %d", got)
+	if !claimPrewarmCandidate(b, chat, 661, now) {
+		t.Fatal("第一次抢占应成功")
 	}
-	// 同一个 uid 的第二次投递（模拟另一处按旧 SELECT 结果重投）。
-	if got := submitRechecks(b, chat, []int64{661}, 10, now); got != 0 {
-		t.Fatalf("抢占后的重复投递应跳过，得到 %d", got)
-	}
-	waitIdle(t, b)
-	if got := fake.CountCalls("getChat"); got != 1 {
-		t.Fatalf("同一人只应复查一次，得到 %d 次 getChat", got)
+	if claimPrewarmCandidate(b, chat, 661, now) {
+		t.Fatal("抢占后的第二次条件更新应失败（RowsAffected=0）")
 	}
 }
 
@@ -925,7 +928,7 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{665: {bio: "喜欢摄影"}})
 
 	// 首查（发言过的成员也该被选中）。
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	checked, next, hash := sweepSchedule(t, b, chat, 665)
 	if checked == 0 || hash == "" {
@@ -939,7 +942,7 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 665, checked, now-1, hash)
 	fake.Reset()
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	checked2, next2, hash2 := sweepSchedule(t, b, chat, 665)
 	if checked2 < now || next2 <= now {
@@ -968,7 +971,7 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	newH := profileHash(senderProfile{Bio: bio})
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{661: {bio: bio}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	checked, next, hash := sweepSchedule(t, b, chat, 661)
@@ -984,7 +987,7 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 661, checked, now-1, oldH)
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -1025,7 +1028,7 @@ func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
 		return "", false
 	}
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if _, ok := loadJoinMute(b.Store, chat, 668); ok {
@@ -1046,7 +1049,7 @@ func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
 	cachesOf(b.Shared).prewarmAI.Set(key,
 		time.Now().Add(-prewarmAIInterval-time.Minute), prewarmAIInterval)
 	setSweepSchedule(t, b, chat, 668, checked, now-1, oldH)
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if rec, ok := loadJoinMute(b.Store, chat, 668); !ok || rec.Kind != kindProfile {
@@ -1071,7 +1074,7 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{662: {bio: bio1}})
 
 	// 第一次资料变化：跑 AI、落新指纹。
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	ai1 := soN.Load() + llmN.Load()
 	if ai1 == 0 {
@@ -1085,7 +1088,7 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	bio2 := "免押小额洗资：https://t.me/+abcdef"
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{662: {bio: bio2}})
 	setSweepSchedule(t, b, chat, 662, now, now-1, h1)
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n != ai1 {
 		t.Fatalf("冷却期内不该花 AI，调用从 %d 涨到 %d", ai1, n)
@@ -1108,7 +1111,7 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 662, checked, now-1, h1)
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n == 0 {
 		t.Fatal("冷却结束后应重新判")
@@ -1137,7 +1140,7 @@ func TestPrewarmSweepChatInactiveSkips(t *testing.T) {
 	}
 
 	// PrewarmSweep 的群列表只含 enabled 群，这里直接调 worker 验分支。
-	prewarmRecheck(b, chat, 666)
+	probePrewarmCandidate(b, chat, 666, time.Now().Unix())
 
 	if got := fake.CountCalls("getChat"); got != 0 {
 		t.Fatalf("停用群不该拉资料，得到 %d 次 getChat", got)
@@ -1183,7 +1186,7 @@ func TestPrewarmSweepFingerprintSkipsAI(t *testing.T) {
 	setSweepSchedule(t, b, chat, 640, stale, now-1, h)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{640: {bio: bio}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
@@ -1207,7 +1210,7 @@ func TestPrewarmSweepFirstSightCleanNoAI(t *testing.T) {
 	addSweepMember(t, b, chat, 641, 25*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{641: {bio: "喜欢摄影"}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if n := soN.Load() + llmN.Load(); n != 0 {
@@ -1229,7 +1232,7 @@ func TestPrewarmSweepFirstSightSuspiciousJudges(t *testing.T) {
 	addSweepMember(t, b, chat, 642, 25*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{642: {bio: "免押小额洗钱"}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -1261,7 +1264,7 @@ func TestPrewarmSweepNicknameOnlyChangeJudges(t *testing.T) {
 		643: {first: "手机拍违停 一百圆/张"},
 	})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -1291,12 +1294,12 @@ func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 608, now-25*3600, now-1,
 		profileHash(senderProfile{Bio: "旧资料"}))
-	// 指纹只看用户名/昵称/简介；这里三项与 prewarmRecheck 组装的一致。
+	// 指纹只看用户名/昵称/简介；这里三项与探测段组装的一致。
 	if GrantProfileOK(b, senderProfile{UserID: 608, Bio: bio}, 6, "测试放行") == 0 {
 		t.Fatal("测试前置放行失败")
 	}
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("资料已放行的不该禁言，得到 %d 次", got)
@@ -1323,7 +1326,7 @@ func TestPrewarmSweepDryrunOnlyLogs(t *testing.T) {
 	addSweepMember(t, b, -100, 601, 25*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{601: {bio: "洗钱"}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("演练不该禁言，得到 %d 次", got)
@@ -1351,7 +1354,7 @@ func TestPrewarmSweepCleanLogsJoinChecked(t *testing.T) {
 		profileHash(senderProfile{Bio: "旧资料"}))
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{610: {bio: "喜欢摄影"}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("正常资料不该禁言，得到 %d 次", got)
@@ -1375,7 +1378,7 @@ func TestPrewarmSweepHonorsGlobalStop(t *testing.T) {
 	if err := b.PutSetting("antiad_enabled", "0"); err != nil {
 		t.Fatal(err)
 	}
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("急停时不该动手，得到 %d 次", got)
@@ -1398,7 +1401,7 @@ func TestPrewarmSweepHonorsAdWhitelist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -1425,7 +1428,7 @@ func TestPrewarmSweepHonorsExemptUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
@@ -1441,36 +1444,70 @@ func TestPrewarmSweepHonorsExemptUsers(t *testing.T) {
 	}
 }
 
-// 每 bot 每轮的复查数有上限：群多时 150/群 × N 会一次性灌满共享判定
-// 队列，饿死实时消息判定。三个群各 155 个到期候选（3×155 > 300）逼出上限。
-func TestPrewarmSweepPerBotCap(t *testing.T) {
+// 探测节奏：每次 prewarmProbeOnce 最多处理一个候选（全局 ~5 次/秒），
+// 并按群轮转，不会一次灌满判定池。
+func TestPrewarmProbeOnePerCall(t *testing.T) {
 	b, fake, _, _, _ := setupPrewarmSweep(t, "", "")
 	chats := []int64{-100, -101, -102}
 	for _, c := range chats {
 		if c != -100 {
 			testutil.EnableAntiad(t, b, c)
 		}
-		for i := 0; i < prewarmSweepBatch+5; i++ {
+		for i := 0; i < 2; i++ {
 			addSweepMember(t, b, c, int64(7000+i), 25*3600, 0)
 		}
 	}
 	fakeSweepProfiles(t, fake, nil)
 
-	// 拉取全空：只推时间不送检，300 条上限跑得很快。
-	PrewarmSweep(b.Shared)
+	// 第一次探测只能处理一个候选。
+	if n := prewarmProbeOnce(b.Shared); n != 1 {
+		t.Fatalf("一轮探测应只处理 1 个候选，得到 %d", n)
+	}
 	waitIdle(t, b)
+	if got := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE prewarm_checked_at > 0`); got != 1 {
+		t.Fatalf("一轮探测后应只有 1 个已查标记，得到 %d", got)
+	}
 
-	got := countRows(t, b, `SELECT COUNT(*) FROM group_members
-		WHERE prewarm_checked_at > 0`)
-	if got != prewarmSweepPerBot {
-		t.Fatalf("每 bot 每轮应只提交 %d 条复查，得到 %d", prewarmSweepPerBot, got)
+	// 继续轮转直到全部到点候选被处理完；每个群都该轮到。
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+	if got := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE prewarm_checked_at > 0`); got != 6 {
+		t.Fatalf("轮转应把 6 个候选全部处理，得到 %d", got)
 	}
 	for _, c := range chats {
 		n := countRows(t, b, `SELECT COUNT(*) FROM group_members
 			WHERE chat_id=? AND prewarm_checked_at > 0`, c)
-		if n > prewarmSweepBatch {
-			t.Errorf("群 %d 超过每群批量 %d：%d", c, prewarmSweepBatch, n)
+		if n != 2 {
+			t.Errorf("群 %d 应处理 2 个候选（轮转覆盖），得到 %d", c, n)
 		}
+	}
+}
+
+// 探测协程节奏：注入很短的间隔后，到点候选会被自动处理（不需要手动
+// 调 prewarmProbeOnce）。停止通道只给测试用。
+func TestPrewarmProbeLoopPaces(t *testing.T) {
+	b, fake, chat, _, _ := setupPrewarmSweep(t,
+		soReply("clean", 0.9, "none", "message"), "")
+	addSweepMember(t, b, chat, 701, 2*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{701: {bio: "喜欢摄影"}})
+
+	old := prewarmProbeInterval
+	prewarmProbeInterval = 5 * time.Millisecond
+	defer func() { prewarmProbeInterval = old }()
+	PrewarmSweep(b.Shared)
+	defer close(cachesOf(b.Shared).prewarmProbeStop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if checked, _, _ := sweepSchedule(t, b, chat, 701); checked > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("探测协程 3 秒内没有处理到点候选")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1491,7 +1528,7 @@ func TestPrewarmSweepQueueHighWater(t *testing.T) {
 	// 到这里 AdBusy == prewarmQueueHighWater：任务全卡在 <-release 上，
 	// 只有 defer 的 close 才让计数回落。
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	// 直接盯计数：若在满水位上还提交了复查，AdBusy 会变成 257 —— 所有
 	// worker 都卡在 <-release 上，没有任务能结束把计数降回去。
 	if got := b.AdBusy(); got != prewarmQueueHighWater {
@@ -1513,7 +1550,7 @@ func TestPrewarmSweepBelowLineNote(t *testing.T) {
 	addSweepMember(t, b, chat, 613, 25*3600, 0)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{613: {bio: "洗钱"}})
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("低于采信线不该禁言，得到 %d 次", got)
@@ -1541,7 +1578,7 @@ func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 	// getChat 全空（首次拉取被限流/失败）：名字、用户名、简介都没有。
 	fakeSweepProfiles(t, fake, nil)
 
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	checked, next, hash := sweepSchedule(t, b, chat, 670)
@@ -1560,7 +1597,7 @@ func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 	newH := profileHash(senderProfile{Bio: bio})
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{670: {bio: bio}})
 	setSweepSchedule(t, b, chat, 670, checked, now-1, "")
-	PrewarmSweep(b.Shared)
+	runPrewarmProbes(t, b.Shared)
 	waitIdle(t, b)
 
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
@@ -1594,12 +1631,12 @@ func TestPrewarmSweepInflightSkipsDuplicate(t *testing.T) {
 	}
 
 	first := make(chan struct{})
-	go func() { prewarmRecheck(b, chat, 671); close(first) }()
+	go func() { probePrewarmCandidate(b, chat, 671, time.Now().Unix()); close(first) }()
 	<-started
 
 	// 第二个同 uid 的投递必须立即返回（互斥命中），不进任何 TG 调用。
 	second := make(chan struct{})
-	go func() { prewarmRecheck(b, chat, 671); close(second) }()
+	go func() { probePrewarmCandidate(b, chat, 671, time.Now().Unix()); close(second) }()
 	immediate := false
 	select {
 	case <-second:
@@ -1615,5 +1652,164 @@ func TestPrewarmSweepInflightSkipsDuplicate(t *testing.T) {
 	}
 	if got := fake.CountCalls("getChat"); got != 1 {
 		t.Fatalf("同一 uid 只应有 1 次资料拉取，得到 %d 次", got)
+	}
+}
+
+// 资料 enforce 规则命中：零 AI 直接禁言，流水带 rule:<id> 且计数 +1。
+func TestPrewarmSweepProfileEnforceRuleZeroAI(t *testing.T) {
+	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+		soReply("clean", 0.9, "none", "message"), "")
+	ruleID := insertRule(t, b, "资料广告_测试", `免押小额洗资`, "promo", true, true)
+	addSweepMember(t, b, chat, 680, 25*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{680: {bio: "免押小额洗资 私聊"}})
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("enforce 命中不该花 AI，跑了 %d 次", n)
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("enforce 命中应禁言 1 次，得到 %d", got)
+	}
+	rec, ok := loadJoinMute(b.Store, chat, 680)
+	if !ok || rec.Kind != kindProfile {
+		t.Fatalf("应写 kind=profile 的进群限制：ok=%v rec=%+v", ok, rec)
+	}
+	var decider, action string
+	if err := b.Store.Read.QueryRow(`SELECT decider,action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`, chat, 680).
+		Scan(&decider, &action); err != nil {
+		t.Fatal(err)
+	}
+	if decider != fmt.Sprintf("rule:%d", ruleID) || action != actionJoinMuted {
+		t.Fatalf("decider/action = %q/%q，期望 rule:%d/join_muted",
+			decider, action, ruleID)
+	}
+	if hits := countRows(t, b, `SELECT hits FROM ad_rules WHERE id=?`, ruleID); hits != 1 {
+		t.Fatalf("规则命中计数应为 1，得到 %d", hits)
+	}
+}
+
+// 非 enforce 资料规则命中：作为 matched_rules 强证据随载荷送 AI。
+func TestPrewarmSweepProfileRuleEvidenceInPayload(t *testing.T) {
+	b, fake, chat, _, _ := setupPrewarmSweep(t, "", "")
+	ruleID := insertRule(t, b, "资料广告_证据", `免押小额洗资`, "promo", true, false)
+	addSweepMember(t, b, chat, 682, 25*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{682: {bio: "免押小额洗资 私聊"}})
+
+	var sawEvidence atomic.Bool
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body),
+			fmt.Sprintf(`"matched_rules":[{"id":%d`, ruleID)) {
+			sawEvidence.Store(true)
+		}
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
+			w.Write([]byte(soReply("clean", 0.9, "none", "message")))
+			return
+		}
+		w.Write([]byte(llmReply(false, 0.9, "none", "message")))
+	})
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if !sawEvidence.Load() {
+		t.Fatal("非 enforce 规则命中应作为 matched_rules 证据进 AI 载荷")
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("非 enforce 命中应交 AI 定案，不该直接禁言，得到 %d 次", got)
+	}
+}
+
+// 形状复用：一号 AI 判广告后学习形状，二号同模板换链接零 AI 直接禁言，
+// 流水 decider=phash，命中计数递增。
+func TestPrewarmSweepProfileShapeReuse(t *testing.T) {
+	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	bio1 := "免押小额洗资 https://t.me/+aaa"
+	addSweepMember(t, b, chat, 690, 25*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{690: {bio: bio1}})
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("一号应被 AI 判禁言 1 次，得到 %d", got)
+	}
+	ai1 := soN.Load() + llmN.Load()
+	if ai1 == 0 {
+		t.Fatal("一号应花 AI（首个模板）")
+	}
+	shape := profileShape(senderProfile{Bio: bio1})
+	rec, ok := lookupProfileShape(b.Store, shape)
+	if !ok || rec.Hits != 1 {
+		t.Fatalf("一号禁言后应学习形状且 hits=1：ok=%v rec=%+v", ok, rec)
+	}
+
+	// 二号：同模板换个邀请链接 → 形状命中，零 AI。
+	addSweepMember(t, b, chat, 691, 25*3600, 0)
+	fakeSweepProfiles(t, fake, map[int64]sweepProfile{
+		691: {bio: "免押小额洗资 https://t.me/+bbb"}})
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if n := soN.Load() + llmN.Load(); n != ai1 {
+		t.Fatalf("形状命中不该再花 AI：AI 调用从 %d 涨到 %d", ai1, n)
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 2 {
+		t.Fatalf("二号应被禁言（共 2 次），得到 %d", got)
+	}
+	rec, ok = lookupProfileShape(b.Store, shape)
+	if !ok || rec.Hits != 2 {
+		t.Fatalf("形状命中计数应为 2：ok=%v rec=%+v", ok, rec)
+	}
+	var decider string
+	if err := b.Store.Read.QueryRow(`SELECT decider FROM antiad_log
+		WHERE chat_id=? AND user_id=691 ORDER BY id DESC LIMIT 1`, chat).
+		Scan(&decider); err != nil {
+		t.Fatal(err)
+	}
+	if decider != "phash" {
+		t.Fatalf("形状命中流水 decider = %q，期望 phash", decider)
+	}
+}
+
+// 已离群（left/kicked）成员：拉资料为空时退避 7 天，不再按阶梯空转，
+// 也不再重复拉取。
+func TestPrewarmSweepGoneBackoff(t *testing.T) {
+	b, fake, chat, _, _ := setupPrewarmSweep(t, "", "")
+	addSweepMember(t, b, chat, 702, 2*3600, 0)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		switch method {
+		case "getChat":
+			return `{"ok":true,"result":{}}`, true
+		case "getChatMember":
+			return `{"ok":true,"result":{"status":"kicked"}}`, true
+		}
+		return "", false
+	}
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	checked, next, hash := sweepSchedule(t, b, chat, 702)
+	if checked == 0 {
+		t.Fatal("离群成员也应记录复查时间")
+	}
+	backoff := int64(prewarmGoneBackoff / time.Second)
+	if next < checked+backoff-60 || next > checked+backoff+60 {
+		t.Fatalf("离群退避应约 7 天：checked=%d next=%d", checked, next)
+	}
+	if hash != "" {
+		t.Fatalf("离群退避不该落指纹，得到 %q", hash)
+	}
+	// 退避期内不再拉资料。
+	fake.Reset()
+	runPrewarmProbes(t, b.Shared)
+	if got := fake.CountCalls("getChat"); got != 0 {
+		t.Fatalf("退避期内不该重复拉资料，得到 %d 次 getChat", got)
 	}
 }
