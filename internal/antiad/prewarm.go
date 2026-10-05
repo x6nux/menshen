@@ -457,6 +457,9 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		return
 	}
 	cachesOf(b.Shared).prewarmInflight.Set(inflightKey, struct{}{}, prewarmInflightTTL)
+	// 处理完成即释放：TTL 只兜底进程崩溃/卡死，不能拿它当正常退出的
+	// 锁——1min/5min 档的下一档重试会被 10 分钟 TTL 整个吃掉。
+	defer cachesOf(b.Shared).prewarmInflight.Delete(inflightKey)
 	conf, ok := chatActive(b, chatID)
 	if !ok {
 		// 群中途被停用也要推下一次：下次轮询不再重复选中。

@@ -665,13 +665,6 @@ func TestPrewarmSweepInterval(t *testing.T) {
 	}
 }
 
-// expirePrewarmInflight 模拟「互斥 TTL 已过」：多阶段用例手动把 next_at
-// 拨回过去、重演下一档时，这一步对应生产里下一档 (≥30min) 已超过
-// prewarmInflightTTL (10min)，否则会被互斥直接跳过。
-func expirePrewarmInflight(b *core.Bot, chat, uid int64) {
-	cachesOf(b.Shared).prewarmInflight.Delete(fmt.Sprintf("%d:%d", chat, uid))
-}
-
 // sweepProfile 是假 getChat 给某个 uid 返回的资料。
 type sweepProfile struct {
 	first string
@@ -945,7 +938,6 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 	// 手动把下一次推到过去：到点后重新进候选；指纹未变 → 零 AI。
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 665, checked, now-1, hash)
-	expirePrewarmInflight(b, chat, 665)
 	fake.Reset()
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
@@ -992,7 +984,6 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 661, checked, now-1, oldH)
-	expirePrewarmInflight(b, chat, 661)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1055,7 +1046,6 @@ func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
 	cachesOf(b.Shared).prewarmAI.Set(key,
 		time.Now().Add(-prewarmAIInterval-time.Minute), prewarmAIInterval)
 	setSweepSchedule(t, b, chat, 668, checked, now-1, oldH)
-	expirePrewarmInflight(b, chat, 668)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1095,7 +1085,6 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	bio2 := "免押小额洗资：https://t.me/+abcdef"
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{662: {bio: bio2}})
 	setSweepSchedule(t, b, chat, 662, now, now-1, h1)
-	expirePrewarmInflight(b, chat, 662)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n != ai1 {
@@ -1119,7 +1108,6 @@ func TestPrewarmSweepAICooldown(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 662, checked, now-1, h1)
-	expirePrewarmInflight(b, chat, 662)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 	if n := soN.Load() + llmN.Load(); n == 0 {
@@ -1572,7 +1560,6 @@ func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 	newH := profileHash(senderProfile{Bio: bio})
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{670: {bio: bio}})
 	setSweepSchedule(t, b, chat, 670, checked, now-1, "")
-	expirePrewarmInflight(b, chat, 670)
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
