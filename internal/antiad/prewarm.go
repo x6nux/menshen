@@ -520,16 +520,18 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	v, err := judgeJoin(b, snap, st)
 	if err != nil {
 		// 上游抖动：保留旧指纹、只推下一次，下一档重试；这次没判成的
-		// 「化妆」不算已消费。
+		// 「化妆」不算已消费。清掉冷却记录，否则下一档会被 10 分钟
+		// 冷却挡住、白等一轮。
+		cachesOf(b.Shared).prewarmAI.Delete(fmt.Sprintf("%d:%d", chatID, uid))
 		slog.Warn("前置号复查：判定失败，下一档重试",
 			"chat", chatID, "uid", uid, "err", err)
 		markPrewarmChecked(b, chatID, uid, interval)
 		return
 	}
-	// 判定完成才记新指纹：下面每条出口都算已看过这份资料。
-	markPrewarmCheckedHash(b, chatID, uid, h, interval)
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
+		// 正常/低于采信线：这份资料已经看过，落新指纹后不再进来。
+		markPrewarmCheckedHash(b, chatID, uid, h, interval)
 		note := "延迟复查（正常）"
 		if v.IsAd {
 			note = "延迟复查（低于采信线，未处置）"
@@ -542,6 +544,7 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		return
 	}
 	if conf.Dryrun {
+		markPrewarmCheckedHash(b, chatID, uid, h, interval)
 		logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
 			From: u, Text: joinProfileText(u, p.Bio, v)}, v, "dryrun:join_muted", "延迟复查（演练）")
 		return
@@ -552,4 +555,11 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: conf.GroupAlert,
 	})
+	// 禁言失败（TG 抖动）不是定案：保留旧指纹、下一档重试，否则一次
+	// restrictChatMember 失败就把这份「化妆」永久吞掉。
+	if _, ok := loadJoinMute(b.Store, chatID, uid); ok {
+		markPrewarmCheckedHash(b, chatID, uid, h, interval)
+		return
+	}
+	markPrewarmChecked(b, chatID, uid, interval)
 }

@@ -957,7 +957,7 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 }
 
 // 判定失败保留旧指纹：一次上游抖动不该把「化妆」当成已消费，下一档
-// 到期还会重试。
+// 到期还会重试；失败时冷却记录已清掉，重试不会被 10 分钟冷却挡住。
 func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	b, fake, chat, _, _ := setupPrewarmSweep(t, "", "") // 未配可用的 AI
 	addSweepMember(t, b, chat, 661, 25*3600, 0)
@@ -979,8 +979,8 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 		t.Fatalf("判定失败应推时间和下一次：checked=%d next=%d", checked, next)
 	}
 
-	// 冷却已过 + 换成能判的假上游：同一份新资料会被重新判，不再丢。
-	cachesOf(b.Shared).prewarmAI.Delete(fmt.Sprintf("%d:%d", chat, 661))
+	// 换成能判的假上游：同一份新资料应直接重判——不需要手动清冷却，
+	// 失败分支自己已清（否则这里会只推 next_at、不送检）。
 	fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	setSweepSchedule(t, b, chat, 661, checked, now-1, oldH)
@@ -992,6 +992,68 @@ func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	}
 	if _, _, hash := sweepSchedule(t, b, chat, 661); hash != newH {
 		t.Fatalf("判定成功后应落新指纹 %q，得到 %q", newH, hash)
+	}
+}
+
+// 禁言失败不是定案：restrictChatMember 抖动时保留旧指纹、下一档重试；
+// 恢复后能正常禁言并落新指纹。
+func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
+	b, fake, chat, _, _ := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, chat, 668, 25*3600, 0)
+	oldH := profileHash(senderProfile{Bio: "旧资料"})
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 668, now-1800, now-1, oldH)
+	bio := "免押小额洗资：https://t.me/+abcdef"
+	newH := profileHash(senderProfile{Bio: bio})
+
+	// restrictChatMember 先失败一次，其余照常；getChat 仍按 uid 返回资料。
+	var failMute atomic.Bool
+	failMute.Store(true)
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		switch method {
+		case "restrictChatMember":
+			if failMute.Load() {
+				return `{"ok":false,"description":"boom"}`, true
+			}
+			return `{"ok":true,"result":true}`, true
+		case "getChat":
+			uid := int64(p["chat_id"].(float64))
+			return fmt.Sprintf(`{"ok":true,"result":{"id":%d,"bio":%q}}`, uid, bio), true
+		}
+		return "", false
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	if _, ok := loadJoinMute(b.Store, chat, 668); ok {
+		t.Fatal("restrictChatMember 失败时不该写 join_mutes")
+	}
+	checked, next, hash := sweepSchedule(t, b, chat, 668)
+	if hash != oldH {
+		t.Fatalf("禁言失败应保留旧指纹 %q，得到 %q", oldH, hash)
+	}
+	if checked < now || next <= now {
+		t.Fatalf("禁言失败应推时间和下一次：checked=%d next=%d", checked, next)
+	}
+
+	// 恢复 + 模拟冷却已过（AI 已成功跑过一次，冷却按真实时间留痕）：
+	// 下一次到点应能禁言成功并落新指纹。
+	failMute.Store(false)
+	key := fmt.Sprintf("%d:%d", chat, 668)
+	cachesOf(b.Shared).prewarmAI.Set(key,
+		time.Now().Add(-prewarmAIInterval-time.Minute), prewarmAIInterval)
+	setSweepSchedule(t, b, chat, 668, checked, now-1, oldH)
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	if rec, ok := loadJoinMute(b.Store, chat, 668); !ok || rec.Kind != kindProfile {
+		t.Fatalf("恢复后应禁言并写 join_mutes：ok=%v rec=%+v", ok, rec)
+	}
+	if _, _, hash := sweepSchedule(t, b, chat, 668); hash != newH {
+		t.Fatalf("禁言成功后应落新指纹 %q，得到 %q", newH, hash)
 	}
 }
 
