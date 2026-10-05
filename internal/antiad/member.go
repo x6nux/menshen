@@ -22,6 +22,9 @@ type groupMember struct {
 	// Whitelisted 是 /white 的本群白名单。随画像一起读出来，判定链路
 	// 就不必再为每条消息单查一次这一列。
 	Whitelisted bool
+	// ProfileHash 是上次复查时落下的资料指纹（profileHash）。空串表示
+	// 还没查过；指纹没变时复查只推时间、不花 AI。
+	ProfileHash string
 	// Known 表示这一行确实读到了。读失败时为零值，而零值画像会让
 	// isNewbie 把老成员当新人从重处置——失败方向反了，所以调用方
 	// 必须先看这个标记。
@@ -31,10 +34,10 @@ type groupMember struct {
 func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 	gm := groupMember{ChatID: chatID, UserID: uid}
 	err := s.Read.QueryRow(`SELECT joined_at,first_seen,msg_count,last_msg_at,
-		ad_hits,whitelisted
+		ad_hits,whitelisted,profile_hash
 		FROM group_members WHERE chat_id=? AND user_id=?`, chatID, uid).
 		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
-			&gm.AdHits, &gm.Whitelisted)
+			&gm.AdHits, &gm.Whitelisted, &gm.ProfileHash)
 	if err != nil {
 		// 没有行是常态（编辑过的消息、行被清理过），读失败要看得见：
 		// 两者都返回 false，混在一起排查时会以为是「没这条画像」。

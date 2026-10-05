@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS group_members (
   ad_hits     INTEGER NOT NULL DEFAULT 0,
   whitelisted INTEGER NOT NULL DEFAULT 0,
   prewarm_checked_at INTEGER NOT NULL DEFAULT 0,
+  profile_hash TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (chat_id, user_id)
 );
 
@@ -434,8 +435,12 @@ func migrate(db *sql.DB) error {
 		// prewarm = 前置号识别（空壳+招呼的综合特征）。申诉提示词与解除
 		// 口径按它分流。
 		{"join_mutes", "kind", "TEXT NOT NULL DEFAULT 'profile'"},
-		// prewarm_checked_at：前置号延迟复查的节流时间戳，一人只查一次。
+		// prewarm_checked_at：前置号复查的节流时间戳（上次复查时间）。
+		// 新成员 10 分钟一轮、老成员 24 小时一轮，由它按人节流。
 		{"group_members", "prewarm_checked_at", "INTEGER NOT NULL DEFAULT 0"},
+		// profile_hash：上次复查时落下的资料指纹（profileHash，见
+		// antiad/profile_ok.go）。指纹没变就不花 AI 重判；空串表示还没查过。
+		{"group_members", "profile_hash", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
@@ -565,6 +570,8 @@ const AppealOpenStatusesSQL = "'statement','ai','web','code','noweb'"
 //   - antiad_log(user_id,id)：/user、Mini App 按人筛、申诉的有效处罚查询。
 //   - group_members(user_id,ad_hits,chat_id)：申诉卡片的关联账号（覆盖索引）。
 //   - group_members(last_msg_at)：保留期清理（谓词已按单列改写）。
+//   - group_members(chat_id,prewarm_checked_at)：前置号老成员每日轮转。
+//   - group_members(chat_id,joined_at)：前置号新成员高频复查取人。
 //   - web_checks(appeal_id,id)/(created_at)：申诉详情页与保留期清理。
 //   - alert_cleanup(bot_id,due_at)/(due_at)：每分钟的撤回扫描与清理。
 //   - ad_hashes(last_hit_at)、appeals(updated_at)、ad_whitelist(expires_at)、
@@ -576,6 +583,8 @@ func ensureIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_antiad_uid ON antiad_log(user_id, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_gmember_user ON group_members(user_id, ad_hits, chat_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_gmember_last_msg ON group_members(last_msg_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_gmember_pwcheck ON group_members(chat_id, prewarm_checked_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_gmember_joined ON group_members(chat_id, joined_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_wc_appeal ON web_checks(appeal_id, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wc_time ON web_checks(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_alert_cleanup_due ON alert_cleanup(bot_id, due_at)`,

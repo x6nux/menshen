@@ -29,6 +29,7 @@ func TestMigrateOldDB(t *testing.T) {
 			joined_at INTEGER NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL,
 			msg_count INTEGER NOT NULL DEFAULT 0, last_msg_at INTEGER NOT NULL DEFAULT 0,
 			ad_hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, user_id))`,
+		`INSERT INTO group_members (chat_id,user_id,first_seen) VALUES (-100,555,1)`,
 		`CREATE TABLE group_messages (chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
 			user_id INTEGER NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,
 			PRIMARY KEY (chat_id, message_id))`,
@@ -90,7 +91,8 @@ func TestMigrateOldDB(t *testing.T) {
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
 		{"bots", "is_main"}, {"upstreams", "kind"},
 		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
-		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"}} {
+		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},
+		{"group_members", "profile_hash"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
@@ -104,6 +106,15 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	if adsTotal != 0 || kinds != "" {
 		t.Errorf("老规则新列默认应为 0/空串，得到 %d/%q", adsTotal, kinds)
+	}
+	// 老成员的资料指纹默认空串（= 还没查过），不能是 NULL 或别的形状。
+	var phash string
+	if err := s.Read.QueryRow(`SELECT profile_hash FROM group_members
+		WHERE chat_id=-100 AND user_id=555`).Scan(&phash); err != nil {
+		t.Fatalf("读老成员 profile_hash 失败: %v", err)
+	}
+	if phash != "" {
+		t.Errorf("老成员 profile_hash 默认应为空串，得到 %q", phash)
 	}
 	// 老上游没有类型：迁移默认 openai，行为与升级前一致。
 	var kind string
@@ -126,6 +137,13 @@ func TestMigrateOldDB(t *testing.T) {
 	// 而让启动失败（Open 已经返回成功，这里再确认索引真的在）。
 	if has, err := hasIndex(s.Write, "antiad_log", "idx_antiad_bot_id"); err != nil || !has {
 		t.Errorf("antiad_log(bot_id,id) 索引没建上（err=%v）", err)
+	}
+	// 前置号复查的两个查询各自依赖的索引：老库的 group_members 连
+	// prewarm_checked_at 都是 migrate 才补的，索引必须建在 migrate 之后。
+	for _, name := range []string{"idx_gmember_pwcheck", "idx_gmember_joined"} {
+		if has, err := hasIndex(s.Write, "group_members", name); err != nil || !has {
+			t.Errorf("group_members 索引 %s 没建上（err=%v）", name, err)
+		}
 	}
 	c, err := NewCache(s)
 	if err != nil {
