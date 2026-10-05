@@ -479,19 +479,30 @@ ORDER BY joined_at LIMIT 20
 
 ### 9.2 调度
 
-`PrewarmSweep` 从小时任务挪到**分钟级**（`tickMinute`），自己按人的
-上次复查时间节流：
+`PrewarmSweep` 从小时任务挪到**分钟级**（`tickMinute`），按进群时长
+分档给出复查间隔，并用 `prewarm_next_at` 预排下一次时间（不在每次运行
+里逐行算年龄，老成员不会被每分钟全表扫）：
 
-| 人群 | 定义 | 复查间隔 | 每群每轮上限 |
-|---|---|---|---|
-| 新成员 | `joined_at > now-24h`（含刚进群） | `prewarmNewInterval = 10min` | 20 |
-| 老成员 | 其余（含 `joined_at=0` 的存量成员） | `prewarmDailyInterval = 24h` | 20 |
+| 进群时长 | 复查间隔 |
+|---|---|
+| ≤1h | **1min** |
+| >1h ~ 12h | **5min** |
+| >12h ~ 24h | **10min** |
+| >24h ~ 7d | **30min** |
+| >7d 或进群时间未知（`joined_at=0`） | **1h** |
 
-- 每 bot 每轮最多提交 `prewarmSweepPerBot = 60` 个；
-  `b.AdBusy() >= prewarmQueueHighWater (256)` 时停止本轮（沿用）。
-- `prewarm_checked_at` 的语义从「一人只查一次」改为「上次复查时间」。
-- 分钟级轮询保证新成员在进群后 ~10 分钟内必查一次；老成员由
-  `ORDER BY prewarm_checked_at ASC` 轮转，全群每天恰好扫一遍。
+- 选人：`WHERE chat_id=? AND whitelisted=0 AND prewarm_next_at <= now
+  ORDER BY prewarm_next_at LIMIT ?`，索引
+  `idx_gmember_pwnext(chat_id, prewarm_next_at)`。
+- 分档函数 `prewarmSweepInterval(age)` 与 `prewarm_next_at` 同步写入：
+  每次复查结束（含所有跳过路径）都更新
+  `prewarm_checked_at=now`、`prewarm_next_at=now+interval`。
+- 每群每轮上限 `prewarmSweepBatch = 120`；每 bot 每轮上限
+  `prewarmSweepPerBot = 240`；`b.AdBusy() >= prewarmQueueHighWater (256)`
+  时停止本轮（沿用）。
+- 容量核对（dev 实测 4513 名成员、3088 名 7 天内新进）：稳态约
+  190 次 getChat/分钟（≈3.2 次/秒，低于 TG 30 次/秒），AI 只在资料
+  指纹变化时触发。
 
 ### 9.3 资料指纹与 AI 省流
 
@@ -513,21 +524,26 @@ ORDER BY joined_at LIMIT 20
 
 ### 9.4 迁移与索引
 
-- `group_members.profile_hash`（schema + migrate + `TestMigrateOldDB`）。
+- `group_members.profile_hash TEXT NOT NULL DEFAULT ''` 与
+  `group_members.prewarm_next_at INTEGER NOT NULL DEFAULT 0`
+  （schema + migrate + `TestMigrateOldDB`；老行含义：从未复查过）。
 - 新增索引（必须在 migrate 之后建，见 `ensureIndexes`）：
-  `idx_gmember_pwcheck(chat_id, prewarm_checked_at)` 与
-  `idx_gmember_joined(chat_id, joined_at)`；两个查询分别按它们取人。
-- `groupMember` 增加 `ProfileHash` 字段，`loadMember` 读出。
+  `idx_gmember_pwnext(chat_id, prewarm_next_at)`；`profile_hash` 上的
+  查询只按 (chat_id, user_id) 单行读，不需要索引。
+- `groupMember` 增加 `ProfileHash`、`PrewarmNextAt` 字段，
+  `loadMember` 读出（后者用于测试断言与排查，选人走 SQL）。
 
 ### 9.5 测试
 
-- 调度：新成员 10 分钟内不重复查、超过 10 分钟再查；老成员 24h 内
-  不重复、超过 24h 再查；`joined_at=0` 的存量成员进入老成员轮转；
+- 阶梯：`prewarmSweepInterval` 五个边界（59min/1h01/11h59/12h01/
+  23h59/24h01/6d23h/7d01、`joined_at=0`）逐一断言；
+- 调度：`prewarm_next_at` 未到不重复查、到点再查；跳过路径（白名单/
+  豁免/join_mutes）也会把 next_at 推到未来，不会每分钟重扫；
 - 指纹：未变 → 零 AI 调用；首查正常资料 → 零 AI；首查可疑资料 →
   AI + 命中禁言；**昵称-only 变化（bio 为空）→ 仍会 AI 判定**；
 - 沿用：白名单/豁免跳过、join_mutes 判重、dryrun、队列高水位、
   每 bot 预算、全局急停；
-- 迁移与索引：老库补列、默认空；索引存在。
+- 迁移与索引：老库补两列、默认值正确；`idx_gmember_pwnext` 存在。
 
 ### 9.6 上线
 
