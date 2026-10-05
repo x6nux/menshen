@@ -59,11 +59,20 @@ func canSpeak(m *tg.ChatMemberInfo) bool {
 	return false // left / kicked
 }
 
+// joinMuteKindLabel 把 join_mutes.kind 翻成日志里看得懂的限制类型。
+func joinMuteKindLabel(kind string) string {
+	if kind == kindPrewarm {
+		return "前置号识别"
+	}
+	return "进群资料审核"
+}
+
 // activeMute 找我们名下还没解除的禁言，返回剩余时长（0 = 无限期）与说明。
 func activeMute(b *core.Bot, chatID, uid int64) (time.Duration, string, bool) {
-	// 进群资料限制：无限期，直到被解除。
+	// 进群类限制（资料/前置号）：无限期，直到被解除。
 	if rec, ok := loadJoinMute(b.Store, chatID, uid); ok {
-		return 0, "进群资料审核：" + core.TruncateRunes(rec.Reason, 80), true
+		return 0, joinMuteKindLabel(rec.Kind) + "：" +
+			core.TruncateRunes(rec.Reason, 80), true
 	}
 	// 消息级禁言：看还没标记解除的流水，按原时长算剩余。
 	minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
@@ -159,16 +168,19 @@ func ReassertActiveMutes(sh *core.Shared) {
 		return
 	}
 	rows, err := sh.Store.Read.Query(
-		`SELECT bot_id,chat_id,user_id FROM join_mutes LIMIT 500`)
+		`SELECT bot_id,chat_id,user_id,kind FROM join_mutes LIMIT 500`)
 	if err != nil {
 		slog.Error("禁言复查：读取进群限制失败", "err", err)
 		return
 	}
-	type item struct{ botID, chatID, uid int64 }
+	type item struct {
+		botID, chatID, uid int64
+		kind               string
+	}
 	var items []item
 	for rows.Next() {
 		var it item
-		if rows.Scan(&it.botID, &it.chatID, &it.uid) == nil {
+		if rows.Scan(&it.botID, &it.chatID, &it.uid, &it.kind) == nil {
 			items = append(items, it)
 		}
 	}
@@ -205,7 +217,7 @@ func ReassertActiveMutes(sh *core.Shared) {
 				"chat", it.chatID, "uid", it.uid, "tg", desc)
 			continue
 		}
-		slog.Info("禁言复查：进群限制被外部解除，已重新施加",
+		slog.Info("禁言复查："+joinMuteKindLabel(it.kind)+"被外部解除，已重新施加",
 			"chat", it.chatID, "uid", it.uid)
 	}
 }

@@ -725,3 +725,123 @@ func TestPrewarmSweepHonorsGlobalStop(t *testing.T) {
 		t.Fatalf("急停时不该动手，得到 %d 次", got)
 	}
 }
+
+// ad_whitelist（面板/申诉加的永久白名单）也要挡住延迟复查：候选查询只
+// 过滤了群画像里的按群白名单（/white），其余豁免由 adExempt 兜住。
+func TestPrewarmSweepHonorsAdWhitelist(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	addSweepMember(t, b, chat, 611, 25*3600, 0, 0) // 白名单：不查
+	addSweepMember(t, b, chat, 612, 25*3600, 0, 0) // 对照：照常禁言
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		if method == "getChat" {
+			uid := int64(p["chat_id"].(float64))
+			return fmt.Sprintf(`{"ok":true,"result":{"id":%d,`+
+				`"bio":"免押小额洗资：https://t.me/+abcdef"}}`, uid), true
+		}
+		return "", false
+	}
+	if err := AddWhitelist(b.Shared, b.BotID(), chat, 611, 0, "appeal", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("白名单成员不该禁言，只应禁对照的 612，得到 %d 次", got)
+	}
+	if _, ok := loadJoinMute(b.Store, chat, 611); ok {
+		t.Error("白名单成员不该写 join_mutes")
+	}
+	if _, ok := loadJoinMute(b.Store, chat, 612); !ok {
+		t.Error("对照成员应被禁言并写 join_mutes")
+	}
+}
+
+// 每 bot 每轮的复查数有上限：群多时 20/群 × N 会一次性灌满共享判定
+// 队列，饿死实时消息判定。三个群各 25 个候选（3×20 > 50）逼出上限。
+func TestPrewarmSweepPerBotCap(t *testing.T) {
+	b, _, _ := setupPrewarmSweep(t, "", "")
+	chats := []int64{-100, -101, -102}
+	for _, c := range chats {
+		if c != -100 {
+			testutil.EnableAntiad(t, b, c)
+		}
+		for i := 0; i < prewarmSweepBatch+5; i++ {
+			addSweepMember(t, b, c, int64(7000+i), 25*3600, 0, 0)
+		}
+	}
+
+	// 简介为空：复查只标记不送检，50 条上限跑得很快。
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+
+	got := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE prewarm_checked_at > 0`)
+	if got != prewarmSweepPerBot {
+		t.Fatalf("每 bot 每轮应只提交 %d 条复查，得到 %d", prewarmSweepPerBot, got)
+	}
+	for _, c := range chats {
+		n := countRows(t, b, `SELECT COUNT(*) FROM group_members
+			WHERE chat_id=? AND prewarm_checked_at > 0`, c)
+		if n > prewarmSweepBatch {
+			t.Errorf("群 %d 单轮超过每群批量 %d：%d", c, prewarmSweepBatch, n)
+		}
+	}
+}
+
+// 判定队列积压到高水位时，延迟复查不再提交，给实时消息判定让路。
+func TestPrewarmSweepQueueHighWater(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t, "", "")
+	addSweepMember(t, b, chat, 601, 25*3600, 0, 0)
+
+	// 占住判定 worker 与队列：这些任务一直阻塞到 release 关闭，AdBusy
+	// 稳定停在高水位上（submit 计数含排队中与执行中，见 core.Bot.AdBusy）。
+	release := make(chan struct{})
+	defer close(release)
+	for i := 0; i < prewarmQueueHighWater; i++ {
+		if !b.AdSubmit(func() { <-release }) {
+			t.Fatal("测试预置队列不应失败")
+		}
+	}
+	// 到这里 AdBusy == prewarmQueueHighWater：任务全卡在 <-release 上，
+	// 只有 defer 的 close 才让计数回落。
+
+	PrewarmSweep(b.Shared)
+	if got := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE prewarm_checked_at > 0`); got != 0 {
+		t.Fatalf("队列积压时不该提交复查，得到 %d 条已查标记", got)
+	}
+	if got := fake.CountCalls("getChat"); got != 0 {
+		t.Errorf("队列积压时不该有人被复查，得到 %d 次 getChat", got)
+	}
+}
+
+// 低于采信线的 ad 结论要注明未处置，措辞与冷判定一致。
+func TestPrewarmSweepBelowLineNote(t *testing.T) {
+	b, fake, chat := setupPrewarmSweep(t, soReply("ad", 0.5, "promo", "account"), "")
+	addSweepMember(t, b, chat, 613, 25*3600, 0, 0)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChat" {
+			return `{"ok":true,"result":{"id":613,"bio":"洗资"}}`, true
+		}
+		return "", false
+	}
+
+	PrewarmSweep(b.Shared)
+	waitIdle(t, b)
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("低于采信线不该禁言，得到 %d 次", got)
+	}
+	var note string
+	if err := b.Store.Read.QueryRow(`SELECT reason FROM antiad_log
+		WHERE chat_id=? AND user_id=613 ORDER BY id DESC LIMIT 1`,
+		chat).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "延迟复查（低于采信线，未处置）") {
+		t.Fatalf("低于采信线的结论应注明未处置，得到 %q", note)
+	}
+}

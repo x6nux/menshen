@@ -131,3 +131,46 @@ func TestReleaseUserUnbansBanRecords(t *testing.T) {
 		t.Errorf("解封必须带 only_if_banned，得到 %v", un)
 	}
 }
+
+// TestUndoVerdictPrewarmMuted：误判一条 prewarm_muted 流水也要走解禁并
+// 清掉 join_mutes 记录 —— 少了这一步，人还是发不了言，而复查任务还会
+// 按残留记录再禁回去。
+func TestUndoVerdictPrewarmMuted(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,557,7,'［前置号复核］','ad',0.95,'systemone','promo',
+		 'prewarm_muted','疑似批量注册的广告前置号',?,?)`,
+		time.Now().Unix(), b.BotID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	saveJoinMute(b, -100, 557, kindPrewarm, "疑似批量注册的广告前置号", 0)
+	row, ok := LoadAdLog(b.Store, id)
+	if !ok {
+		t.Fatal("记录应能读回")
+	}
+
+	if _, ok2, desc := UndoVerdict(b, row, 1); !ok2 {
+		t.Fatalf("误判解禁失败：%s", desc)
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM join_mutes WHERE user_id=557`); n != 0 {
+		t.Errorf("prewarm 限制记录应被清掉，剩 %d 条", n)
+	}
+	if after, _ := LoadAdLog(b.Store, id); after.Action != "undone" {
+		t.Errorf("判定应改判 undone，得到 %q", after.Action)
+	}
+	sawUnmute := false
+	for _, p := range fake.Calls("restrictChatMember") {
+		if perms, ok := p["permissions"].(map[string]any); ok &&
+			perms["can_send_messages"] == true {
+			sawUnmute = true
+		}
+	}
+	if !sawUnmute {
+		t.Error("应发一次权限全开的解禁言")
+	}
+}

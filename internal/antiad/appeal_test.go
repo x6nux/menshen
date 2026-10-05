@@ -1,7 +1,9 @@
 package antiad
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -469,5 +471,69 @@ func TestAppealPromptCoversPrewarm(t *testing.T) {
 	if !strings.Contains(appealSystemPrompt, "prewarm") ||
 		!strings.Contains(appealSystemPrompt, "photo_count") {
 		t.Error("申诉提示词未覆盖 prewarm 类与 photo_count")
+	}
+}
+
+// prewarm 的解除出口是「资料已补齐」：载荷必须带当前 username 与
+// photo_count，否则模型看不见任何可撤销的依据，怎么改资料都通不过。
+func TestJudgeAppealPrewarmPayload(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	fake := b.TG.(*testutil.FakeTG)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		switch method {
+		case "getChat":
+			return `{"ok":true,"result":{"id":555,"username":"zhangsan",` +
+				`"first_name":"张三","bio":"喜欢摄影"}}`, true
+		case "getUserProfilePhotos":
+			return `{"ok":true,"result":{"total_count":2}}`, true
+		}
+		return "", false
+	}
+	var body atomic.Value
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"{\"uphold\":false,\"confidence\":0.9,\"reason\":\"资料已补齐\"}"}}]}`))
+	})
+	penalties := []appealPenalty{{Type: "prewarm", ChatID: -100,
+		Reason: "疑似批量注册的广告前置号"}}
+	if _, err := judgeAppeal(b, b.Cache.Snap(), 555, penalties, "我补了资料"); err != nil {
+		t.Fatalf("申诉复判应成功：%v", err)
+	}
+	got, _ := body.Load().(string)
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(got), &req); err != nil {
+		t.Fatalf("请求体不是合法 JSON：%v", err)
+	}
+	var user string
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			user = m.Content
+		}
+	}
+	var payload struct {
+		PhotoCount int `json:"photo_count"`
+		Sender     struct {
+			Username string `json:"username"`
+			Bio      string `json:"bio"`
+		} `json:"sender"`
+	}
+	if err := json.Unmarshal([]byte(user), &payload); err != nil {
+		t.Fatalf("申诉载荷不是合法 JSON：%v", err)
+	}
+	if payload.PhotoCount != 2 {
+		t.Errorf("载荷 photo_count = %d，期望 2", payload.PhotoCount)
+	}
+	if payload.Sender.Username != "zhangsan" {
+		t.Errorf("载荷 username = %q，期望 zhangsan", payload.Sender.Username)
+	}
+	if payload.Sender.Bio != "喜欢摄影" {
+		t.Errorf("载荷 bio = %q，期望 喜欢摄影", payload.Sender.Bio)
 	}
 }

@@ -232,6 +232,12 @@ const (
 	prewarmSweepDelay = 24 * time.Hour
 	// prewarmSweepBatch：每群每轮最多复查的人数，防止一次性打满 TG 速率。
 	prewarmSweepBatch = 20
+	// prewarmSweepPerBot：每 bot 每轮最多提交的复查数。群多时 20/群 × N
+	// 会一次性灌满共享判定队列，饿死实时消息判定。
+	prewarmSweepPerBot = 50
+	// prewarmQueueHighWater：判定任务积压到这个数就不再提交复查。复查是
+	// 后台低优先级工作，实时消息判定优先。
+	prewarmQueueHighWater = 256
 )
 
 // PrewarmSweep 是前置号延迟复查（小时任务）：对进群 24h~7d、发言 ≤2 条、
@@ -249,41 +255,70 @@ func PrewarmSweep(sh *core.Shared) {
 		if snap.BotSettingInt(b.BotID(), "antiad_prewarm_sweep", 0) != 1 {
 			return
 		}
+		left := prewarmSweepPerBot
 		for _, c := range snap.ChatsOf(b.BotID()) {
-			if c.Enabled {
-				sweepChat(b, c.ChatID, now)
+			if !c.Enabled {
+				continue
+			}
+			if b.AdBusy() >= prewarmQueueHighWater {
+				slog.Warn("前置号复查：判定队列积压，本轮停止", "bot", b.BotID())
+				return
+			}
+			n := sweepChat(b, c.ChatID, now, left)
+			left -= n
+			if left <= 0 {
+				slog.Info("前置号复查：达到每轮上限，剩余候选留待下一轮",
+					"bot", b.BotID())
+				return
 			}
 		}
 	})
 }
 
-// sweepChat 圈出该群的候选并投进判定 worker。
-func sweepChat(b *core.Bot, chatID, now int64) {
+// sweepChat 圈出该群的候选并投进判定 worker；max 是本 bot 本轮的剩余
+// 名额，返回实际提交数。候选里的白名单/豁免由 prewarmRecheck 再拦一道。
+func sweepChat(b *core.Bot, chatID, now int64, max int) int {
+	limit := prewarmSweepBatch
+	if max < limit {
+		limit = max
+	}
 	rows, err := b.Store.Read.Query(`SELECT user_id FROM group_members
 		WHERE chat_id=? AND joined_at > ? AND joined_at <= ?
 		  AND msg_count <= 2 AND whitelisted=0 AND prewarm_checked_at=0
 		ORDER BY joined_at LIMIT ?`,
 		chatID, now-int64(prewarmSweepWindow/time.Second),
-		now-int64(prewarmSweepDelay/time.Second), prewarmSweepBatch)
+		now-int64(prewarmSweepDelay/time.Second), limit)
 	if err != nil {
 		slog.Error("前置号复查：查询候选失败", "chat", chatID, "err", err)
-		return
+		return 0
 	}
 	var uids []int64
 	for rows.Next() {
 		var uid int64
-		if rows.Scan(&uid) == nil {
-			uids = append(uids, uid)
+		if err := rows.Scan(&uid); err != nil {
+			slog.Warn("前置号复查：读取候选失败", "chat", chatID, "err", err)
+			continue
 		}
+		uids = append(uids, uid)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("前置号复查：遍历候选出错", "chat", chatID, "err", err)
 	}
 	rows.Close()
+	n := 0
 	for _, uid := range uids {
+		if b.AdBusy() >= prewarmQueueHighWater {
+			slog.Warn("前置号复查：判定队列积压，停止本轮", "chat", chatID)
+			return n
+		}
 		uid := uid
 		if !b.AdSubmit(func() { prewarmRecheck(b, chatID, uid) }) {
 			slog.Warn("前置号复查：判定队列已满，本轮停止", "chat", chatID)
-			return
+			return n
 		}
+		n++
 	}
+	return n
 }
 
 // markPrewarmChecked 记下复查时间戳，保证一人只查一次（失败也不重查，
@@ -321,6 +356,12 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	u := &tg.TGUser{ID: uid, Username: info.username,
 		FirstName: info.firstName, LastName: info.lastName}
 	gm, _ := loadMember(b.Store, chatID, uid)
+	// 与消息路径同一道豁免门：候选查询只过滤了群画像里的按群白名单，
+	// ad_whitelist（面板/申诉加的永久白名单）、antiad_exempt_users、
+	// 主管理员/归属人与群管理员都要在这里拦住。
+	if adExempt(b, snap, chatID, u, gm.Whitelisted) {
+		return
+	}
 	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
 	p.Bio = info.bio
 	p.BioLinks = resolveProfileLinks(b, p)
@@ -346,8 +387,12 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	}
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
+		note := "延迟复查（正常）"
+		if v.IsAd {
+			note = "延迟复查（低于采信线，未处置）"
+		}
 		logAd(b, &tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title},
-			From: u, Text: joinProfileText(u, p.Bio, v)}, v, "join_checked", "延迟复查（正常）")
+			From: u, Text: joinProfileText(u, p.Bio, v)}, v, "join_checked", note)
 		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {
 			GrantProfileOK(b, p, v.ProfileOKHours, "延迟复查放行："+v.Reason)
 		}
