@@ -2,8 +2,10 @@ package antiad
 
 import (
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
+	"menshen/internal/tg"
 )
 
 func TestProfileEmpty(t *testing.T) {
@@ -34,6 +36,56 @@ func TestPrewarmStateFields(t *testing.T) {
 	st := adState{JoinCheck: false, PrewarmCheck: true}
 	if !st.PrewarmCheck {
 		t.Fatal("PrewarmCheck 应为真")
+	}
+}
+
+func TestPrewarmCandidate(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutSetting("antiad_prewarm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	snap := b.Cache.Snap()
+	now := time.Now().Unix()
+	gm := groupMember{Known: true, MsgCount: 1, JoinedAt: now - 3600}
+	msg := func(text string) *tg.Message {
+		return &tg.Message{From: &tg.TGUser{ID: 555}, Text: text}
+	}
+	if !prewarmCandidate(b, snap, gm, msg("哈喽"), false) {
+		t.Error("新成员首条短招呼应命中")
+	}
+	if !prewarmCandidate(b, snap, gm, msg("擦"), false) {
+		t.Error("无意义短词也应命中（判定交给 AI）")
+	}
+	if prewarmCandidate(b, snap, gm, msg("麻烦问下这个怎么配置"), false) {
+		t.Error("长消息不该命中")
+	}
+	if prewarmCandidate(b, snap, gm, msg("哈喽"), true) {
+		t.Error("编辑过的消息不该命中")
+	}
+	if prewarmCandidate(b, snap, groupMember{MsgCount: 2, JoinedAt: now - 3600},
+		msg("哈喽"), false) {
+		t.Error("非首条消息不该命中")
+	}
+	if prewarmCandidate(b, snap, groupMember{MsgCount: 1}, msg("哈喽"), false) {
+		t.Error("入群时间未知不该命中")
+	}
+	if prewarmCandidate(b, snap, groupMember{MsgCount: 1,
+		JoinedAt: now - int64(prewarmJoinWindow/time.Second) - 60},
+		msg("哈喽"), false) {
+		t.Error("超出进群窗口不该命中")
+	}
+	withLink := msg("哈喽")
+	withLink.Entities = []tg.MessageEntity{{Type: "url"}}
+	if prewarmCandidate(b, snap, gm, withLink, false) {
+		t.Error("带链接的消息不该命中")
+	}
+
+	// 开关关闭：一律不圈。
+	b2, _ := testutil.NewTestBot(t, 2)
+	testutil.EnableAntiad(t, b2, -100)
+	if prewarmCandidate(b2, b2.Cache.Snap(), gm, msg("哈喽"), false) {
+		t.Error("开关关闭时不该命中")
 	}
 }
 
