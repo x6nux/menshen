@@ -330,49 +330,53 @@ func judgeJoin(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 	return llm, nil
 }
 
-// applyJoinMute 限制发言并在群里挂出自助解除入口（进群冷判定专用）。
-//
-// 禁言是**无限期**的（不给 until_date），因为解除的条件是「本人改正
-// 账号资料」而不是「等够时间」。给时限的话，广告号只要熬过去就能开工，
-// 而改正过的人却还要继续等。
-func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
-	applyJoinMuteNotify(b, conf, u, v, bio, "进群冷判定", conf.GroupAlert)
+// joinMuteSpec 描述一次进群类限制的落库与呈现差异。
+type joinMuteSpec struct {
+	Kind     string // profile | prewarm
+	Action   string // join_muted | prewarm_muted
+	Note     string // 流水 note
+	Body     string // 流水正文（joinProfileText / prewarmLogText 渲染结果）
+	Reason   string // v.Reason 为空时的兜底理由
+	Announce bool   // 群内通知
 }
 
-// applyJoinMuteNotify 是 applyJoinMute 的展开：note 写进流水说明，announce
-// 决定自己发不发群内通知。
+func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
+	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
+		Kind: kindProfile, Action: actionJoinMuted, Note: "进群冷判定",
+		Body:     joinProfileText(u, bio, v),
+		Reason:   "账号资料中含有推广或引流内容",
+		Announce: conf.GroupAlert,
+	})
+}
+
+// applyJoinMuteNotify 是进群类限制的执行：禁言 + 落库 + 群内通知 + 申诉入口。
 //
-// 显式 /check 判成广告时必须 announce=true：群内展示默认关，自动通知被吃掉
-// 后管理员看不到任何回执，会以为命令没生效（线上真实反馈）。
-func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict,
-	bio, note string, announce bool) {
+// 原来的入参是「正文渲染固定 + action 固定」；现在由调用方传 joinMuteSpec，
+// 前置号识别复用同一套执行但 kind/action/正文不同。
+func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
+	v adVerdict, spec joinMuteSpec) {
 
 	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
 		"chat_id": conf.ChatID, "user_id": u.ID,
 		"permissions": MutedPermissions(),
 	}); !ok {
 		slog.Warn("冷判定：限制发言失败",
-			"chat", conf.ChatID, "uid", u.ID, "来源", note, "tg", desc)
+			"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "tg", desc)
 		return
 	}
 
 	reason := strings.TrimSpace(v.Reason)
 	if reason == "" {
+		reason = strings.TrimSpace(spec.Reason)
+	}
+	if reason == "" {
 		reason = "账号资料中含有推广或引流内容"
 	}
 
-	// 先落流水：群内通知的按钮要带记录号（ub<记录号>），管理员点进来
-	// 是这条冷判定的记录卡片，被限制的人点进来是申诉入口。
 	logID := logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
-		From: u, Text: joinProfileText(u, bio, v)},
-		v, "join_muted", note)
+		From: u, Text: spec.Body}, v, spec.Action, spec.Note)
 
-	// 群内通知与命中告警共用「群内展示」开关（conf.GroupAlert）：群主不想
-	// 让 bot 说话时，禁言照常执行，只是不在群里挂出来。发出来就安排到点
-	// 自动撤回——通知的信息价值在本人看到之后就没有了，申诉入口在私聊里。
-	// 静默开关在 sendGroup 里已经生效。明显账号（高置信高危害）只弹一小会。
-	if announce {
-		// 群内只给半行短结论；完整理由留在 join_mutes 里（申诉入口与详情用）。
+	if spec.Announce {
 		groupText := verdictBrief(v)
 		if groupText == "" {
 			groupText = reason
@@ -380,13 +384,11 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerd
 		msgID := sendGroup(b, conf.ChatID, joinMuteNotice(b, u, groupText, logID), nil)
 		scheduleAlertCleanup(b, conf.ChatID, msgID, alertTTL(b, b.Cache.Snap(), v))
 	}
-	saveJoinMute(b, conf.ChatID, u.ID, reason, 0)
-	// 判定命中即把那条「XXX 已加入群组」的服务消息删掉：广告号的昵称
-	// 会原样出现在里面。服务消息与判定谁先到都有可能，按 (群, 人) 配对。
+	saveJoinMute(b, conf.ChatID, u.ID, spec.Kind, reason, 0)
 	deleteJoinNotice(b, conf.ChatID, u.ID)
 
 	slog.Info("反广告：资料判定已限制发言",
-		"chat", conf.ChatID, "uid", u.ID, "来源", note, "置信度", v.Confidence)
+		"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "置信度", v.Confidence)
 }
 
 // joinProfileText 把进群资料渲染成流水正文。

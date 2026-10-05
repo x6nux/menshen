@@ -113,7 +113,7 @@ func TestAppealLiftsOwnGban(t *testing.T) {
 func TestAppealAIOverturnsAndLifts(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, false, "资料已改正")
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	if !HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1)) {
 		t.Fatal("申诉入口应被接管")
@@ -153,7 +153,7 @@ func TestAppealAIOverturnsAndLifts(t *testing.T) {
 func TestAppealUpholdFallsBackToNoWeb(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, true, "仍是广告")
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
@@ -182,7 +182,7 @@ func TestAppealUpholdFallsBackToNoWeb(t *testing.T) {
 func TestAppealUpholdGoesToWeb(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, true, "仍是广告")
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 	b.Cfg.PublicURL = "https://ad.example.com"
 	b.Cfg.TurnstileSiteKey, b.Cfg.TurnstileSecret = "site", "secret"
 	if err := EnsureWebSecret(b.Shared); err != nil {
@@ -206,7 +206,7 @@ func TestAppealUpholdGoesToWeb(t *testing.T) {
 // TestAppealGateBlocksRetry：退避期内再发起申诉会被挡下，且不建新单。
 func TestAppealGateBlocksRetry(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 	unbanGateBump(b.Shared, 555)
 
 	HandleAppealCallback(b, appealGo(555))
@@ -239,7 +239,7 @@ func TestAppealSingleOpen(t *testing.T) {
 		VALUES (?,?, 'web', ?, ?, ?)`, b.BotID(), 555, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 
@@ -264,7 +264,7 @@ func TestAppealSingleOpen(t *testing.T) {
 func TestAppealStatementDirectGo(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, false, "资料已改正")
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	// 点「写申诉理由」进入 statement。
 	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
@@ -305,7 +305,7 @@ func TestAppealStatementDirectGo(t *testing.T) {
 // TestAppealStatementCancel：取消按钮把单子作废，之后可以重新发起。
 func TestAppealStatementCancel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
 		From: &tg.TGUser{ID: 555},
@@ -344,7 +344,7 @@ func TestAppealWebWindowRenews(t *testing.T) {
 		VALUES (?,?, 'web', ?, ?, ?)`, b.BotID(), 555, old, old, old); err != nil {
 		t.Fatal(err)
 	}
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 
@@ -368,7 +368,7 @@ func TestAppealNoWebBlocksNewAppeal(t *testing.T) {
 		VALUES (?,?, 'noweb', 'uphold', ?, ?)`, b.BotID(), 555, now, now); err != nil {
 		t.Fatal(err)
 	}
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
 	HandleNonStaffPrivate(b, appealDM(555), "/start "+unbanPayload(1))
 
@@ -402,7 +402,7 @@ func TestStartAppealAISingleFlight(t *testing.T) {
 		w.Write([]byte(`{"choices":[{"message":{"content":` +
 			`"{\"uphold\":true,\"confidence\":0.9,\"reason\":\"维持\"}"}}]}`))
 	})
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 	now := time.Now().Unix()
 	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
 		(bot_id,user_id,status,created_at,updated_at) VALUES (?,?,'ai',?,?)`,

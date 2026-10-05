@@ -520,5 +520,10 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	// 处置与进群冷判定同档，但回执必须发：这是管理员显式发的命令，而群内
 	// 展示默认关，靠 applyJoinMute 的自动通知会一条回执都没有，命令看起来
 	// 像没生效（线上真实反馈）。
-	applyJoinMuteNotify(b, conf, u, v, p.Bio, "资料复查", true)
+	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
+		Kind: kindProfile, Action: actionJoinMuted, Note: "资料复查",
+		Body:     joinProfileText(u, p.Bio, v),
+		Reason:   "账号资料中含有推广或引流内容",
+		Announce: true,
+	})
 }

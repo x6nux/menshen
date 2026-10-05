@@ -180,7 +180,7 @@ func TestAppealEntryNoMute(t *testing.T) {
 // TestAppealEntryListsPenalties 确认被限制的人拿到的是限制清单与申诉按钮。
 func TestAppealEntryListsPenalties(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
-	saveJoinMute(b, -100, 555, "简介里写着引流链接", 88)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里写着引流链接", 88)
 
 	m := &tg.Message{MessageID: 1, From: &tg.TGUser{ID: 555},
 		Chat: &tg.Chat{ID: 555, Type: "private"}}

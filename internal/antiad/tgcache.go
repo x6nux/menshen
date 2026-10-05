@@ -154,7 +154,7 @@ func userPhotoCount(b *core.Bot, uid int64) (int, bool) {
 		} `json:"result"`
 	}
 	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
-		slog.Warn("反广告：查询头像返回异常", "uid", uid)
+		slog.Warn("反广告：查询头像返回异常", "uid", uid, "resp", string(raw))
 		return 0, false
 	}
 	cache.Set(uid, photoEntry{count: resp.Result.TotalCount}, photoTTL)

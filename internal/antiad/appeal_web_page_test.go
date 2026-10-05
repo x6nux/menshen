@@ -181,7 +181,7 @@ func TestAppealWebFlowPass(t *testing.T) {
 	if err := EnsureWebSecret(b.Shared); err != nil {
 		t.Fatal(err)
 	}
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 0)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 0)
 	withRegistry(t, b)
 
 	now := time.Now().Unix()
@@ -257,7 +257,7 @@ func TestAppealWebFlowBotFailsAndRejects(t *testing.T) {
 	if err := EnsureWebSecret(b.Shared); err != nil {
 		t.Fatal(err)
 	}
-	saveJoinMute(b, -100, 555, "简介里有联系方式", 0)
+	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 0)
 	withRegistry(t, b)
 
 	now := time.Now().Unix()

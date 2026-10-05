@@ -84,19 +84,24 @@ type joinMuteRec struct {
 	ChatID    int64
 	UserID    int64
 	BotID     int64
+	Kind      string
 	Reason    string
 	NoticeMsg int64
 	Attempts  int64
 	CreatedAt int64
 }
 
-func saveJoinMute(b *core.Bot, chatID, uid int64, reason string, noticeMsg int64) {
+func saveJoinMute(b *core.Bot, chatID, uid int64, kind, reason string,
+	noticeMsg int64) {
+	if kind == "" {
+		kind = kindProfile
+	}
 	if _, err := b.Store.Write.Exec(`INSERT INTO join_mutes
-		(chat_id,user_id,bot_id,reason,notice_msg,attempts,created_at)
-		VALUES (?,?,?,?,?,0,?)
+		(chat_id,user_id,bot_id,kind,reason,notice_msg,attempts,created_at)
+		VALUES (?,?,?,?,?,?,0,?)
 		ON CONFLICT(chat_id,user_id) DO UPDATE SET
-		  reason=excluded.reason, notice_msg=excluded.notice_msg`,
-		chatID, uid, b.BotID(), core.TruncateRunes(reason, 300), noticeMsg,
+		  kind=excluded.kind, reason=excluded.reason, notice_msg=excluded.notice_msg`,
+		chatID, uid, b.BotID(), kind, core.TruncateRunes(reason, 300), noticeMsg,
 		time.Now().Unix()); err != nil {
 		slog.Error("冷判定：限制记录落库失败", "chat", chatID, "uid", uid, "err", err)
 	}
@@ -104,9 +109,9 @@ func saveJoinMute(b *core.Bot, chatID, uid int64, reason string, noticeMsg int64
 
 func loadJoinMute(s *store.Store, chatID, uid int64) (joinMuteRec, bool) {
 	var r joinMuteRec
-	err := s.Read.QueryRow(`SELECT chat_id,user_id,bot_id,reason,notice_msg,
+	err := s.Read.QueryRow(`SELECT chat_id,user_id,bot_id,kind,reason,notice_msg,
 		attempts,created_at FROM join_mutes WHERE chat_id=? AND user_id=?`,
-		chatID, uid).Scan(&r.ChatID, &r.UserID, &r.BotID, &r.Reason,
+		chatID, uid).Scan(&r.ChatID, &r.UserID, &r.BotID, &r.Kind, &r.Reason,
 		&r.NoticeMsg, &r.Attempts, &r.CreatedAt)
 	if err != nil {
 		return r, false
