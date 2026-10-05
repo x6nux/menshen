@@ -329,6 +329,24 @@ func TestPrewarmPayloadCarriesFlag(t *testing.T) {
 	}
 }
 
+// 端到端：开关开启时，首条招呼走前置号复核而不是普通消息判定。
+func TestPrewarmPipelineRoutesToAccountCheck(t *testing.T) {
+	b, _, uid, chat := setupPrewarm(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	sendPrewarmMessage(t, b, uid, chat)
+
+	// 普通消息判定的提示词里没有 prewarm_check 这句；命中前置号时
+	// 不应该再跑一遍普通消息判定的先行动作（无临时禁言 tempMutes）。
+	if _, ok := cachesOf(b.Shared).tempMutes.Get(tempMuteKey(chat, uid)); ok {
+		t.Fatal("前置号复核不应触发消息判定的临时禁言")
+	}
+	rec, ok := loadJoinMute(b.Store, chat, uid)
+	if !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("应写入 prewarm 限制，得到 (%v,%q)", ok, rec.Kind)
+	}
+}
+
 // TestJoinMuteKindRoundTrip：kind 要能落库读回，prewarm 与 profile 区分开。
 func TestJoinMuteKindRoundTrip(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

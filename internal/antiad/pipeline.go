@@ -261,6 +261,17 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// 前置号复核优先于普通消息判定：新成员的第一条短招呼不判「这条
+	// 消息是不是广告」，改判「这个账号是不是批量注册的广告前置号」。
+	// 候选条件很窄（首条、短、无链接），开关默认关。
+	if prewarmCandidate(b, snap, gm, m, edited) {
+		if !b.AdSubmit(func() { prewarmJudge(b, snap, conf, m, state) }) {
+			slog.Warn("反广告：判定队列已满，前置号复核未跑", "chat", m.Chat.ID, "uid", m.From.ID)
+			logAd(b, m, adVerdict{Reason: "判定队列已满"}, "none", "判定队列已满，未送检")
+		}
+		return
+	}
+
 	// 判定要发 1~2 次 AI 请求（带重试最坏几十秒），而更新处理是串行的。
 	// 同步等在这里，上游一慢整个 bot 就停摆——管理员连「关闭反广告」
 	// 都点不动，而上游抖动恰恰是最需要关掉它的时刻。
