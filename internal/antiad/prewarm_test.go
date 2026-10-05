@@ -597,27 +597,72 @@ func addSweepMember(t *testing.T, b *core.Bot, chat, uid, joinedAgo, whitelisted
 	}
 }
 
-// setSweepChecked 预置上次复查时间与资料指纹。
-func setSweepChecked(t *testing.T, b *core.Bot, chat, uid, at int64, hash string) {
+// setSweepSchedule 预置上次复查时间、下次到期时间与资料指纹。
+func setSweepSchedule(t *testing.T, b *core.Bot, chat, uid, checkedAt, nextAt int64, hash string) {
 	t.Helper()
 	if _, err := b.Store.Write.Exec(`UPDATE group_members
-		SET prewarm_checked_at=?, profile_hash=? WHERE chat_id=? AND user_id=?`,
-		at, hash, chat, uid); err != nil {
+		SET prewarm_checked_at=?, prewarm_next_at=?, profile_hash=?
+		WHERE chat_id=? AND user_id=?`,
+		checkedAt, nextAt, hash, chat, uid); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// sweepCheckedAt 读某人的上次复查时间与指纹。
-func sweepCheckedAt(t *testing.T, b *core.Bot, chat, uid int64) (int64, string) {
+// sweepSchedule 读某人的复查时间、下次到期时间与指纹。
+func sweepSchedule(t *testing.T, b *core.Bot, chat, uid int64) (int64, int64, string) {
 	t.Helper()
-	var at int64
+	var checked, next int64
 	var hash string
-	if err := b.Store.Read.QueryRow(`SELECT prewarm_checked_at,profile_hash
+	if err := b.Store.Read.QueryRow(`SELECT prewarm_checked_at,prewarm_next_at,profile_hash
 		FROM group_members WHERE chat_id=? AND user_id=?`, chat, uid).
-		Scan(&at, &hash); err != nil {
+		Scan(&checked, &next, &hash); err != nil {
 		t.Fatal(err)
 	}
-	return at, hash
+	return checked, next, hash
+}
+
+// 阶梯边界逐一断言（§9.2/§9.5），外加 joined_at=0 走最老一档。
+func TestPrewarmSweepInterval(t *testing.T) {
+	cases := []struct {
+		name string
+		age  time.Duration
+		want time.Duration
+	}{
+		{"0", 0, time.Minute},
+		{"59m", 59 * time.Minute, time.Minute},
+		{"1h", time.Hour, time.Minute}, // ≤1h 仍是 1min
+		{"1h01", time.Hour + time.Minute, 5 * time.Minute},
+		{"11h59", 11*time.Hour + 59*time.Minute, 5 * time.Minute},
+		{"12h", 12 * time.Hour, 5 * time.Minute},
+		{"12h01", 12*time.Hour + time.Minute, 10 * time.Minute},
+		{"23h59", 23*time.Hour + 59*time.Minute, 10 * time.Minute},
+		{"24h", 24 * time.Hour, 10 * time.Minute},
+		{"24h01", 24*time.Hour + time.Minute, 30 * time.Minute},
+		{"6d23h", 6*24*time.Hour + 23*time.Hour, 30 * time.Minute},
+		{"7d", 7 * 24 * time.Hour, 30 * time.Minute},
+		{"7d01", 7*24*time.Hour + time.Minute, time.Hour},
+		{"30d", 30 * 24 * time.Hour, time.Hour},
+	}
+	for _, c := range cases {
+		if got := prewarmSweepInterval(c.age); got != c.want {
+			t.Errorf("%s: prewarmSweepInterval = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+	// joined_at=0（进群时间未知）按最老一档处理，不当成刚进门的号重扫。
+	const now = 1_700_000_000
+	if got := prewarmAge(now, 0); got <= 7*24*time.Hour {
+		t.Errorf("joined_at=0 的年龄应超过 7d，得到 %v", got)
+	}
+	if got := prewarmSweepInterval(prewarmAge(now, 0)); got != time.Hour {
+		t.Errorf("joined_at=0 应取 1h 档，得到 %v", got)
+	}
+	if got := prewarmAge(now, now-30*60); got != 30*time.Minute {
+		t.Errorf("年龄换算 = %v，期望 30m", got)
+	}
+	// 时钟回拨不应给出负年龄。
+	if got := prewarmAge(now, now+3600); got != 0 {
+		t.Errorf("未来 joined_at 的年龄应为 0，得到 %v", got)
+	}
 }
 
 // sweepProfile 是假 getChat 给某个 uid 返回的资料。
@@ -640,31 +685,26 @@ func fakeSweepProfiles(t *testing.T, fake *testutil.FakeTG, profs map[int64]swee
 	}
 }
 
-// 选人、跳过的各条路径与重复 sweep 的幂等：老成员按 24h 轮转、新成员按
-// 10min 节流；白名单不选、join_mutes 只标记；首查干净资料零 AI。
+// 选人、跳过的各条路径与重复 sweep 的幂等：只有 prewarm_next_at 到点的人
+// 进候选；未到期不动、白名单不选、join_mutes 只标记；首查干净资料零 AI。
 func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 	b, fake, chat, _, _ := setupPrewarmSweep(t,
 		soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	now := time.Now().Unix()
-	addSweepMember(t, b, chat, 601, 25*3600, 0) // 老成员首查，可疑简介 → AI 命中禁言
-	addSweepMember(t, b, chat, 602, 25*3600, 0) // 老成员 1 小时前查过：24h 内不查
-	setSweepChecked(t, b, chat, 602, now-3600, "stale602")
-	addSweepMember(t, b, chat, 603, 25*3600, 0) // 老成员 25 小时前查过：到期复查
-	setSweepChecked(t, b, chat, 603, now-25*3600,
-		profileHash(senderProfile{Bio: "喜欢摄影"})) // 指纹未变 → 零 AI
+	addSweepMember(t, b, chat, 601, 25*3600, 0) // 到期，可疑简介 → AI 命中禁言
+	setSweepSchedule(t, b, chat, 601, now-1800, now-1, "")
+	addSweepMember(t, b, chat, 602, 25*3600, 0) // 未到期：完全不碰
+	setSweepSchedule(t, b, chat, 602, now-3600, now+1800, "stale602")
 	addSweepMember(t, b, chat, 604, 25*3600, 1) // 群白名单：不选
-	addSweepMember(t, b, chat, 605, 2*3600, 0)  // 新成员 5 分钟前查过：10min 内不查
-	setSweepChecked(t, b, chat, 605, now-300, "stale605")
-	addSweepMember(t, b, chat, 606, 2*3600, 0) // 新成员首查，干净资料 → 零 AI，只落指纹
-	addSweepMember(t, b, chat, 607, 25*3600, 0)
-	saveJoinMute(b, chat, 607, kindPrewarm, "已有前置号限制", 0) // 已在禁言：只标记
-	addSweepMember(t, b, chat, 608, -1, 0)                // joined_at=0 的存量成员：进老成员轮转
+	addSweepMember(t, b, chat, 607, 25*3600, 0) // 已在 prewarm 禁言：只标记 + 推下一次
+	setSweepSchedule(t, b, chat, 607, now-600, now-1, "")
+	saveJoinMute(b, chat, 607, kindPrewarm, "已有前置号限制", 0)
+	addSweepMember(t, b, chat, 608, 2*3600, 0) // 首查干净 → 零 AI，只落指纹
+	setSweepSchedule(t, b, chat, 608, now-600, now-1, "")
 
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{
 		601: {bio: "免押小额洗资：https://t.me/+abcdef"},
-		603: {bio: "喜欢摄影"},
-		606: {bio: "喜欢摄影"},
 		608: {bio: "喜欢摄影"},
 	})
 
@@ -674,36 +714,41 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 	if got := fake.CountCalls("restrictChatMember"); got != 1 {
 		t.Fatalf("应只禁 601 一个人，得到 %d 次", got)
 	}
-	for _, uid := range []int64{601, 603, 606, 607, 608} {
-		if at, _ := sweepCheckedAt(t, b, chat, uid); at == 0 {
-			t.Errorf("uid %d 应被标记已查", uid)
+	for _, uid := range []int64{601, 607, 608} {
+		checked, next, _ := sweepSchedule(t, b, chat, uid)
+		if checked < now || next <= now {
+			t.Errorf("uid %d 应记录复查时间并预排下一次：checked=%d next=%d",
+				uid, checked, next)
 		}
 	}
 	// 首查干净：指纹落库，但一个 AI 都没跑（601 的 AI 由假上游断言）。
-	for _, uid := range []int64{601, 606, 608} {
-		if _, hash := sweepCheckedAt(t, b, chat, uid); hash == "" {
+	for _, uid := range []int64{601, 608} {
+		if _, _, hash := sweepSchedule(t, b, chat, uid); hash == "" {
 			t.Errorf("uid %d 首查后应落资料指纹", uid)
 		}
 	}
-	// 602（24h 内）、604（白名单）、605（10min 内）不该被碰。
-	if at, hash := sweepCheckedAt(t, b, chat, 602); at != now-3600 || hash != "stale602" {
-		t.Errorf("602 24h 内不该复查：at/hash = %d/%q", at, hash)
+	// 未到期（602）与群白名单（604）不该被碰。
+	if checked, next, hash := sweepSchedule(t, b, chat, 602); checked != now-3600 ||
+		next != now+1800 || hash != "stale602" {
+		t.Errorf("602 未到期不该复查：%d/%d/%q", checked, next, hash)
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 604); at != 0 || hash != "" {
-		t.Errorf("604 白名单不该被选：at/hash = %d/%q", at, hash)
+	if checked, next, hash := sweepSchedule(t, b, chat, 604); checked != 0 ||
+		next != 0 || hash != "" {
+		t.Errorf("604 白名单不该被选：%d/%d/%q", checked, next, hash)
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 605); at != now-300 || hash != "stale605" {
-		t.Errorf("605 10min 内不该复查：at/hash = %d/%q", at, hash)
-	}
-	if _, hash := sweepCheckedAt(t, b, chat, 607); hash != "" {
+	if _, _, hash := sweepSchedule(t, b, chat, 607); hash != "" {
 		t.Errorf("join_mutes 跳过只推时间，不该动指纹，得到 %q", hash)
 	}
 
-	// 再跑一轮：全部都在各自档位的间隔内，不产生新动作。
-	checks := map[int64][2]any{}
-	for _, uid := range []int64{601, 602, 603, 604, 605, 606, 607, 608} {
-		at, hash := sweepCheckedAt(t, b, chat, uid)
-		checks[uid] = [2]any{at, hash}
+	// 再跑一轮：全部 next_at 都在未来（白名单不在候选里），不产生新动作。
+	type sched struct {
+		checked, next int64
+		hash          string
+	}
+	checks := map[int64]sched{}
+	for _, uid := range []int64{601, 602, 604, 607, 608} {
+		checked, next, hash := sweepSchedule(t, b, chat, uid)
+		checks[uid] = sched{checked, next, hash}
 	}
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
@@ -711,10 +756,10 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 		t.Fatalf("重复 sweep 不应再禁，得到 %d 次", got)
 	}
 	for uid, want := range checks {
-		at, hash := sweepCheckedAt(t, b, chat, uid)
-		if at != want[0] || hash != want[1] {
-			t.Errorf("uid %d 在间隔内被改写了：(%v,%v) -> (%d,%q)",
-				uid, want[0], want[1], at, hash)
+		checked, next, hash := sweepSchedule(t, b, chat, uid)
+		if checked != want.checked || next != want.next || hash != want.hash {
+			t.Errorf("uid %d 在未到期时被改写：(%d,%d,%q) -> (%d,%d,%q)",
+				uid, want.checked, want.next, want.hash, checked, next, hash)
 		}
 	}
 	if rec, ok := loadJoinMute(b.Store, chat, 607); !ok || rec.Kind != kindPrewarm {
@@ -722,102 +767,84 @@ func TestPrewarmSweepSelectionAndIdempotency(t *testing.T) {
 	}
 }
 
-// 新成员 10 分钟节流：查过一次后，间隔内再跑 sweep 连资料都不拉；
-// 超过 10 分钟且指纹未变时只推时间、不花 AI（§9.2/§9.3）。
-func TestPrewarmSweepNewMemberHighFrequency(t *testing.T) {
+// next_at 预排调度：未到不查、到点再查；跳过路径也会推下一次；joined_at=0
+// 走最老一档（1h），进群 2h 的走 5min 档。
+func TestPrewarmSweepNextAtScheduling(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
 		soReply("clean", 0.9, "none", "message"), "")
+	now := time.Now().Unix()
+	// 未到点：300 秒后才是候选，本轮连资料都不该拉。
 	addSweepMember(t, b, chat, 620, 2*3600, 0)
-	fakeSweepProfiles(t, fake, map[int64]sweepProfile{620: {bio: "喜欢摄影"}})
-
-	PrewarmSweep(b.Shared)
-	waitIdle(t, b)
-	at1, hash1 := sweepCheckedAt(t, b, chat, 620)
-	if at1 == 0 || hash1 == "" {
-		t.Fatalf("新成员首查应落时间与指纹：at=%d hash=%q", at1, hash1)
-	}
-	if n := soN.Load() + llmN.Load(); n != 0 {
-		t.Fatalf("首查干净资料不该花 AI，跑了 %d 次", n)
-	}
-	getChat1 := fake.CountCalls("getChat")
-
-	// 10 分钟内：不该再被选中。
-	PrewarmSweep(b.Shared)
-	waitIdle(t, b)
-	if at, _ := sweepCheckedAt(t, b, chat, 620); at != at1 {
-		t.Fatalf("10 分钟内不该复查：at %d -> %d", at1, at)
-	}
-	if got := fake.CountCalls("getChat"); got != getChat1 {
-		t.Fatalf("10 分钟内不该拉资料：getChat %d -> %d", getChat1, got)
-	}
-
-	// 超过 10 分钟：重新拉资料；指纹未变，只推时间不花 AI。
-	stale := time.Now().Unix() - int64(prewarmNewInterval/time.Second) - 60
-	setSweepChecked(t, b, chat, 620, stale, hash1)
-	fake.Reset()
-	PrewarmSweep(b.Shared)
-	waitIdle(t, b)
-	at2, hash2 := sweepCheckedAt(t, b, chat, 620)
-	if at2 <= stale {
-		t.Fatalf("超过 10 分钟应重新复查：at %d（stale=%d）", at2, stale)
-	}
-	if hash2 != hash1 {
-		t.Fatalf("指纹未变不该改写：%q -> %q", hash1, hash2)
-	}
-	if n := soN.Load() + llmN.Load(); n != 0 {
-		t.Fatalf("指纹未变不该花 AI，跑了 %d 次", n)
-	}
-	if got := fake.CountCalls("getChat"); got != 1 {
-		t.Fatalf("超过 10 分钟应重新拉一次资料，得到 %d 次 getChat", got)
-	}
-}
-
-// 老成员每日节流（含 joined_at=0 的存量成员）：24h 内不查、超过 24h 再查；
-// 指纹未变只推时间不花 AI。
-func TestPrewarmSweepOldMemberDaily(t *testing.T) {
-	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
-		soReply("clean", 0.9, "none", "message"), "")
-	addSweepMember(t, b, chat, 630, 25*3600, 0) // 入群 25h
-	addSweepMember(t, b, chat, 631, -1, 0)      // joined_at=0 的存量成员
+	setSweepSchedule(t, b, chat, 620, now-7200, now+300, "futurehash")
+	// 到点且进群 2h（5min 档）：首查干净 → 零 AI，落指纹并预排。
+	addSweepMember(t, b, chat, 621, 2*3600, 0)
+	setSweepSchedule(t, b, chat, 621, now-600, now-1, "")
+	// 到点但已在进群类禁言：只推时间与下一次。
+	addSweepMember(t, b, chat, 622, 2*3600, 0)
+	setSweepSchedule(t, b, chat, 622, now-600, now-1, "")
+	saveJoinMute(b, chat, 622, kindProfile, "已有进群限制", 0)
+	// 到点的存量成员（joined_at=0）：按最老一档推 1h。
+	addSweepMember(t, b, chat, 623, -1, 0)
+	setSweepSchedule(t, b, chat, 623, now-600, now-1, "")
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{
-		630: {bio: "喜欢摄影"}, 631: {bio: "喜欢摄影"},
+		621: {bio: "喜欢摄影"}, 623: {bio: "喜欢摄影"},
 	})
 
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
-	at630, hash630 := sweepCheckedAt(t, b, chat, 630)
-	at631, _ := sweepCheckedAt(t, b, chat, 631)
-	if at630 == 0 || at631 == 0 {
-		t.Fatalf("两个老成员（含 joined_at=0）都应被首查：630 at=%d，631 at=%d",
-			at630, at631)
-	}
+
 	if n := soN.Load() + llmN.Load(); n != 0 {
-		t.Fatalf("首查干净资料不该花 AI，跑了 %d 次", n)
+		t.Fatalf("无资料变化不该花 AI，跑了 %d 次", n)
+	}
+	// 620 未到点，原地不动。
+	if checked, next, hash := sweepSchedule(t, b, chat, 620); checked != now-7200 ||
+		next != now+300 || hash != "futurehash" {
+		t.Errorf("620 未到点不该被碰：%d/%d/%q", checked, next, hash)
+	}
+	// 621：5min 档，指纹落库。
+	checked, next, hash := sweepSchedule(t, b, chat, 621)
+	if checked < now || hash == "" {
+		t.Errorf("621 应复查并落指纹：checked=%d hash=%q", checked, hash)
+	}
+	if next < now+int64((5*time.Minute-time.Minute)/time.Second) ||
+		next > now+int64((5*time.Minute+time.Minute)/time.Second) {
+		t.Errorf("621 的 next_at 应落在 5min 档附近，得到 %d（now=%d）", next, now)
+	}
+	// 622：join_mutes 跳过，只推时间，指纹保持空。
+	checked, next, hash = sweepSchedule(t, b, chat, 622)
+	if checked < now || hash != "" {
+		t.Errorf("622 join_mutes 跳过应只推时间：checked=%d hash=%q", checked, hash)
+	}
+	if next < now+int64((5*time.Minute-time.Minute)/time.Second) ||
+		next > now+int64((5*time.Minute+time.Minute)/time.Second) {
+		t.Errorf("622 的 next_at 应落在 5min 档附近，得到 %d", next)
+	}
+	// 623：joined_at=0 按 1h 档。
+	checked, next, _ = sweepSchedule(t, b, chat, 623)
+	if checked < now {
+		t.Errorf("623 应复查：checked=%d", checked)
+	}
+	hour := int64(prewarmSweepInterval(prewarmAge(now, 0)) / time.Second)
+	if next < now+hour-60 || next > now+hour+60 {
+		t.Errorf("623 的 next_at 应落在 1h 档附近，得到 %d（now=%d）", next, now)
 	}
 
-	// 24h 内：不复查。
+	// 立刻再跑一轮：全部 next_at 都在未来，一个都不该被选中。
+	before := map[int64]int64{}
+	for _, uid := range []int64{620, 621, 622, 623} {
+		_, nx, _ := sweepSchedule(t, b, chat, uid)
+		before[uid] = nx
+	}
+	fake.Reset()
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
-	if at, _ := sweepCheckedAt(t, b, chat, 630); at != at630 {
-		t.Fatalf("24h 内不该复查 630：%d -> %d", at630, at)
+	if got := fake.CountCalls("getChat"); got != 0 {
+		t.Fatalf("未到点不该拉资料，得到 %d 次 getChat", got)
 	}
-	if at, _ := sweepCheckedAt(t, b, chat, 631); at != at631 {
-		t.Fatalf("24h 内不该复查 631：%d -> %d", at631, at)
-	}
-
-	// 630 的上次复查挪到 25h 前：到期复查；631 仍在 24h 内。
-	stale := time.Now().Unix() - int64(prewarmDailyInterval/time.Second) - 3600
-	setSweepChecked(t, b, chat, 630, stale, hash630)
-	PrewarmSweep(b.Shared)
-	waitIdle(t, b)
-	if at, hash := sweepCheckedAt(t, b, chat, 630); at <= stale || hash != hash630 {
-		t.Fatalf("超过 24h 应复查 630 且指纹不变：at=%d hash=%q", at, hash)
-	}
-	if at, _ := sweepCheckedAt(t, b, chat, 631); at != at631 {
-		t.Fatalf("631 还在 24h 内不该复查：%d -> %d", at631, at)
-	}
-	if n := soN.Load() + llmN.Load(); n != 0 {
-		t.Fatalf("指纹未变不该花 AI，跑了 %d 次", n)
+	for uid, want := range before {
+		if _, nx, _ := sweepSchedule(t, b, chat, uid); nx != want {
+			t.Errorf("uid %d 未到点被改写：next %d -> %d", uid, want, nx)
+		}
 	}
 }
 
@@ -829,8 +856,9 @@ func TestPrewarmSweepFingerprintSkipsAI(t *testing.T) {
 	addSweepMember(t, b, chat, 640, 25*3600, 0)
 	bio := "免押小额洗资：https://t.me/+abcdef"
 	h := profileHash(senderProfile{Bio: bio})
-	stale := time.Now().Unix() - 25*3600
-	setSweepChecked(t, b, chat, 640, stale, h)
+	now := time.Now().Unix()
+	stale := now - 25*3600
+	setSweepSchedule(t, b, chat, 640, stale, now-1, h)
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{640: {bio: bio}})
 
 	PrewarmSweep(b.Shared)
@@ -842,8 +870,10 @@ func TestPrewarmSweepFingerprintSkipsAI(t *testing.T) {
 	if n := soN.Load() + llmN.Load(); n != 0 {
 		t.Fatalf("指纹未变不该花 AI，跑了 %d 次", n)
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 640); at <= stale || hash != h {
-		t.Fatalf("只该推时间、不动指纹：at=%d hash=%q", at, hash)
+	checked, next, hash := sweepSchedule(t, b, chat, 640)
+	if checked <= stale || next <= now || hash != h {
+		t.Fatalf("只该推时间与下一次、不动指纹：checked=%d next=%d hash=%q",
+			checked, next, hash)
 	}
 }
 
@@ -864,8 +894,8 @@ func TestPrewarmSweepFirstSightCleanNoAI(t *testing.T) {
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("不该禁言，得到 %d 次", got)
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 641); at == 0 || hash == "" {
-		t.Fatalf("首查应落时间与指纹：at=%d hash=%q", at, hash)
+	if at, next, hash := sweepSchedule(t, b, chat, 641); at == 0 || next <= at || hash == "" {
+		t.Fatalf("首查应落时间、指纹并预排下一次：at=%d next=%d hash=%q", at, next, hash)
 	}
 }
 
@@ -889,8 +919,8 @@ func TestPrewarmSweepFirstSightSuspiciousJudges(t *testing.T) {
 	if _, ok := loadJoinMute(b.Store, chat, 642); !ok {
 		t.Fatal("应写 join_mutes")
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 642); at == 0 || hash == "" {
-		t.Fatalf("应落时间与指纹：at=%d hash=%q", at, hash)
+	if at, next, hash := sweepSchedule(t, b, chat, 642); at == 0 || next <= at || hash == "" {
+		t.Fatalf("应落时间、指纹并预排下一次：at=%d next=%d hash=%q", at, next, hash)
 	}
 }
 
@@ -902,7 +932,8 @@ func TestPrewarmSweepNicknameOnlyChangeJudges(t *testing.T) {
 		llmReply(true, 0.95, "promo", "account"))
 	addSweepMember(t, b, chat, 643, 25*3600, 0)
 	// 上次查过的是干净资料；现在昵称变成广告，简介仍为空。
-	setSweepChecked(t, b, chat, 643, time.Now().Unix()-25*3600,
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 643, now-25*3600, now-1,
 		profileHash(senderProfile{FirstName: "Robert Williamson"}))
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{
 		643: {first: "手机拍违停 一百圆/张"},
@@ -920,6 +951,9 @@ func TestPrewarmSweepNicknameOnlyChangeJudges(t *testing.T) {
 	if _, ok := loadJoinMute(b.Store, chat, 643); !ok {
 		t.Fatal("应写 join_mutes")
 	}
+	if _, next, _ := sweepSchedule(t, b, chat, 643); next <= now {
+		t.Fatalf("判定后应预排下一次，next=%d", next)
+	}
 }
 
 // 资料已被复判放行且没改过：跳过，不重复吃同一个结论。
@@ -932,7 +966,8 @@ func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{608: {bio: bio}})
 	// 预置一份旧指纹：本次资料算「变过」，直接进判定流程，专测
 	// ProfileAllowed 这道门（首查路径另由 TestPrewarmSweepFirstSight* 覆盖）。
-	setSweepChecked(t, b, chat, 608, time.Now().Unix()-25*3600,
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 608, now-25*3600, now-1,
 		profileHash(senderProfile{Bio: "旧资料"}))
 	// 指纹只看用户名/昵称/简介；这里三项与 prewarmRecheck 组装的一致。
 	if GrantProfileOK(b, senderProfile{UserID: 608, Bio: bio}, 6, "测试放行") == 0 {
@@ -946,6 +981,10 @@ func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
 	}
 	if n := soN.Load() + llmN.Load(); n != 0 {
 		t.Fatalf("放行资料不该送 AI，跑了 %d 次", n)
+	}
+	// 跳过也要预排下一次，否则下一分钟又会被选中。
+	if _, next, _ := sweepSchedule(t, b, chat, 608); next <= now {
+		t.Fatalf("ProfileAllowed 跳过应预排下一次，next=%d", next)
 	}
 }
 
@@ -985,7 +1024,8 @@ func TestPrewarmSweepCleanLogsJoinChecked(t *testing.T) {
 	addSweepMember(t, b, chat, 610, 25*3600, 0)
 	// 预置旧指纹（资料变过）→ 走冷判定；首查干净资料现在是零 AI 路径，
 	// 由 TestPrewarmSweepFirstSightCleanNoAI 覆盖。
-	setSweepChecked(t, b, chat, 610, time.Now().Unix()-25*3600,
+	now := time.Now().Unix()
+	setSweepSchedule(t, b, chat, 610, now-25*3600, now-1,
 		profileHash(senderProfile{Bio: "旧资料"}))
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{610: {bio: "喜欢摄影"}})
 
@@ -1072,13 +1112,15 @@ func TestPrewarmSweepHonorsExemptUsers(t *testing.T) {
 	if got := fake.CountCalls("getChat"); got != 0 {
 		t.Fatalf("豁免用户不该拉资料，得到 %d 次 getChat", got)
 	}
-	if at, hash := sweepCheckedAt(t, b, chat, 614); at == 0 || hash != "" {
-		t.Fatalf("豁免跳过应只推时间、不落指纹：at=%d hash=%q", at, hash)
+	if checked, next, hash := sweepSchedule(t, b, chat, 614); checked == 0 ||
+		next <= checked || hash != "" {
+		t.Fatalf("豁免跳过应只推时间与下一次、不落指纹：checked=%d next=%d hash=%q",
+			checked, next, hash)
 	}
 }
 
-// 每 bot 每轮的复查数有上限：群多时 2 档 × 20 × N 会一次性灌满共享判定
-// 队列，饿死实时消息判定。三个群各 25 个老成员候选（3×20 > 60）逼出上限。
+// 每 bot 每轮的复查数有上限：群多时 120/群 × N 会一次性灌满共享判定
+// 队列，饿死实时消息判定。三个群各 125 个到期候选（3×125 > 240）逼出上限。
 func TestPrewarmSweepPerBotCap(t *testing.T) {
 	b, fake, _, _, _ := setupPrewarmSweep(t, "", "")
 	chats := []int64{-100, -101, -102}
@@ -1092,7 +1134,7 @@ func TestPrewarmSweepPerBotCap(t *testing.T) {
 	}
 	fakeSweepProfiles(t, fake, nil)
 
-	// 资料为空：首查只落空指纹不送检，60 条上限跑得很快。
+	// 资料为空：首查只落空指纹不送检，240 条上限跑得很快。
 	PrewarmSweep(b.Shared)
 	waitIdle(t, b)
 
@@ -1104,9 +1146,8 @@ func TestPrewarmSweepPerBotCap(t *testing.T) {
 	for _, c := range chats {
 		n := countRows(t, b, `SELECT COUNT(*) FROM group_members
 			WHERE chat_id=? AND prewarm_checked_at > 0`, c)
-		// 本用例全是老成员：单群单档上限即 prewarmSweepBatch。
 		if n > prewarmSweepBatch {
-			t.Errorf("群 %d 单档超过每群批量 %d：%d", c, prewarmSweepBatch, n)
+			t.Errorf("群 %d 超过每群批量 %d：%d", c, prewarmSweepBatch, n)
 		}
 	}
 }
