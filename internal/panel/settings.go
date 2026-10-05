@@ -80,6 +80,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_pre_act_conf", "初判线：先行动作置信度", "0-100 的整数；初判置信度低于它时只送复判，不先删消息、不临时禁言（拿不准的初判不再先把人罚一遍）", 0, 100, "antiad"},
 	{"antiad_act_hard", "处置线：删除+禁言", "0-100 的整数，新人达到它才禁言", 0, 100, "antiad"},
 	{"antiad_act_soft", "处置线：删除", "0-100 的整数，低于它不处置", 0, 100, "antiad"},
+	{"antiad_mute_conf", "禁言置信度下限", "0-100 的整数；要禁言/封禁（含仅删除档的短禁言）时，终判置信度必须达到它，低于它一律降级为只删/仅告警，管理员可在告警卡片上人工补刀。默认 75，0 = 关闭这条", 0, 100, "antiad"},
 	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销。默认跟随全局，单 bot 可覆盖", 0, 1, "both"},
 	{"antiad_group_silent", "群内静默", "1 = 群里不发任何通知（告警、限制提示、命令回复都不发），判定与处置照常；0 = 正常发", 0, 1, "antiad"},
 	{"antiad_cold_conf", "冷判定采信线", "0-100 的整数，建议高于处置线——进群画像的证据更少", 0, 100, "antiad"},
@@ -101,7 +102,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_alert_every", "私聊汇总间隔（分钟）", "1-1440 的整数，每隔这么久最多一条", 1, 1440, "antiad"},
 	{"antiad_ban", "禁言改为封禁", "1 = 该禁言的改为永久封禁出群，0 = 禁言；每群可单独覆盖", 0, 1, "antiad"},
 	{"antiad_short_mute", "仅删除档短时禁言", "1 = 只删除的档位附一记 5 分钟短禁言（堵住删完接着发）；0 = 只删不禁", 0, 1, "antiad"},
-	{"antiad_bool_verdict", "按模型结论定档", "默认开：模型判为广告就按最高档处置（新人删除+禁言/封禁，老人仍只删不禁），不看置信度——大模型的置信度抖动大，同一条广告可能 88% 也可能 95%。填 0 回到按置信度分档", 0, 1, "antiad"},
+	{"antiad_bool_verdict", "按模型结论定档", "默认开：模型判为广告就按最高档处置（新人删除+禁言/封禁，老人仍只删不禁），不看置信度——大模型的置信度抖动大，同一条广告可能 88% 也可能 95%。填 0 回到按置信度分档。无论开关，禁言/封禁都还要过「禁言置信度下限」", 0, 1, "antiad"},
 	{"antiad_judge_bots", "判定普通成员 bot", "1 = 判（默认；有管理员权限的 bot 始终豁免），0 = 豁免所有 bot；需对方 bot 开启 Bot-to-Bot 模式才收得到", 0, 1, "antiad"},
 	{"gban_global", "加入全局联合封禁组", "1 = 与其他加入的 bot 共享命中并接收全组执行；0 = 退出全局组，只在本归属人的专属组联动", 0, 1, "antiad"},
 }
@@ -129,7 +130,7 @@ var settingSections = []struct {
 }{
 	{"处置与分档", []string{
 		"antiad_new_hours", "antiad_new_msgs",
-		"antiad_act_hard", "antiad_act_soft", "antiad_severe_mute",
+		"antiad_act_hard", "antiad_act_soft", "antiad_mute_conf", "antiad_severe_mute",
 		"antiad_mute_minutes", "antiad_ban",
 		"antiad_short_mute", "antiad_bool_verdict",
 	}},

@@ -35,6 +35,17 @@ func severeAd(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	return false
 }
 
+// muteConfLine 返回本 bot 的「禁言置信度下限」（百分数）。终判要禁言/封禁
+// 时置信度必须达到它，否则降级为只删/仅告警。
+func muteConfLine(b *core.Bot, snap *store.Snapshot) float64 {
+	return float64(snap.BotSettingInt(b.BotID(), "antiad_mute_conf", store.DefaultMuteConf))
+}
+
+// belowMuteConf 报告这个终判的置信度够不够得着禁言线。
+func belowMuteConf(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
+	return v.Confidence*100 < muteConfLine(b, snap)
+}
+
 // decideAction 按「用户风险档 × 置信度」决定处置强度。
 //
 //	置信度 ≥ hard(90%)      新人: 删 + 禁言 + 告警    老人: 删 + 告警
@@ -46,10 +57,33 @@ func severeAd(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 // 诈骗、赌博这类不因为「他是老成员」就放过。
 //
 // 两条线都可以按 bot 覆盖，归 owner 调 —— 他最清楚自己的群该多严。
+//
+// 无论按哪套定档，禁言/封禁还要过**禁言置信度下限**（antiad_mute_conf，
+// 默认 75%）：模型偶尔会输出 is_ad=true、confidence=0、reason 却写着正常
+// 讨论的结论，按结论定档（antiad_bool_verdict）会直接删消息 + 禁言一个
+// 普通人。低于下限一律降级为只删/仅告警，管理员在告警卡片上人工补刀。
 func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) adAction {
 	if !v.IsAd {
 		return adAction{Name: "none"}
 	}
+	act := decideTier(b, snap, newbie, v)
+	if (act.Mute || act.Ban) && belowMuteConf(b, snap, v) {
+		act.Mute, act.Ban, act.Purge = false, false, false
+		switch {
+		case act.Delete:
+			act.Name = "deleted"
+		case act.Alert:
+			act.Name = "alerted"
+		default:
+			act.Name = "none"
+		}
+	}
+	return act
+}
+
+// decideTier 是定档本体，不含禁言置信度下限这道安全阀（见 decideAction）：
+// 下限要作用在两套定档方式之上，而不是只改其中一套。
+func decideTier(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) adAction {
 	// 「按模型结论定档」：只看模型的是/否结论，不看置信度。大模型在同一类
 	// 内容上的置信度抖动很大（同一条广告可能 88% 也可能 95%），卡 90% 硬线
 	// 会让「明显是广告」的内容时而只删、时而禁言。老人仍只删不禁——那是

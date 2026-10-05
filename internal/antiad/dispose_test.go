@@ -514,6 +514,35 @@ func TestBoolVerdictMode(t *testing.T) {
 	}
 }
 
+// TestLowConfidenceAdNotMuted：线上记录 #16729 —— 复判模型返回
+// is_ad=true、confidence=0、reason 却写着「正常讨论」，bool 模式按结论
+// 定档会直接删消息 + 永久禁言（本 bot antiad_mute_minutes=0）。禁言
+// 置信度下限让这种结论只删不禁，等管理员在告警卡片上补刀。
+func TestLowConfidenceAdNotMuted(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	// 最坏情况：万一禁言落地就是永久。
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_minutes", "0"); err != nil {
+		t.Fatal(err)
+	}
+	fakeAIWith(t, b, soReply("clean", 0.5, "none", "message"),
+		llmReply(true, 0, "none", "message"))
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7,
+		"我从几千的IP池里挑出来十个极度纯净又快的IP"))
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("0%% 置信的判定不该禁言，实际禁言 %d 次", n)
+	}
+	if n := fake.CountCalls("deleteMessage"); n != 1 {
+		t.Errorf("广告结论仍应删消息，实际删除 %d 次", n)
+	}
+	if _, action, _ := logRow(t, b); action != "deleted" {
+		t.Errorf("动作应降级为 deleted，得到 %q", action)
+	}
+}
+
 // TestHashHitPunishesInBoolMode：按模型结论定档时，哈希命中不再「只删不罚」。
 // 那条豁免在复判上游超时（复判失败回退到 hash 结论）时会让「同一条广告
 // 换个号再发」只删不禁——线上真实发生过（记录 #342）。

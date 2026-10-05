@@ -197,7 +197,8 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 		t.Error("危害度达阈值时应够格")
 	}
 
-	// 端到端：bool 模式下 62% 的新人广告只禁言、不进名单。
+	// 端到端：bool 模式下 62% 的新人广告只删不禁、不进名单 —— 禁言置信度
+	// 下限（默认 75）把低置信结论挡在禁言之外，删与告警照常。
 	fakeAIWith(t, b, soReply("ad", 0.62, "promo", "message"),
 		llmReply(true, 0.62, "promo", "message"))
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "ping0.cc"))
@@ -205,8 +206,11 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 	if _, in := b.Cache.Snap().Gban[42]; in {
 		t.Error("低置信误报不该进联合封禁名单")
 	}
-	if n := fake.CountCalls("restrictChatMember"); n == 0 {
-		t.Error("单群禁言照常执行")
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("62%% 低于禁言置信度下限，不该禁言，实际 %d 次", n)
+	}
+	if _, action, _ := logRow(t, b); action != "deleted" {
+		t.Errorf("应降级为只删，得到 %q", action)
 	}
 }
 

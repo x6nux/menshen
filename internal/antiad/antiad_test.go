@@ -55,6 +55,82 @@ func TestDecideAction(t *testing.T) {
 	}
 }
 
+// TestMuteConfFloor：禁言/封禁必须有置信度兜底。模型偶尔会输出
+// is_ad=true、confidence=0、reason 却写着「正常讨论」的结论（线上记录
+// #16729 等 8 条）：bool 模式只看结论，会直接删消息 + 禁言（本群禁言
+// 时长还是 0 = 永久）。低于「禁言置信度下限」（默认 75）一律降级为
+// 只删/仅告警，管理员可在告警卡片上人工补刀。
+func TestMuteConfFloor(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1) // bool 模式默认开
+	snap := b.Cache.Snap()
+
+	cases := []struct {
+		name   string
+		conf   float64
+		newbie bool
+		kind   string
+		sev    float64
+		scope  string
+		want   adAction
+	}{
+		{"0% 新人：只删不禁", 0, true, "promo", 0, "message",
+			adAction{Delete: true, Alert: true, Name: "deleted"}},
+		{"50% 新人：只删不禁", 0.5, true, "promo", 0, "message",
+			adAction{Delete: true, Alert: true, Name: "deleted"}},
+		{"74% 新人：只删不禁", 0.74, true, "promo", 0, "message",
+			adAction{Delete: true, Alert: true, Name: "deleted"}},
+		{"75% 新人：删+禁言", 0.75, true, "promo", 0, "message",
+			adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"}},
+		{"低置信账号级：不连带删除", 0.5, true, "promo", 0, "account",
+			adAction{Delete: true, Alert: true, Name: "deleted"}},
+		{"低置信高危害：仍不自动禁言", 0.5, false, "porn_bait", 3, "message",
+			adAction{Delete: true, Alert: true, Name: "deleted"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := decideAction(b, snap, c.newbie, adVerdict{
+				IsAd: true, Confidence: c.conf, Kind: c.kind,
+				Severity: c.sev, Scope: c.scope})
+			if got != c.want {
+				t.Errorf("decideAction = %+v, 期望 %+v", got, c.want)
+			}
+		})
+	}
+
+	// 下限设 0 = 关闭这条，回到只看结论（旧行为）。
+	if err := b.PutBotSetting(b.BotID(), "antiad_mute_conf", "0"); err != nil {
+		t.Fatal(err)
+	}
+	snap = b.Cache.Snap()
+	got := decideAction(b, snap, true, adVerdict{IsAd: true, Confidence: 0, Kind: "promo"})
+	if !got.Mute {
+		t.Errorf("下限关闭后 0%% 置信仍应按结论定档禁言，得到 %+v", got)
+	}
+}
+
+// TestShortMuteRespectsFloor：仅删除档的 5 分钟短禁言也是禁言，同样过
+// 禁言置信度下限。默认档位本来就 ≥75%，这条只在 bool 模式把低置信结论
+// 放进删除档时才起作用。
+func TestShortMuteRespectsFloor(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	if err := b.PutBotSetting(b.BotID(), "antiad_short_mute", "1"); err != nil {
+		t.Fatal(err)
+	}
+	snap := b.Cache.Snap()
+	conf := testutil.ChatConfOf(t, b, -100)
+
+	low := planAction(b, snap, conf, false, adVerdict{IsAd: true, Confidence: 0.5, Kind: "promo"})
+	if low.Short {
+		t.Errorf("低置信的仅删除档不该附短禁言: %+v", low)
+	}
+	ok := planAction(b, snap, conf, false, adVerdict{IsAd: true, Confidence: 0.9, Kind: "promo"})
+	if !ok.Short || ok.Name != "deleted" {
+		t.Errorf("置信度够的仅删除档应附短禁言: %+v", ok)
+	}
+}
+
 // TestIsNewbie 的关键分支是 AgeKnown=false：此时 AgeHours 退回 first_seen，
 // 采信它会把上线首日的全群元老一起打成新人。
 func TestIsNewbie(t *testing.T) {

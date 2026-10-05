@@ -109,8 +109,12 @@ const (
 // 「仅删除」档可选附一记短时禁言（antiad_short_mute）。
 func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bool, v adVerdict) adAction {
 	act := withPunish(decideAction(b, snap, newbie, v), snap.BanMode(conf))
+	// 短禁言也是禁言，同样要过禁言置信度下限：低置信的结论只删不禁，
+	// 没必要让一个可能清白的人 5 分钟发不了言。默认档位本来就 ≥75%，
+	// 这条只在「按模型结论定档」把低置信结论放进删除档时才起作用。
 	if act.Name == "deleted" &&
-		snap.BotSettingInt(b.BotID(), "antiad_short_mute", 0) == 1 {
+		snap.BotSettingInt(b.BotID(), "antiad_short_mute", 0) == 1 &&
+		!belowMuteConf(b, snap, v) {
 		act.Short = true
 	}
 	return act

@@ -41,6 +41,15 @@ const DefaultSoFloor = 30
 // 出现「面板显示 75、实际按 80 跑」这种对不上的情况。
 const DefaultPreActConf = 75
 
+// DefaultMuteConf 是「禁言置信度下限」的默认值（百分数）：终判要禁言/封禁
+// 时，置信度低于它一律降级成只删/仅告警。
+//
+// 「按模型结论定档」（antiad_bool_verdict）设计上不看置信度，因为同一类
+// 广告的置信度会在 88%/95% 之间抖动；但实测模型会偶尔输出 is_ad=true、
+// confidence=0、reason 还写着「正常讨论」的结论，不卡这条线就会删消息 +
+// 禁言（本群禁言还是永久的）。低于处置线的结论交给管理员在告警卡片上补刀。
+const DefaultMuteConf = 75
+
 var settingDefaults = map[string]string{
 	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是旧的小时
 	// 偏移键，仅在 tz_name 无效时作回落用，面板上已不再直接暴露。
@@ -108,6 +117,7 @@ var settingDefaults = map[string]string{
 	// 引入浮点要改动整套设置面板机制，不值当。
 	"antiad_so_trust":     strconv.Itoa(DefaultSoTrust),    // systemone 置信度采信线
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
+	"antiad_mute_conf":    strconv.Itoa(DefaultMuteConf),   // 禁言/封禁的置信度下限
 	"antiad_severe_mute":  "2",                             // 高危害不受资历豁免（危害度）
 	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不复判
 	"antiad_act_hard":     "90",                            // 删除 + 禁言线

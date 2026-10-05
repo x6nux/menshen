@@ -374,11 +374,15 @@ func TestPreActLineSkipsLowConfidence(t *testing.T) {
 }
 
 // TestPreActLineConfigurable：初判线可配，设成 0 等于退回「初判一出结论就动手」。
+// 禁言置信度下限同样在这条路上生效（临时禁言也是禁言），所以这里把两道线
+// 一起放到底，单独验证「初判线 0 = 低置信也先动手」这一行为。
 func TestPreActLineConfigurable(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	if err := b.PutBotSetting(b.BotID(), "antiad_pre_act_conf", "0"); err != nil {
-		t.Fatal(err)
+	for k, v := range map[string]string{"antiad_pre_act_conf": "0", "antiad_mute_conf": "0"} {
+		if err := b.PutBotSetting(b.BotID(), k, v); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fakeAIWith(t, b, soReply("ad", 0.30, "scam", "message"),
 		llmReply(true, 0.9, "scam", "message"))
