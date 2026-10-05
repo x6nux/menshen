@@ -61,6 +61,10 @@ type adChatInfo struct {
 //
 // 单列而不并进 message.text：归属必须分清。那段话是被引用者写的，
 // 混进本人正文会让「转述并批评广告」的人也被判成广告。
+//
+// 只有外部聊天引用会进送检载荷（见 buildState）：群内引用是别人的话，
+// 引用一条广告提醒管理员 / 批评 / 询问是举报行为，不算引用者的载荷。
+// 留底与告警仍用 displayText 保留全部引用，那是审计口径。
 type adQuotedInfo struct {
 	Text string `json:"text"`
 	From string `json:"from"`
@@ -187,7 +191,14 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 			MentionedBots: mentionedBots(text),
 		},
 		Sender: p,
-		Quoted: quotedInfo(m),
+	}
+	// 群内引用不送检：引用群友的消息是别人的话，「引用一条广告提醒管理员」
+	// 可能恰恰是举报行为，送检会让引用者看起来在说那段广告（线上记录
+	// #16913：用户引用「你来柬埔寨 我跟你详谈」后，下一条「鳄鱼」被判成
+	// 诈骗广告）。外部聊天引用照旧保留 —— 那是「正文为空、载荷全在引用
+	// 里」的主要规避形态（把频道广告搬进群），也是 quoted 字段存在的意义。
+	if q := quotedInfo(m); q != nil && q.IsExternal {
+		st.Quoted = q
 	}
 	if m.Chat != nil {
 		st.Chat = adChatInfo{ID: m.Chat.ID, Title: m.Chat.Title}
@@ -218,10 +229,10 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	// 启用的必封规则命中单独成字段：它比形态摘要强，提示词按「强证据」
 	// 对待（见 matchedRulesClause），但仍由模型结合上下文复核后处置。
 	//
-	// 匹配用 displayText（含引用）：正文为空、载荷全在引用里的规避形态
-	// 同样要命中（与守门处的 enforce/计数口径完全一致）；提示词另有
-	// 「引用他人广告做批评不算」的出口，由复判模型结合语境定案。
-	st.MatchedRules = MatchedRuleInfos(snap, displayText(m))
+	// 匹配用 judgingText（正文 + 外部引用）：正文为空、载荷全在外部引用
+	// 里的规避形态同样要命中；群内引用是别人的话（引用广告提醒管理员），
+	// 不算引用者发出的载荷。
+	st.MatchedRules = MatchedRuleInfos(snap, judgingText(m))
 	return st
 }
 
@@ -246,8 +257,14 @@ func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
 		if h.MessageID == m.MessageID {
 			continue
 		}
+		// 留底存的是 displayText（含引用）；历史只带本人正文，引用段
+		// （别人的话）剥掉。纯引用的消息没有正文可展示，直接跳过。
+		t := stripQuotedTail(h.Text)
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
 		out = append(out, core.CtxMsg{Name: senderName(m.From),
-			Text: core.TruncateRunes(h.Text, ctxTextLimit), At: h.At})
+			Text: core.TruncateRunes(t, ctxTextLimit), At: h.At})
 	}
 	if len(out) > n {
 		out = out[len(out)-n:]

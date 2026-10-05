@@ -188,7 +188,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// 的命中不在这里处置 —— 它稍后走「先删后判」专线：立即删除 + 临时禁言，
 	// 跳过 systemone，直接交大模型复判定案（见 buildState 的 matched_rules
 	// 与 judgeAndAct）。命中计数对所有规则都记。
-	if hits := MatchRules(snap, text); len(hits) > 0 {
+	if hits := MatchRules(snap, judgingText(m)); len(hits) > 0 {
 		for _, r := range hits {
 			BumpRuleHits(b.Shared, r.ID)
 		}

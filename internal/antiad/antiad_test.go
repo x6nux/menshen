@@ -489,6 +489,80 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 	}
 }
 
+// TestGroupQuoteNotJudged：群内引用不进判定 —— 引用群友的消息（尤其是
+// 引用一条广告提醒管理员）是别人的话，送检会让引用者看起来在说那段广告
+// （线上记录 #16913：用户回「我操」引用群里的「你来柬埔寨 我跟你详谈」，
+// 随后一条「鳄鱼」被复判判成诈骗广告）。外部聊天引用照旧保留：那是
+// 「正文为空、载荷全在引用里」的主要规避形态。
+func TestGroupQuoteNotJudged(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+
+	same := testutil.GroupMsg(-100, 42, 7, "鳄鱼")
+	same.ReplyToMessage = testutil.GroupMsg(-100, 43, 6, "你来柬埔寨 我跟你详谈")
+	st := buildState(b, b.Cache.Snap(), same, senderProfile{MsgsInGroup: 1})
+	if st.Quoted != nil {
+		t.Errorf("群内引用不该进判定载荷: %+v", st.Quoted)
+	}
+	if st.Message.Text != "鳄鱼" {
+		t.Errorf("message.text 应保持本人正文，得到 %q", st.Message.Text)
+	}
+	if got := judgingText(same); got != "鳄鱼" {
+		t.Errorf("judgingText = %q，期望只留正文", got)
+	}
+	// 留底 / 告警仍要看得见引用（审计口径），只有判定过滤。
+	if got := displayText(same); got != "鳄鱼\n［引用］你来柬埔寨 我跟你详谈" {
+		t.Errorf("displayText = %q，引用应照实保留", got)
+	}
+
+	ext := testutil.GroupMsg(-100, 42, 8, "u")
+	ext.ExternalReply = &tg.ExternalReplyInfo{Text: "频道推广",
+		Chat: &tg.Chat{ID: -100999, Title: "某频道"}}
+	st = buildState(b, b.Cache.Snap(), ext, senderProfile{MsgsInGroup: 1})
+	if st.Quoted == nil || !st.Quoted.IsExternal {
+		t.Errorf("外部引用应保留并标 is_external: %+v", st.Quoted)
+	}
+	if got := judgingText(ext); !strings.Contains(got, "频道推广") {
+		t.Errorf("judgingText 应含外部引用，得到 %q", got)
+	}
+}
+
+// TestStripQuotedTail：剥引用段只认 displayText 的拼接位（行首或换行后的
+// 「［引用］」），正文里恰好出现这个词时不动刀。
+func TestStripQuotedTail(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"我操\n［引用］你来柬埔寨 我跟你详谈", "我操"},
+		{"［引用］纯引用没有正文", ""},
+		{"普通发言", "普通发言"},
+		{"正文里提到［引用］这个词但没换行", "正文里提到［引用］这个词但没换行"},
+	}
+	for _, c := range cases {
+		if got := stripQuotedTail(c.in); got != c.want {
+			t.Errorf("stripQuotedTail(%q) = %q, 期望 %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRecentContextStripsGroupQuotes：recent_context 拿留底回填，留底存的
+// 是 displayText（含引用）。引用段是别人的话，历史里必须剥掉 —— 否则
+// 「引用广告提醒管理员」的人，在模型眼里就是发广告的人。
+func TestRecentContextStripsGroupQuotes(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	recordMessage(b, -100, 1, 42, "我操\n［引用］你来柬埔寨 我跟你详谈", 1000, "")
+	recordMessage(b, -100, 2, 42, "［引用］纯引用没有正文", 1001, "")
+	recordMessage(b, -100, 3, 42, "普通发言", 1002, "")
+	m := testutil.GroupMsg(-100, 42, 4, "当前这条")
+	recordMessage(b, -100, 4, 42, "当前这条", 1003, "")
+
+	st := buildState(b, b.Cache.Snap(), m, senderProfile{MsgsInGroup: 4})
+	var got []string
+	for _, c := range st.RecentContext {
+		got = append(got, c.Text)
+	}
+	if want := []string{"我操", "普通发言"}; !slices.Equal(got, want) {
+		t.Fatalf("recent_context = %q, 期望 %q（引用段剥掉、纯引用不进历史）", got, want)
+	}
+}
+
 // TestAlertTTLBySeverity：明显到不用人盯的群内提醒只弹一小会 —— 置信度
 // 到删除+禁言线且危害度 ≥ 阈值（默认 2）；其余维持普通 TTL；短撤回秒数
 // 为 0 时关闭。

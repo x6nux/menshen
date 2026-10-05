@@ -10,6 +10,7 @@ import (
 
 	"menshen/internal/core"
 	"menshen/internal/testutil"
+	"menshen/internal/tg"
 )
 
 // insertRule 往库里插一条必封规则并重建快照，返回规则 id。
@@ -549,16 +550,28 @@ func TestRuleHitNoLLMFallsBackToMatrix(t *testing.T) {
 	}
 }
 
-// TestMatchedRulesSeeQuoted：规则匹配看含引用的完整文本（正文为空、载荷
-// 全在引用里是典型规避形态），与守门处的 enforce/计数口径一致。
+// TestMatchedRulesSeeQuoted：规则匹配区分引用来源 —— 外部聊天引用照旧
+// 命中（正文为空、载荷全在引用里是典型规避形态，也是 quoted 字段存在的
+// 意义）；群内引用是别人的话（引用一条广告提醒管理员），不算引用者发出的
+// 载荷，不参与匹配。
 func TestMatchedRulesSeeQuoted(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	insertRule(t, b, "引用广告规则", "引用命中词", "scam", true, false)
 
-	m := testutil.GroupMsg(-100, 42, 1, "看看这个")
-	m.ReplyToMessage = testutil.GroupMsg(-100, 43, 2, "引用命中词")
-	st := buildState(b, b.Cache.Snap(), m, senderProfile{MsgsInGroup: 5})
+	// 群内引用：不命中。
+	same := testutil.GroupMsg(-100, 42, 1, "看看这个")
+	same.ReplyToMessage = testutil.GroupMsg(-100, 43, 2, "引用命中词")
+	st := buildState(b, b.Cache.Snap(), same, senderProfile{MsgsInGroup: 5})
+	if len(st.MatchedRules) != 0 {
+		t.Errorf("群内引用不该触发规则证据：%+v", st.MatchedRules)
+	}
+
+	// 外部聊天引用：照旧命中。
+	ext := testutil.GroupMsg(-100, 42, 3, "看看这个")
+	ext.ExternalReply = &tg.ExternalReplyInfo{Text: "引用命中词",
+		Chat: &tg.Chat{ID: -100999, Title: "某频道"}}
+	st = buildState(b, b.Cache.Snap(), ext, senderProfile{MsgsInGroup: 5})
 	if len(st.MatchedRules) != 1 || st.MatchedRules[0].Name != "引用广告规则" {
-		t.Errorf("引用里的规则命中应进证据：%+v", st.MatchedRules)
+		t.Errorf("外部引用里的规则命中应进证据：%+v", st.MatchedRules)
 	}
 }

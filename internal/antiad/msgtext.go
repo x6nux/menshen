@@ -152,6 +152,11 @@ func forwardSource(raw json.RawMessage) string {
 	return ""
 }
 
+// quoteMark 是拼接被引用内容的标记，displayText / judgingText / 留底回填
+// （stripQuotedTail）共用同一个字面量 —— 分开写的话，改一处忘一处就会
+// 在历史里留下剥不掉的引用段。
+const quoteMark = "［引用］"
+
 // displayText 是「这条消息在群里实际可见的全部文字」：本人正文加上
 // 被引用的内容。
 //
@@ -162,17 +167,53 @@ func forwardSource(raw json.RawMessage) string {
 //     第一条之后全被当成重复吞掉
 //   - 只拿本人正文落库/告警 → 管理员和形态总结看到的都是空白
 //
-// 送检载荷不用它：那里 message.text 与 quoted 必须分开，保住归属。
+// 送检载荷不用它：那里 message.text 与 quoted 必须分开，保住归属；
+// 规则匹配用 judgingText（群内引用不参与）。
 func displayText(m *tg.Message) string {
-	t := msgText(m)
+	return joinQuote(msgText(m), quotedInfo(m))
+}
+
+// judgingText 是真正参与判定与规则匹配的文本：本人正文 + **外部聊天**引用。
+//
+// 群内引用是别人的话：有人引用一条广告来提醒管理员 / 批评 / 询问，那是
+// 举报与讨论，把那段广告算到引用者头上会把他判成发广告的人。外部引用
+// （频道、其它聊天）照旧保留 —— 那是「正文为空、载荷全在引用里」的主要
+// 规避形态。留底、去重、告警仍走 displayText（审计口径，引用照实保留）。
+func judgingText(m *tg.Message) string {
 	q := quotedInfo(m)
+	if q == nil || !q.IsExternal {
+		return msgText(m)
+	}
+	return joinQuote(msgText(m), q)
+}
+
+// joinQuote 把正文与引用拼成可见文本；正文为空时直接给引用段。
+func joinQuote(t string, q *adQuotedInfo) string {
 	if q == nil {
 		return t
 	}
 	if t == "" {
-		return "［引用］" + q.Text
+		return quoteMark + q.Text
 	}
-	return t + "\n［引用］" + q.Text
+	return t + "\n" + quoteMark + q.Text
+}
+
+// stripQuotedTail 去掉留底文本里的引用段，返回本人正文。
+//
+// 留底存的是 displayText（正文 + 引用），recent_context 与 /check 的
+// review_history 都是拿留底回填的。引用内容属于被引用者：把「引用广告
+// 提醒管理员」的人的历史里那段广告原样喂给复判，模型会把它当成这个人
+// 的发言（线上实测过）。判定载荷里群内引用已被过滤（见 buildState），
+// 历史按同一口径剥掉。
+func stripQuotedTail(text string) string {
+	// 引用段由 displayText 接在正文后面（换行 + 标记），或整条都是引用。
+	if i := strings.Index(text, "\n"+quoteMark); i >= 0 {
+		return strings.TrimRight(text[:i], "\n")
+	}
+	if strings.HasPrefix(text, quoteMark) {
+		return ""
+	}
+	return text
 }
 
 // senderName 取一个供上下文展示的名字，优先 username。

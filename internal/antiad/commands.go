@@ -137,8 +137,14 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	state := buildState(b, snap, tgt, profile)
 	state.ReviewHistory = make([]core.CtxMsg, 0, len(hist))
 	for _, h := range hist {
+		// 群内引用是别人的话，复查的是这个账号本人说了什么：剥掉引用段，
+		// 免得「引用广告提醒管理员」在他的历史里看起来像他自己在发广告。
+		t := stripQuotedTail(h.Text)
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
 		state.ReviewHistory = append(state.ReviewHistory,
-			core.CtxMsg{Name: senderName(target), Text: h.Text, At: h.At})
+			core.CtxMsg{Name: senderName(target), Text: t, At: h.At})
 	}
 
 	if !b.AdSubmit(func() {
