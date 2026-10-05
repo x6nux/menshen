@@ -171,6 +171,26 @@ func TestLLMVerdictCarriesSeverity(t *testing.T) {
 	}
 }
 
+// TestLLMAdWithoutKindIsClean：复判吐出 is_ad=true 却 kind=none 是自相矛盾 ——
+// 线上 #18020：理由写着「按正常交流处理」，按模型结论定档照样删了，正文还
+// 记成哈希，另一个人发同一句话被直接删。没说出广告类别就不算广告。
+func TestLLMAdWithoutKindIsClean(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"{\"is_ad\":true,\"confidence\":0.15,\"kind\":\"none\",\"scope\":\"message\",\"severity\":0,\"profile_ok_hours\":48,\"reason\":\"按正常交流处理\"}"}}]}`))
+	})
+	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.IsAd {
+		t.Error("kind=none 的广告结论应按正常处理")
+	}
+	if v.ProfileOKHours != 48 {
+		t.Errorf("按正常处理后资料放行要生效，得到 %d", v.ProfileOKHours)
+	}
+}
+
 // TestVerdictCarriesModel 确认模型名一路带到 verdict 上：换模型后校准阈值，
 // 第一件事就是知道眼前这条结论出自哪个模型。Decider 只说走了几级，说不出是谁。
 func TestVerdictCarriesModel(t *testing.T) {

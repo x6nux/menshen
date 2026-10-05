@@ -516,8 +516,9 @@ func TestBoolVerdictMode(t *testing.T) {
 
 // TestLowConfidenceAdNotMuted：线上记录 #16729 —— 复判模型返回
 // is_ad=true、confidence=0、reason 却写着「正常讨论」，bool 模式按结论
-// 定档会直接删消息 + 永久禁言（本 bot antiad_mute_minutes=0）。禁言
-// 置信度下限让这种结论只删不禁，等管理员在告警卡片上补刀。
+// 定档会直接删消息 + 永久禁言（本 bot antiad_mute_minutes=0）。kind=none
+// 说不出广告类别，按正常走：只删不禁也不行 —— #18020 照删还记了哈希，
+// 别人发同一句话被直接删。
 func TestLowConfidenceAdNotMuted(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -535,11 +536,11 @@ func TestLowConfidenceAdNotMuted(t *testing.T) {
 	if n := fake.CountCalls("restrictChatMember"); n != 0 {
 		t.Errorf("0%% 置信的判定不该禁言，实际禁言 %d 次", n)
 	}
-	if n := fake.CountCalls("deleteMessage"); n != 1 {
-		t.Errorf("广告结论仍应删消息，实际删除 %d 次", n)
+	if n := fake.CountCalls("deleteMessage"); n != 0 {
+		t.Errorf("kind=none 的结论不该删消息，实际删除 %d 次", n)
 	}
-	if _, action, _ := logRow(t, b); action != "deleted" {
-		t.Errorf("动作应降级为 deleted，得到 %q", action)
+	if _, action, _ := logRow(t, b); action != "none" {
+		t.Errorf("动作应为 none，得到 %q", action)
 	}
 }
 

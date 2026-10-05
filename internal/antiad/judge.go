@@ -237,6 +237,11 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
 			fmt.Errorf("反广告：大模型 JSON 解析失败: %w", err)
 	}
+	// is_ad=true 却说不出广告类别是模型自相矛盾（实测理由写着「按正常交流
+	// 处理」）。按模型结论定档只看 is_ad，照它会删消息、记哈希，按正常走。
+	if out.IsAd && out.Kind == "none" {
+		out.IsAd = false
+	}
 	okHours := 0
 	if !out.IsAd {
 		okHours = clampProfileHours(out.ProfileOKHours)
