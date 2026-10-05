@@ -6,6 +6,37 @@ import (
 	"menshen/internal/testutil"
 )
 
+func TestProfileEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		p    senderProfile
+		want bool
+	}{
+		{"全空", senderProfile{}, true},
+		{"只有空白名字", senderProfile{FirstName: "  "}, true},
+		{"有简介", senderProfile{Bio: "hello"}, false},
+		{"有用户名", senderProfile{Username: "abc"}, false},
+		{"有名字", senderProfile{FirstName: "小明"}, false},
+	}
+	for _, c := range cases {
+		if got := c.p.ProfileEmpty(); got != c.want {
+			t.Errorf("%s: ProfileEmpty = %v，期望 %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPrewarmStateFields(t *testing.T) {
+	zero := 0
+	p := senderProfile{Photos: &zero, PhotoKnown: true}
+	if !p.PhotoKnown || p.Photos == nil || *p.Photos != 0 {
+		t.Fatal("Photos/PhotoKnown 应可表达「查到了，0 张」")
+	}
+	st := adState{JoinCheck: false, PrewarmCheck: true}
+	if !st.PrewarmCheck {
+		t.Fatal("PrewarmCheck 应为真")
+	}
+}
+
 // TestJoinMuteKindRoundTrip：kind 要能落库读回，prewarm 与 profile 区分开。
 func TestJoinMuteKindRoundTrip(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

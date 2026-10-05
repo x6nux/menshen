@@ -27,6 +27,12 @@ type senderProfile struct {
 	AgeKnown    bool  `json:"age_known"`
 	MsgsInGroup int64 `json:"msgs_in_group"`
 	PriorAdHits int64 `json:"prior_ad_hits"`
+	// Photos / PhotoKnown 只有前置号复核路径填充（见 prewarm.go）：
+	// 头像张数与「查没查到」。指针是为了让 0 张也能进载荷（omitempty
+	// 对非空指针不生效），同时未填充时字段整体缺席 —— PhotoKnown=false
+	// 时照片数未知，任何一方都不得把它当成「无头像」。
+	Photos     *int `json:"photos,omitempty"`
+	PhotoKnown bool `json:"photo_known,omitempty"`
 	// ProfileOK 表示这份资料已被复判确认不构成广告（见 profile_ok.go），
 	// 到 ProfileOKUntil 之前不得再凭资料判为广告；正文照常判断。
 	ProfileOK      bool   `json:"profile_ok,omitempty"`
@@ -121,12 +127,23 @@ type adState struct {
 	// JoinCheck 为真表示这是**进群冷判定**：此人一条消息都还没发过，
 	// message 整块是空的，全部证据在 sender 里。提示词据此切换口径，
 	// 不加这个标记的话模型会把「正文为空」当成规避形态而误判。
-	JoinCheck           bool   `json:"join_check,omitempty"`
+	JoinCheck bool `json:"join_check,omitempty"`
+	// PrewarmCheck 为真表示这是**前置号复核**：新成员的首条短消息，
+	// 问的是账号层面「是不是批量注册的广告前置号」。提示词据此切换口径。
+	PrewarmCheck        bool   `json:"prewarm_check,omitempty"`
 	KnownAdPatterns     string `json:"known_ad_patterns"`
 	KnownFalsePositives string `json:"known_false_positives"`
 	// MatchedRules 是命中的非强制必封规则（强证据，不是判决）。enforce
 	// 规则命中时已在同步段直接处置，不会走到送检；这里只放需要 AI 复核的。
 	MatchedRules []MatchedRule `json:"matched_rules,omitempty"`
+}
+
+// ProfileEmpty 报告账号资料是否为空壳：简介、用户名都没有，名字也只有
+// 空白。前置号识别的信号之一，单凭它不构成判断。
+func (p senderProfile) ProfileEmpty() bool {
+	return strings.TrimSpace(p.Bio) == "" &&
+		strings.TrimSpace(p.Username) == "" &&
+		strings.TrimSpace(p.FirstName+p.LastName) == ""
 }
 
 // buildProfile 组装发送者画像。
