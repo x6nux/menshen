@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 
 	"menshen/internal/core"
@@ -49,16 +48,13 @@ var shapeStrip = strings.NewReplacer(
 )
 
 // profileShape 把资料归一化成「形状」：小写、去零宽与标点、压缩空白，
-// 链接→[链接]、@用户名→[号]、数字段→[数]。bio 为空时退回昵称（同模板
-// 批量号的昵称也常成套）。
+// 链接→[链接]、@用户名→[号]、数字段→[数]。
 //
-// 返回空串表示不足以参与复用：有效字母不足 4 个或只剩占位符时没有
-// 区分度，硬拿来命中只会扩大误伤面。
+// 只取 bio：昵称是低熵文本（Robert Williamson/John Smith 这类同名者众），
+// 拿它做形状会显著扩大零 AI 误伤面；号商模板都在 bio。bio 为空 → 空串，
+// 不参与复用。有效字母不足 4 个或只剩占位符同样返回空串（没有区分度）。
 func profileShape(p senderProfile) string {
 	src := strings.TrimSpace(p.Bio)
-	if src == "" {
-		src = strings.TrimSpace(p.FirstName + " " + p.LastName)
-	}
 	if src == "" {
 		return ""
 	}
@@ -144,17 +140,6 @@ func learnProfileShape(s *store.Store, shape, kind, sample string, now int64) {
 	}
 }
 
-// bumpProfileShapeHit 记一次形状复用命中。
-func bumpProfileShapeHit(s *store.Store, shape string, now int64) {
-	if shape == "" {
-		return
-	}
-	if _, err := s.Write.Exec(`UPDATE profile_shapes
-		SET hits=hits+1, last_hit=? WHERE shape=?`, now, shape); err != nil {
-		slog.Warn("反广告：资料形状命中计数失败", "shape", shape, "err", err)
-	}
-}
-
 // removeProfileShape 删除一条形状（限制被撤销/申诉解除时用）：形状只从
 // 已成立的处罚学习，处罚被推翻后它不该继续复用。
 func removeProfileShape(s *store.Store, shape string) {
@@ -167,12 +152,13 @@ func removeProfileShape(s *store.Store, shape string) {
 }
 
 // shapeMute 在资料形状命中已学习模板时直接禁言（零 AI）。演练群只落
-// dryrun 流水；quiet=true 用于批量探测（不发群通知）。返回 (是否命中,
-// 是否已落入 join_mutes)。
+// dryrun 流水（不刷新形状热度）；quiet=true 用于批量探测（不发群通知）。
+// 返回 (是否命中, 是否已落入 join_mutes)。
 //
-// 这里不把 Shape 再交给 applyJoinMuteNotify：命中路径已经 bump 过计数，
-// 触发方是既有模板而不是这条资料；让 join_mutes.shape 留空，撤销这条
-// 限制时也不会把模板本身删掉。
+// Shape 随处罚落进 join_mutes.shape：撤销/申诉解除这条限制时按它反查
+// 删除模板（同 AI/enforce 路径）。命中计数不在这里手动 bump——交给
+// applyJoinMuteNotify 成功后的 learn 计一次，避免双计；演练不落库也就
+// 不会让错误形状靠 dryrun 命中续命。
 func shapeMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, p senderProfile,
 	body, note string, quiet bool) (bool, bool) {
 	shape := profileShape(p)
@@ -183,8 +169,6 @@ func shapeMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, p senderProfile,
 	if !ok {
 		return false, false
 	}
-	now := time.Now().Unix()
-	bumpProfileShapeHit(b.Store, shape, now)
 	v := adVerdict{IsAd: true, Confidence: 1, Kind: rec.Kind, Scope: "account",
 		Decider: "phash",
 		Reason: fmt.Sprintf("资料形态与已判定广告号一致（样本：%s，已命中 %d 次）",
@@ -197,6 +181,7 @@ func shapeMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, p senderProfile,
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: note,
 		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
+		Shape: shape,
 		Quiet: quiet,
 	})
 	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)

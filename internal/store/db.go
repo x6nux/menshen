@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS ad_hashes (
 -- （链接/数字/@用户名占位、去零宽与标点）的形态。第一个账号被判广告后
 -- 学习下来，后续同形状账号零 AI 直接禁言。全局表，不按 bot 隔离：
 -- 账号资料模板是攻击者侧的公开复用，跨租户命中是收益。
--- last_hit 兼作过期依据（CleanupData 按保留期清理）。
+-- last_hit 兼作过期依据（CleanupData 按 log_retention_days 保留期清理）。
 CREATE TABLE IF NOT EXISTS profile_shapes (
   shape      TEXT PRIMARY KEY,
   kind       TEXT    NOT NULL DEFAULT '',

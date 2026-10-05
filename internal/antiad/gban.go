@@ -632,11 +632,19 @@ func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 			break
 		}
 		if !done {
+			// 无在跑的 bot 也要清掉形状：这里直接 DELETE 不会走
+			// dropJoinMute 的反查删除，模板会继续被复用。
+			var shape string
+			if err := sh.Store.Read.QueryRow(`SELECT shape FROM join_mutes
+				WHERE chat_id=? AND user_id=?`, chatID, uid).Scan(&shape); err != nil {
+				shape = ""
+			}
 			if _, err := sh.Store.Write.Exec(`DELETE FROM join_mutes
 				WHERE chat_id=? AND user_id=?`, chatID, uid); err != nil {
 				slog.Error("进群限制：清除失败", "chat", chatID, "uid", uid, "err", err)
 				continue
 			}
+			removeProfileShape(sh.Store, shape)
 			NoteLifted(sh, chatID, uid)
 		}
 		n++
@@ -804,7 +812,8 @@ func CleanupData(sh *core.Shared) {
 	if _, err := deleteBatched(sh, "ad_hashes", "last_hit_at < ?", cut); err != nil {
 		slog.Error("清理内容哈希失败", "err", err)
 	}
-	// 资料形状与内容哈希同寿：只保留还在复用的模板形状。
+	// 资料形状与内容哈希同寿：按保留期（log_retention_days）清掉久未命中的
+	// 模板形状。
 	if _, err := deleteBatched(sh, "profile_shapes", "last_hit < ?", cut); err != nil {
 		slog.Error("清理资料形状失败", "err", err)
 	}
