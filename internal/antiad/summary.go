@@ -83,8 +83,8 @@ func renderAdSummary(b *core.Bot, from, to int64) (string, map[string]any, bool)
 	id := b.BotID()
 	var hits, cleared, errs, skipped int64
 	if err := b.Store.Read.QueryRow(`SELECT
-		COALESCE(SUM(CASE WHEN verdict='ad' AND action NOT IN ('none','join_checked') THEN 1 ELSE 0 END),0),
-		COALESCE(SUM(CASE WHEN verdict='clean' AND action NOT IN ('none','join_checked') THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN verdict='ad' AND action NOT IN ('none','join_checked','prewarm_checked') THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN verdict='clean' AND action NOT IN ('none','join_checked','prewarm_checked') THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN verdict='error' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN verdict='skipped' THEN 1 ELSE 0 END),0)
 		FROM antiad_log WHERE bot_id=? AND id > ? AND id <= ?`, id, from, to).
@@ -98,7 +98,7 @@ func renderAdSummary(b *core.Bot, from, to int64) (string, map[string]any, bool)
 
 	var list []summaryHit
 	rows, err := b.Store.Read.Query(`SELECT id,chat_id,user_id,verdict,confidence,ad_kind,action,reason
-		FROM antiad_log WHERE bot_id=? AND id > ? AND id <= ? AND action NOT IN ('none','join_checked')
+		FROM antiad_log WHERE bot_id=? AND id > ? AND id <= ? AND action NOT IN ('none','join_checked','prewarm_checked')
 		ORDER BY chat_id, id LIMIT ?`, id, from, to, adSummaryList)
 	if err != nil {
 		slog.Error("反广告：读取汇总命中失败", "err", err)
@@ -206,7 +206,7 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 
 // ActionLabel 把 antiad_log.action 的机器值翻成人话。
 // 完整词汇表：none/alerted/deleted/muted/deleted_muted/deleted_banned/banned/
-// join_muted/join_checked/undone，以及以上任意值前缀 "dryrun:" 表示演练期本应执行、实际未执行。
+// join_muted/join_checked/prewarm_muted/prewarm_checked/undone，以及以上任意值前缀 "dryrun:" 表示演练期本应执行、实际未执行。
 // 漏掉任何一个值都会导致面板直接显示原始字符串。
 func ActionLabel(a string) string {
 	switch {
@@ -228,6 +228,10 @@ func ActionLabel(a string) string {
 		return "进群限制发言"
 	case a == "join_checked":
 		return "入群检查"
+	case a == actionPrewarmMuted:
+		return "前置号限制发言"
+	case a == actionPrewarmChecked:
+		return "前置号检查"
 	case a == "undone":
 		return "已标记误判"
 	case strings.HasPrefix(a, "dryrun:"):

@@ -84,6 +84,8 @@ const ACTION_LABELS: Record<string, string> = {
   deleted_banned: '删除+封禁',
   join_muted: '进群限制发言',
   join_checked: '入群检查',
+  prewarm_muted: '前置号限制发言',
+  prewarm_checked: '前置号检查',
   gban_muted: '联封禁言',
   gban_banned: '联封出群',
   alerted: '仅告警',

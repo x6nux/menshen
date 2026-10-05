@@ -196,6 +196,8 @@ func TestActionLabel(t *testing.T) {
 		"none": "未处置", "alerted": "仅告警", "deleted": "已删除",
 		"muted": "已禁言", "deleted_muted": "已删除+禁言", "deleted_banned": "已删除+封禁",
 		"banned": "已封禁", "join_muted": "进群限制发言", "join_checked": "入群检查",
+		"prewarm_muted":   "前置号限制发言",
+		"prewarm_checked": "前置号检查",
 		"undone":               "已标记误判",
 		"dryrun:deleted_muted": "演练（本应已删除+禁言）",
 	}
@@ -203,6 +205,22 @@ func TestActionLabel(t *testing.T) {
 		if got := ActionLabel(in); got != want {
 			t.Errorf("ActionLabel(%q) = %q, 期望 %q", in, got, want)
 		}
+	}
+}
+
+// prewarm_checked 与 join_checked 同口径：不算处置，用户页的「被处置过」
+// 与私聊汇总都要排除它。
+func TestPrewarmCheckedNotProcessed(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	logAd(b, testutil.GroupMsg(-100, 9001, 7, "［前置号复核］"),
+		adVerdict{IsAd: false, Confidence: 0.9, Kind: "none", Decider: "systemone",
+			Reason: "正常新用户"},
+		actionPrewarmChecked, "前置号复核")
+	if n := countRows(t, b, `SELECT COUNT(*) FROM antiad_log WHERE user_id=9001 AND `+ProcessedCond); n != 0 {
+		t.Errorf("前置号检查不是处置，不该计入被处置过，得到 %d", n)
+	}
+	if _, _, ok := renderAdSummary(b, 0, 1<<62); ok {
+		t.Error("前置号检查不该触发管理员私聊汇总")
 	}
 }
 

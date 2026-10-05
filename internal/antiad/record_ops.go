@@ -135,7 +135,7 @@ func UndoVerdict(b *core.Bot, r AdLogRow, actor int64) (lifted string, ok bool, 
 
 	ok = true
 	switch r.Action {
-	case "muted", "deleted_muted", "gban_muted", "join_muted":
+	case "muted", "deleted_muted", "gban_muted", "join_muted", "prewarm_muted":
 		ok, desc = LiftMute(b, r.ChatID, r.UserID)
 	case "banned", "deleted_banned", "gban_banned":
 		if ok, desc = Unban(b, r.ChatID, r.UserID); ok {
