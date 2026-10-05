@@ -438,3 +438,36 @@ func TestManualConfirmGoneUserSkipsMute(t *testing.T) {
 		t.Errorf("理由应写明未追加禁言：%q", reason)
 	}
 }
+
+// TestRelIsDispositionCallback：群管理员的「解封（判定维持）」按钮走 a:ad:rel。
+// 它必须与 ok/fp/del/mute/ban 一起被放行，否则非 staff 的群管理员点下去
+// 会被 dispatch 的处置白名单挡掉，静默无反应。
+func TestRelIsDispositionCallback(t *testing.T) {
+	if !IsAdDispositionCallback("a:ad:rel:12345") {
+		t.Error("a:ad:rel 应被识别为处置回调")
+	}
+	if IsAdDispositionCallback("a:ad:lift:12345") {
+		t.Error("未列入白名单的动作不该被放行")
+	}
+}
+
+// TestUndoneRecordNotRepunished：已标记误判的记录不能再被残留的「确认/禁言/
+// 封禁」按钮重新罚一遍 —— 误判是负样本，一次误点就把放行的人重新禁回去。
+func TestUndoneRecordNotRepunished(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	id := seedLog(t, b, 555, "正常讨论", "deleted")
+	if _, err := b.Store.Write.Exec(
+		`UPDATE antiad_log SET action='undone' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, op := range []string{"ok", "mute", "ban"} {
+		fake.Reset()
+		HandleAdminCallback(b, cb(1, "a:ad:"+op+":"+itoa(id)))
+		if n := fake.CountCalls("restrictChatMember") + fake.CountCalls("banChatMember") +
+			fake.CountCalls("banChatSenderChat"); n != 0 {
+			t.Errorf("op=%s：已误判的记录不该被重新处置，得到 %d 次 TG 处罚调用", op, n)
+		}
+	}
+}

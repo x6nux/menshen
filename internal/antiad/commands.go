@@ -380,7 +380,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	v, err := judgeBoth(b, snap, state)
 	if err != nil {
 		slog.Warn("反广告：复查失败", "chat", chatID, "uid", tgt.From.ID, "err", err)
-		b.Send(chatID, "复查失败："+html.EscapeString(core.TruncateRunes(err.Error(), 200)), nil)
+		b.Send(chatID, "复查失败："+html.EscapeString(publicError(err)), nil)
 		return
 	}
 
@@ -504,8 +504,7 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat, u 
 	v, err := judgeJoin(b, snap, st)
 	if err != nil {
 		slog.Warn("反广告：资料复查失败", "chat", chatID, "uid", u.ID, "err", err)
-		sendGroup(b, chatID, "复查失败："+
-			html.EscapeString(core.TruncateRunes(err.Error(), 200)), nil)
+		sendGroup(b, chatID, "复查失败："+html.EscapeString(publicError(err)), nil)
 		return
 	}
 	// 采信线与进群冷判定同一根：资料证据比一条消息少得多。

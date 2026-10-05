@@ -150,6 +150,15 @@ func (p senderProfile) ProfileEmpty() bool {
 		strings.TrimSpace(p.FirstName+p.LastName) == ""
 }
 
+// hasMediaCarrier 报告这条消息是否真的携带媒体（图、贴纸、视频、文件、
+// 语音、联系人卡片、投票等）。原实现写成「有配文却没有正文」，把纯图、
+// 纯贴纸反向报成 has_media=false —— 模型拿到的这个信号与实际相反。
+func hasMediaCarrier(m *tg.Message) bool {
+	return len(m.Photo) > 0 || m.Sticker != nil || m.Video != nil ||
+		m.Document != nil || m.Audio != nil || m.Animation != nil ||
+		m.Contact != nil || m.Poll != nil || m.Venue != nil || m.Invoice != nil
+}
+
 // buildProfile 组装发送者画像。
 func buildProfile(b *core.Bot, m *tg.Message, gm groupMember, now int64) senderProfile {
 	p := senderProfile{PriorAdHits: gm.AdHits, MsgsInGroup: gm.MsgCount}
@@ -182,7 +191,7 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	st := adState{
 		Message: adMessageInfo{
 			Text:        core.TruncateRunes(text, adStateTextLimit),
-			HasMedia:    m.Text == "" && m.Caption != "",
+			HasMedia:    hasMediaCarrier(m),
 			IsForwarded: len(m.ForwardOrigin) > 0,
 			IsEdited:    m.EditDate != 0,
 			// 长度报原文的，不报截断后的：长度本身是判定信号

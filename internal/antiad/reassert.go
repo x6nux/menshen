@@ -157,18 +157,38 @@ func reassertMute(b *core.Bot, conf store.BotChat, cu *tg.ChatMemberUpdated) {
 		"chat", chatID, "uid", u.ID, "剩余", left.String(), "限制", why)
 }
 
+// reassertPageSize 是每轮复查核对的行数上限。join_mutes 可能上千行，一次
+// 全查会打出一长串 getChatMember；按游标分页，每轮核对一页，下一轮接上，
+// 保证所有行都会被轮询到，又不会把一轮撑成一次扫描风暴。
+const reassertPageSize = 500
+
 // ReassertActiveMutes 周期性核对「我们名下还在生效的进群限制」有没有被外部
 // 解除（验证机器人、另一个 bot 的权限覆盖都会造成这个），有就重新施加。
 //
 // 事件驱动那条路（chat_member）在更新丢失时什么都看不到：bot 重启、TG
 // 掉推、或者解除动作发生在我们上线之前。这一轮按 join_mutes 逐条问一次
-// 真实状态，把漏掉的补上。数量按 join_mutes 行数算，通常几十条。
+// 真实状态，把漏掉的补上。
+//
+// 判据是「人在群里、且现在能发言」：join_mutes 里有我们的记录，而
+// Telegram 侧却允许他发言，说明禁言被外部覆盖了。反过来，仍然
+// can_send_messages=false 的人本来就还在我们（或别的 bot）的限制里，
+// 不该重复施加。
 func ReassertActiveMutes(sh *core.Shared) {
 	if sh.Reg == nil {
 		return
 	}
+	c := cachesOf(sh)
+	lastChat, lastUID := int64(-1<<63), int64(-1<<63)
+	if c.reassertCursor != "" {
+		if id, uid, ok := parseReassertCursor(c.reassertCursor); ok {
+			lastChat, lastUID = id, uid
+		}
+	}
 	rows, err := sh.Store.Read.Query(
-		`SELECT bot_id,chat_id,user_id,kind FROM join_mutes LIMIT 500`)
+		`SELECT bot_id,chat_id,user_id,kind FROM join_mutes
+		 WHERE chat_id > ? OR (chat_id = ? AND user_id > ?)
+		 ORDER BY chat_id, user_id LIMIT ?`,
+		lastChat, lastChat, lastUID, reassertPageSize)
 	if err != nil {
 		slog.Error("禁言复查：读取进群限制失败", "err", err)
 		return
@@ -185,6 +205,14 @@ func ReassertActiveMutes(sh *core.Shared) {
 		}
 	}
 	rows.Close()
+	// 分页游标：取满一页时下轮从这里往后接；不足一页说明已到末尾，
+	// 清空游标让下一轮从头开始，保证先前跳过的行最终都会被核对。
+	if len(items) < reassertPageSize {
+		c.reassertCursor = ""
+	} else {
+		last := items[len(items)-1]
+		c.reassertCursor = formatReassertCursor(last.chatID, last.uid)
+	}
 	if len(items) == 0 {
 		return
 	}
@@ -202,12 +230,15 @@ func ReassertActiveMutes(sh *core.Shared) {
 		if rec.Cache.Snap().Whitelisted(it.botID, it.chatID, it.uid, now) {
 			continue
 		}
-		if _, ok := cachesOf(sh).justLifted.Get(reassertKey(it.chatID, it.uid)); ok {
+		if _, ok := c.justLifted.Get(reassertKey(it.chatID, it.uid)); ok {
 			continue
 		}
 		st := chatMemberState([]*core.Bot{rec}, it.chatID, it.uid)
-		if st == nil || !st.Member || !st.Muted {
-			continue // 已经不在了，或者本来就不能发言（还在限制里）
+		// st.Muted 为真 = 现在 can_send_messages=false = 还在限制里，跳过；
+		// 人已离群（left/kicked）没有权限可改，也跳过。只有当他在群里、
+		// 且能发言时，才说明我们的禁言被外部解除了。
+		if st == nil || st.Status == "left" || st.Status == "kicked" || st.Muted {
+			continue
 		}
 		if !reassertAllowed(sh, it.chatID, it.uid) {
 			continue
@@ -220,4 +251,16 @@ func ReassertActiveMutes(sh *core.Shared) {
 		slog.Info("禁言复查："+joinMuteKindLabel(it.kind)+"被外部解除，已重新施加",
 			"chat", it.chatID, "uid", it.uid)
 	}
+}
+
+func formatReassertCursor(chatID, uid int64) string {
+	return fmt.Sprintf("%d:%d", chatID, uid)
+}
+
+func parseReassertCursor(s string) (int64, int64, bool) {
+	var chatID, uid int64
+	if _, err := fmt.Sscanf(s, "%d:%d", &chatID, &uid); err != nil {
+		return 0, 0, false
+	}
+	return chatID, uid, true
 }

@@ -141,7 +141,7 @@ func HandleUbanCommand(b *core.Bot, m *tg.Message, arg string) {
 		return
 	}
 	if !b.AdLimits.Allow(fmt.Sprintf("uban:%d", actor),
-		b.Cache.Snap().SettingInt("antiad_cmd_rpm", 3)) {
+		b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
 		b.Send(dm, "操作太频繁，请稍后再试。", nil)
 		return
 	}

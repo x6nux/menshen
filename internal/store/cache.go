@@ -595,8 +595,13 @@ func (c *Cache) Reload() error {
 		return err
 	}
 
+	// 先提交再发布快照：反过来的话，提交失败时快照已经指向一份并未落库的
+	// 数据（调用方如 PutSetting 已按成功返回），重启后值会回退。
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	c.cfg.Store(snap)
-	return tx.Commit()
+	return nil
 }
 
 func (c *Cache) loadModels(snap *Snapshot, q rowQueryer) error {

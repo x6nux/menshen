@@ -526,7 +526,7 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 		// 覆盖联合封禁——出错就放行等于让人靠打挂上游来解开全平台封禁。
 		slog.Warn("申诉：AI 复核失败，转网页", "appeal", appealID, "uid", uid, "err", err)
 		updateAppeal(b.Shared, appealID, `ai_result='error', ai_reason=?`,
-			core.TruncateRunes(err.Error(), 300))
+			publicError(err))
 		enterWebOrNoWeb(b, appealID, uid, penalties)
 		return
 	}

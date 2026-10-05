@@ -500,7 +500,10 @@ func chatBot(b *core.Bot, uid, chatID int64) (*core.Bot, bool) {
 //     所处的位置决定，拿它当判据等于「在自己能当管理员的群里点一下，
 //     就能处置别的群的记录」。
 func adDispositionAllowed(b *core.Bot, uid int64, row antiad.AdLogRow) bool {
-	if b.Cfg.IsAdmin(uid) {
+	// 服务管理员：主管理员全通，次管限自己名下的 bot。记录卡片本来就是
+	// 私聊发给 bot 归属人的，只有主管理员点得动的话，次管会看到卡片上
+	// 每个按钮都被静默拒绝。
+	if b.IsStaff(uid) && b.CanManageBot(uid, row.BotID) {
 		return true
 	}
 	return antiad.IsChatAdmin(b, row.ChatID, uid)
@@ -514,7 +517,7 @@ func IsAdDispositionCallback(data string) bool {
 		return false
 	}
 	switch parts[2] {
-	case "ok", "fp", "del", "mute", "ban":
+	case "ok", "fp", "del", "mute", "ban", "rel":
 		return true
 	}
 	return false
@@ -522,6 +525,16 @@ func IsAdDispositionCallback(data string) bool {
 
 // applyAdManualAction 执行管理员的人工处置。
 func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row antiad.AdLogRow) {
+	// 已判误判的记录不能再被「确认正确 / 禁言 / 封禁」重新处置：这几条都会
+	// 重新动手罚人，而误判是负样本、是最值钱的训练信号，一个残留按钮的
+	// 误点就把放行的人重新罚一遍。del/rel 只删消息或解除限制，不在此列。
+	if row.Action == "undone" {
+		switch op {
+		case "ok", "mute", "ban":
+			b.AnswerCallback(q.ID, "该记录已标记误判，不再处置")
+			return
+		}
+	}
 	switch op {
 	case "ok":
 		// 管理员确认判定正确：**绕过老成员免禁言** —— 人已经看过原文并背书，

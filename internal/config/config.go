@@ -303,6 +303,11 @@ func assign(c *Config, key, val string) error {
 			}
 			c.AdminIDs = append(c.AdminIDs, n)
 		}
+	default:
+		// 未知键静默忽略是容器里最难查的一类事故：拼错一个字母
+		// （public_urll / dbpath），配置永远停在默认值，而启动日志与
+		// 面板上一切正常。留一行警告，至少排障时有迹可循。
+		slog.Warn("配置项未知，已忽略", "key", key)
 	}
 	return nil
 }

@@ -174,3 +174,29 @@ func TestUndoVerdictPrewarmMuted(t *testing.T) {
 		t.Error("应发一次权限全开的解禁言")
 	}
 }
+
+// TestAdHitsCounted：只有当初真的加过 ad_hits 的记录才允许在「误判」时递减。
+// 进群类处置、manual-ban 与演练记录都会让无条件递减抹掉真实命中数。
+func TestAdHitsCounted(t *testing.T) {
+	cases := []struct {
+		name string
+		r    AdLogRow
+		want bool
+	}{
+		{"自动广告处置", AdLogRow{Verdict: "ad", Decider: "systemone", Action: "deleted_muted"}, true},
+		{"禁言档", AdLogRow{Verdict: "ad", Decider: "llm", Action: "muted"}, true},
+		{"封禁档", AdLogRow{Verdict: "ad", Decider: "llm", Action: "banned"}, true},
+		{"演练不计数", AdLogRow{Verdict: "ad", Decider: "llm", Action: "dryrun:deleted_muted"}, false},
+		{"进群资料限制", AdLogRow{Verdict: "ad", Decider: "systemone", Action: "join_muted"}, false},
+		{"前置号限制", AdLogRow{Verdict: "ad", Decider: "llm", Action: "prewarm_muted"}, false},
+		{"进群检查未处置", AdLogRow{Verdict: "clean", Decider: "systemone", Action: "join_checked"}, false},
+		{"人工封禁不计入", AdLogRow{Verdict: "ad", Decider: "manual-ban", Action: "banned"}, false},
+		{"护栏未送检", AdLogRow{Verdict: "skipped", Decider: "skipped", Action: "none"}, false},
+		{"已误判", AdLogRow{Verdict: "ad", Decider: "systemone", Action: "undone"}, false},
+	}
+	for _, c := range cases {
+		if got := adHitsCounted(c.r); got != c.want {
+			t.Errorf("%s: adHitsCounted=%v，期望 %v", c.name, got, c.want)
+		}
+	}
+}

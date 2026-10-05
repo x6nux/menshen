@@ -41,6 +41,10 @@ type caches struct {
 	justLifted core.TTLMap[string, struct{}]
 	// reasserts 记重新施加的时间点（限流用），键 chat:uid。
 	reasserts core.TTLMap[string, []time.Time]
+	// reassertCursor 是周期复查的分页游标（最后核对过的 "chatID:uid"）。
+	// join_mutes 行数可能上千，每轮只核对一页，下轮从这里往后接。只被
+	// 小时任务那个不重入的 goroutine 读写，无需加锁。
+	reassertCursor string
 	// joinBackfillDone 记录 (bot, chat) 上次补全入群时间，键 "bot:chat"。
 	joinBackfillDone core.TTLMap[string, struct{}]
 	// joinLookupMiss 是单人入群时间查不到的负缓存，避免反复起脚本。

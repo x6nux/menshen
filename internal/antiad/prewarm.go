@@ -236,7 +236,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Reason:   "疑似批量注册的广告前置号",
 		Announce: conf.GroupAlert,
 		MsgID:    m.MessageID,
-		Shape:    profileShape(state.Sender),
+		Shape:    learnableShape(state.Sender),
 	})
 }
 
@@ -695,7 +695,7 @@ func judgePrewarmItem(b *core.Bot, it prewarmItem) {
 		Body:     joinProfileText(it.u, it.p.Bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: it.conf.GroupAlert,
-		Shape:    profileShape(it.p),
+		Shape:    learnableShape(it.p),
 		Quiet:    true,
 	})
 	// 禁言失败（TG 抖动）不是定案：保留旧指纹、下一档重试，否则一次

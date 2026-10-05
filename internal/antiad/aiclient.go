@@ -652,3 +652,16 @@ func noteRetry(sh *core.Shared, snap *store.Snapshot, key string) {
 			"截止", until.Format("15:04:05"))
 	}
 }
+
+// publicError 把判定失败的原因收敛成给用户看的笼统文案。
+//
+// aiCall 的错误里带着上游名称与最多 200 字节的供应商响应体（见 aiAttempt
+// 的错误拼装），它只该进日志。群内 /check 回复与申诉网页都是用户可见面
+// —— 群成员能自己触发 /check、被封的人本来就在看申诉页，把内部基础设施
+// 信息回给他们既是信息泄露，也没有任何可操作性。
+func publicError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "判定服务暂时不可用，请稍后重试"
+}

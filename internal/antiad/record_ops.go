@@ -110,10 +110,17 @@ func LiftMute(b *core.Bot, chatID, uid int64) (bool, string) {
 // 数据侧的改判与 TG 侧是否成功无关；返回撤掉的名单与 TG 侧是否解除成功。
 func UndoVerdict(b *core.Bot, r AdLogRow, actor int64) (lifted string, ok bool, desc string) {
 	reason := appendNote(r.Reason, "管理员标记误判")
-	UpdateAdLog(b, r.ID, "undone", reason)
-	// 同样的内容别再被当成广告直接删（见内容哈希）。
-	ForgetAdHash(b, r.Text)
-	BumpAdHits(b, r.ChatID, r.UserID, -1)
+	if r.Action != "undone" {
+		UpdateAdLog(b, r.ID, "undone", reason)
+		// 同样的内容别再被当成广告直接删（见内容哈希）。
+		ForgetAdHash(b, r.Text)
+		// 只有当初真的加过 ad_hits 的记录才能减：join_muted / prewarm_* /
+		// join_checked 与 /ban（manual-ban）都不计入，dryrun: 什么都没执行；
+		// 无条件递减会把这些人的真实命中数抹掉。
+		if adHitsCounted(r) {
+			BumpAdHits(b, r.ChatID, r.UserID, -1)
+		}
+	}
 
 	var names []string
 	if b.IsStaff(actor) {
@@ -157,6 +164,27 @@ func appendNote(old, add string) string {
 		return add
 	}
 	return old + "；" + add
+}
+
+// adHitsCounted 报告这条流水当初是否真的把 ad_hits 加过一 —— 撤销时只有
+// 加过才能减。加过的是 actOnVerdict / reviewAndAct / markAd / leaderBan
+// 这几条消息级处置；进群类（join_muted / join_checked / prewarm_*）与
+// /ban（decider=manual-ban）都不计入，演练（dryrun:）什么都没执行。
+//
+// 拿不准时按「没加过」处理：漏减最多让惯犯的风控档案偏高，错减却会把
+// 这个人其它消息挣来的真实命中数抹掉。
+func adHitsCounted(r AdLogRow) bool {
+	if strings.HasPrefix(r.Action, "dryrun:") {
+		return false
+	}
+	if r.Verdict != "ad" || r.Decider == "manual-ban" {
+		return false
+	}
+	switch r.Action {
+	case "alerted", "deleted", "muted", "deleted_muted", "banned", "deleted_banned":
+		return true
+	}
+	return false
 }
 
 // ReleaseUser 解封/解禁言一个人并清掉本群的限制记录 —— 与「误判」不同，

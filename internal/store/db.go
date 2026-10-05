@@ -598,8 +598,9 @@ const AppealOpenStatusesSQL = "'statement','ai','web','code','noweb'"
 //     复查阶梯本身不建索引：选人只按 prewarm_next_at <= now，不逐行算年龄。
 //   - web_checks(appeal_id,id)/(created_at)：申诉详情页与保留期清理。
 //   - alert_cleanup(bot_id,due_at)/(due_at)：每分钟的撤回扫描与清理。
-//   - ad_hashes(last_hit_at)、appeals(updated_at)、ad_whitelist(expires_at)、
-//     gban(created_at)：保留期清理与面板列表。
+//   - ad_hashes(last_hit_at)、profile_shapes(last_hit)、profile_ok(expires_at)、
+//     join_mutes(user_id)、appeals(updated_at)、ad_whitelist(expires_at)、
+//     gban(created_at)：保留期清理、解除查询与面板列表。
 func ensureIndexes(db *sql.DB) error {
 	stmts := []string{
 		`CREATE INDEX IF NOT EXISTS idx_antiad_bot_id ON antiad_log(bot_id, id)`,
@@ -613,6 +614,9 @@ func ensureIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_alert_cleanup_due ON alert_cleanup(bot_id, due_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_alert_cleanup_at ON alert_cleanup(due_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_adh_last_hit ON ad_hashes(last_hit_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_pshape_last_hit ON profile_shapes(last_hit)`,
+		`CREATE INDEX IF NOT EXISTS idx_pok_expires ON profile_ok(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_joinmutes_user ON join_mutes(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_appeal_updated ON appeals(updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_aw_expires ON ad_whitelist(expires_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_gban_created ON gban(created_at)`,

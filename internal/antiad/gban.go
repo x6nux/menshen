@@ -627,13 +627,17 @@ func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 		done := false
 		for _, b := range botsOfChat(sh, chatID) {
 			// 有在跑的 bot：走既有解除路径（删记录、撤通知、解禁言、标记）。
-			LiftMute(b, chatID, uid)
-			done = true
-			break
+			// 解除失败（人已离群、权限不足）不能当成成功 break —— 那样
+			// join_mutes 与形状会残留，调用方还会报告「已解除」，而复查
+			// 任务会照旧把禁言施加回去。换下一个 bot 试，都不成再走兜底。
+			if ok, _ := LiftMute(b, chatID, uid); ok {
+				done = true
+				break
+			}
 		}
 		if !done {
-			// 无在跑的 bot 也要清掉形状：这里直接 DELETE 不会走
-			// dropJoinMute 的反查删除，模板会继续被复用。
+			// 没有能解除的 bot（或全部失败）也要清掉记录与形状：这里直接
+			// DELETE 不会走 dropJoinMute 的反查删除，模板会继续被复用。
 			var shape string
 			if err := sh.Store.Read.QueryRow(`SELECT shape FROM join_mutes
 				WHERE chat_id=? AND user_id=?`, chatID, uid).Scan(&shape); err != nil {
@@ -843,6 +847,13 @@ func CleanupData(sh *core.Shared) {
 	if _, err := deleteBatched(sh, "profile_ok",
 		"expires_at != 0 AND expires_at < ?", time.Now().Unix()); err != nil {
 		slog.Error("清理过期资料放行失败", "err", err)
+	}
+	// join_mutes 不能按保留期删：它是无限期进群限制的唯一记录，删了等于把
+	// 还没解除的限制忘了（/unban 找不到、复查也不再施加）。但群不再由任何
+	// bot 管理时，这条限制已经没有执行者，清掉孤儿行避免表随删群无限增长。
+	if _, err := deleteBatched(sh, "join_mutes",
+		"chat_id NOT IN (SELECT chat_id FROM bot_chats)"); err != nil {
+		slog.Error("清理孤儿进群限制失败", "err", err)
 	}
 }
 

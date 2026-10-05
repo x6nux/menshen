@@ -85,7 +85,6 @@ func hashHit(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Messag
 	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）。
 	if m.Chat != nil {
 		ensureJoinAge(b, m.Chat.ID, &state.Sender)
-		profile = state.Sender
 	}
 	v := adVerdict{IsAd: true, Confidence: h.Confidence, Kind: h.Kind, Scope: "message",
 		Decider: deciderHash, Reason: note}
@@ -103,8 +102,12 @@ func hashHit(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Messag
 		finish(v)
 		return
 	}
+	// 「资料放行」的指纹含 Bio，必须在提交复判前 enrichSender：放进复判
+	// 闭包里补的话，finish 用的还是没补 Bio 的 profile，存下的指纹与下次
+	// 判定算出来的对不上，放行永远命中不了。与 judgeAndAct 同一顺序。
+	enrichSender(b, &state.Sender)
+	profile = state.Sender
 	if !b.AdReview(func() {
-		enrichSender(b, &state.Sender)
 		rv := review(b, snap, state, v, llmSystemPrompt)
 		if rv.Decider != deciderHash {
 			// 复判成功时理由换成了大模型的，命中哈希这件事也得留在流水里。

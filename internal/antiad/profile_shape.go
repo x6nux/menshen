@@ -102,6 +102,27 @@ func profileShape(p senderProfile) string {
 	return out
 }
 
+// learnableShape 返回一条**值得学习**的资料形状：只有 bio 自身呈现了可疑
+// 特征（链接、联系方式、招揽话术）时才返回非空。
+//
+// 为什么加这道门：profileShape 只看 bio，但一条进群限制可能并非因 bio 而
+// 成立 —— 前置号看的是头像与随机用户名，资料必封规则可能命中昵称，AI 也
+// 可能因用户名判广告。此时把那段普通简介（「热爱生活，喜欢旅行」）学成
+// 模板，零 AI 的 shapeMute 就会误伤用同一句简介的正常人，而形状表是全
+// 平台共享的。宁可少学（漏掉检测），不可误学（误伤面被放大）。
+func learnableShape(p senderProfile) string {
+	bio := strings.ToLower(p.Bio)
+	if strings.TrimSpace(bio) == "" {
+		return ""
+	}
+	for _, h := range coldPrefilterHints {
+		if h.hit(bio) {
+			return profileShape(p)
+		}
+	}
+	return ""
+}
+
 // profileShapeRec 是 profile_shapes 的一行。
 type profileShapeRec struct {
 	Shape     string

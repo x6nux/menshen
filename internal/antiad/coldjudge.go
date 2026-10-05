@@ -273,8 +273,9 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		slog.Info("冷判定：资料已被复判放行，跳过", "chat", conf.ChatID, "uid", u.ID)
 		return
 	}
-	markProfileOK(b, &p)
-
+	// 此处不调 markProfileOK：上面刚确认 ProfileAllowed 返回 0，再标一次
+	// 也只会得到 0（死代码）。放行由「已放行」那条分支直接跳过冷判定，
+	// 模型不需要在载荷里再看到 profile_ok 信号。
 	st := adState{
 		Chat:      adChatInfo{ID: conf.ChatID, Title: conf.Title},
 		Sender:    p,
@@ -394,7 +395,7 @@ func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, b
 		Body:     joinProfileText(u, bio, v),
 		Reason:   "账号资料中含有推广或引流内容",
 		Announce: conf.GroupAlert,
-		Shape: profileShape(senderProfile{Username: u.Username,
+		Shape: learnableShape(senderProfile{Username: u.Username,
 			FirstName: u.FirstName, LastName: u.LastName, Bio: bio}),
 	})
 }
@@ -465,18 +466,24 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	// （spec.Kind 是 profile/prewarm）；phash 命中时会把它作 ad_kind 写进
 	// 流水，记成限制类型会让记录显示成 "profile"。v.Kind 为空才退回它。
 	if spec.Shape != "" {
-		if _, err := b.Store.Write.Exec(`UPDATE join_mutes SET shape=?
+		res, err := b.Store.Write.Exec(`UPDATE join_mutes SET shape=?
 			WHERE chat_id=? AND user_id=?`,
-			spec.Shape, conf.ChatID, u.ID); err != nil {
+			spec.Shape, conf.ChatID, u.ID)
+		if err != nil {
 			slog.Warn("反广告：写入限制形状失败",
 				"chat", conf.ChatID, "uid", u.ID, "err", err)
 		}
-		shapeKind := strings.TrimSpace(v.Kind)
-		if shapeKind == "" {
-			shapeKind = spec.Kind
+		// 只有限制记录确实落库了才学习形状：形状表只能从**已成立**的处罚
+		// 学习，否则它既没有 join_mutes.shape 可反查删除，又会一直误伤
+		// 同模板的正常人。UPDATE 没改到行 = 记录没写成，跳过学习。
+		if n, _ := res.RowsAffected(); err == nil && n > 0 {
+			shapeKind := strings.TrimSpace(v.Kind)
+			if shapeKind == "" {
+				shapeKind = spec.Kind
+			}
+			learnProfileShape(b.Store, spec.Shape, shapeKind, spec.Body,
+				time.Now().Unix())
 		}
-		learnProfileShape(b.Store, spec.Shape, shapeKind, spec.Body,
-			time.Now().Unix())
 	}
 
 	slog.Info("反广告：已限制发言",
@@ -569,7 +576,7 @@ func enforceProfileRule(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: note,
 		Body: body, Reason: v.Reason, Announce: conf.GroupAlert,
-		Shape: profileShape(p),
+		Shape: learnableShape(p),
 		Quiet: quiet,
 	})
 	_, muted := loadJoinMute(b.Store, conf.ChatID, u.ID)

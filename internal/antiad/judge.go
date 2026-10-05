@@ -146,6 +146,15 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	}
 	v.Reason = fmt.Sprintf("判定 %s 置信度:%.0f%%，危害度:%.1f",
 		soChoiceLabel(isAd.Choice), isAd.Confidence*100, v.Severity)
+	// is_ad=true 却把 ad_kind 选成 none，是模型自相矛盾（问题里明写「判为
+	// 广告时不得选 none」）。按模型结论定档只看 is_ad，照它会删消息、禁言、
+	// 连带删除并把正文记成哈希；说不出广告类别就不算广告，与 judgeLLM
+	// 里同一条兜底保持同一口径。
+	if v.IsAd && v.Kind == "none" {
+		slog.Info("反广告：systemone 返回 is_ad=ad 但 ad_kind=none，按正常处理",
+			"置信度", v.Confidence)
+		v.IsAd = false
+	}
 	return v, nil
 }
 
@@ -281,7 +290,7 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error)
 		return adVerdict{}, fmt.Errorf("systemone: %v; llm: %v", soErr, llmErr)
 	case llmErr != nil:
 		// 复查同理：低于采信线的初判不因为「大模型没跑成」就变成可处置的。
-		if demoteUnconfirmed(b, &so, "大模型复查失败："+llmErr.Error()) {
+		if demoteUnconfirmed(b, snap, &so, "大模型复查失败："+llmErr.Error()) {
 			slog.Warn("反广告：大模型复查失败且初判低于采信线，按未定放行",
 				"置信度", so.Confidence, "err", llmErr)
 			return so, nil
@@ -375,7 +384,7 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 		// 哈希命中不是「模型拿不准」：它是同一条内容此前已被判定为广告的
 		// 硬证据，不该被采信线降级（复判失败时照旧采信它）。
 		if prior.Decider != deciderHash &&
-			demoteUnconfirmed(b, &prior, "大模型复判失败："+err.Error()) {
+			demoteUnconfirmed(b, snap, &prior, "大模型复判失败："+err.Error()) {
 			slog.Warn("反广告：大模型复判失败且初判低于采信线，按未定放行",
 				"置信度", prior.Confidence, "err", err)
 			prior.Cost += llm.Cost
@@ -404,8 +413,8 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 // 可靠的一路当成最终结论 —— 而按模型结论定档（antiad_bool_verdict）
 // 又恰恰不看置信度，两件事叠在一起就会出现「13% 的广告删消息+禁言」。
 // 返回是否降级（降级后 IsAd=false，按未定走：留流水、不处置）。
-func demoteUnconfirmed(b *core.Bot, v *adVerdict, why string) bool {
-	trust := float64(b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100
+func demoteUnconfirmed(b *core.Bot, snap *store.Snapshot, v *adVerdict, why string) bool {
+	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100
 	if !v.IsAd || v.Confidence >= trust {
 		return false
 	}

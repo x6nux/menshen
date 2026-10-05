@@ -178,9 +178,13 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 	}
 	if act.Purge {
 		// 判定的那条上面已删过，再删一次 TG 会自动跳过，不必剔除。
-		ids := gmsgIDs(b, `chat_id=? AND user_id=? AND at > ?`,
+		ids, qerr := gmsgIDs(b, `chat_id=? AND user_id=? AND at > ?`,
 			m.Chat.ID, m.From.ID, time.Now().Add(-purgeWindow).Unix())
-		if ok, desc := deleteMessages(b, m.Chat.ID, ids); !ok {
+		if qerr != nil {
+			// 查询失败时 ids 为空，若照旧调 deleteMessages 会返回成功，
+			// 流水里还会写「已连带删除此人近期全部消息」—— 一次静默的假成功。
+			notes = append(notes, "连带删除失败: 读取留底出错")
+		} else if ok, desc := deleteMessages(b, m.Chat.ID, ids); !ok {
 			notes = append(notes, "连带删除失败: "+desc)
 		}
 	}
@@ -322,8 +326,12 @@ func albumKey(chatID int64, album string) string { return fmt.Sprintf("%d:%s", c
 // 联系方式截图）会留在群里。
 func deleteAlbum(b *core.Bot, m *tg.Message) (bool, string) {
 	cachesOf(b.Shared).doomedAlbums.Set(albumKey(m.Chat.ID, m.MediaGroupID), struct{}{}, albumDoomTTL)
-	return deleteMessages(b, m.Chat.ID, gmsgIDs(b,
-		`chat_id=? AND user_id=? AND media_group=?`, m.Chat.ID, m.From.ID, m.MediaGroupID))
+	ids, err := gmsgIDs(b, `chat_id=? AND user_id=? AND media_group=?`,
+		m.Chat.ID, m.From.ID, m.MediaGroupID)
+	if err != nil {
+		return false, "读取相册留底失败"
+	}
+	return deleteMessages(b, m.Chat.ID, ids)
 }
 
 func albumDoomed(b *core.Bot, chatID int64, album string) bool {
@@ -332,11 +340,13 @@ func albumDoomed(b *core.Bot, chatID int64, album string) bool {
 }
 
 // gmsgIDs 按条件取留底里的消息 ID。where 只来自本包的字面量。
-func gmsgIDs(b *core.Bot, where string, args ...any) []int64 {
+// 查询失败返回错误：调用方必须把「一条都没取到」与「查询失败」分开，
+// 后者当成空列表会让连带删除静默地什么都不做却报成功。
+func gmsgIDs(b *core.Bot, where string, args ...any) ([]int64, error) {
 	rows, err := b.Store.Read.Query(`SELECT message_id FROM group_messages WHERE `+where, args...)
 	if err != nil {
 		slog.Error("反广告：读取留底 ID 失败", "err", err)
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var ids []int64
@@ -346,7 +356,11 @@ func gmsgIDs(b *core.Bot, where string, args ...any) []int64 {
 			ids = append(ids, id)
 		}
 	}
-	return ids
+	if err := rows.Err(); err != nil {
+		slog.Error("反广告：读取留底 ID 游标出错", "err", err)
+		return ids, err
+	}
+	return ids, nil
 }
 
 // deleteMessages 批量删除，每次最多 100 条（TG 的上限），找不到的 TG 会自动跳过。
@@ -361,6 +375,12 @@ func deleteMessages(b *core.Bot, chatID int64, ids []int64) (bool, string) {
 	return true, ""
 }
 
+// gbanSevereLine 是联合封禁的第二条证据线：危害度达到它就算够格，即使置信度
+// 没过硬线（按模型结论定档时置信度不参与档位）。用固定常量而非某个设置项：
+// 全平台封禁的门槛不该跟着展示向的开关（如短撤回阈值 antiad_alert_severe）
+// 漂移 —— 把那个开关调成 0 会让门槛凭空消失。危害度的语义见 severeAd。
+const gbanSevereLine = 2.0
+
 // gbanWorthy 报告这次判定够不够格进联合封禁名单。
 //
 // 联合封禁会把人从**所有**接入群一起请出去，比单群禁言重得多，所以除了
@@ -369,8 +389,9 @@ func deleteMessages(b *core.Bot, chatID int64, ids []int64) (bool, string) {
 // 不参与档位，必须把这条线单独补回来——否则 62% 的误报也会把人全平台封掉。
 func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	hard := float64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
-	severe := float64(snap.BotSettingInt(b.BotID(), "antiad_alert_severe", 2))
-	if v.Confidence*100 < hard && v.Severity < severe {
+	confHigh := v.Confidence*100 >= hard
+	severe := v.Severity >= gbanSevereLine
+	if !confHigh && !severe {
 		return false
 	}
 	// 账号级结论（「资料本身就是广告位」）再抬一道：它的证据全在昵称、
@@ -379,7 +400,7 @@ func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	// 的封禁，误伤一个正常用户的代价远大于漏掉一个广告号；这一档只认真有
 	// 把握的。
 	if v.Scope == "account" {
-		return v.Confidence*100 >= hard && v.Severity >= severe
+		return confHigh && severe
 	}
 	return true
 }

@@ -1,9 +1,12 @@
 package antiad
 
 import (
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
+	"menshen/internal/core"
 	"menshen/internal/testutil"
 	"menshen/internal/tg"
 )
@@ -147,5 +150,58 @@ func TestReassertMuteThrottled(t *testing.T) {
 	got := fake.CountCalls("restrictChatMember") - base
 	if got != reassertLimit {
 		t.Errorf("每小时最多重新施加 %d 次，实际 %d 次", reassertLimit, got)
+	}
+}
+
+// TestReassertActiveMutesPeriodic：周期复查只对「人在群里、且现在能发言」的
+// 进群限制重新施加 —— 那才是被外部（验证机器人等）解除的样子；仍在限制里
+// 或已离群的人不动。这条路径此前没有测试，条件一度写反导致兜底完全失效。
+func TestReassertActiveMutesPeriodic(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, func(*core.Bot, *tg.Update) {})
+	testutil.EnableAntiad(t, b, -100)
+	fake := b.TG.(*testutil.FakeTG)
+
+	add := func(uid int64) {
+		if _, err := b.Store.Write.Exec(`INSERT INTO join_mutes
+			(chat_id,user_id,bot_id,kind,reason,created_at)
+			VALUES (?,?,?,?,?,?)`,
+			int64(-100), uid, b.BotID(), kindProfile, "资料", time.Now().Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memberResp := func(canSend bool) string {
+		return `{"ok":true,"result":{"status":"restricted","user":{"id":1},` +
+			`"is_member":true,"can_send_messages":` + strconv.FormatBool(canSend) + `}}`
+	}
+
+	// 1) 被外部解除（现在能发言）：应重新施加一次无限期禁言。
+	add(8101)
+	fake.RespFunc = func(method string, _ map[string]any) (string, bool) {
+		if method == "getChatMember" {
+			return memberResp(true), true
+		}
+		return "", false
+	}
+	before := fake.CountCalls("restrictChatMember")
+	ReassertActiveMutes(b.Shared)
+	if got := fake.CountCalls("restrictChatMember") - before; got != 1 {
+		t.Errorf("被外部解除后应重新施加 1 次，得到 %d 次", got)
+	}
+
+	// 2) 仍在限制里（can_send_messages=false）：不该重复施加。
+	add(8102)
+	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
+		if method == "getChatMember" {
+			if fmt.Sprint(payload["user_id"]) == "8102" {
+				return memberResp(false), true
+			}
+			return memberResp(true), true
+		}
+		return "", false
+	}
+	before = fake.CountCalls("restrictChatMember")
+	ReassertActiveMutes(b.Shared)
+	if got := fake.CountCalls("restrictChatMember") - before; got != 1 {
+		t.Errorf("8101 应重施加、8102 仍在限制里不应，合计 1 次，得到 %d 次", got)
 	}
 }

@@ -218,6 +218,29 @@ func (b *Bot) MarkUpdateSeen(updateID int64) bool {
 	return true
 }
 
+// UnmarkUpdateSeen 撤掉「已见」标记：队列满丢弃一条更新时用（见 Enqueue）。
+// 让 TG 之后重推同一 update_id 时还能被当成首次投递处理，而不是被去重
+// 逻辑静默吞掉。update_id 为 0 不参与去重，无需处理。
+func (b *Bot) UnmarkUpdateSeen(updateID int64) {
+	if updateID == 0 {
+		return
+	}
+	b.seenMu.Lock()
+	defer b.seenMu.Unlock()
+	if _, ok := b.seenSet[updateID]; !ok {
+		return
+	}
+	delete(b.seenSet, updateID)
+	// seenOrder 只在队列满时（罕见）做一次线性删除，代价可接受；顺序
+	// 不重要，只要两个结构保持一致。
+	for i, id := range b.seenOrder {
+		if id == updateID {
+			b.seenOrder = append(b.seenOrder[:i], b.seenOrder[i+1:]...)
+			break
+		}
+	}
+}
+
 const (
 	// adWorkers 是每个 bot 的并发判定数。8 路在活跃群里排不开：单次判定
 	// 最坏要几十秒（AI 重试预算 45 秒），几条慢请求就能把通道占满。
@@ -675,6 +698,10 @@ func (b *Bot) Enqueue(u *tg.Update) bool {
 	case b.updates <- u:
 		return true
 	default:
+		// 队列满：丢弃并回 200。但要把「已见」标记撤掉 —— 否则这次 200
+		// 一旦在网络上丢失、TG 重推同一 update_id，重推会被当成重复投递
+		// 直接丢弃，这条更新就永远处理不到了。撤掉后重推仍有机会入队。
+		b.UnmarkUpdateSeen(u.UpdateID)
 		return false
 	}
 }

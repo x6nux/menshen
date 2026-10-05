@@ -191,6 +191,21 @@ func TestLLMAdWithoutKindIsClean(t *testing.T) {
 	}
 }
 
+// TestSystemOneAdWithoutKindIsClean：初判（systemone）同样不能采信
+// is_ad=ad 却 ad_kind=none 的自相矛盾结论。按模型结论定档只看 is_ad，
+// 缺口在的话这条会对新人删消息 + 禁言 + 连带删除；与复判路径同一口径。
+func TestSystemOneAdWithoutKindIsClean(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	fakeAIWith(t, b, soReply("ad", 0.99, "none", "account"), ``)
+	v, err := judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.IsAd {
+		t.Error("systemone 给出 ad_kind=none 时应按正常处理")
+	}
+}
+
 // TestVerdictCarriesModel 确认模型名一路带到 verdict 上：换模型后校准阈值，
 // 第一件事就是知道眼前这条结论出自哪个模型。Decider 只说走了几级，说不出是谁。
 func TestVerdictCarriesModel(t *testing.T) {
@@ -286,7 +301,7 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	// 弱初判（50%）：复判失败 → 按未定放行，不追加处置。
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	fakeAIWith(t, b, soReply("ad", 0.50, "none", "account"), ``) // 复判无响应=失败
+	fakeAIWith(t, b, soReply("ad", 0.50, "promo", "account"), ``) // 复判无响应=失败
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "我活了"))
 	waitIdle(t, b)
 
