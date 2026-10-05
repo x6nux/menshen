@@ -466,3 +466,71 @@ ORDER BY joined_at LIMIT 20
 | Layer 2 | 复用冷判定 AI，仅对「24h~7d 内几乎没发言 + 资料非空」的成员跑一次 | 洗资号证据在事后改的简介里；只查一次、有窗口，成本可控 |
 | 联合封禁 | v1 不自动 gban | 画像证据弱于内容证据，不扩大误伤面 |
 | 正则必封规则页 | 不接入 | 行为/画像规则无法用正文正则表达，接入会污染全库零误封测试口径 |
+
+## 9. 修订（2026-10-05）：新成员高频复查 + 老成员每日扫描
+
+### 9.1 动机（线上实证）
+
+2026-10-05 15:48 一个号（8591254077）进群时资料是 `Robert Williamson`
++ 空简介，冷判定 clean；**几分钟后**把昵称改成「手机拍违停 一百圆/张」
+并在简介里挂上私密群链接，之后 0 发言。原设计的 Layer 2 要等进群满
+24h 才复查，这类「进门即成妆」的号会挂着广告资料在群里待一整天。
+同时旧规则（#3、#162 等）只跑群消息正文，对 0 发言的号无能为力。
+
+### 9.2 调度
+
+`PrewarmSweep` 从小时任务挪到**分钟级**（`tickMinute`），自己按人的
+上次复查时间节流：
+
+| 人群 | 定义 | 复查间隔 | 每群每轮上限 |
+|---|---|---|---|
+| 新成员 | `joined_at > now-24h`（含刚进群） | `prewarmNewInterval = 10min` | 20 |
+| 老成员 | 其余（含 `joined_at=0` 的存量成员） | `prewarmDailyInterval = 24h` | 20 |
+
+- 每 bot 每轮最多提交 `prewarmSweepPerBot = 60` 个；
+  `b.AdBusy() >= prewarmQueueHighWater (256)` 时停止本轮（沿用）。
+- `prewarm_checked_at` 的语义从「一人只查一次」改为「上次复查时间」。
+- 分钟级轮询保证新成员在进群后 ~10 分钟内必查一次；老成员由
+  `ORDER BY prewarm_checked_at ASC` 轮转，全群每天恰好扫一遍。
+
+### 9.3 资料指纹与 AI 省流
+
+`group_members` 新增 `profile_hash TEXT NOT NULL DEFAULT ''`，值与
+`profileHash(p)`（username + 昵称 + 简介，小写）一致。每次复查：
+
+1. 拉最新资料（绕 bio 缓存），算 `h`；
+2. `h` 与存量相同且非空 → 只更新 `prewarm_checked_at`，**不花 AI**；
+3. 首查（存量为空、首次见到该成员）→ 先跑本地预筛
+   `coldSuspicious(u, bio)`：不中 → 只落指纹，不花 AI；命中 → 冷判定；
+4. 资料**变过**（指纹非空且不同）→ 直接冷判定，**不再要求 bio 非空**
+   —— 只改昵称/用户名的化妆变体也要抓（原实现 `bio == ""` 直接跳过，
+   会漏昵称-only 的广告）；
+5. 硬规则（领导人）在指纹门之前先跑，零成本；
+6. `ProfileAllowed`、join_mutes 判重、adExempt、dryrun 全部沿用。
+
+指纹在判定开始前落库（失败不重刷；新成员 10 分钟后会再查，老成员
+次日再查）。
+
+### 9.4 迁移与索引
+
+- `group_members.profile_hash`（schema + migrate + `TestMigrateOldDB`）。
+- 新增索引（必须在 migrate 之后建，见 `ensureIndexes`）：
+  `idx_gmember_pwcheck(chat_id, prewarm_checked_at)` 与
+  `idx_gmember_joined(chat_id, joined_at)`；两个查询分别按它们取人。
+- `groupMember` 增加 `ProfileHash` 字段，`loadMember` 读出。
+
+### 9.5 测试
+
+- 调度：新成员 10 分钟内不重复查、超过 10 分钟再查；老成员 24h 内
+  不重复、超过 24h 再查；`joined_at=0` 的存量成员进入老成员轮转；
+- 指纹：未变 → 零 AI 调用；首查正常资料 → 零 AI；首查可疑资料 →
+  AI + 命中禁言；**昵称-only 变化（bio 为空）→ 仍会 AI 判定**；
+- 沿用：白名单/豁免跳过、join_mutes 判重、dryrun、队列高水位、
+  每 bot 预算、全局急停；
+- 迁移与索引：老库补列、默认空；索引存在。
+
+### 9.6 上线
+
+代码合并部署后：测试群开两开关观察；CMLiussss 群开
+`antiad_prewarm_sweep`，新成员在 10 分钟内进入复查节奏，当天即可
+抓到 8591254077 这类「进门即成妆」的号。
