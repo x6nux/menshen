@@ -126,3 +126,37 @@ const photoTTL = 24 * time.Hour
 type photoEntry struct {
 	count int
 }
+
+// userPhotoCount 取此人的头像张数（getUserProfilePhotos）。
+//
+// ok 为假表示这次没查成：调用方必须与「查到 0 张」区分开 —— 把查询
+// 失败当无头像，会在 TG 抖动时给正常用户扣一顶前置号的帽子。失败不
+// 缓存，下次候选再查。
+func userPhotoCount(b *core.Bot, uid int64) (int, bool) {
+	if uid <= 0 {
+		return 0, true
+	}
+	cache := &cachesOf(b.Shared).photo
+	if e, ok := cache.Get(uid); ok {
+		return e.count, true
+	}
+	raw, err := b.TG.Call("getUserProfilePhotos", map[string]any{
+		"user_id": uid, "limit": 1,
+	})
+	if err != nil {
+		slog.Warn("反广告：查询头像失败", "uid", uid, "err", err)
+		return 0, false
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			TotalCount int `json:"total_count"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
+		slog.Warn("反广告：查询头像返回异常", "uid", uid)
+		return 0, false
+	}
+	cache.Set(uid, photoEntry{count: resp.Result.TotalCount}, photoTTL)
+	return resp.Result.TotalCount, true
+}
