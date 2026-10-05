@@ -303,3 +303,41 @@ func TestAppealViewJSONArraysNeverNull(t *testing.T) {
 		}
 	}
 }
+
+// TestDossierMarksPrewarmMutedGreeting：Layer 1 命中会删掉那条招呼，
+// 申诉页的历史留底要把它标成「被拦」—— 否则管理员只看到人被禁言，
+// 看不到被删的内容是句招呼。
+func TestDossierMarksPrewarmMutedGreeting(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	now := time.Now().Unix()
+
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,556,902,'哈喽','ad',0.95,'systemone','promo','prewarm_muted',
+		 '疑似批量注册的广告前置号',?,?)`, now, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at) VALUES (-100,902,556,'哈喽',?)`,
+		now); err != nil {
+		t.Fatal(err)
+	}
+
+	var data appealViewData
+	loadAppealDossier(b.Shared, appealRec{ID: 1, BotID: b.BotID(), UserID: 556}, &data)
+	found := false
+	for _, h := range data.History {
+		if h.Text != "哈喽" {
+			continue
+		}
+		found = true
+		if !h.Blocked || h.Mark != "被拦" {
+			t.Errorf("prewarm 删掉的招呼应标「被拦」：%+v", h)
+		}
+	}
+	if !found {
+		t.Fatalf("历史留底应含被删的招呼：%+v", data.History)
+	}
+}

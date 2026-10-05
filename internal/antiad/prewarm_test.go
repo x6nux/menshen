@@ -64,6 +64,9 @@ func TestPrewarmCandidate(t *testing.T) {
 	if !prewarmCandidate(b, snap, gm, msg("擦"), false) {
 		t.Error("无意义短词也应命中（判定交给 AI）")
 	}
+	if prewarmCandidate(b, snap, gm, msg("。。。"), false) {
+		t.Error("纯标点消息不该命中")
+	}
 	if prewarmCandidate(b, snap, gm, msg("麻烦问下这个怎么配置"), false) {
 		t.Error("长消息不该命中")
 	}
@@ -198,6 +201,36 @@ func TestPrewarmHitMutes(t *testing.T) {
 	if action != actionPrewarmMuted {
 		t.Fatalf("action = %q，期望 %q", action, actionPrewarmMuted)
 	}
+	// 流水要挂被删招呼的消息号，申诉页的留底才能把它标成「被拦」。
+	var msgID int64
+	if err := b.Store.Read.QueryRow(`SELECT message_id FROM antiad_log
+		WHERE chat_id=? AND user_id=? AND action=? ORDER BY id DESC LIMIT 1`,
+		chat, uid, actionPrewarmMuted).Scan(&msgID); err != nil {
+		t.Fatal(err)
+	}
+	if msgID != 1 {
+		t.Fatalf("prewarm_muted 应挂招呼消息号 1，得到 %d", msgID)
+	}
+}
+
+// 已在进群类禁言中的成员再发首条招呼：不重复禁言、不删招呼、不改 kind
+// （与 Layer 2 的判重对称，也堵住「冷判定先禁、招呼后到」的竞态）。
+func TestPrewarmJudgeSkipsExistingJoinMute(t *testing.T) {
+	b, fake, uid, chat := setupPrewarm(t,
+		soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	saveJoinMute(b, chat, uid, kindProfile, "简介里有联系方式", 0)
+	sendPrewarmMessage(t, b, uid, chat)
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("已有进群限制不该重复禁言，得到 %d 次", got)
+	}
+	if got := fake.CountCalls("deleteMessage"); got != 0 {
+		t.Errorf("已有进群限制不该删招呼，得到 %d 次", got)
+	}
+	if rec, ok := loadJoinMute(b.Store, chat, uid); !ok || rec.Kind != kindProfile {
+		t.Fatalf("kind = %q,%v，应保持 profile 不被改写", rec.Kind, ok)
+	}
 }
 
 // 未命中：只落 prewarm_checked，不禁言。
@@ -229,14 +262,17 @@ func TestPrewarmBelowLine(t *testing.T) {
 	if got := fake.CountCalls("restrictChatMember"); got != 0 {
 		t.Fatalf("低于采信线不该禁言，得到 %d 次", got)
 	}
-	var action string
-	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+	var action, note string
+	if err := b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log
 		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
-		chat, uid).Scan(&action); err != nil {
+		chat, uid).Scan(&action, &note); err != nil {
 		t.Fatal(err)
 	}
 	if action != actionPrewarmChecked {
 		t.Fatalf("低于采信线也应完成复核并落流水，action = %q", action)
+	}
+	if !strings.Contains(note, "前置号复核（低于采信线，未处置）") {
+		t.Fatalf("低于采信线的结论应注明未处置，得到 %q", note)
 	}
 }
 
@@ -451,7 +487,9 @@ func TestPrewarmPipelineRoutesToAccountCheck(t *testing.T) {
 	}
 }
 
-// TestJoinMuteKindRoundTrip：kind 要能落库读回，prewarm 与 profile 区分开。
+// TestJoinMuteKindRoundTrip：kind 要能落库读回，且 upsert 不降级 ——
+// prewarm 一旦写入，Layer 2 复查随后写的 profile 不能把它覆盖回去，
+// 否则申诉出口会被悄悄放宽。反向（profile → prewarm）是升级，允许。
 func TestJoinMuteKindRoundTrip(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	saveJoinMute(b, -100, 555, kindPrewarm, "前置号", 0)
@@ -459,10 +497,16 @@ func TestJoinMuteKindRoundTrip(t *testing.T) {
 	if !ok || rec.Kind != kindPrewarm {
 		t.Fatalf("kind 读回 = %q,%v，期望 prewarm", rec.Kind, ok)
 	}
-	// upsert 更新 kind：同一个人再次被资料类命中时以最后一次为准。
+	// prewarm → profile：不降级（Layer 1 与 Layer 2 的竞态）。
 	saveJoinMute(b, -100, 555, kindProfile, "资料广告", 0)
-	if rec, _ = loadJoinMute(b.Store, -100, 555); rec.Kind != kindProfile {
-		t.Fatalf("upsert 后 kind = %q，期望 profile", rec.Kind)
+	if rec, _ = loadJoinMute(b.Store, -100, 555); rec.Kind != kindPrewarm {
+		t.Fatalf("profile 覆盖后 kind = %q，期望保持 prewarm", rec.Kind)
+	}
+	// profile → prewarm：升级允许。
+	saveJoinMute(b, -100, 556, kindProfile, "资料广告", 0)
+	saveJoinMute(b, -100, 556, kindPrewarm, "前置号", 0)
+	if rec, _ = loadJoinMute(b.Store, -100, 556); rec.Kind != kindPrewarm {
+		t.Fatalf("prewarm 覆盖后 kind = %q，期望 prewarm", rec.Kind)
 	}
 }
 

@@ -225,6 +225,7 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	rows, err = sh.Store.Read.Query(`SELECT chat_id,message_id,action FROM antiad_log
 		WHERE bot_id=? AND user_id=? AND message_id<>0 AND action IN
 		('deleted','deleted_muted','deleted_banned','banned',
+		 'prewarm_muted','dryrun:prewarm_muted',
 		 'dryrun:deleted','dryrun:deleted_muted','dryrun:deleted_banned','dryrun:banned')`,
 		ap.BotID, ap.UserID)
 	if err == nil {

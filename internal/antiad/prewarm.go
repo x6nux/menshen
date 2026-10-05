@@ -67,8 +67,9 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 		return false // 说明只在 Caption 里的媒体消息（图片/文件）交回普通判定
 	}
 	text := strings.TrimSpace(msgText(m)) // 按钮/联系人等载荷计入长度，避免短招呼带着载荷混进候选
-	if len([]rune(strings.Trim(text, prewarmTrimCut))) > prewarmTextMax {
-		return false
+	trimmed := strings.Trim(text, prewarmTrimCut)
+	if n := len([]rune(trimmed)); n == 0 || n > prewarmTextMax {
+		return false // 纯标点（“。。。”）没有实质内容，交给普通消息判定
 	}
 	for _, e := range m.Entities {
 		switch e.Type {
@@ -174,6 +175,12 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	if m == nil || m.From == nil || m.Chat == nil {
 		return
 	}
+	// 已在进群类禁言中：不重复禁言，也不改 kind（与 Layer 2 的判重对称）。
+	// 竞态的另一半：先被冷判定按 profile 禁言的人随后发一句招呼，不该被
+	// 这条路径再禁一次或升级成 prewarm。
+	if _, ok := loadJoinMute(b.Store, m.Chat.ID, m.From.ID); ok {
+		return
+	}
 	// 提示词按这个标记切换口径（prewarm_check），漏设会让模型按普通
 	// 消息判定理解载荷。
 	state.PrewarmCheck = true
@@ -203,7 +210,11 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_prewarm_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
-		logAd(b, m, v, actionPrewarmChecked, "前置号复核")
+		note := "前置号复核"
+		if v.IsAd {
+			note = "前置号复核（低于采信线，未处置）"
+		}
+		logAd(b, m, v, actionPrewarmChecked, note)
 		return
 	}
 	if conf.Dryrun {
@@ -221,6 +232,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Body:     prewarmLogText(m.From, m, state.Sender.Bio, state.Sender, v),
 		Reason:   "疑似批量注册的广告前置号",
 		Announce: conf.GroupAlert,
+		MsgID:    m.MessageID,
 	})
 }
 
@@ -346,22 +358,24 @@ func prewarmRecheck(b *core.Bot, chatID, uid int64) {
 	}
 	snap := b.Cache.Snap()
 
+	// 与消息路径同一道豁免门，放在拉资料之前：候选查询只过滤了群画像
+	// 里的按群白名单，ad_whitelist（面板/申诉加的永久白名单）、
+	// antiad_exempt_users、主管理员/归属人与群管理员都要在这里拦住，
+	// 且不该为一次注定跳过的复查吃 getChat。
+	u := &tg.TGUser{ID: uid}
+	gm, _ := loadMember(b.Store, chatID, uid)
+	if adExempt(b, snap, chatID, u, gm.Whitelisted) {
+		return
+	}
+
 	// 拿最新资料：对方可能刚把广告写进简介。
 	cachesOf(b.Shared).bio.Delete(uid)
 	info := userInfo(b, uid)
 	if strings.TrimSpace(info.bio) == "" {
 		return // 空壳由 Layer 1 负责；这里只抓资料里已有的广告
 	}
-
-	u := &tg.TGUser{ID: uid, Username: info.username,
+	u = &tg.TGUser{ID: uid, Username: info.username,
 		FirstName: info.firstName, LastName: info.lastName}
-	gm, _ := loadMember(b.Store, chatID, uid)
-	// 与消息路径同一道豁免门：候选查询只过滤了群画像里的按群白名单，
-	// ad_whitelist（面板/申诉加的永久白名单）、antiad_exempt_users、
-	// 主管理员/归属人与群管理员都要在这里拦住。
-	if adExempt(b, snap, chatID, u, gm.Whitelisted) {
-		return
-	}
 	p := buildProfile(b, &tg.Message{From: u}, gm, time.Now().Unix())
 	p.Bio = info.bio
 	p.BioLinks = resolveProfileLinks(b, p)

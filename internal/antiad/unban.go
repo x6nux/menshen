@@ -91,6 +91,10 @@ type joinMuteRec struct {
 	CreatedAt int64
 }
 
+// saveJoinMute 落一条进群类限制。upsert 不把 kind 从 prewarm 降级回
+// profile：Layer 1（前置号复核）与 Layer 2（延迟复查）可能竞态写同一个
+// 人，谁后写不能决定申诉口径 —— prewarm 的解除出口（补齐资料）比 profile
+// （删干净简介）更严，降级会悄悄放宽。反向升级（profile → prewarm）允许。
 func saveJoinMute(b *core.Bot, chatID, uid int64, kind, reason string,
 	noticeMsg int64) {
 	if kind == "" {
@@ -100,7 +104,8 @@ func saveJoinMute(b *core.Bot, chatID, uid int64, kind, reason string,
 		(chat_id,user_id,bot_id,kind,reason,notice_msg,attempts,created_at)
 		VALUES (?,?,?,?,?,?,0,?)
 		ON CONFLICT(chat_id,user_id) DO UPDATE SET
-		  kind=excluded.kind, reason=excluded.reason, notice_msg=excluded.notice_msg`,
+		  kind = CASE WHEN join_mutes.kind = 'prewarm' THEN 'prewarm' ELSE excluded.kind END,
+		  reason=excluded.reason, notice_msg=excluded.notice_msg`,
 		chatID, uid, b.BotID(), kind, core.TruncateRunes(reason, 300), noticeMsg,
 		time.Now().Unix()); err != nil {
 		slog.Error("冷判定：限制记录落库失败", "chat", chatID, "uid", uid, "err", err)

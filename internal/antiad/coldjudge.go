@@ -346,6 +346,9 @@ type joinMuteSpec struct {
 	Body     string // 流水正文（joinProfileText / prewarmLogText 渲染结果）
 	Reason   string // v.Reason 为空时的兜底理由
 	Announce bool   // 群内通知
+	// MsgID 是被处置的原消息号（前置号删掉的那条招呼）；0 = 无对应消息。
+	// 挂上它，申诉页的留底才能把这条招呼标成「被拦」。
+	MsgID int64
 }
 
 func applyJoinMute(b *core.Bot, conf store.BotChat, u *tg.TGUser, v adVerdict, bio string) {
@@ -386,7 +389,7 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	}
 
 	logID := logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title},
-		From: u, Text: spec.Body}, v, spec.Action, spec.Note)
+		From: u, MessageID: spec.MsgID, Text: spec.Body}, v, spec.Action, spec.Note)
 
 	if spec.Announce {
 		groupText := verdictBrief(v)
