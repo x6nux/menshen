@@ -570,3 +570,72 @@ ORDER BY joined_at LIMIT 20
 代码合并部署后：测试群开两开关观察；CMLiussss 群开
 `antiad_prewarm_sweep`，新成员在 10 分钟内进入复查节奏，当天即可
 抓到 8591254077 这类「进门即成妆」的号。
+
+## 10. 修订（2026-10-05 夜）：规则优先、资料形状复用、低优先级探测
+
+### 10.1 动机（线上实证）
+
+- 扫描首轮把 TG 打出 429（`sendMessage`），探测与通知都不该抢实时链路的额度；
+- 同模板批量号（「免押小额洗资 ＋ 不同邀请链接」等）逐个跑 AI 开销大，
+  而它们的资料形状高度一致；
+- 现有 287 条必封规则本就以入群资料文本为语料，`#3`/`#162` 能命中
+  8591254077 的资料，但规则门只跑消息正文，资料路径没用上；
+- 被踢/退群的成员（如 8591254077 后续被踢且资料清空）会让复查每档
+  空转重试。
+
+### 10.2 规则优先门（零 AI）
+
+- 资料文本按规则语料的同一形态构造
+  `profileRuleText(u, bio) = joinProfileText(u, bio, adVerdict{})`；
+- `coldJudge` 与 `prewarmRecheck` 在调 AI 前先 `MatchRules(snap, text)`：
+  - `enforce` 命中 → 按账号级广告直接禁言（`BumpRuleHits`、
+    `join_mutes.kind=profile`、流水 decider `rule:<id>`、reason 引用规则名），
+    **零 AI**；
+  - 非 enforce 命中 → 注入 `state.MatchedRules` 作为强证据再送 AI；
+    `coldInstructions` / `coldLLMPrompt` 补 `matchedRulesClause` 口径。
+- 位置：`coldJudge` 在拿到 bio 之后；`prewarmRecheck` 的 enforce 门放在
+  指纹门之前（资料没变也要抓新启用的规则），证据在送检前组好。
+
+### 10.3 资料形状哈希（跨账号复用）
+
+- `profileShape(p)`：取 `bio`（为空退回昵称），小写、去零宽/控制符、
+  压缩空白；链接 → `[链接]`、纯数字段 → `[数]`、`@用户名` → `[号]`；
+  去掉标点后不足 4 个有效字符、或只剩占位符 → 空串（不参与）。
+- 新表 `profile_shapes(shape TEXT PRIMARY KEY, kind TEXT, hits INTEGER,
+  last_hit INTEGER, sample TEXT, created_at INTEGER)`（`schemaSQL` 新表，
+  老库 `CREATE IF NOT EXISTS` 直接可建，无需 migrate）。
+- **学习**：`applyJoinMuteNotify` 成功禁言后，若 `spec.Shape` 非空 →
+  upsert 形状（hits+1、样本=资料摘要）。`join_mutes` 增加 `shape` 列
+  （migrate），供解除时反查删除。
+- **复用**：`coldJudge` / `prewarmRecheck` 在送 AI 前查形状；命中 →
+  直接禁言（流水 decider `phash`，reason 写明命中的样本与数量），
+  **零 AI**。同模板批量号从第二个开始不再花 AI。
+- **清理**：`dropJoinMute`（申诉/撤销/人工解除）按 `join_mutes.shape`
+  删除对应形状；`CleanupData` 清 30 天未命中的形状。
+- 本轮不做形状管理面板；日志/告警可见来源，后续可补。
+
+### 10.4 低优先级探测与通知限流
+
+- 延迟复查不再往共享判定队列提交探测任务，改为**独立探测协程**
+  （`Shared` 上 `sync.Once` 启动，进程内一份）：
+  - 节奏 `prewarmProbeInterval = 200ms`（≈5 次/秒，全局，远低于
+    TG 30 次/秒）；轮转启用中的群，每 tick 选一个到点的候选
+    （`ORDER BY prewarm_next_at LIMIT 1` + 条件 UPDATE 抢占）；
+  - 轻量段（getChat/getChatMember/规则/形状/指纹）在协程内完成；
+    需要 AI 时把**已取到的资料**投递到判定池，避免二次 getChat；
+  - `PrewarmSweep` 语义改为「确保探测协程已启动」（`tickMinute` 调用，
+    幂等）。
+- **群内通知限流**：同一群 5 秒最多一条；**批量禁言（sweep）默认
+  不发群通知**（`joinMuteSpec.Quiet`），只落流水，管理员通过现有
+  私聊汇总/告警获知；Layer 1 与进群冷判定维持群开关行为。
+- **离群长退避**：拉资料为空且 `getChatMember` 状态为 `left`/`kicked`
+  → `next_at = now + 7d`，不再空转。
+
+### 10.5 其他修复与测试
+
+- in-flight 互斥改为**处理完成即释放**（`defer Delete`，TTL 仅兜底崩溃），
+  恢复 1min/5min 档的次档重试；
+- 测试：enforce 规则命中零 AI 禁言、非 enforce 证据进载荷；形状
+  学习→过期→清理、形状命中零 AI、解除删形状；`Quiet` 批量禁言无群
+  消息但有私聊汇总；离群退避；探测节奏（注入间隔断言调用次数）；
+  in-flight 释放后下一档真的重试。
