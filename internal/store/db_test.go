@@ -92,7 +92,7 @@ func TestMigrateOldDB(t *testing.T) {
 		{"bots", "is_main"}, {"upstreams", "kind"},
 		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
 		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},
-		{"group_members", "profile_hash"}} {
+		{"group_members", "profile_hash"}, {"group_members", "prewarm_next_at"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}
@@ -116,6 +116,15 @@ func TestMigrateOldDB(t *testing.T) {
 	if phash != "" {
 		t.Errorf("老成员 profile_hash 默认应为空串，得到 %q", phash)
 	}
+	// 老成员的复查到期时间默认 0（= 从未复查过，立刻进一次候选）。
+	var nextAt int64
+	if err := s.Read.QueryRow(`SELECT prewarm_next_at FROM group_members
+		WHERE chat_id=-100 AND user_id=555`).Scan(&nextAt); err != nil {
+		t.Fatalf("读老成员 prewarm_next_at 失败: %v", err)
+	}
+	if nextAt != 0 {
+		t.Errorf("老成员 prewarm_next_at 默认应为 0，得到 %d", nextAt)
+	}
 	// 老上游没有类型：迁移默认 openai，行为与升级前一致。
 	var kind string
 	if err := s.Read.QueryRow(`SELECT kind FROM upstreams WHERE name='old'`).Scan(&kind); err != nil {
@@ -138,12 +147,10 @@ func TestMigrateOldDB(t *testing.T) {
 	if has, err := hasIndex(s.Write, "antiad_log", "idx_antiad_bot_id"); err != nil || !has {
 		t.Errorf("antiad_log(bot_id,id) 索引没建上（err=%v）", err)
 	}
-	// 前置号复查的两个查询各自依赖的索引：老库的 group_members 连
-	// prewarm_checked_at 都是 migrate 才补的，索引必须建在 migrate 之后。
-	for _, name := range []string{"idx_gmember_pwcheck", "idx_gmember_joined"} {
-		if has, err := hasIndex(s.Write, "group_members", name); err != nil || !has {
-			t.Errorf("group_members 索引 %s 没建上（err=%v）", name, err)
-		}
+	// 前置号复查的选人依赖 (chat_id,prewarm_next_at) 索引：老库的
+	// prewarm_next_at 是 migrate 才补的，索引必须建在 migrate 之后。
+	if has, err := hasIndex(s.Write, "group_members", "idx_gmember_pwnext"); err != nil || !has {
+		t.Errorf("group_members 索引 idx_gmember_pwnext 没建上（err=%v）", err)
 	}
 	c, err := NewCache(s)
 	if err != nil {
