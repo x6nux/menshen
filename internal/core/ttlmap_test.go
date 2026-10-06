@@ -54,3 +54,26 @@ func TestSharedExt(t *testing.T) {
 		t.Fatalf("不同 Shared 之间串了状态：%d", got)
 	}
 }
+
+// TestTTLMapSetNX：只在键不存在时写入；已过期视为不存在。
+func TestTTLMapSetNX(t *testing.T) {
+	var m TTLMap[string, int]
+	if !m.SetNX("k", 1, time.Hour) {
+		t.Fatal("首次 SetNX 应成功")
+	}
+	if m.SetNX("k", 2, time.Hour) {
+		t.Fatal("键还在时 SetNX 应失败")
+	}
+	if v, _ := m.Get("k"); v != 1 {
+		t.Fatalf("失败的 SetNX 不该改写值：%d", v)
+	}
+	// 过期后可以重新占用。
+	m.Set("k", 9, time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+	if !m.SetNX("k", 3, time.Hour) {
+		t.Fatal("过期后 SetNX 应成功")
+	}
+	if v, _ := m.Get("k"); v != 3 {
+		t.Fatalf("过期后 SetNX 应写入新值：%d", v)
+	}
+}

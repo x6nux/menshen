@@ -85,7 +85,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_act_soft", "处置线：删除", "0-100 的整数，低于它不处置", 0, 100, "antiad"},
 	{"antiad_mute_conf", "禁言置信度下限", "0-100 的整数；要禁言/封禁（含仅删除档的短禁言）时，终判置信度必须达到它，低于它一律降级为只删/仅告警，管理员可在告警卡片上人工补刀。默认 75，0 = 关闭这条", 0, 100, "antiad"},
 	{"antiad_cold", "进群冷判定", "1 = 开，0 = 关；开启后每个进群的人都可能花一次 AI 开销。默认跟随全局，单 bot 可覆盖", 0, 1, "both"},
-	{"antiad_joinverify", "入群人机验证", "1 = 开；新人进群先禁言，通过网页人机验证（Turnstile / reCAPTCHA / hCaptcha / Cap）后自动解除，未通过则按等待时长移出群聊。需在配置里指定 captcha_provider 等，未配齐时本开关不生效。默认 0", 0, 1, "antiad"},
+	{"antiad_joinverify", "入群人机验证", "1 = 开；新人进群先禁言，通过网页人机验证（Turnstile / hCaptcha / 内置 Cap）后自动解除，未通过则按等待时长移出群聊。需在配置里指定 captcha_provider 等，未配齐时本开关不生效。默认 0", 0, 1, "antiad"},
 	{"antiad_joinverify_minutes", "入群验证等待（分钟）", "非负整数；超过它还没通过就移出群聊（可重新加入）；0 = 不踢，一直禁言。验证页的有效窗口也用这个值，默认 10", 0, 0, "antiad"},
 	{"antiad_group_silent", "群内静默", "1 = 群里不发任何通知（告警、限制提示、命令回复都不发），判定与处置照常；0 = 正常发", 0, 1, "antiad"},
 	{"antiad_cold_conf", "冷判定采信线", "0-100 的整数，建议高于处置线——进群画像的证据更少", 0, 100, "antiad"},

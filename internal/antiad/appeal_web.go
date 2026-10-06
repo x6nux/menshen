@@ -158,7 +158,7 @@ func IsWebPagePath(p string) bool {
 		return false
 	}
 	switch rt.kind {
-	case "ap", "apv", "v", "jv":
+	case "ap", "apv", "v", "jv", "demo":
 		return true
 	}
 	return false
@@ -184,6 +184,8 @@ func WebHandler(sh *core.Shared) http.Handler {
 			handleLogViewPage(sh, w, r, route)
 		case "jv":
 			handleJoinVerifyPage(sh, w, r, route)
+		case "demo":
+			handleCaptchaDemoPage(sh, w, r, route)
 		default:
 			http.NotFound(w, r)
 		}

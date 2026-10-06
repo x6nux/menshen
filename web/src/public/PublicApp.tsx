@@ -10,6 +10,7 @@ import { parseRoute } from './api'
 import { InvalidState } from './InvalidState'
 import { AppealVerifyPage } from './pages/AppealVerifyPage'
 import { AppealViewPage } from './pages/AppealViewPage'
+import { CaptchaDemoPage } from './pages/CaptchaDemoPage'
 import { JoinVerifyPage } from './pages/JoinVerifyPage'
 import { LogViewPage } from './pages/LogViewPage'
 
@@ -50,6 +51,10 @@ export function PublicApp() {
         ) : route.kind === 'jv' ? (
           <ErrorBoundary>
             <JoinVerifyPage route={route} />
+          </ErrorBoundary>
+        ) : route.kind === 'demo' ? (
+          <ErrorBoundary>
+            <CaptchaDemoPage route={route} />
           </ErrorBoundary>
         ) : route.kind === 'v' ? (
           <ErrorBoundary>

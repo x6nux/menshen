@@ -124,10 +124,9 @@ func TestEnvFillsAll(t *testing.T) {
 	t.Setenv("MENSHEN_LISTEN_ADDR", "0.0.0.0:8081")
 	t.Setenv("MENSHEN_TG_PROXY", "http://127.0.0.1:7890")
 	t.Setenv("MENSHEN_AI_PROXY", "socks5://127.0.0.1:1080")
-	t.Setenv("MENSHEN_CAPTCHA_PROVIDER", "cap")
+	t.Setenv("MENSHEN_CAPTCHA_PROVIDER", "hcaptcha")
 	t.Setenv("MENSHEN_CAPTCHA_SITE_KEY", "site")
 	t.Setenv("MENSHEN_CAPTCHA_SECRET", "secret")
-	t.Setenv("MENSHEN_CAPTCHA_ENDPOINT", "https://cap.example.com/")
 	t.Setenv("MENSHEN_CAPTCHA_MIN_SCORE", "60")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "不存在.yaml"))
@@ -153,18 +152,15 @@ func TestEnvFillsAll(t *testing.T) {
 	if cfg.TGProxy == nil || cfg.AIProxy == nil {
 		t.Errorf("代理没读到: tg=%v ai=%v", cfg.TGProxy, cfg.AIProxy)
 	}
-	if cfg.CaptchaProvider != "cap" || !cfg.CaptchaEnabled() {
+	if cfg.CaptchaProvider != "hcaptcha" || !cfg.CaptchaEnabled() {
 		t.Errorf("入群验证配置没读全: %+v", cfg)
-	}
-	if cfg.CaptchaEndpoint != "https://cap.example.com" {
-		t.Errorf("captcha_endpoint 应去掉尾部斜杠，得到 %q", cfg.CaptchaEndpoint)
 	}
 	if cfg.CaptchaMinScore != 60 {
 		t.Errorf("captcha_min_score = %d, 期望 60", cfg.CaptchaMinScore)
 	}
 }
 
-// TestCaptchaConfigValidation：提供方白名单与 cap 的端点要求。
+// TestCaptchaConfigValidation：提供方白名单与「cap 无需配置」。
 //
 // 拼错的提供方若被静默忽略，入群验证会「开着但不生效」，而面板上
 // 一切正常 —— 正是最难查的那类事故，所以启动时就报错。
@@ -172,23 +168,58 @@ func TestCaptchaConfigValidation(t *testing.T) {
 	if _, err := Load(writeConfig(t, "captcha_provider: \"recaptch\"\n")); err == nil {
 		t.Error("未知的 captcha_provider 应当启动报错")
 	}
+	if _, err := Load(writeConfig(t, "captcha_provider: \"recaptcha\"\n")); err == nil {
+		t.Error("已移除的 reCAPTCHA 应当启动报错")
+	}
 	if _, err := Load(writeConfig(t, "captcha_min_score: \"101\"\n")); err == nil {
 		t.Error("越界的 captcha_min_score 应当启动报错")
 	}
 
-	// cap 缺 endpoint 时按未启用处理（不报错，但 CaptchaEnabled 为假）。
-	cfg, err := Load(writeConfig(t,
-		"captcha_provider: \"cap\"\ncaptcha_site_key: \"s\"\ncaptcha_secret: \"k\"\n"))
+	// cap 是内置实现：无需 site key / secret / endpoint 即视为可用。
+	cfg, err := Load(writeConfig(t, "captcha_provider: \"CAP\"\n"))
+	if err != nil {
+		t.Fatalf("提供方名应大小写不敏感: %v", err)
+	}
+	if cfg.CaptchaProvider != "cap" || !cfg.CaptchaEnabled() {
+		t.Error("cap 无需任何密钥即应视为已启用")
+	}
+
+	// turnstile / hcaptcha 缺 secret 时按未启用处理（不报错）。
+	cfg, err = Load(writeConfig(t, "captcha_provider: \"hcaptcha\"\ncaptcha_site_key: \"s\"\n"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.CaptchaEnabled() {
-		t.Error("cap 缺 endpoint 时不应视为已启用")
+		t.Error("hcaptcha 缺 secret 时不应视为已启用")
 	}
-	if _, err := Load(writeConfig(t,
-		"captcha_provider: \"CAP\"\ncaptcha_site_key: \"s\"\ncaptcha_secret: \"k\"\n"+
-			"captcha_endpoint: \"https://cap.example.com\"\n")); err != nil {
-		t.Fatalf("提供方名应大小写不敏感: %v", err)
+}
+
+// TestParseCaptchaDemoKeys：紧凑格式解析与错误分支。
+func TestParseCaptchaDemoKeys(t *testing.T) {
+	got, err := parseCaptchaDemoKeys(
+		"turnstile=sk1,sec1; hcaptcha=sk2,sec2; cap=ignored,ignored")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got["turnstile"].SiteKey != "sk1" || got["turnstile"].Secret != "sec1" {
+		t.Errorf("turnstile 解析错误: %+v", got["turnstile"])
+	}
+	if got["hcaptcha"].SiteKey != "sk2" {
+		t.Errorf("hcaptcha 解析错误: %+v", got["hcaptcha"])
+	}
+	if _, ok := got["cap"]; ok {
+		t.Error("cap 是内置实现，不该进演示密钥表")
+	}
+
+	for _, bad := range []string{
+		"recaptcha=a,b",  // 已移除
+		"turnstile=sk1",  // 缺 secret
+		"turnstile=,sec", // 缺 site key
+		"turnstile=a,b,c",
+	} {
+		if _, err := parseCaptchaDemoKeys(bad); err == nil {
+			t.Errorf("%q 应当报错", bad)
+		}
 	}
 }
 

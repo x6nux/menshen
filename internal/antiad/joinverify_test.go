@@ -59,71 +59,42 @@ func TestCaptchaProviders(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
 
-	oldR, oldH := recaptchaVerifyURL, hcaptchaVerifyURL
-	t.Cleanup(func() { recaptchaVerifyURL, hcaptchaVerifyURL = oldR, oldH })
+	oldH := hcaptchaVerifyURL
+	t.Cleanup(func() { hcaptchaVerifyURL = oldH })
 
 	var form url.Values
-	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 		form = r.PostForm
-		path = r.URL.Path
-		// 带分数的一家回 0.9；用来验证 minScore。
 		w.Write([]byte(`{"success":true,"hostname":"ad.example.com","score":0.9}`))
 	}))
 	t.Cleanup(srv.Close)
-	recaptchaVerifyURL, hcaptchaVerifyURL = srv.URL, srv.URL
-
-	rec := captchaProvider{name: "recaptcha", siteKey: "sk", secret: "sec"}
-	if ok, why := rec.verify(b.Shared, "tok", "203.0.113.7"); !ok {
-		t.Fatalf("reCAPTCHA 应通过: %s", why)
-	}
-	if form["secret"][0] != "sec" || form["response"][0] != "tok" ||
-		form["remoteip"][0] != "203.0.113.7" {
-		t.Errorf("reCAPTCHA 请求字段不对: %v", form)
-	}
-	rec.minScore = 95
-	if ok, _ := rec.verify(b.Shared, "tok", "1.2.3.4"); ok {
-		t.Error("分数 0.9 低于下限 95 时应判失败")
-	}
-	rec.minScore = 0
+	hcaptchaVerifyURL = srv.URL
 
 	hc := captchaProvider{name: "hcaptcha", siteKey: "hk", secret: "hsec"}
-	if ok, why := hc.verify(b.Shared, "tok", "1.2.3.4"); !ok {
+	if ok, why := hc.verify(b.Shared, "tok", "203.0.113.7"); !ok {
 		t.Fatalf("hCaptcha 应通过: %s", why)
 	}
-	if form["sitekey"][0] != "hk" {
-		t.Errorf("hCaptcha 请求应带 sitekey: %v", form)
+	if form["secret"][0] != "hsec" || form["response"][0] != "tok" ||
+		form["remoteip"][0] != "203.0.113.7" || form["sitekey"][0] != "hk" {
+		t.Errorf("hCaptcha 请求字段不对: %v", form)
 	}
+	hc.minScore = 95
+	if ok, _ := hc.verify(b.Shared, "tok", "1.2.3.4"); ok {
+		t.Error("分数 0.9 低于下限 95 时应判失败")
+	}
+	hc.minScore = 0
 
 	// hostname 不符一律失败：令牌必须由我们自己域名上的页面签出。
 	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"success":true,"hostname":"evil.example.com"}`))
 	})
-	if ok, _ := rec.verify(b.Shared, "tok", "1.2.3.4"); ok {
+	if ok, _ := hc.verify(b.Shared, "tok", "1.2.3.4"); ok {
 		t.Error("hostname 不符时应判失败")
 	}
 
-	// Cap：POST <endpoint>/<sitekey>/siteverify，body 为 JSON。
-	var capBody map[string]string
-	capSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		json.NewDecoder(r.Body).Decode(&capBody)
-		w.Write([]byte(`{"success":true}`))
-	}))
-	t.Cleanup(capSrv.Close)
-	capP := captchaProvider{name: "cap", siteKey: "sitekey", secret: "csecret",
-		endpoint: capSrv.URL}
-	if ok, why := capP.verify(b.Shared, "tok", "1.2.3.4"); !ok {
-		t.Fatalf("Cap 应通过: %s", why)
-	}
-	if path != "/sitekey/siteverify" || capBody["secret"] != "csecret" ||
-		capBody["response"] != "tok" {
-		t.Errorf("Cap 校验请求不对: path=%q body=%v", path, capBody)
-	}
-
 	// 空令牌不发请求直接失败。
-	if ok, _ := capP.verify(b.Shared, "", "1.2.3.4"); ok {
+	if ok, _ := hc.verify(b.Shared, "", "1.2.3.4"); ok {
 		t.Error("缺令牌应判失败")
 	}
 }

@@ -10,7 +10,6 @@ package panel
 import (
 	"io/fs"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"menshen/internal/core"
@@ -46,9 +45,10 @@ func PublicShellHandler(sh *core.Shared) http.Handler {
 //   - 脚本只有同源产物与验证码组件，没有内联脚本，所以不需要 nonce；
 //   - MUI/Emotion 在运行时注入 style 标签，style-src 必须放行 inline；
 //   - Turnstile 的来源始终放行（申诉页固定用它）；
-//   - 再按 config 里配置的入群验证提供方追加来源：reCAPTCHA / hCaptcha
-//     各自有固定的脚本与 iframe 域，Cap 的实例地址是用户自填的，运行时
-//     取它的 origin；
+//   - 再按 config 里出现的提供方追加来源：生产的 captcha_provider 与演示页
+//     captcha_demo_keys 里列出的每一家。演示页可能一次展示多家，少放行一个
+//     来源时那个组件会静默不显示、验证永远不通过；
+//   - Cap 是内置的 Go 服务（组件从 jsdelivr 拉、挑战走同源），只放行 CDN；
 //   - default-src 'none' 兜底，没显式放行的能力一律没有。
 func publicShellCSP(sh *core.Shared) string {
 	script := []string{"'self'", "https://challenges.cloudflare.com"}
@@ -56,29 +56,29 @@ func publicShellCSP(sh *core.Shared) string {
 	connect := []string{"'self'", "https://challenges.cloudflare.com"}
 	extra := ""
 
-	provider := ""
-	endpoint := ""
+	provs := map[string]bool{}
 	if sh != nil {
-		provider = sh.Cfg.CaptchaProvider
-		endpoint = sh.Cfg.CaptchaEndpoint
+		if sh.Cfg.CaptchaProvider != "" {
+			provs[sh.Cfg.CaptchaProvider] = true
+		}
+		for name := range sh.Cfg.CaptchaDemoKeys {
+			provs[name] = true
+		}
+		// 演示页恒定带上内置 Cap（无需密钥），所以要一并放行它的来源。
+		if sh.Cfg.CaptchaDemo {
+			provs["cap"] = true
+		}
 	}
-	switch provider {
-	case "recaptcha":
-		script = append(script, "https://www.google.com", "https://www.gstatic.com")
-		frame = append(frame, "https://www.google.com")
-		connect = append(connect, "https://www.google.com")
-	case "hcaptcha":
+	if provs["hcaptcha"] {
 		script = append(script, "https://js.hcaptcha.com")
 		frame = append(frame, "https://newassets.hcaptcha.com", "https://js.hcaptcha.com")
 		connect = append(connect,
 			"https://api.hcaptcha.com", "https://hcaptcha.com", "https://*.hcaptcha.com")
-	case "cap":
-		// 组件与 wasm 从 jsdelivr 拉取；wasm 实例化需要 wasm-unsafe-eval。
+	}
+	if provs["cap"] {
+		// 组件从 jsdelivr 拉取；挑战 / 兑换走同源（'self' 已放行）。
 		script = append(script, "https://cdn.jsdelivr.net", "'wasm-unsafe-eval'")
 		connect = append(connect, "https://cdn.jsdelivr.net")
-		if o := endpointOrigin(endpoint); o != "" {
-			connect = append(connect, o)
-		}
 		// Cap 用 Web Worker 跑工作量证明。
 		extra = "worker-src 'self' blob:; "
 	}
@@ -101,15 +101,3 @@ const publicShellCSPBase = "default-src 'none'; " +
 	"connect-src 'self' https://challenges.cloudflare.com; " +
 	"frame-src https://challenges.cloudflare.com; " +
 	"base-uri 'none'; form-action 'self'"
-
-// endpointOrigin 取端点 URL 的 origin（scheme://host）。解析失败返回空串。
-func endpointOrigin(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	return u.Scheme + "://" + u.Host
-}

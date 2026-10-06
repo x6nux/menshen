@@ -56,28 +56,22 @@ func TestPublicShellHandler(t *testing.T) {
 // TestPublicShellCSPProviders：入群验证的提供方要各自放行其脚本 / iframe /
 // 连接来源。少放行一个来源时组件静默不显示，验证永远不通过。
 func TestPublicShellCSPProviders(t *testing.T) {
-	cases := []struct {
-		provider string
-		endpoint string
-		want     []string
-	}{
-		{"recaptcha", "", []string{
-			"https://www.google.com", "https://www.gstatic.com"}},
-		{"hcaptcha", "", []string{
-			"https://js.hcaptcha.com", "https://newassets.hcaptcha.com",
-			"https://api.hcaptcha.com"}},
-		{"cap", "https://cap.example.com/", []string{
-			"https://cdn.jsdelivr.net", "https://cap.example.com",
-			"'wasm-unsafe-eval'", "worker-src 'self' blob:"}},
-	}
-	for _, c := range cases {
-		sh := &core.Shared{Cfg: &config.Config{
-			CaptchaProvider: c.provider, CaptchaEndpoint: c.endpoint}}
-		got := publicShellCSP(sh)
-		for _, want := range c.want {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s 的 CSP 缺少 %q：%s", c.provider, want, got)
-			}
+	sh := &core.Shared{Cfg: &config.Config{
+		CaptchaProvider: "hcaptcha",
+		CaptchaDemo:     true, // 演示页恒定带内置 cap
+	}}
+	got := publicShellCSP(sh)
+	for _, want := range []string{
+		"https://js.hcaptcha.com", "https://newassets.hcaptcha.com",
+		"https://api.hcaptcha.com",
+		// cap（内置）也要放行 CDN 与 worker
+		"https://cdn.jsdelivr.net", "'wasm-unsafe-eval'", "worker-src 'self' blob:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CSP 缺少 %q：%s", want, got)
 		}
+	}
+	if strings.Contains(got, "google.com") {
+		t.Errorf("已移除 reCAPTCHA，CSP 不该再放行 google：%s", got)
 	}
 }

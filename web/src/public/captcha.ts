@@ -1,7 +1,7 @@
 // 入群验证页的验证码组件加载与渲染。
 //
-// 支持四家：Cloudflare Turnstile / Google reCAPTCHA / hCaptcha / Cap
-// （自建）。每家脚本只注入一次，render 后返回清理函数。
+// 支持三家：Cloudflare Turnstile / hCaptcha / Cap（内置 Go 实现，组件走
+// jsdelivr，挑战走同源）。每家脚本只注入一次，render 后返回清理函数。
 //
 // 这里注入的脚本域必须与 Go 侧 panel.publicShellCSP 放行的来源一致：
 // 少放行一个域时浏览器会静默拦下脚本，表现为组件不显示、验证永远不通过，
@@ -11,17 +11,9 @@ import { loadTurnstile } from './turnstile'
 export interface CaptchaOpts {
   provider: string
   sitekey: string
-  /** Cap 专用：<endpoint>/<sitekey>/，由服务端拼好下发。 */
+  /** Cap 专用：<base>/cap/<sitekey>/，由服务端下发。 */
   endpoint?: string
   onToken: (token: string) => void
-}
-
-interface RecaptchaApi {
-  render: (
-    el: HTMLElement,
-    opts: { sitekey: string; callback: (token: string) => void },
-  ) => number
-  reset: (id?: number) => void
 }
 
 interface HCaptchaApi {
@@ -34,7 +26,6 @@ interface HCaptchaApi {
 
 declare global {
   interface Window {
-    grecaptcha?: RecaptchaApi
     hcaptcha?: HCaptchaApi
   }
 }
@@ -58,13 +49,6 @@ export function mountCaptcha(el: HTMLElement, o: CaptchaOpts): () => void {
         if (!ts || stopped) return
         const id = ts.render(el, { sitekey: o.sitekey, callback: done })
         adopt(() => window.turnstile?.remove(id))
-      })
-      break
-    case 'recaptcha':
-      void loadRecaptcha().then((g) => {
-        if (!g || stopped) return
-        const id = g.render(el, { sitekey: o.sitekey, callback: done })
-        adopt(() => g.reset(id))
       })
       break
     case 'hcaptcha':
@@ -105,22 +89,6 @@ function injectScript(src: string, type?: string): Promise<void> {
     s.onerror = () => resolve()
     document.head.appendChild(s)
   })
-}
-
-let recaptchaLoader: Promise<RecaptchaApi | null> | null = null
-
-/** loadRecaptcha 注入 google reCAPTCHA（render=explicit）；失败返回 null。 */
-export function loadRecaptcha(): Promise<RecaptchaApi | null> {
-  if (window.grecaptcha?.render) return Promise.resolve(window.grecaptcha)
-  if (recaptchaLoader) return recaptchaLoader
-  recaptchaLoader = new Promise((resolve) => {
-    ;(window as unknown as { msRecaptchaOnload?: () => void }).msRecaptchaOnload =
-      () => resolve(window.grecaptcha ?? null)
-    void injectScript(
-      'https://www.google.com/recaptcha/api.js?render=explicit&onload=msRecaptchaOnload',
-    ).then(() => resolve(window.grecaptcha ?? null))
-  })
-  return recaptchaLoader
 }
 
 let hcaptchaLoader: Promise<HCaptchaApi | null> | null = null

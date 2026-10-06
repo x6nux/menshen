@@ -70,6 +70,8 @@ type caches struct {
 	// prewarmNoticeAt 做群内通知的按群限速，键 chatID，值上次通知时刻。
 	// 扫描高峰的 429 主要来自成批 sendMessage。
 	prewarmNoticeAt core.TTLMap[int64, time.Time]
+	// capNonces 记录内置 Cap 已用过的挑战 / 兑换令牌签名，防重放，键为签名十六进制。
+	capNonces core.TTLMap[string, struct{}]
 }
 
 type cachesKey struct{}
@@ -99,4 +101,5 @@ func GCCaches(sh *core.Shared) {
 	c.prewarmAI.GC(now)
 	c.prewarmInflight.GC(now)
 	c.prewarmNoticeAt.GC(now)
+	c.capNonces.GC(now)
 }

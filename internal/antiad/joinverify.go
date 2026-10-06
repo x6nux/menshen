@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // ---- 入群人机验证 ----
 //
 // 新人进群先禁言，在群里发一条带验证链接的提示；本人用浏览器完成人机
-// 验证（Turnstile / reCAPTCHA / hCaptcha / Cap）后自动解除。它拦在门口，
+// 验证（Turnstile / hCaptcha / 内置 Cap）后自动解除。它拦在门口，
 // 与冷判定独立：冷判定看资料、验证看「是不是人」，两者可以同时开。
 //
 // 与 join_mutes 分开记：那是可申诉的处罚（资料/前置号判为广告），入群
@@ -63,7 +62,7 @@ func joinVerifyEnabled(b *core.Bot) bool {
 	if !WebAvailable(b.Shared) {
 		return false
 	}
-	return captchaOf(b.Shared).enabled()
+	return captchaOf(b.Shared).enabled(b.Shared)
 }
 
 // joinVerifyWindow 是验证链接的有效时长；0 表示不限时（也不踢人）。
@@ -222,8 +221,7 @@ func joinVerifyPageData(b *core.Bot, sh *core.Shared, rec joinVerifyRec) map[str
 		}
 	}
 	if p.name == "cap" {
-		data["endpoint"] = strings.TrimRight(p.endpoint, "/") + "/" +
-			url.PathEscape(p.siteKey) + "/"
+		data["endpoint"] = CapBaseURL(sh)
 	}
 	return data
 }

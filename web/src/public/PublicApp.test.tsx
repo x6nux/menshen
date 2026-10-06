@@ -307,6 +307,36 @@ describe('PublicApp · 入群验证页', () => {
   })
 })
 
+describe('PublicApp · 人机验证测试台', () => {
+  it('列出已配置的验证方式并提供组件容器', async () => {
+    at('/_w/demo/1/x')
+    server.use(
+      http.get('*/_w/demo/1/x', () =>
+        HttpResponse.json({
+          providers: [
+            { provider: 'hcaptcha', sitekey: 'hsite' },
+            { provider: 'cap', sitekey: 'menshen', endpoint: '/cap/menshen/' },
+          ],
+        }),
+      ),
+    )
+    render(<PublicApp />)
+
+    expect(await screen.findByText('人机验证测试台')).toBeInTheDocument()
+    expect(screen.getByText(/hCaptcha/)).toBeInTheDocument()
+    expect(screen.getByText(/Cap（内置）/)).toBeInTheDocument()
+    expect(screen.getByTestId('captcha-hcaptcha')).toBeInTheDocument()
+    expect(screen.getByTestId('captcha-cap')).toBeInTheDocument()
+  })
+
+  it('没有配置任何验证方式时给出提示', async () => {
+    at('/_w/demo/1/x')
+    server.use(http.get('*/_w/demo/1/x', () => HttpResponse.json({ providers: [] })))
+    render(<PublicApp />)
+    expect(await screen.findByText(/未配置任何验证方式/)).toBeInTheDocument()
+  })
+})
+
 // stubMatchMedia 让 jsdom 里的 useMediaQuery 按查询返回指定匹配。
 function stubMatchMedia(matches: (q: string) => boolean) {
   window.matchMedia = ((q: string) => ({

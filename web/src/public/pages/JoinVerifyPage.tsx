@@ -12,7 +12,6 @@ import { errorText, InvalidState } from '../InvalidState'
 
 const PROVIDER_LABEL: Record<string, string> = {
   turnstile: 'Cloudflare Turnstile',
-  recaptcha: 'Google reCAPTCHA',
   hcaptcha: 'hCaptcha',
   cap: 'Cap',
 }

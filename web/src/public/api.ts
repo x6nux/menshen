@@ -47,7 +47,7 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await resp.json()) as T
 }
 
-export type WebRouteKind = 'ap' | 'apv' | 'v' | 'jv'
+export type WebRouteKind = 'ap' | 'apv' | 'v' | 'jv' | 'demo'
 
 export interface WebRoute {
   kind: WebRouteKind
@@ -63,7 +63,8 @@ export function parseRoute(pathname: string): WebRoute | null {
   const i = segs.indexOf('_w')
   if (i < 0 || i + 3 >= segs.length) return null
   const kind = segs[i + 1]
-  if (kind !== 'ap' && kind !== 'apv' && kind !== 'v' && kind !== 'jv') return null
+  if (kind !== 'ap' && kind !== 'apv' && kind !== 'v' && kind !== 'jv' && kind !== 'demo')
+    return null
   const id = Number(segs[i + 2])
   if (!Number.isInteger(id) || id <= 0) return null
   return { kind, id, sig: segs[i + 3], path: '/' + segs.slice(0, i + 4).join('/') }
@@ -111,7 +112,7 @@ export interface JoinVerifyData {
   uid: number
   chat_id: number
   chat?: string
-  /** turnstile / recaptcha / hcaptcha / cap；空表示未配置。 */
+  /** turnstile / hcaptcha / cap；空表示未配置。 */
   provider: string
   sitekey: string
   /** Cap 专用：<endpoint>/<sitekey>/。 */
@@ -122,6 +123,19 @@ export interface JoinVerifyData {
   minutes: number
   /** 到期时刻（unix 秒）；0 = 不限时。 */
   expires: number
+}
+
+/** CaptchaDemoProvider 是演示页上的一家验证方式（只含公开的 site key）。 */
+export interface CaptchaDemoProvider {
+  provider: string
+  sitekey: string
+  /** Cap 专用：<endpoint>/<sitekey>/。 */
+  endpoint?: string
+}
+
+/** CaptchaDemoData 是人机验证演示页（demo）的数据接口返回。 */
+export interface CaptchaDemoData {
+  providers: CaptchaDemoProvider[]
 }
 
 export interface Gate {

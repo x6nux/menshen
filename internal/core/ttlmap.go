@@ -30,6 +30,23 @@ func (t *TTLMap[K, V]) Set(k K, v V, ttl time.Duration) {
 	t.m.Store(k, ttlItem[V]{v: v, exp: time.Now().Add(ttl)})
 }
 
+// SetNX 只在键不存在（或已过期）时写入，返回是否写成功。
+//
+// 用于「用掉一次」这类一次性凭据（Cap 的验证令牌防重放）：Get 再 Set
+// 不是原子的，两个并发请求会双双通过。过期条目按不存在处理并就地替换。
+func (t *TTLMap[K, V]) SetNX(k K, v V, ttl time.Duration) bool {
+	item := ttlItem[V]{v: v, exp: time.Now().Add(ttl)}
+	actual, loaded := t.m.LoadOrStore(k, item)
+	if !loaded {
+		return true
+	}
+	if it, ok := actual.(ttlItem[V]); ok && !time.Now().Before(it.exp) {
+		t.m.Store(k, item)
+		return true
+	}
+	return false
+}
+
 // Take 取出并删除；过期的条目同样删掉，但报告不存在。
 func (t *TTLMap[K, V]) Take(k K) (V, bool) {
 	if raw, ok := t.m.LoadAndDelete(k); ok {

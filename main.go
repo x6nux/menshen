@@ -264,7 +264,7 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh), public: panel.PublicShellHandler(sh), admin: panel.WebAdminHandler(sh)},
+		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh), public: panel.PublicShellHandler(sh), admin: panel.WebAdminHandler(sh), cap: antiad.CapHandler(sh)},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
 		// 只设 ReadHeaderTimeout 挡不住慢速发 body 的连接：它会一直占着
 		// goroutine 与内存（暴露到回环之外时就是廉价的 slowloris）。
@@ -296,6 +296,7 @@ type webRouter struct {
 	mini   http.Handler
 	public http.Handler
 	admin  http.Handler
+	cap    http.Handler
 }
 
 func (h webRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -314,6 +315,11 @@ func (h webRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin") && h.admin != nil {
 		h.admin.ServeHTTP(w, r)
+		return
+	}
+	// 内置 Cap 服务的入口：Cap 无需外部实例，challenge/redeem 由本进程处理。
+	if strings.HasPrefix(r.URL.Path, "/cap/") && h.cap != nil {
+		h.cap.ServeHTTP(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/miniapp") {
