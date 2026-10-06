@@ -190,8 +190,8 @@ var settingDefaults = map[string]string{
 	"antiad_unban_base": "60",
 
 	// ---- 入群人机验证（per-bot）----
-	// 新人进群先禁言，发一条带验证链接的群消息（网页上解 reCAPTCHA /
-	// hCaptcha / Turnstile / Cap），通过后自动解除。默认关：它要求每个
+	// 新人进群先禁言，发一条带验证链接的群消息（网页上解 Turnstile /
+	// hCaptcha / 内置 Cap），通过后自动解除。默认关：它要求每个
 	// 进群的人都点一次网页。提供方在 config 里配（captcha_provider 等），
 	// 没配好时即使打开也发不出验证页。
 	"antiad_joinverify": "0",
