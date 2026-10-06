@@ -97,7 +97,7 @@ func applyChatInfo(b *core.Bot, p *senderProfile) {
 // 之前的放行若还挡在这里，复查就永远维持原判（线上真实漏过：管理员 /check
 // 一份明显的 VPS 广告资料，反被从 6 小时续到了 72 小时）。
 func enrichSenderFresh(b *core.Bot, p *senderProfile) {
-	cachesOf(b.Shared).bio.Delete(p.UserID)
+	ForgetUserInfo(b, p.UserID)
 	applyChatInfo(b, p)
 	// 链接解析要等简介补全（@xxx 藏在简介里），所以清缓存放在这之后。
 	for _, h := range profileHandles(*p) {

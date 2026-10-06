@@ -235,7 +235,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	snap := b.Cache.Snap()
 	// 进群是低频事件，简介必须拿最新的：对方可能刚改过资料（上一次被判、
 	// 改完简介再进来），用 1 小时缓存会把旧简介的结论原样重演一遍。
-	cachesOf(b.Shared).bio.Delete(u.ID)
+	ForgetUserInfo(b, u.ID)
 	bio := userBio(b, u.ID)
 
 	gm, _ := loadMember(b.Store, conf.ChatID, u.ID)

@@ -14,9 +14,11 @@ type caches struct {
 	// 全量送检时不缓存等于每条群消息一次 getChatMember，
 	// 必然撞上 Telegram 的全局速率限制。
 	chatAdmin core.TTLMap[string, bool]
-	// bio 缓存 TG 个人资料（getChat）。广告号的强特征常写在简介里，
-	// 但全量送检下不缓存就是每条群消息多一次 TG 往返。
-	bio core.TTLMap[int64, bioEntry]
+	// bio 缓存 TG 个人资料（getChat），键 "botID:uid"。广告号的强特征常写在
+	// 简介里，但全量送检下不缓存就是每条群消息多一次 TG 往返。键里带 bot：
+	// 查不查得到取决于该 bot 与用户有没有共同会话，共用一个键会让查不到的
+	// 「空」盖掉另一个 bot 查得到的结果（见 bioCacheKey）。
+	bio core.TTLMap[string, bioEntry]
 	// photo 缓存 getUserProfilePhotos 的结果（头像张数），键 uid。
 	// 前置号/申诉路径才查；头像数很少变，查一次管一天。
 	photo core.TTLMap[int64, photoEntry]

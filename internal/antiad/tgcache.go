@@ -78,6 +78,22 @@ type bioEntry struct {
 	username  string
 }
 
+// bioCacheKey 让资料缓存按 (bot, uid) 分开。
+//
+// 能不能查到一个人取决于**这个 bot 与他有没有共同会话**：工作 bot 入群、
+// 判过他的消息，查得到；主 bot 按设计不入群，永远查不到。共用一个键会让
+// 主 bot 失败留下的「空」盖掉工作 bot 查得到的结果（反之亦然），所以键里
+// 必须带 bot——同一个人的资料，不同 bot 得到的是不同答案。
+func bioCacheKey(b *core.Bot, uid int64) string {
+	return fmt.Sprintf("%d:%d", b.BotID(), uid)
+}
+
+// ForgetUserInfo 丢掉这个 bot 对该用户的资料缓存，让下次 userInfo 重新查。
+// 资料刚被改过（头像/简介换马甲）时用。
+func ForgetUserInfo(b *core.Bot, uid int64) {
+	cachesOf(b.Shared).bio.Delete(bioCacheKey(b, uid))
+}
+
 // userInfo 取此人的 getChat 资料（昵称、用户名、简介），带缓存。
 //
 // 广告号的强特征常常不在消息里而在账号本身：简介写着联系方式、价目、
@@ -90,7 +106,8 @@ type bioEntry struct {
 // 查询失败返回空：与群管理员查询同向，TG 故障不得让判定链路停摆。
 func userInfo(b *core.Bot, uid int64) bioEntry {
 	cache := &cachesOf(b.Shared).bio
-	if e, ok := cache.Get(uid); ok {
+	key := bioCacheKey(b, uid)
+	if e, ok := cache.Get(key); ok {
 		return e
 	}
 
@@ -102,7 +119,7 @@ func userInfo(b *core.Bot, uid int64) bioEntry {
 		// 每条消息都重试一次。其余错误才值得警告。
 		var apiErr *tg.APIError
 		if errors.As(err, &apiErr) && apiErr.NotFound() {
-			cache.Set(uid, empty, bioTTL)
+			cache.Set(key, empty, bioTTL)
 			return empty
 		}
 		slog.Warn("反广告：查询账号资料失败", "uid", uid, "err", err)
@@ -112,7 +129,7 @@ func userInfo(b *core.Bot, uid int64) bioEntry {
 	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
 		// 对方从未与 bot 私聊过时 TG 也会拒答，这是常态而非故障，
 		// 所以按空资料缓存下来，避免每条消息都重试一次。
-		cache.Set(uid, empty, bioTTL)
+		cache.Set(key, empty, bioTTL)
 		return empty
 	}
 	e := bioEntry{
@@ -126,7 +143,7 @@ func userInfo(b *core.Bot, uid int64) bioEntry {
 			e.firstName = resp.Result.Title
 		}
 	}
-	cache.Set(uid, e, bioTTL)
+	cache.Set(key, e, bioTTL)
 	return e
 }
 

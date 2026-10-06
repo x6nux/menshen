@@ -176,7 +176,7 @@ func TestColdJudgeSkipsClearedProfile(t *testing.T) {
 
 	// 改了资料（介绍换成引流话术）：放行失效，冷判定照跑。
 	bio = "做单日结 5000 私聊我"
-	cachesOf(b.Shared).bio.Delete(u.ID) // 简介有 1 小时缓存，测试里直接清掉
+	ForgetUserInfo(b, u.ID) // 简介有 1 小时缓存，测试里直接清掉
 	if n := countRows(t, b, `SELECT COUNT(*) FROM profile_ok`); n != 1 {
 		t.Fatalf("放行记录应还在，得到 %d", n)
 	}

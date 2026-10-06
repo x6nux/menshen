@@ -564,7 +564,7 @@ func judgeAppeal(b *core.Bot, snap *store.Snapshot, uid int64,
 	// 简介绕开缓存重新拉取：对方可能刚改完资料，读到一小时前的旧值
 	// 会让他无论怎么改都通不过。昵称与用户名一并取回：prewarm 的
 	// 「补齐任意一项」出口需要看见它们。
-	cachesOf(b.Shared).bio.Delete(uid)
+	ForgetUserInfo(b, uid)
 	info := userInfo(b, uid)
 	p := buildProfile(b, &tg.Message{From: &tg.TGUser{ID: uid,
 		Username: info.username, FirstName: info.firstName,

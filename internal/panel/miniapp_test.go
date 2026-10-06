@@ -768,6 +768,74 @@ func TestMiniUserWithoutBodyBotID(t *testing.T) {
 // TestMiniAppTodoCounts：工作台待办（state.todo）的口径——未结申诉按权限
 // 与「未结」状态集合统计，演练群与停用 bot 按可见范围统计；申诉结案后
 // 未结计数要跟着减少。
+// TestMiniUserStoredNameFallback：主管理员看用户页时 scopeBot 是主 bot，而主
+// bot 不入群、getChat 永远查不到这个人。昵称/用户名必须回落到判定流水里留存的
+// user_name（判定当时记下的），而不是一直显示「查不到」。
+func TestMiniUserStoredNameFallback(t *testing.T) {
+	_, b := testutil.NewTestRegistry(t, nil)
+	sh := b.Shared
+	testutil.RegisterMainTestBot(t, sh, testutil.TestToken, b.BotID(), 777)
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id,user_name)
+		VALUES (-100,555,7,'广告原文','ad',0.9,'llm','scam','deleted_muted','',?,?,
+		 'Hohwhén (@A89899999)')`, time.Now().Unix(), b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), b.BotID(), "user",
+		map[string]any{"user_id": 555})
+	if w.Code != http.StatusOK {
+		t.Fatalf("应返回用户页，得到 %d：%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Hohwhén") || !strings.Contains(body, "A89899999") {
+		t.Errorf("昵称/用户名应回落到流水里留存的 user_name：%s", body)
+	}
+}
+
+// TestMiniUserUsesBotWithCommonChat：用户页不能固定用主 bot 查资料——主 bot
+// 不入群、查不到；要换成判过这个人的工作 bot，才拿得到实时昵称与简介。
+func TestMiniUserUsesBotWithCommonChat(t *testing.T) {
+	reg, mainBot := testutil.NewTestRegistry(t, nil)
+	sh := mainBot.Shared
+	testutil.RegisterMainTestBot(t, sh, testutil.TestToken, mainBot.BotID(), 777)
+	worker, workerTG := testutil.AddRegistryBot(t, reg, sh, 4343, 777)
+	workerTG.Resp["getChat"] = `{"ok":true,"result":{"first_name":"白展堂",` +
+		`"username":"tgdsBZT","bio":"我的TG频道 @tgds100"}}`
+	if err := sh.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	// 这个人被工作 bot 判过；流水里留底的是旧名字。
+	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id,user_name)
+		VALUES (-100,555,7,'广告原文','ad',0.9,'llm','scam','deleted_muted','',?,?,
+		 '旧名 (@old)')`, time.Now().Unix(), worker.BotID()); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &miniTestEnv{t: t, h: MiniAppHandler(sh), now: time.Now().Unix()}
+	w := miniDo(t, env.h, testutil.TestToken, env.adminInit(), mainBot.BotID(), "user",
+		map[string]any{"user_id": 555})
+	if w.Code != http.StatusOK {
+		t.Fatalf("应返回用户页，得到 %d：%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{"白展堂", "tgdsBZT", "我的TG频道"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("资料卡应含 %q（判过他的那个 bot 现查的结果）：%s", want, body)
+		}
+	}
+	if strings.Contains(body, "旧名") {
+		t.Errorf("现查拿得到时不该再用留底的名字：%s", body)
+	}
+}
+
 func TestMiniAppTodoCounts(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared

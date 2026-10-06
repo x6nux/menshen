@@ -1459,10 +1459,11 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64
 	}
 
 	d := antiad.LoadUserDossier(sh, scopeBot, target)
-	// 昵称/用户名/简介：有活着的实例就走 getChat（带缓存），查不到留空。
-	if inst, live := lookupBot(sh, scopeBot); live {
-		d.Name, d.Username, d.Bio = antiad.UserProfile(inst, target)
-	}
+	// 昵称/用户名/简介：挑一个与该用户有共同会话的 bot 现查，查不到再回落到
+	// 流水里留存的 user_name。主管理员这里 scopeBot 是主 bot（平台级视角），
+	// 而主 bot 不入群、查不到任何人——不换 bot 就永远是「查不到」。
+	inst, _ := lookupBot(sh, scopeBot)
+	antiad.ResolveUserProfile(sh, &d, inst, scopeBot, target)
 
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
 	where := `user_id=?` + clauseWhere

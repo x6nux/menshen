@@ -612,7 +612,7 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 	}
 
 	// 拿最新资料：对方可能刚把广告写进昵称或简介。
-	cachesOf(b.Shared).bio.Delete(uid)
+	ForgetUserInfo(b, uid)
 	info := userInfo(b, uid)
 	// getChat 全空（名字、用户名、简介都没有）有两种可能：人已离群
 	// （left/kicked，或 TG 直接回 400 查无此人——member not found /

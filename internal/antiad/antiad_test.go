@@ -452,6 +452,27 @@ func TestUserInfoChatNotFoundCachedQuietly(t *testing.T) {
 	}
 }
 
+// TestUserInfoCachePerBot：个人资料缓存按 (bot, uid) 分开。
+//
+// 查不查得到一个人取决于该 bot 与他**有没有共同会话**：主 bot 按设计不入群、
+// 永远查不到，会把「空」写进缓存。共用一个键的话，工作 bot 随后查得到也会被
+// 这条空挡住——线上表现就是「流水里明明有这个人，资料卡却一直查不到」。
+func TestUserInfoCachePerBot(t *testing.T) {
+	reg, mainBot := testutil.NewTestRegistry(t, nil)
+	worker, workerTG := testutil.AddRegistryBot(t, reg, mainBot.Shared, 4343, 777)
+	workerTG.Resp["getChat"] = `{"ok":true,"result":{"first_name":"白展堂","username":"tgdsBZT"}}`
+
+	// 主 bot 先查：默认假传输层给的是空资料，按 (主bot, uid) 缓存。
+	if name, _, _ := UserProfile(mainBot, 9001); name != "" {
+		t.Errorf("主 bot 查不到任何人，应得空昵称，得到 %q", name)
+	}
+	// 工作 bot 查得到，不能被上面那条空结果挡住。
+	name, username, _ := UserProfile(worker, 9001)
+	if name != "白展堂" || username != "tgdsBZT" {
+		t.Errorf("工作 bot 应查得到资料，得到 name=%q username=%q", name, username)
+	}
+}
+
 // TestAdExemptLinkedChannelForward：关联频道自动转发进讨论群时，发送者是
 // 777000（is_bot=false）。能往关联频道发帖的只有频道方，判它等于判频道自己
 // 的帖子，处置还会去禁言这个官方账号。
@@ -1175,7 +1196,7 @@ func TestCheckBypassesProfileOKAndBioCache(t *testing.T) {
 		}
 		return "", false
 	}
-	cachesOf(b.Shared).bio.Set(555, bioEntry{bio: "缓存里的旧简介"}, time.Hour)
+	cachesOf(b.Shared).bio.Set(bioCacheKey(b, 555), bioEntry{bio: "缓存里的旧简介"}, time.Hour)
 
 	var soPayloads []string
 	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {

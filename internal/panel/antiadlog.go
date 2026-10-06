@@ -757,13 +757,11 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 	}
 	snap := b.Cache.Snap()
 
-	// 资料卡：昵称/用户名/简介要发一次 getChat（带缓存）。
-	name, username, bio := antiad.UserProfile(b, target)
-	d := antiad.UserDossier{UID: target, Name: name, Username: username, Bio: bio}
-	if rec := snap.Bots[b.BotID()]; rec != nil {
-		d = antiad.LoadUserDossier(b.Shared, b.BotID(), target)
-		d.Name, d.Username, d.Bio = name, username, bio
-	}
+	// 资料卡：昵称/用户名/简介现查一次 getChat（带缓存），查不到回落到流水里
+	// 留存的 user_name。面板常开在主 bot 上，而主 bot 不入群、查不到任何人，
+	// 所以交给 ResolveUserProfile 去挑一个跟这人有共同会话的 bot。
+	d := antiad.LoadUserDossier(b.Shared, b.BotID(), target)
+	antiad.ResolveUserProfile(b.Shared, &d, b, b.BotID(), target)
 
 	countQ := `SELECT COUNT(*) FROM antiad_log WHERE user_id=?` + where
 	if !all {
