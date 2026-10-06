@@ -415,19 +415,22 @@ func TestIsChatAdminFailClosed(t *testing.T) {
 }
 
 // TestIsChatAdminMemberNotFoundFailClosed：人已不在群里时 TG 直接回 400
-// member not found——同样按普通成员处理（不得放大权限），但这是 TG 的
-// 确定回答而非故障：走静默分支，不刷「查询群管理员失败」的警告。
+// 拒答（member not found，或透传的 PARTICIPANT_ID_INVALID）——同样按
+// 普通成员处理（不得放大权限），但这是 TG 的确定回答而非故障：走静默
+// 分支，不刷「查询群管理员失败」的警告。
 func TestIsChatAdminMemberNotFoundFailClosed(t *testing.T) {
-	b, fake := testutil.NewTestBot(t, 1)
-	fake.Err["getChatMember"] = testutil.TGNotFound("getChatMember",
-		"Bad Request: member not found")
+	for _, desc := range []string{"Bad Request: member not found",
+		"Bad Request: PARTICIPANT_ID_INVALID"} {
+		b, fake := testutil.NewTestBot(t, 1)
+		fake.Err["getChatMember"] = testutil.TGNotFound("getChatMember", desc)
 
-	if IsChatAdmin(b, -100, 42) {
-		t.Error("查无此人时必须按普通成员处理")
-	}
-	// 查无此人也不缓存：人可能随时重新进群。
-	if IsChatAdmin(b, -100, 42); fake.CountCalls("getChatMember") != 2 {
-		t.Error("查无此人的结果不该被缓存")
+		if IsChatAdmin(b, -100, 42) {
+			t.Errorf("%s：查无此人时必须按普通成员处理", desc)
+		}
+		// 查无此人也不缓存：人可能随时重新进群。
+		if IsChatAdmin(b, -100, 42); fake.CountCalls("getChatMember") != 2 {
+			t.Errorf("%s：查无此人的结果不该被缓存", desc)
+		}
 	}
 }
 

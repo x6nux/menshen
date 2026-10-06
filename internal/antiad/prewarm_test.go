@@ -1619,34 +1619,37 @@ func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 	}
 }
 
-// 人已离群、TG 直接答 400 member not found（bot 看不见离群动作时
-// group_members 里仍留着此人）：按离群退避 7 天，而不是当成「拉取失败，
-// 不确定」在复查阶梯里无限空转——线上每档刷「查询群管理员失败/查询账号
-// 资料失败/资料拉取全空」三连警告，就是这条 400 没被认出来。
+// 人已离群、TG 直接回 400 拒答（bot 看不见离群动作时 group_members 里
+// 仍留着此人）：按离群退避 7 天，而不是当成「拉取失败，不确定」在复查
+// 阶梯里无限空转——线上每档刷「查询群管理员失败/查询账号资料失败/资料
+// 拉取全空」三连警告，就是这条 400 没被认出来。member not found 与
+// MTProto 透传的 PARTICIPANT_ID_INVALID 两种文本都要认。
 func TestPrewarmSweepGoneMemberNotFoundBacksOff(t *testing.T) {
-	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
-		soReply("ad", 0.96, "promo", "account"),
-		llmReply(true, 0.95, "promo", "account"))
-	addSweepMember(t, b, chat, 672, 25*3600, 0)
-	now := time.Now().Unix()
-	setSweepSchedule(t, b, chat, 672, now-1800, now-1, "")
-	fake.Err["getChat"] = testutil.TGNotFound("getChat",
-		"Bad Request: chat not found")
-	fake.Err["getChatMember"] = testutil.TGNotFound("getChatMember",
-		"Bad Request: member not found")
+	for _, desc := range []string{"Bad Request: member not found",
+		"Bad Request: PARTICIPANT_ID_INVALID"} {
+		b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+			soReply("ad", 0.96, "promo", "account"),
+			llmReply(true, 0.95, "promo", "account"))
+		addSweepMember(t, b, chat, 672, 25*3600, 0)
+		now := time.Now().Unix()
+		setSweepSchedule(t, b, chat, 672, now-1800, now-1, "")
+		fake.Err["getChat"] = testutil.TGNotFound("getChat",
+			"Bad Request: chat not found")
+		fake.Err["getChatMember"] = testutil.TGNotFound("getChatMember", desc)
 
-	runPrewarmProbes(t, b.Shared)
-	waitIdle(t, b)
+		runPrewarmProbes(t, b.Shared)
+		waitIdle(t, b)
 
-	checked, next, hash := sweepSchedule(t, b, chat, 672)
-	if hash != "" {
-		t.Fatalf("离群退避不该落指纹，得到 %q", hash)
-	}
-	if checked < now || next < now+int64(prewarmGoneBackoff/time.Second)-60 {
-		t.Fatalf("离群成员应退避 7 天：checked=%d next=%d", checked, next)
-	}
-	if n := soN.Load() + llmN.Load(); n != 0 {
-		t.Fatalf("离群不该花 AI，跑了 %d 次", n)
+		checked, next, hash := sweepSchedule(t, b, chat, 672)
+		if hash != "" {
+			t.Fatalf("%s：离群退避不该落指纹，得到 %q", desc, hash)
+		}
+		if checked < now || next < now+int64(prewarmGoneBackoff/time.Second)-60 {
+			t.Fatalf("%s：离群成员应退避 7 天：checked=%d next=%d", desc, checked, next)
+		}
+		if n := soN.Load() + llmN.Load(); n != 0 {
+			t.Fatalf("%s：离群不该花 AI，跑了 %d 次", desc, n)
+		}
 	}
 }
 

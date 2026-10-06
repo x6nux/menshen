@@ -114,12 +114,23 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: HTTP %d: %s", e.Method, e.Code, e.Body)
 }
 
-// NotFound 报告这是不是 Bot API 对「查无此人/此群」的标准回答（400 的
-// chat not found、member not found 等）。这不是故障而是 TG 的确定答案：
-// 对象从未与 bot 产生过关联，或已不在原处。
+// NotFound 报告这是不是 Bot API 对「查无此人/此群」的标准回答。有两类
+// 文本：Bot API 自述的 chat/member/user not found，与透传的 MTProto 错误
+// PARTICIPANT_ID_INVALID、PEER_ID_INVALID、USER_ID_INVALID——含义一致：
+// 对象不存在或与 bot 已无关联，是确定答案而非故障（人已离群、从未与
+// bot 私聊过）。
 func (e *APIError) NotFound() bool {
-	return e != nil && e.Code == http.StatusBadRequest &&
-		strings.Contains(strings.ToLower(e.Desc), "not found")
+	if e == nil || e.Code != http.StatusBadRequest {
+		return false
+	}
+	d := strings.ToLower(e.Desc)
+	for _, frag := range [...]string{"not found", "participant_id_invalid",
+		"peer_id_invalid", "user_id_invalid"} {
+		if strings.Contains(d, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // retryAfter 从 429 响应体里取 parameters.retry_after（秒）。

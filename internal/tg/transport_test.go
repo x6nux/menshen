@@ -111,44 +111,67 @@ func TestCallFloodWaitTooLongFailsFast(t *testing.T) {
 
 // TestCallBadRequestIsStructuredAPIError：400 的「查无此人」类拒答要带
 // 结构化的 description 回来——上层靠它区分「TG 明确说没有」与「网络故障」，
-// 前者是常态不该刷警告（离群成员曾因此在复查阶梯里无限空转）。
+// 前者是常态不该刷警告（离群成员曾因此在复查阶梯里无限空转）。两类文本
+// 都要认：Bot API 自述的 * not found，与透传的 MTProto *_ID_INVALID。
 func TestCallBadRequestIsStructuredAPIError(t *testing.T) {
+	gone := []string{
+		"Bad Request: chat not found",
+		"Bad Request: member not found",
+		"Bad Request: PARTICIPANT_ID_INVALID",
+		"Bad Request: PEER_ID_INVALID",
+		"Bad Request: USER_ID_INVALID",
+	}
+	var n int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"ok":false,"error_code":400,` +
-			`"description":"Bad Request: chat not found"}`))
+		w.Write([]byte(`{"ok":false,"error_code":400,"description":"` +
+			gone[n-1] + `"}`))
 	}))
 	defer srv.Close()
 
 	c := NewHTTP(srv.URL, "tok", nil)
-	_, err := c.Call("getChat", map[string]any{"chat_id": 123})
+	for i, desc := range gone {
+		_, err := c.Call("getChat", map[string]any{"chat_id": 123})
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("400 应返回 *APIError，得到 %T: %v", err, err)
+		}
+		if apiErr.Code != http.StatusBadRequest || apiErr.Desc != desc {
+			t.Errorf("第 %d 次: Code=%d Desc=%q，期望 %q", i+1, apiErr.Code, apiErr.Desc, desc)
+		}
+		if !apiErr.NotFound() {
+			t.Errorf("%q 应判为 NotFound", desc)
+		}
+		// 日志格式保持原样：方法 + 状态码 + 响应体。
+		if want := "getChat: HTTP 400: "; !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("错误文本应保留 %q 前缀，得到 %q", want, err.Error())
+		}
+	}
+
+	// 无关的 400（对象存在但请求本身有问题）不得判为 NotFound。
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"ok":false,"error_code":400,` +
+			`"description":"Bad Request: MESSAGE_ID_INVALID"}`))
+	}))
+	defer srv2.Close()
+	c2 := NewHTTP(srv2.URL, "tok", nil)
+	_, err := c2.Call("getChatMember", nil)
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("400 应返回 *APIError，得到 %T: %v", err, err)
-	}
-	if apiErr.Code != http.StatusBadRequest {
-		t.Errorf("Code = %d，期望 400", apiErr.Code)
-	}
-	if apiErr.Desc != "Bad Request: chat not found" {
-		t.Errorf("Desc = %q", apiErr.Desc)
-	}
-	if !apiErr.NotFound() {
-		t.Error("chat not found 应判为 NotFound")
-	}
-	// 日志格式保持原样：方法 + 状态码 + 响应体。
-	if want := "getChat: HTTP 400: "; !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("错误文本应保留 %q 前缀，得到 %q", want, err.Error())
+	if !errors.As(err, &apiErr) || apiErr.NotFound() {
+		t.Errorf("MESSAGE_ID_INVALID 不得判为 NotFound，得到 %v", err)
 	}
 
 	// 非 JSON 的 400（网关错误页）：Desc 解析不出，NotFound 必须为假，
 	// 宁可当故障重试，也不能把网关抽风当成「人不在了」。
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`<html>bad request</html>`))
 	}))
-	defer srv2.Close()
-	c2 := NewHTTP(srv2.URL, "tok", nil)
-	_, err = c2.Call("getChatMember", nil)
+	defer srv3.Close()
+	c3 := NewHTTP(srv3.URL, "tok", nil)
+	_, err = c3.Call("getChatMember", nil)
 	if !errors.As(err, &apiErr) || apiErr.NotFound() {
 		t.Errorf("非 JSON 的 400 不得判为 NotFound，得到 %v", err)
 	}
