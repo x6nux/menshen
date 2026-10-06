@@ -23,6 +23,10 @@ const (
 	actionJoinMuted      = "join_muted"
 	actionPrewarmMuted   = "prewarm_muted"
 	actionPrewarmChecked = "prewarm_checked"
+
+	// deciderPrewarmShell 标记「空壳特征组合齐备、本地零 AI」的判定，
+	// 与 systemone/大模型的结论区分开（流水与面板按它展示）。
+	deciderPrewarmShell = "prewarm_shell"
 )
 
 const (
@@ -97,11 +101,17 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 const prewarmInstructions = "prewarm_check 为 true：这是一个刚进群、" +
 	"只在群里发了一句短招呼的新账号。请判断它是**批量注册、等待日后投放" +
 	"广告的前置号**，还是正常新用户。\n" +
-	"综合看这些特征（单看任何一条都不构成证据，正常人也可能是这样）：" +
-	"is_premium 为 true、photos 为 0 且 photo_known 为 true（无头像）、" +
-	"bio 为空、没有 username 或 username 是无词形的随机字母数字串" +
-	"（如 tpiw33abik、vwzbc32xc7、dmfh9r1dgm）、首条消息只是打招呼。" +
-	"这些特征**组合起来**才是前置号的典型形态。\n" +
+	"判为前置号需要**同时满足全部必要条件**：①无头像（photos==0 且 " +
+	"photo_known==true）；②昵称是业务场景词或无词形随机串；③username 是" +
+	"无词形的随机字母数字串（如 tpiw33abik、vwzbc32xc7、dmfh9r1dgm）；" +
+	"④bio 为空。username_rand 与 name_rand 是本地随机度算法对 " +
+	"username/昵称的评分（0~100，≥65 为无词形随机串），直接采信，不要" +
+	"自己再目测；字段缺席表示没有可评分的拉丁字母串（中文昵称按文本本身" +
+	"判断）。用户名长度在 8~16 之间、is_premium 为 true 只**加重风险**，" +
+	"不是必要条件。\n" +
+	"**bio 非空时不得判为前置号**：写了正常生活、兴趣、签名的用户，按" +
+	"资料内容本身判断。必要条件不齐、但资料或招呼里另有广告证据（链接、" +
+	"引流话术）的，按相应条款判广告，而不是前置号。\n" +
 	"反过来，有头像、username 像真名、昵称自然、资料与行为像真人，" +
 	"或者正文里有任何实质内容，都应当判正常。宁可放过，不要误伤刚进门" +
 	"的正常人。photo_known 为 false 表示头像数没查到，不得把它当无头像。\n" +
@@ -118,11 +128,15 @@ const prewarmInstructions = "prewarm_check 为 true：这是一个刚进群、" 
 const prewarmLLMPrompt = "你是 Telegram 群组的账号审核员。用户消息是一个 JSON，" +
 	"描述一个刚进群、只发了一句短招呼的新账号（prewarm_check=true）。\n" +
 	"1. 判断它是**批量注册、等待日后投放广告的前置号**，还是正常新用户。\n" +
-	"2. 综合特征：is_premium、photos==0 且 photo_known==true、bio 为空、" +
-	"username 缺失或是无词形的随机字母数字串、首条只是招呼。单看任何一条" +
-	"都不算证据；组合起来才是典型形态。\n" +
-	"3. 有头像、username 像真名、昵称自然、或正文有实质内容的，判正常；" +
-	"photo_known=false 不得当作无头像。宁可放过，不要误伤刚进门的人。\n" +
+	"2. 判为前置号需要**同时满足全部必要条件**：无头像（photos==0 且 " +
+	"photo_known==true）、昵称是业务场景词或无词形随机串、username 是无词形" +
+	"随机字母数字串、bio 为空。username_rand/name_rand 是本地随机度评分" +
+	"（0~100，≥65 为无词形随机串），直接采信；字段缺席表示没有可评分的" +
+	"拉丁字母串。用户名长度 8~16、is_premium 只加重风险，不是必要条件。\n" +
+	"3. bio 非空（写了正常生活/兴趣/签名）不得判前置号；必要条件不齐但另有" +
+	"广告证据的按相应条款判广告。有头像、username 像真名、昵称自然、或正文" +
+	"有实质内容的，判正常；photo_known=false 不得当作无头像。宁可放过，" +
+	"不要误伤刚进门的人。\n" +
 	"4. " + bioLinksClause + serviceListClause + "\n" +
 	"4.1 " + profileOKClause + "\n" +
 	"4.2 " + patternClause + "\n" +
@@ -158,6 +172,12 @@ func prewarmLogText(u *tg.TGUser, m *tg.Message, bio string,
 	}
 	sb.WriteString(fmt.Sprintf("\n信号: 会员=%v 头像=%s 资料空壳=%v",
 		p.IsPremium, photo, p.ProfileEmpty()))
+	if p.UsernameRand != nil {
+		sb.WriteString(fmt.Sprintf(" 用户名随机=%d", *p.UsernameRand))
+	}
+	if p.NameRand != nil {
+		sb.WriteString(fmt.Sprintf(" 昵称随机=%d", *p.NameRand))
+	}
 	if v.Kind != "" {
 		sb.WriteString("\n类型: " + v.Kind)
 	}
@@ -197,16 +217,35 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		state.Sender.Photos, state.Sender.PhotoKnown = &photos, true
 	}
 
+	// 空壳特征组合门（零 AI）：无头像、无简介、随机用户名、场景词或随机
+	// 昵称**全部齐备**即是批量注册前置号，直接处置，不送 AI——提示词把
+	// 「组合」当典型形态，可全齐的形态本地的随机度算法认得比模型准。
+	// 只命中一部分的不禁言，标记重点关注后照常送 AI。
+	shell := evalPrewarmShape(state.Sender)
+	if shell.Anchor() {
+		if shell.Full() {
+			prewarmShellDispose(b, conf, m, state.Sender, shell)
+			return
+		}
+		setPrewarmWatch(b, m.Chat.ID, m.From.ID, true)
+	}
+	// 随机度评分进载荷：提示词把 username_rand/name_rand 当本地测量值读，
+	// 免得模型自己目测「像不像随机串」（它测得没这个准）。
+	state.Sender.UsernameRand = randScored(state.Sender.Username)
+	state.Sender.NameRand = randScored(state.Sender.FirstName + state.Sender.LastName)
+
 	v, err := judgeAccountCheck(b, snap, state,
 		prewarmInstructions, prewarmLLMPrompt, "前置号复核")
 	if err != nil {
 		slog.Warn("前置号复核：判定失败，回落消息判定",
 			"chat", m.Chat.ID, "uid", m.From.ID, "err", err)
-		// 回落的是普通消息判定：清掉复核标记与只属于前置号复核的头像
-		// 字段，别把它们混进消息判定的载荷（提示词并不认识）。
+		// 回落的是普通消息判定：清掉复核标记与只属于前置号复核的头像、
+		// 随机度字段，别把它们混进消息判定的载荷（提示词并不认识）。
 		state.PrewarmCheck = false
 		state.Sender.Photos = nil
 		state.Sender.PhotoKnown = false
+		state.Sender.UsernameRand = nil
+		state.Sender.NameRand = nil
 		judgeAndAct(b, snap, conf, m, state.Sender, state)
 		return
 	}
@@ -240,6 +279,36 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	})
 }
 
+// prewarmShellDispose 处置空壳特征齐备的账号：删招呼 + 无限期禁言，与
+// AI 命中同一套执行，但判定是本地的特征组合（零 AI）。演练群只落
+// dryrun 流水。Kind 给 promo：空壳号还没开工，按最常见的推广前置档记。
+// 组合里的简介是空的，learnableShape 不会有产出，不传 Shape。
+func prewarmShellDispose(b *core.Bot, conf store.BotChat, m *tg.Message,
+	p senderProfile, shell prewarmShapeVerdict) {
+
+	v := adVerdict{IsAd: true, Confidence: 1, Kind: "promo", Scope: "account",
+		Decider: deciderPrewarmShell, Reason: prewarmShapeReason(shell)}
+	if conf.Dryrun {
+		logAd(b, m, v, "dryrun:"+actionPrewarmMuted, "前置号识别（演练）")
+		return
+	}
+	// 探测路径没有可删的消息（MsgID=0）：静默空壳号还没发过言。
+	if m.MessageID != 0 {
+		if ok, desc := b.CallOK("deleteMessage", map[string]any{
+			"chat_id": m.Chat.ID, "message_id": m.MessageID}); !ok {
+			slog.Warn("前置号识别：删除招呼消息失败",
+				"chat", m.Chat.ID, "msg", m.MessageID, "tg", desc)
+		}
+	}
+	applyJoinMuteNotify(b, conf, m.From, v, joinMuteSpec{
+		Kind: kindPrewarm, Action: actionPrewarmMuted, Note: "前置号识别",
+		Body:     prewarmLogText(m.From, m, p.Bio, p, v),
+		Reason:   v.Reason,
+		Announce: conf.GroupAlert,
+		MsgID:    m.MessageID,
+	})
+}
+
 const (
 	// prewarmQueueHighWater：判定任务积压到这个数就不再探测/提交复查。
 	// 复查是后台低优先级工作，实时消息判定优先。
@@ -263,27 +332,41 @@ const (
 	// prewarmGoneBackoff 是已离群（left/kicked）成员的复查退避时长：
 	// 资料永远拉不到了，按阶梯空转重试只是白打 TG。
 	prewarmGoneBackoff = 7 * 24 * time.Hour
+	// prewarmWatchInterval 是重点关注成员（prewarm_watch=1，空壳特征
+	// 部分命中但没到处置档）的复查间隔上限：盯得紧一些，化妆一落地
+	// 下一轮就撞上指纹变化，但也不是无间隔空转。
+	prewarmWatchInterval = 5 * time.Minute
 )
 
 // prewarmProbeInterval 是低优先级探测协程的节奏：全局 ~5 次/秒，远低于
 // TG 30 次/秒；测试里可以缩短。探测与判定池分离，不再和实时判定抢队列。
 var prewarmProbeInterval = 200 * time.Millisecond
 
-// prewarmSweepInterval 按进群时长给出下一次复查间隔（§9.2 的阶梯）：
-// 进群越久资料越稳定，查得越稀。
+// prewarmSweepInterval 按进群时长给出下一次复查间隔：新人（≤72h，与
+// 首条招呼的进群窗口一致）随时间拉长但**封顶 5min**——新人是最该盯的
+// 时候；过了新人窗口再放宽到老成员节奏。
 func prewarmSweepInterval(age time.Duration) time.Duration {
 	switch {
 	case age <= time.Hour:
 		return time.Minute
-	case age <= 12*time.Hour:
-		return 5 * time.Minute
-	case age <= 24*time.Hour:
-		return 10 * time.Minute
+	case age <= 72*time.Hour:
+		return prewarmWatchInterval
 	case age <= 7*24*time.Hour:
 		return 30 * time.Minute
 	default:
 		return time.Hour
 	}
+}
+
+// prewarmSweepIntervalFor 是重点关注感知的阶梯：watched 成员无论多老，
+// 间隔封顶 prewarmWatchInterval。空壳特征部分命中的号最可能事后化妆，
+// 间隔不能随年龄放宽到 30min/1h。
+func prewarmSweepIntervalFor(age time.Duration, watched bool) time.Duration {
+	d := prewarmSweepInterval(age)
+	if watched && d > prewarmWatchInterval {
+		return prewarmWatchInterval
+	}
+	return d
 }
 
 // prewarmAge 把 joined_at 换算成进群时长。进群时间未知（0，bot 部署前
@@ -484,7 +567,7 @@ type prewarmItem struct {
 // 判定池。互斥锁在提交成功时交给 worker 释放，其余出口 defer 释放。
 func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 	gm, _ := loadMember(b.Store, chatID, uid)
-	interval := prewarmSweepInterval(prewarmAge(now, gm.JoinedAt))
+	interval := prewarmSweepIntervalFor(prewarmAge(now, gm.JoinedAt), gm.Watched)
 
 	// 已在进群类禁言中：不再判、不再禁，避免重复禁言或把 prewarm
 	// 限制覆盖成 profile 改变申诉口径。推一次时间，本轮不再选中他。
@@ -586,6 +669,50 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 			markPrewarmChecked(b, chatID, uid, interval)
 		}
 		return
+	}
+
+	// 空壳特征组合（零 AI）：无简介是锚点，配上随机用户名/场景或随机
+	// 昵称才继续；两个条件都齐了才花一次头像查询，凑齐四条直接按前置号
+	// 处置。只命中一部分的不禁言，标记重点关注并把复查间隔压到 5min，
+	// 静等化妆落地（指纹一变下一轮就进 AI）。这条路径是「从不发言的
+	// 空壳号」唯一能被处置的地方。
+	shell := evalPrewarmShape(p)
+	if shell.Anchor() {
+		if shell.UnameRand && shell.NameSus {
+			if n, ok := userPhotoCount(b, uid); ok {
+				p.PhotoKnown, p.Photos = true, &n
+			}
+			shell = evalPrewarmShape(p)
+		}
+		if shell.Full() {
+			prewarmShellDispose(b, conf,
+				&tg.Message{Chat: &tg.Chat{ID: chatID, Title: conf.Title}, From: u},
+				p, shell)
+			// 禁言失败不是定案：保留旧指纹下一档重试；演练没动人也算
+			// 已看过，落指纹。
+			if _, muted := loadJoinMute(b.Store, chatID, uid); muted || conf.Dryrun {
+				markPrewarmCheckedHash(b, chatID, uid, h, interval)
+			} else {
+				markPrewarmChecked(b, chatID, uid, interval)
+			}
+			return
+		}
+		if !gm.Watched {
+			setPrewarmWatch(b, chatID, uid, true)
+			slog.Info("前置号：空壳特征部分命中，列入重点关注",
+				"chat", chatID, "uid", uid, "依据", shell.Why)
+		}
+		// 关注档取「普通阶梯与 5min 封顶」的较小值：刚进门的成员仍是
+		// 1min 档，老成员从 30min/1h 压回 5min。
+		markPrewarmChecked(b, chatID, uid,
+			prewarmSweepIntervalFor(prewarmAge(now, gm.JoinedAt), true))
+		return
+	}
+	// 组合不再成立（资料补齐了）：解除关注，回到普通阶梯。
+	if gm.Watched {
+		setPrewarmWatch(b, chatID, uid, false)
+		slog.Info("前置号：空壳特征不再成立，解除重点关注",
+			"chat", chatID, "uid", uid)
 	}
 
 	// 首次见到该成员：本地预筛不中就不花 AI——绝大多数正常人的资料

@@ -93,6 +93,7 @@ func TestMigrateOldDB(t *testing.T) {
 		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
 		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},
 		{"group_members", "profile_hash"}, {"group_members", "prewarm_next_at"},
+		{"group_members", "prewarm_watch"},
 		{"join_mutes", "shape"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)

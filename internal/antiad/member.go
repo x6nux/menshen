@@ -28,6 +28,10 @@ type groupMember struct {
 	// PrewarmNextAt 是下一次前置号复查的到期时间（预排）。0 = 从未复查。
 	// 选人走 SQL 的 prewarm_next_at <= now，这个字段用于测试断言与排查。
 	PrewarmNextAt int64
+	// Watched 是前置号重点关注标记（prewarm_watch）：空壳特征部分命中、
+	// 不够处置的成员置 1，复查间隔封顶 prewarmWatchInterval；资料补齐
+	// （组合不再成立）后由复查路径清零。
+	Watched bool
 	// Known 表示这一行确实读到了。读失败时为零值，而零值画像会让
 	// isNewbie 把老成员当新人从重处置——失败方向反了，所以调用方
 	// 必须先看这个标记。
@@ -37,10 +41,11 @@ type groupMember struct {
 func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 	gm := groupMember{ChatID: chatID, UserID: uid}
 	err := s.Read.QueryRow(`SELECT joined_at,first_seen,msg_count,last_msg_at,
-		ad_hits,whitelisted,profile_hash,prewarm_next_at
+		ad_hits,whitelisted,profile_hash,prewarm_next_at,prewarm_watch
 		FROM group_members WHERE chat_id=? AND user_id=?`, chatID, uid).
 		Scan(&gm.JoinedAt, &gm.FirstSeen, &gm.MsgCount, &gm.LastMsgAt,
-			&gm.AdHits, &gm.Whitelisted, &gm.ProfileHash, &gm.PrewarmNextAt)
+			&gm.AdHits, &gm.Whitelisted, &gm.ProfileHash, &gm.PrewarmNextAt,
+			&gm.Watched)
 	if err != nil {
 		// 没有行是常态（编辑过的消息、行被清理过），读失败要看得见：
 		// 两者都返回 false，混在一起排查时会以为是「没这条画像」。

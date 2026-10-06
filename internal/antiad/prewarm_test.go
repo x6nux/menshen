@@ -633,7 +633,8 @@ func sweepSchedule(t *testing.T, b *core.Bot, chat, uid int64) (int64, int64, st
 	return checked, next, hash
 }
 
-// 阶梯边界逐一断言（§9.2/§9.5），外加 joined_at=0 走最老一档。
+// 阶梯边界逐一断言：新人（≤72h，与首条招呼的进群窗口一致）随时间
+// 拉长但封顶 5min，过了新人窗口放宽到老成员节奏。joined_at=0 走最老一档。
 func TestPrewarmSweepInterval(t *testing.T) {
 	cases := []struct {
 		name string
@@ -644,12 +645,11 @@ func TestPrewarmSweepInterval(t *testing.T) {
 		{"59m", 59 * time.Minute, time.Minute},
 		{"1h", time.Hour, time.Minute}, // ≤1h 仍是 1min
 		{"1h01", time.Hour + time.Minute, 5 * time.Minute},
-		{"11h59", 11*time.Hour + 59*time.Minute, 5 * time.Minute},
 		{"12h", 12 * time.Hour, 5 * time.Minute},
-		{"12h01", 12*time.Hour + time.Minute, 10 * time.Minute},
-		{"23h59", 23*time.Hour + 59*time.Minute, 10 * time.Minute},
-		{"24h", 24 * time.Hour, 10 * time.Minute},
-		{"24h01", 24*time.Hour + time.Minute, 30 * time.Minute},
+		{"24h", 24 * time.Hour, 5 * time.Minute},
+		{"71h59", 71*time.Hour + 59*time.Minute, 5 * time.Minute},
+		{"72h", 72 * time.Hour, 5 * time.Minute}, // 新人窗口封顶 5min
+		{"72h01", 72*time.Hour + time.Minute, 30 * time.Minute},
 		{"6d23h", 6*24*time.Hour + 23*time.Hour, 30 * time.Minute},
 		{"7d", 7 * 24 * time.Hour, 30 * time.Minute},
 		{"7d01", 7*24*time.Hour + time.Minute, time.Hour},
@@ -659,6 +659,16 @@ func TestPrewarmSweepInterval(t *testing.T) {
 		if got := prewarmSweepInterval(c.age); got != c.want {
 			t.Errorf("%s: prewarmSweepInterval = %v，期望 %v", c.name, got, c.want)
 		}
+	}
+	// 重点关注成员（空壳特征部分命中）无论多老都压回 5min。
+	if got := prewarmSweepIntervalFor(30*24*time.Hour, true); got != 5*time.Minute {
+		t.Errorf("重点关注的老成员应封顶 5min，得到 %v", got)
+	}
+	if got := prewarmSweepIntervalFor(30*time.Minute, true); got != time.Minute {
+		t.Errorf("重点关注的新成员仍是 1min 档，得到 %v", got)
+	}
+	if got := prewarmSweepIntervalFor(30*24*time.Hour, false); got != time.Hour {
+		t.Errorf("非重点关注的老成员应走 1h 档，得到 %v", got)
 	}
 	// joined_at=0（进群时间未知）按最老一档处理，不当成刚进门的号重扫。
 	const now = 1_700_000_000
@@ -679,8 +689,9 @@ func TestPrewarmSweepInterval(t *testing.T) {
 
 // sweepProfile 是假 getChat 给某个 uid 返回的资料。
 type sweepProfile struct {
-	first string
-	bio   string
+	first    string
+	username string
+	bio      string
 }
 
 // fakeSweepProfiles 让 getChat 按 uid 返回给定资料（未列出的 uid 返回空资料）。
@@ -1856,5 +1867,196 @@ func TestPrewarmSweepGoneBackoff(t *testing.T) {
 	runPrewarmProbes(t, b.Shared)
 	if got := fake.CountCalls("getChat"); got != 0 {
 		t.Fatalf("退避期内不该重复拉资料，得到 %d 次 getChat", got)
+	}
+}
+
+// ---- 空壳特征组合（零 AI 判定 / 重点关注） ----
+
+// sendPrewarmMessageAs 以指定资料的用户发首条招呼。
+func sendPrewarmMessageAs(t *testing.T, b *core.Bot, chatID int64,
+	u *tg.TGUser, text string) {
+	t.Helper()
+	recordJoin(b, chatID, u.ID, time.Now().Unix()-3600)
+	HandleGroupMessage(b, &tg.Message{
+		MessageID: 1, Date: 1700000000, Text: text,
+		From: u, Chat: &tg.Chat{ID: chatID, Type: "supergroup", Title: "测试群"},
+	})
+	waitIdle(t, b)
+}
+
+// watchFlag 读成员的关注标记。
+func watchFlag(t *testing.T, b *core.Bot, chat, uid int64) int {
+	t.Helper()
+	var w int
+	if err := b.Store.Read.QueryRow(`SELECT prewarm_watch FROM group_members
+		WHERE chat_id=? AND user_id=?`, chat, uid).Scan(&w); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// 空壳四条件全齐（无头像+场景昵称+随机用户名+无简介）：零 AI 直接禁言，
+// 招呼删除，流水 prewarm_muted 且 decider=prewarm_shell。
+func TestPrewarmShellMutesWithoutAI(t *testing.T) {
+	b, fake, _, chat := setupPrewarm(t, "", "")
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.96, "promo", "account"),
+		llmReply(true, 0.95, "promo", "account"))
+	sendPrewarmMessageAs(t, b, chat,
+		&tg.TGUser{ID: 771, Username: "tpiw33abik", FirstName: "在线服务"}, "哈喽")
+
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("特征齐备不该花 AI，跑了 %d 次", n)
+	}
+	if got := fake.CountCalls("restrictChatMember"); got != 1 {
+		t.Fatalf("应禁言 1 次，得到 %d 次", got)
+	}
+	if got := fake.CountCalls("deleteMessage"); got == 0 {
+		t.Fatal("应删除招呼消息")
+	}
+	rec, ok := loadJoinMute(b.Store, chat, 771)
+	if !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("join_mutes = (%v,%q)，期望存在且 kind=prewarm", ok, rec.Kind)
+	}
+	var decider, action, reason string
+	if err := b.Store.Read.QueryRow(`SELECT decider,action,text FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, 771).Scan(&decider, &action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if decider != deciderPrewarmShell || action != actionPrewarmMuted {
+		t.Fatalf("decider/action = %q/%q，期望 %q/%q",
+			decider, action, deciderPrewarmShell, actionPrewarmMuted)
+	}
+	if !strings.Contains(reason, "随机") || !strings.Contains(reason, "无头像") {
+		t.Errorf("reason 应列出证据，得到 %q", reason)
+	}
+}
+
+// 只命中一部分（随机用户名+无简介，昵称正常）：不禁言，标记重点关注，
+// AI 照常复核。
+func TestPrewarmShellPartialWatches(t *testing.T) {
+	b, fake, _, chat := setupPrewarm(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	sendPrewarmMessageAs(t, b, chat,
+		&tg.TGUser{ID: 772, Username: "tpiw33abik", FirstName: "小明"}, "哈喽")
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("特征不全不该禁言，得到 %d 次", got)
+	}
+	if got := watchFlag(t, b, chat, 772); got != 1 {
+		t.Fatalf("部分命中应标记重点关注，prewarm_watch = %d", got)
+	}
+	var action string
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log
+		WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 1`,
+		chat, 772).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != actionPrewarmChecked {
+		t.Fatalf("action = %q，期望 AI 照常复核落 %q", action, actionPrewarmChecked)
+	}
+}
+
+// 有正常个人简介的用户：即使用户名随机也绝不进组合（不误伤）。
+func TestPrewarmBioProtects(t *testing.T) {
+	b, fake, _, chat := setupPrewarm(t,
+		soReply("clean", 0.9, "none", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	fake.Resp["getChat"] = `{"ok":true,"result":{"id":773,
+		"first_name":"小明","bio":"热爱生活，喜欢旅行"}}`
+	sendPrewarmMessageAs(t, b, chat,
+		&tg.TGUser{ID: 773, Username: "tpiw33abik", FirstName: "小明"}, "哈喽")
+
+	if got := fake.CountCalls("restrictChatMember"); got != 0 {
+		t.Fatalf("有正常简介不该禁言，得到 %d 次", got)
+	}
+	if got := watchFlag(t, b, chat, 773); got != 0 {
+		t.Fatalf("有正常简介不该重点关注，prewarm_watch = %d", got)
+	}
+}
+
+// fakeSweepChatProfiles 让 getChat 按 uid 返回含用户名的资料、
+// getUserProfilePhotos 按 uid 返回头像数（未列出的 uid 都是空/0 张）。
+func fakeSweepChatProfiles(t *testing.T, fake *testutil.FakeTG,
+	profs map[int64]sweepProfile, photos map[int64]int) {
+	t.Helper()
+	fake.RespFunc = func(method string, p map[string]any) (string, bool) {
+		switch method {
+		case "getChat":
+			uid := int64(p["chat_id"].(float64))
+			pr := profs[uid]
+			return fmt.Sprintf(
+				`{"ok":true,"result":{"id":%d,"first_name":%q,"username":%q,"bio":%q}}`,
+				uid, pr.first, pr.username, pr.bio), true
+		case "getUserProfilePhotos":
+			uid := int64(p["user_id"].(float64))
+			return fmt.Sprintf(
+				`{"ok":true,"result":{"total_count":%d,"photos":[]}}`, photos[uid]), true
+		}
+		return "", false
+	}
+}
+
+// 探测路径的空壳组合：全齐零 AI 处置；部分命中标记关注并压到 5min 档；
+// 资料补齐后关注自动解除。
+func TestPrewarmSweepShell(t *testing.T) {
+	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
+		soReply("clean", 0.9, "none", "message"), "")
+	now := time.Now().Unix()
+	// 681：四条件齐备 → 零 AI 禁言。
+	addSweepMember(t, b, chat, 681, 2*3600, 0)
+	setSweepSchedule(t, b, chat, 681, now-600, now-1, "")
+	// 682：随机用户名+无简介，但有头像 → 重点关注。
+	addSweepMember(t, b, chat, 682, 2*3600, 0)
+	setSweepSchedule(t, b, chat, 682, now-600, now-1, "")
+	profs := map[int64]sweepProfile{
+		681: {first: "在线服务", username: "tpiw33abik"},
+		682: {first: "小明", username: "tpiw33abik"},
+	}
+	fakeSweepChatProfiles(t, fake, profs,
+		map[int64]int{681: 0, 682: 2}) // 681 无头像，682 有头像
+
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Fatalf("探测路径零 AI，跑了 %d 次", n)
+	}
+	if rec, ok := loadJoinMute(b.Store, chat, 681); !ok || rec.Kind != kindPrewarm {
+		t.Fatalf("681 应被零 AI 处置：(%v,%q)", ok, rec.Kind)
+	}
+	if _, _, hash := sweepSchedule(t, b, chat, 681); hash == "" {
+		t.Error("681 处置后应落指纹")
+	}
+	if got := watchFlag(t, b, chat, 681); got != 0 {
+		t.Errorf("681 已处置不该标记关注，prewarm_watch = %d", got)
+	}
+	if got := watchFlag(t, b, chat, 682); got != 1 {
+		t.Fatalf("682 部分命中应标记重点关注，prewarm_watch = %d", got)
+	}
+	// 681/682 都按 5min 档预排（2h 年龄在关注档内）。
+	for _, uid := range []int64{681, 682} {
+		_, next, _ := sweepSchedule(t, b, chat, uid)
+		if next < now+int64(4*time.Minute/time.Second) ||
+			next > now+int64(6*time.Minute/time.Second) {
+			t.Errorf("%d 的 next_at 应落在 5min 档附近，得到 %d", uid, next)
+		}
+	}
+
+	// 682 补齐资料（写了正常简介）：关注解除，走普通首查（预筛干净 →
+	// 零 AI 落指纹）。
+	setSweepSchedule(t, b, chat, 682, now-600, now-1, "")
+	profs[682] = sweepProfile{first: "小明", username: "tpiw33abik", bio: "喜欢摄影"}
+	runPrewarmProbes(t, b.Shared)
+	waitIdle(t, b)
+	if got := watchFlag(t, b, chat, 682); got != 0 {
+		t.Fatalf("资料补齐后应解除关注，prewarm_watch = %d", got)
+	}
+	if _, _, hash := sweepSchedule(t, b, chat, 682); hash == "" {
+		t.Error("682 解除关注后应按普通首查落指纹")
+	}
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Errorf("682 的资料始终干净，不该花 AI，跑了 %d 次", n)
 	}
 }

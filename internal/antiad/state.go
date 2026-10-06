@@ -33,6 +33,12 @@ type senderProfile struct {
 	// 时照片数未知，任何一方都不得把它当成「无头像」。
 	Photos     *int `json:"photos,omitempty"`
 	PhotoKnown bool `json:"photo_known,omitempty"`
+	// UsernameRand / NameRand 是本地算法对 username / 昵称（拉丁部分）
+	// 的随机度评分（0~100，≥unameRandomScore 为无词形随机串），同样只有
+	// 前置号复核路径填充。nil = 没有可评分的拉丁字母串（中文昵称、无
+	// 用户名），不得当成 0 分解读；提示词按此口径解释给模型。
+	UsernameRand *int `json:"username_rand,omitempty"`
+	NameRand     *int `json:"name_rand,omitempty"`
 	// ProfileOK 表示这份资料已被复判确认不构成广告（见 profile_ok.go），
 	// 到 ProfileOKUntil 之前不得再凭资料判为广告；正文照常判断。
 	ProfileOK      bool   `json:"profile_ok,omitempty"`

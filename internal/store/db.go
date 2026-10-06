@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS group_members (
   prewarm_checked_at INTEGER NOT NULL DEFAULT 0,
   profile_hash TEXT NOT NULL DEFAULT '',
   prewarm_next_at INTEGER NOT NULL DEFAULT 0,
+  prewarm_watch INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, user_id)
 );
 
@@ -462,6 +463,11 @@ func migrate(db *sql.DB) error {
 		// 复查过，立刻进一次候选；到点选中后由 worker 按进群时长的
 		// 阶梯（1/5/10/30/60min）覆盖。
 		{"group_members", "prewarm_next_at", "INTEGER NOT NULL DEFAULT 0"},
+		// prewarm_watch：前置号重点关注标记。空壳特征部分命中（无简介 +
+		// 随机用户名/场景昵称，见 antiad/uname.go）但没到处置档的成员置 1，
+		// 复查间隔封顶 prewarmWatchInterval（5min）；资料补齐后由复查路径
+		// 清零。
+		{"group_members", "prewarm_watch", "INTEGER NOT NULL DEFAULT 0"},
 		// shape：这条进群限制对应的资料形状哈希（profile_shapes.shape）。
 		// 解除限制时按它反查删除，避免误伤解掉之后形状还在复用。
 		{"join_mutes", "shape", "TEXT NOT NULL DEFAULT ''"},
