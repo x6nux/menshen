@@ -287,8 +287,15 @@ func miniOK(w http.ResponseWriter, v any) {
 
 // specMeta 是下发给 Mini App 的设置项元信息（不含值）。
 func specMeta(sp settingSpec) map[string]any {
+	kind := "number"
+	if sp.min == 0 && sp.max == 1 {
+		kind = "toggle"
+	}
+	if stringSpecByKey(sp.key) != nil {
+		kind = "text" // 字符串型（时区/附加链接/验证码密钥），前端用文本框
+	}
 	return map[string]any{
-		"key": sp.key, "label": sp.label, "hint": sp.hint,
+		"key": sp.key, "label": sp.label, "hint": sp.hint, "kind": kind,
 		"min": sp.min, "max": sp.max, "group": sp.group,
 	}
 }
@@ -449,7 +456,15 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 		"tz_name": snap.Setting("tz_name"),
 	}
 	if main {
-		out["global"] = snap.Settings
+		// global 会发给浏览器：密钥类设置（web_secret / captcha_secret）
+		// 不能原样下发，拷贝一份删掉。「是否已设置」走 settings_set。
+		g := make(map[string]string, len(snap.Settings))
+		for k, v := range snap.Settings {
+			g[k] = v
+		}
+		delete(g, "web_secret")
+		delete(g, "captcha_secret")
+		out["global"] = g
 		out["digest"] = snap.Setting("antiad_digest")
 		out["digest_fix"] = snap.Setting("antiad_digest_fix")
 		// settings_set 是显式写过的设置键（settings 表里有行的键）。

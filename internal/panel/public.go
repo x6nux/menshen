@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"menshen/internal/antiad"
 	"menshen/internal/core"
 )
 
@@ -58,14 +59,16 @@ func publicShellCSP(sh *core.Shared) string {
 
 	provs := map[string]bool{}
 	if sh != nil {
-		if sh.Cfg.CaptchaProvider != "" {
-			provs[sh.Cfg.CaptchaProvider] = true
+		// 提供方与测试台都存在 settings 表里（网页面板配置），现读现拼：
+		// 面板上换一家或补一组密钥，下一个请求的 CSP 就跟上。
+		if p := antiad.CaptchaProviderName(sh); p != "" {
+			provs[p] = true
 		}
-		for name := range sh.Cfg.CaptchaDemoKeys {
+		for _, name := range antiad.CaptchaDemoProviderNames(sh) {
 			provs[name] = true
 		}
 		// 演示页恒定带上内置 Cap（无需密钥），所以要一并放行它的来源。
-		if sh.Cfg.CaptchaDemo {
+		if antiad.CaptchaDemoOn(sh) {
 			provs["cap"] = true
 		}
 	}

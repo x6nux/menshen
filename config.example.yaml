@@ -131,37 +131,22 @@ bot_token: "123456789:AA..."
 # turnstile_site_key: ""
 # turnstile_secret: ""
 
-# ---- 入群人机验证（仅 webhook 模式）----
+# ---- 入群人机验证 ----
 #
 # 新人进群先禁言，网页上通过人机验证后自动解除；未通过则按等待时长
-# 移出群聊。开关在面板的「进群与验证」里（antiad_joinverify，per-bot），
-# 这里配的是用哪家的验证码：
+# 移出群聊。**全部在网页面板上配置**（bot 私聊菜单 → 全局设置，或
+# Mini App / 网页版 /admin 的「入群人机验证」卡片），存 settings 表，
+# 不在 config.yaml：
 #
-#   captcha_provider: turnstile | hcaptcha | cap
-#     - turnstile  → Cloudflare Turnstile（与申诉用的那套密钥**不同**，
-#                    这里用 captcha_secret，申诉用 turnstile_secret）
-#     - hcaptcha   → hCaptcha
-#     - cap        → 内置实现（Go 进程内，见 antiad/capserver.go）。
-#                    **无需任何配置、无需单独跑服务**，直接写 cap 即可。
+#   captcha_provider   turnstile | hcaptcha | cap（cap 内置，无需密钥）
+#   captcha_site_key   turnstile / hcaptcha 的站点密钥
+#   captcha_secret     与 site key 配对的服务端密钥
+#   captcha_min_score  分数下限（仅 hCaptcha Enterprise 有意义）
+#   captcha_demo       人机验证测试台（_w/demo）开关，仅测试用
+#   captcha_demo_keys  测试台里各家的密钥
 #
-# 留空 = 不启用入群验证（面板上的开关即使打开也不生效）。
-# turnstile / hcaptcha 需要 captcha_site_key + captcha_secret；
-# captcha_min_score（0-100，0 = 不检查）只对 hCaptcha Enterprise 有意义，
-# 普通 hCaptcha 不返回分数。
-#
-# ⚠️ 各家的域名白名单同样要包含 public_url 的主机名。
-# captcha_provider: ""
-# captcha_site_key: ""
-# captcha_secret: ""
-# captcha_min_score: 0
-
-# ---- 人机验证测试台（_w/demo，仅测试用）----
-#
-# 打开后访问 <public_url>/_w/demo/1/x 可在一页里逐个测试各验证方式。
-# 生产环境保持 captcha_demo: 0。cap 是内置的，无需在此配密钥即会出现。
-#
-# captcha_demo: 0
-# captcha_demo_keys: "turnstile=site_key,secret;hcaptcha=site_key,secret"
+# per-bot 的开关（antiad_joinverify / antiad_joinverify_minutes）在
+# 面板的「进群与验证」分组里。
 
 # 取客户端真实 IP 的请求头（用于网页验证记录与账号关联）。
 # 前提：listen_addr 只绑回环、流量全部经过反代，这个头才可信。

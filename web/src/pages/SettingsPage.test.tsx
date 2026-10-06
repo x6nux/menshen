@@ -278,3 +278,36 @@ describe('SettingsPage 权限', () => {
     expect(screen.queryByText('总开关')).not.toBeInTheDocument()
   })
 })
+
+describe('SettingsPage 入群人机验证（settings 表，网页配置）', () => {
+  it('渲染提供方 / 密钥行，secret 只显示「已设置」不回显', async () => {
+    await renderSettings()
+    expect(screen.getByText('入群人机验证')).toBeInTheDocument()
+    expect(screen.getByText('hc-site-key')).toBeInTheDocument()
+    expect(screen.getByText('已设置')).toBeInTheDocument()
+    expect(screen.queryByText('super-secret')).not.toBeInTheDocument()
+  })
+
+  it('提供方抽屉提交 scope=global 的 set', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('set', bodies)
+    await renderSettings()
+
+    fireEvent.click(screen.getByText('提供方'))
+    const drawer = await screen.findByRole('dialog')
+    const chips = within(drawer).getAllByText('cap')
+    fireEvent.click(chips[0])
+    fireEvent.click(within(drawer).getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ scope: 'global', key: 'captcha_provider', value: 'cap' })
+  })
+
+  it('测试台开关走字符串 1/0', async () => {
+    const bodies: Record<string, unknown>[] = []
+    capturePost('set', bodies)
+    await renderSettings()
+    fireEvent.click(screen.getByRole('switch', { name: '人机验证测试台' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0]).toEqual({ scope: 'global', key: 'captcha_demo', value: '1' })
+  })
+})

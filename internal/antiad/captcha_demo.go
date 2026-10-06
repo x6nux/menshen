@@ -21,8 +21,8 @@ var demoProviderOrder = []string{"turnstile", "hcaptcha", "cap"}
 
 // captchaDemoProvider 按名字取演示提供方。
 //
-// turnstile / hcaptcha 用 captcha_demo_keys 里的凭据；cap 是进程内实现，
-// 无需任何配置，恒定可用。
+// turnstile / hcaptcha 用 captcha_demo_keys 设置里的凭据；cap 是进程内
+// 实现，无需任何配置，恒定可用。
 func captchaDemoProvider(sh *core.Shared, name string) (captchaProvider, bool) {
 	if name == "cap" {
 		if !capEnabled(sh) {
@@ -30,7 +30,11 @@ func captchaDemoProvider(sh *core.Shared, name string) (captchaProvider, bool) {
 		}
 		return captchaProvider{name: "cap", siteKey: CapSiteKey}, true
 	}
-	c, ok := sh.Cfg.CaptchaDemoKeys[name]
+	keys, err := parseCaptchaDemoKeys(sh.Cache.Snap().Setting("captcha_demo_keys"))
+	if err != nil {
+		return captchaProvider{}, false
+	}
+	c, ok := keys[name]
 	if !ok {
 		return captchaProvider{}, false
 	}
@@ -40,7 +44,7 @@ func captchaDemoProvider(sh *core.Shared, name string) (captchaProvider, bool) {
 // handleCaptchaDemoPage 处理演示页的 GET ?json=1（返回各家 site key）与
 // POST {provider,token,signals}（服务端校验）。
 func handleCaptchaDemoPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, _ webRoute) {
-	if !sh.Cfg.CaptchaDemo {
+	if !CaptchaDemoOn(sh) {
 		writeWebJSON(w, http.StatusNotFound, map[string]any{"error": "链接无效或已被替换。"})
 		return
 	}

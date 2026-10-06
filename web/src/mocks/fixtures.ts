@@ -157,6 +157,11 @@ export const mockState: State = {
     antiad_cold_conf: '85',
     antiad_cold_prefilter: '0',
     antiad_unban_base: '60',
+    // 入群人机验证（settings 表；secret 不下发，见 miniState 的脱敏）。
+    captcha_provider: 'hcaptcha',
+    captcha_site_key: 'hc-site-key',
+    captcha_demo: '0',
+    captcha_demo_keys: 'hcaptcha=hc-site-key,hc-secret',
   },
   // settings_set 只列显式写过的键：与上面被 fixture 覆盖成非默认/代表值的项对应。
   settings_set: [
@@ -166,6 +171,7 @@ export const mockState: State = {
     'tz_name',
     'antiad_mute_minutes',
     'antiad_ban',
+    'captcha_secret',
   ],
   digest: '（mock）测试群以技术交流为主。',
   digest_fix: '',

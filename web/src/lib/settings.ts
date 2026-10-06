@@ -3,15 +3,16 @@
 import type { Spec } from '../api/types'
 import { durationText } from './format'
 
-export type ControlKind = 'toggle' | 'number' | 'select'
+export type ControlKind = 'toggle' | 'number' | 'text' | 'select'
 
 /**
- * controlKind 按 spec 的 min/max 推断控件；
- * 三个总开关、时区、模型列表等特殊卡不在 specs 里，由页面单独渲染。
+ * controlKind 推断控件：后端下发的 kind 优先（字符串型设置是 text），
+ * 缺省按 min/max 推断。时区、模型列表等特殊卡不在 specs 里，由页面单独渲染。
  */
 export function controlKind(spec: Spec): ControlKind {
+  if (spec.kind === 'text') return 'text'
+  if (spec.kind === 'toggle') return 'toggle'
   if (spec.min === 0 && spec.max === 1) return 'toggle'
-  if (spec.max && spec.max > 1) return 'number'
   return 'number'
 }
 

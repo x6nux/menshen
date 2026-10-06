@@ -42,6 +42,19 @@ var tzSpec = settingSpec{key: "tz_name", label: "展示时区",
 var groupFooterSpec = settingSpec{key: "antiad_group_footer", label: "群内提示附加链接",
 	hint: "原样附在群内告警与进群限制通知末尾，例如：② 使用指南 (https://t.me/your_link)；填 - 清空"}
 
+// captchaProviderSpec / captchaSiteKeySpec / captchaSecretSpec /
+// captchaDemoKeySpec 是入群人机验证的字符串型设置（settings 表，网页面板
+// 配置）。与 tzSpec 一样不走整数校验；secret 的**当前值不能回显**——TG
+// 会把它打进聊天记录、Mini App 会把它发给浏览器，显示一律脱敏。
+var captchaProviderSpec = settingSpec{key: "captcha_provider", label: "入群验证提供方",
+	hint: "turnstile / hcaptcha / cap（cap 内置无需密钥）；填 - 关闭入群验证"}
+var captchaSiteKeySpec = settingSpec{key: "captcha_site_key", label: "入群验证 Site Key",
+	hint: "turnstile / hcaptcha 后台的站点密钥，域名白名单须含 public_url 的主机名；cap 留空；填 - 清空"}
+var captchaSecretSpec = settingSpec{key: "captcha_secret", label: "入群验证 Secret",
+	hint: "与 site key 配对的服务端密钥；填 - 清空"}
+var captchaDemoKeySpecs = settingSpec{key: "captcha_demo_keys", label: "测试台密钥",
+	hint: "人机验证测试台（_w/demo）用，形如 turnstile=site_key,secret;hcaptcha=site_key,secret；cap 内置无需配；填 - 清空"}
+
 // stringSpecByKey 返回字符串型设置项（不走 settingSpecs 的整数校验）。
 func stringSpecByKey(k string) *settingSpec {
 	switch k {
@@ -49,6 +62,14 @@ func stringSpecByKey(k string) *settingSpec {
 		return &tzSpec
 	case groupFooterSpec.key:
 		return &groupFooterSpec
+	case captchaProviderSpec.key:
+		return &captchaProviderSpec
+	case captchaSiteKeySpec.key:
+		return &captchaSiteKeySpec
+	case captchaSecretSpec.key:
+		return &captchaSecretSpec
+	case captchaDemoKeySpecs.key:
+		return &captchaDemoKeySpecs
 	}
 	return nil
 }
@@ -75,6 +96,9 @@ var settingSpecs = []settingSpec{
 	{"antiad_hedge_fanout", "并发模式路数", "2-5 的整数；并发期间开销随之成倍", 2, 5, ""},
 	{"antiad_upstream_alert_after", "上游异常告警阈值", "连续失败达到它才私聊告警；0 = 关闭", 0, 0, ""},
 	{"antiad_upstream_alert_minutes", "上游异常告警冷却（分钟）", "1-1440 的整数，冷却期内不重复告警", 1, 1440, ""},
+	// 入群验证的提供方与密钥是字符串型（见 captchaProviderSpec 一族），
+	// 不进这张整数表；只有分数下限是整数。
+	{"captcha_min_score", "入群验证分数下限", "0-100 的整数，只对 hCaptcha Enterprise 有意义（普通 hCaptcha 不返回分数）；0 = 不检查", 0, 100, ""},
 
 	// ---- 每个 bot 可覆盖的参数 ----
 	{"antiad_so_trust", "采信线：systemone 置信度", "0-100 的整数；初判置信度低于它才转大模型复判，达到它直接采信初判。默认 95（只有很有把握的初判才免复判）", 0, 100, "antiad"},
@@ -146,7 +170,7 @@ var settingSections = []struct {
 	}},
 	{"进群与验证", []string{
 		"antiad_cold", "antiad_cold_conf", "antiad_cold_prefilter",
-		"antiad_joinverify", "antiad_joinverify_minutes",
+		"antiad_joinverify", "antiad_joinverify_minutes", "captcha_min_score",
 		"antiad_prewarm", "antiad_prewarm_sweep", "antiad_prewarm_conf",
 		"antiad_unban_base",
 	}},
@@ -386,9 +410,29 @@ func askSettingInput(b *core.Bot, chatID, uid, botID int64, sp *settingSpec) {
 		extra = "\n\n填 <code>-</code> 可恢复为全局默认值 <code>" +
 			html.EscapeString(snap.Setting(sp.key)) + "</code>。"
 	}
+	// 密钥不能回显进聊天记录：TG 消息会永久留在会话里。
+	if sp.key == captchaSecretSpec.key {
+		cur = secretSetLabel(b.Shared, sp.key)
+	}
 	b.AskInput(chatID, uid, "st_edit", settingTarget(botID, sp.key),
 		"请输入<b>"+html.EscapeString(sp.label)+"</b>的新值（"+sp.hint+"）："+
 			extra+"\n\n当前值：<code>"+html.EscapeString(cur)+"</code>")
+}
+
+// settingSetLabel 报告一个「不该回显」的设置是否已设置：查 settings 表
+// 是否有行，而不是读兜底默认值（有默认值的键 Setting() 永远非空）。
+func settingSetLabel(sh *core.Shared, key string) string {
+	var one int
+	if err := sh.Store.Read.QueryRow(
+		`SELECT 1 FROM settings WHERE k=?`, key).Scan(&one); err != nil {
+		return "未设置"
+	}
+	return "已设置"
+}
+
+// secretSetLabel 是 settingSetLabel 在入群验证 Secret 上的别名，语义更直白。
+func secretSetLabel(sh *core.Shared, key string) string {
+	return settingSetLabel(sh, key)
 }
 
 // ---- 设置持久化 ----
@@ -464,6 +508,24 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 	rows = append(rows, [][2]string{{
 		"📎 群内附加链接 · " + btnValue(snap.Setting(groupFooterSpec.key)),
 		"a:st:e:" + groupFooterSpec.key}})
+	// 入群验证：secret 绝不能回显进聊天记录，只显示「已设置/未设置」。
+	rows = append(rows, [][2]string{{
+		"🛡 入群验证提供方 · " + btnValue(snap.Setting(captchaProviderSpec.key)),
+		"a:st:e:" + captchaProviderSpec.key}})
+	rows = append(rows, [][2]string{{
+		"🔑 入群验证 Site Key · " + btnValue(snap.Setting(captchaSiteKeySpec.key)),
+		"a:st:e:" + captchaSiteKeySpec.key}})
+	rows = append(rows, [][2]string{{
+		"🔐 入群验证 Secret · " + settingSetLabel(b.Shared, captchaSecretSpec.key),
+		"a:st:e:" + captchaSecretSpec.key}})
+	rows = append(rows, [][2]string{{
+		"🧪 测试台密钥 · " + btnValue(snap.Setting(captchaDemoKeySpecs.key)),
+		"a:st:e:" + captchaDemoKeySpecs.key}})
+	demoLabel := "🧪 开启人机验证测试台"
+	if snap.SettingInt("captcha_demo", 0) == 1 {
+		demoLabel = "🧪 关闭人机验证测试台"
+	}
+	rows = append(rows, [][2]string{{demoLabel, "a:st:t:captcha_demo"}})
 	rows = append(rows, [][2]string{{"◀️ 返回主菜单", "a:main"}})
 
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))

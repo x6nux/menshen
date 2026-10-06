@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"menshen/internal/config"
 	"menshen/internal/core"
 	"menshen/internal/testutil"
 )
@@ -15,9 +14,14 @@ import (
 // enableCaptchaDemo 打开演示页并给 hcaptcha 配一组假密钥。
 func enableCaptchaDemo(t *testing.T, b *core.Bot) {
 	t.Helper()
-	b.Cfg.CaptchaDemo = true
-	b.Cfg.CaptchaDemoKeys = map[string]config.CaptchaCred{
-		"hcaptcha": {SiteKey: "hsite", Secret: "hsecret"},
+	// 测试台开关与密钥都在 settings 表里（网页面板配置）。
+	for k, v := range map[string]string{
+		"captcha_demo":      "1",
+		"captcha_demo_keys": "hcaptcha=hsite,hsecret",
+	} {
+		if err := b.PutSetting(k, v); err != nil {
+			t.Fatalf("putSetting %s: %v", k, err)
+		}
 	}
 	b.Cfg.PublicURL = "https://ad.example.com"
 	if err := EnsureWebSecret(b.Shared); err != nil {
@@ -149,5 +153,47 @@ func TestCaptchaDemoPostCap(t *testing.T) {
 	WebHandler(b.Shared).ServeHTTP(w, req)
 	if !strings.Contains(w.Body.String(), `"ok":true`) {
 		t.Fatalf("cap 端到端应通过，得到 %s", w.Body.String())
+	}
+}
+
+// TestParseCaptchaDemoKeys：紧凑格式解析与错误分支（面板写入也走它）。
+func TestParseCaptchaDemoKeys(t *testing.T) {
+	got, err := parseCaptchaDemoKeys(
+		"turnstile=sk1,sec1; hcaptcha=sk2,sec2; cap=ignored,ignored")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got["turnstile"].SiteKey != "sk1" || got["turnstile"].Secret != "sec1" {
+		t.Errorf("turnstile 解析错误: %+v", got["turnstile"])
+	}
+	if got["hcaptcha"].SiteKey != "sk2" {
+		t.Errorf("hcaptcha 解析错误: %+v", got["hcaptcha"])
+	}
+	if _, ok := got["cap"]; ok {
+		t.Error("cap 是内置实现，不该进演示密钥表")
+	}
+	for _, bad := range []string{
+		"recaptcha=a,b",  // 已移除
+		"turnstile=sk1",  // 缺 secret
+		"turnstile=,sec", // 缺 site key
+		"turnstile=a,b,c",
+	} {
+		if _, err := parseCaptchaDemoKeys(bad); err == nil {
+			t.Errorf("%q 应当报错", bad)
+		}
+	}
+}
+
+// TestCaptchaProviderValid：提供方白名单（空串 = 关闭，合法）。
+func TestCaptchaProviderValid(t *testing.T) {
+	for _, ok := range []string{"", "turnstile", "hcaptcha", "cap", " CAP "} {
+		if !CaptchaProviderValid(ok) {
+			t.Errorf("%q 应当合法", ok)
+		}
+	}
+	for _, bad := range []string{"recaptcha", "google", "captcha"} {
+		if CaptchaProviderValid(bad) {
+			t.Errorf("%q 应当被拒", bad)
+		}
 	}
 }

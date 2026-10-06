@@ -189,15 +189,25 @@ var settingDefaults = map[string]string{
 	// base × 2^(n-1)，封顶 1 小时——有耐心的人也磨不动多少 AI 开销。
 	"antiad_unban_base": "60",
 
-	// ---- 入群人机验证（per-bot）----
-	// 新人进群先禁言，发一条带验证链接的群消息（网页上解 Turnstile /
-	// hCaptcha / 内置 Cap），通过后自动解除。默认关：它要求每个
-	// 进群的人都点一次网页。提供方在 config 里配（captcha_provider 等），
-	// 没配好时即使打开也发不出验证页。
+	// ---- 入群人机验证 ----
+	// per-bot 开关：antiad_joinverify（0/1）与等待分钟数。提供方与密钥是
+	// **全局**设置（settings 表，网页面板配置），不走 config.yaml —— 密钥
+	// 要能随时在面板上换，与上游 API key 同一待遇。
 	"antiad_joinverify": "0",
 	// 未通过验证的等待分钟数，到点踢出（允许重新进群再试）。验证页的有效
 	// 窗口与它一致。0 = 不踢，一直禁言。
 	"antiad_joinverify_minutes": "10",
+	// captcha_provider：turnstile / hcaptcha / cap（cap 内置，无需密钥）；
+	// 空 = 入群验证关闭（面板开关即使打开也不生效）。
+	"captcha_provider":  "",
+	"captcha_site_key":  "",
+	"captcha_secret":    "",
+	"captcha_min_score": "0",
+	// captcha_demo：人机验证测试台（_w/demo），仅测试用，生产保持 0。
+	"captcha_demo": "0",
+	// captcha_demo_keys：测试台里 turnstile / hcaptcha 的密钥，形如
+	// "turnstile=site_key,secret;hcaptcha=site_key,secret"。cap 内置无需配。
+	"captcha_demo_keys": "",
 }
 
 // BotRec 是 bots 表的一行。

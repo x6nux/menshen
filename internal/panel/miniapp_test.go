@@ -1877,3 +1877,45 @@ func TestMiniRulesCRUD(t *testing.T) {
 			cleanEnabled, cleanEnforce)
 	}
 }
+
+// TestMiniAppStateRedactsCaptchaSecret：state.global 会发给浏览器，密钥类
+// 设置（captcha_secret / web_secret）绝不能原样下发 —— 「是否已设置」由
+// settings_set 表达。
+func TestMiniAppStateRedactsCaptchaSecret(t *testing.T) {
+	env := newMiniEnv(t)
+	for k, v := range map[string]string{
+		"captcha_secret": "super-secret-value", "captcha_site_key": "site"} {
+		if err := env.sh.PutSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := miniDo(env.t, env.h, testutil.TestToken, env.adminInit(),
+		testutil.TestBotID, "state", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("state 应 200，得到 %d", w.Code)
+	}
+	var out struct {
+		Global      map[string]string `json:"global"`
+		SettingsSet []string          `json:"settings_set"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(w.Body.String(), "super-secret-value") {
+		t.Error("state 响应里出现了 captcha_secret 原文")
+	}
+	if v, ok := out.Global["captcha_secret"]; ok {
+		t.Errorf("global 不该包含 captcha_secret，得到 %q", v)
+	}
+	if _, ok := out.Global["web_secret"]; ok {
+		t.Error("global 不该包含 web_secret")
+	}
+	if _, ok := out.Global["captcha_site_key"]; !ok {
+		t.Error("非密钥设置应照常下发")
+	}
+	set := strings.Join(out.SettingsSet, ",")
+	if !strings.Contains(set, "captcha_secret") {
+		t.Error("settings_set 应包含 captcha_secret（前端据此显示「已设置」）")
+	}
+}

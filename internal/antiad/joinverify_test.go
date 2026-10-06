@@ -21,9 +21,14 @@ func enableJoinVerify(t *testing.T, b *core.Bot) {
 	if err := b.PutSetting("antiad_joinverify", "1"); err != nil {
 		t.Fatalf("打开入群验证失败: %v", err)
 	}
-	b.Cfg.CaptchaProvider = "turnstile"
-	b.Cfg.CaptchaSiteKey = "site"
-	b.Cfg.CaptchaSecret = "secret"
+	// 提供方与密钥存 settings（网页面板配置），不再是 config.yaml。
+	for k, v := range map[string]string{
+		"captcha_provider": "turnstile", "captcha_site_key": "site",
+		"captcha_secret": "secret"} {
+		if err := b.PutSetting(k, v); err != nil {
+			t.Fatalf("putSetting %s: %v", k, err)
+		}
+	}
 	b.Cfg.PublicURL = "https://ad.example.com"
 	if err := EnsureWebSecret(b.Shared); err != nil {
 		t.Fatalf("EnsureWebSecret: %v", err)
@@ -104,7 +109,9 @@ func TestCaptchaProviders(t *testing.T) {
 func TestVerifyTurnstileTokenHostname(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
-	b.Cfg.CaptchaSecret = "secret"
+	if err := b.PutSetting("captcha_secret", "secret"); err != nil {
+		t.Fatal(err)
+	}
 
 	old := turnstileVerifyURL
 	t.Cleanup(func() { turnstileVerifyURL = old })
@@ -114,13 +121,13 @@ func TestVerifyTurnstileTokenHostname(t *testing.T) {
 	t.Cleanup(srv.Close)
 	turnstileVerifyURL = srv.URL
 
-	if ok, why := verifyTurnstileToken(b.Shared, b.Cfg.CaptchaSecret, "tok", "1.2.3.4"); !ok {
+	if ok, why := verifyTurnstileToken(b.Shared, b.Cache.Snap().Setting("captcha_secret"), "tok", "1.2.3.4"); !ok {
 		t.Fatalf("只有 success+hostname 时应通过: %s", why)
 	}
 	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"success":true,"hostname":"evil.example.com"}`))
 	})
-	if ok, _ := verifyTurnstileToken(b.Shared, b.Cfg.CaptchaSecret, "tok", "1.2.3.4"); ok {
+	if ok, _ := verifyTurnstileToken(b.Shared, b.Cache.Snap().Setting("captcha_secret"), "tok", "1.2.3.4"); ok {
 		t.Error("hostname 不符应判失败")
 	}
 }

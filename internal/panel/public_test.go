@@ -6,8 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"menshen/internal/config"
-	"menshen/internal/core"
+	"menshen/internal/testutil"
 )
 
 // TestPublicShellHandler：公开网页壳带统一 CSP（放行 Turnstile、无内联
@@ -38,9 +37,9 @@ func TestPublicShellHandler(t *testing.T) {
 	if _, ok := miniAppDistFS(); !ok {
 		t.Skip("前端未构建，跳过壳内容断言")
 	}
-	sh := &core.Shared{Cfg: &config.Config{}}
+	b, _ := testutil.NewTestBot(t, 1)
 	w := httptest.NewRecorder()
-	PublicShellHandler(sh).ServeHTTP(w,
+	PublicShellHandler(b.Shared).ServeHTTP(w,
 		httptest.NewRequest(http.MethodGet, "/x/_w/ap/1/sig", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET 壳应 200，得到 %d：%s", w.Code, w.Body.String())
@@ -56,10 +55,15 @@ func TestPublicShellHandler(t *testing.T) {
 // TestPublicShellCSPProviders：入群验证的提供方要各自放行其脚本 / iframe /
 // 连接来源。少放行一个来源时组件静默不显示，验证永远不通过。
 func TestPublicShellCSPProviders(t *testing.T) {
-	sh := &core.Shared{Cfg: &config.Config{
-		CaptchaProvider: "hcaptcha",
-		CaptchaDemo:     true, // 演示页恒定带内置 cap
-	}}
+	b, _ := testutil.NewTestBot(t, 1)
+	// 提供方与测试台都在 settings 表里（网页面板配置）。
+	for k, v := range map[string]string{
+		"captcha_provider": "hcaptcha", "captcha_demo": "1"} {
+		if err := b.PutSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sh := b.Shared
 	got := publicShellCSP(sh)
 	for _, want := range []string{
 		"https://js.hcaptcha.com", "https://newassets.hcaptcha.com",

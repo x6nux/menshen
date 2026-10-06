@@ -17,7 +17,8 @@ import (
 // 放行四个 —— 同一个设置项在不同入口有不同规则，是最难排查的那种问题。
 
 // globalToggles 是一键切换的全局 0/1 开关（不在 settingSpecs 里）。
-var globalToggles = []string{"antiad_enabled", "alert_copy_main", "gban_enabled", "antiad_rule_auto"}
+var globalToggles = []string{"antiad_enabled", "alert_copy_main", "gban_enabled",
+	"antiad_rule_auto", "captcha_demo"}
 
 // singleModelKeys 是单值模型设置；列表型的见 legacyModelKey。
 var singleModelKeys = []string{"antiad_vision_model", "antiad_rule_model"}
@@ -56,6 +57,40 @@ func setSetting(sh *core.Shared, uid, botID int64, key, val string) error {
 		}
 		if len([]rune(val)) > 300 {
 			return core.Bad("附加文本过长（上限 300 字）")
+		}
+
+	case key == captchaProviderSpec.key:
+		// 提供方名统一小写；「-」= 关闭（清空）。
+		if reset {
+			val = ""
+		} else {
+			val = strings.ToLower(val)
+			if !antiad.CaptchaProviderValid(val) {
+				return core.Bad("提供方必须是 turnstile / hcaptcha / cap")
+			}
+		}
+		// 选外部两家时密钥必须已经配齐——「开着但没人能验证」的状态在
+		// 面板上一切正常，是最难查的那类事故，所以在写入点拦住。
+		// cap 是内置实现，无需密钥，这里不查。
+		if val == "turnstile" || val == "hcaptcha" {
+			snap := sh.Cache.Snap()
+			if snap.Setting("captcha_site_key") == "" || snap.Setting("captcha_secret") == "" {
+				return core.Bad("请先设置入群验证 Site Key 与 Secret，再选 %s", val)
+			}
+		}
+
+	case key == captchaSiteKeySpec.key || key == captchaSecretSpec.key ||
+		key == captchaDemoKeySpecs.key:
+		if reset {
+			val = ""
+		}
+		if key == captchaDemoKeySpecs.key && val != "" {
+			if err := antiad.ValidateCaptchaDemoKeys(val); err != nil {
+				return core.Bad("%s", err.Error())
+			}
+		}
+		if len(val) > 500 {
+			return core.Bad("取值过长（上限 500 字）")
 		}
 
 	case slices.Contains(singleModelKeys, key):

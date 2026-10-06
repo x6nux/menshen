@@ -37,6 +37,8 @@ export interface Spec {
   key: string
   label: string
   hint: string
+  /** number=整数（按 min/max 校验），toggle=0/1 开关，text=自由文本。 */
+  kind?: 'number' | 'toggle' | 'text'
   min: number
   max: number
   group: string

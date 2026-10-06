@@ -176,6 +176,9 @@ export function SettingsPage() {
   const [digestDraft, setDigestDraft] = useState('')
   const [fixOpen, setFixOpen] = useState(false)
   const [fixDraft, setFixDraft] = useState('')
+  const [captchaOpen, setCaptchaOpen] = useState(false)
+  const [captchaField, setCaptchaField] = useState<string | null>(null)
+  const [captchaDraft, setCaptchaDraft] = useState('')
 
   if (state.isPending) return <Skeletons rows={4} />
   if (state.isError) {
@@ -251,14 +254,16 @@ export function SettingsPage() {
   function submitSpec() {
     if (!editingSpec) return
     const val = specDraft.trim()
-    if (val === '') {
-      toast('请输入取值；全局设置项不回退默认，请填一个合法整数')
-      return
-    }
-    const invalid = validateSpecValue(editingSpec, val)
-    if (invalid) {
-      toast(invalid)
-      return
+    if (controlKind(editingSpec) !== 'text') {
+      if (val === '') {
+        toast('请输入取值；全局设置项不回退默认，请填一个合法整数')
+        return
+      }
+      const invalid = validateSpecValue(editingSpec, val)
+      if (invalid) {
+        toast(invalid)
+        return
+      }
     }
     setMut.mutate(
       { scope: 'global', key: editingSpec.key, value: val },
@@ -303,6 +308,41 @@ export function SettingsPage() {
         onSuccess: (resp) => {
           toast(resp.note ?? '已保存')
           setFooterOpen(false)
+        },
+        onError: (err) => toast(err.message),
+      },
+    )
+  }
+
+  /** CAPTCHA_FIELDS 是入群验证的四个字符串型设置（settings 表）。 */
+  const CAPTCHA_FIELDS: Record<string, { label: string; hint: string }> = {
+    captcha_provider: {
+      label: '入群验证提供方',
+      hint: 'turnstile / hcaptcha / cap（cap 内置无需密钥）；填 - 关闭入群验证',
+    },
+    captcha_site_key: { label: '入群验证 Site Key', hint: '域名白名单须含本站主机名；填 - 清空' },
+    captcha_secret: { label: '入群验证 Secret', hint: '与 site key 配对的服务端密钥；填 - 清空' },
+    captcha_demo_keys: {
+      label: '测试台密钥',
+      hint: '形如 turnstile=site_key,secret;hcaptcha=site_key,secret；填 - 清空',
+    },
+  }
+
+  /** openCaptcha 打开入群验证字段抽屉；secret 不回显，每次都从空输入。 */
+  function openCaptcha(field: string) {
+    setCaptchaField(field)
+    setCaptchaDraft(field === 'captcha_secret' ? '' : (global[field] ?? ''))
+    setCaptchaOpen(true)
+  }
+
+  function submitCaptcha() {
+    if (!captchaField) return
+    setMut.mutate(
+      { scope: 'global', key: captchaField, value: captchaDraft.trim() },
+      {
+        onSuccess: (resp) => {
+          toast(resp.note ?? '已保存')
+          setCaptchaOpen(false)
         },
         onError: (err) => toast(err.message),
       },
@@ -462,6 +502,40 @@ export function SettingsPage() {
         />
       </SectionCard>
 
+      <SectionCard title="入群人机验证">
+        <SwitchRow
+          primary="人机验证测试台"
+          secondary="开启后 <public_url>/_w/demo/1/x 可逐个测试各验证方式；仅测试用"
+          checked={global.captcha_demo === '1'}
+          disabled={toggleMut.isPending}
+          onChange={(next) => toggleKey('captcha_demo', next)}
+        />
+        <SettingRow
+          label="提供方"
+          hint="turnstile / hcaptcha / cap（cap 内置，无需密钥）"
+          value={global.captcha_provider || '未设置（入群验证关闭）'}
+          onClick={() => openCaptcha('captcha_provider')}
+        />
+        <SettingRow
+          label="Site Key"
+          hint="turnstile / hcaptcha 需要配；cap 不需要"
+          value={global.captcha_site_key || '未设置'}
+          onClick={() => openCaptcha('captcha_site_key')}
+        />
+        <SettingRow
+          label="Secret"
+          hint="已设置时不回显，编辑即整体替换；填 - 清空"
+          value={settingsSet.has('captcha_secret') ? '已设置' : '未设置'}
+          onClick={() => openCaptcha('captcha_secret')}
+        />
+        <SettingRow
+          label="测试台密钥"
+          hint="测试台里 turnstile / hcaptcha 的密钥；cap 不需要"
+          value={global.captcha_demo_keys || '未设置'}
+          onClick={() => openCaptcha('captcha_demo_keys')}
+        />
+      </SectionCard>
+
       <SectionCard title="形态摘要">
         <Box sx={{ px: 2, py: 1.5 }}>
           <Typography
@@ -615,6 +689,15 @@ export function SettingsPage() {
                 checked={specDraft === '1'}
                 onChange={(next) => setSpecDraft(next ? '1' : '0')}
               />
+            ) : editingSpec !== null && controlKind(editingSpec) === 'text' ? (
+              <TextField
+                fullWidth
+                size="small"
+                label={editingSpec.label}
+                value={specDraft}
+                onChange={(event) => setSpecDraft(event.target.value)}
+                helperText={specHint(editingSpec)}
+              />
             ) : (
               <>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -662,6 +745,38 @@ export function SettingsPage() {
             )}
           </>
         )}
+      </FormDrawer>
+
+      <FormDrawer
+        open={captchaOpen}
+        onClose={() => setCaptchaOpen(false)}
+        title={captchaField ? (CAPTCHA_FIELDS[captchaField]?.label ?? '入群验证') : '入群验证'}
+        pending={setMut.isPending}
+        submitText="保存"
+        onSubmit={submitCaptcha}
+      >
+        {captchaField === 'captcha_provider' && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.5 }}>
+            {['turnstile', 'hcaptcha', 'cap'].map((p) => (
+              <Chip
+                key={p}
+                size="small"
+                label={p}
+                color={captchaDraft.trim() === p ? 'primary' : 'default'}
+                variant={captchaDraft.trim() === p ? 'filled' : 'outlined'}
+                onClick={() => setCaptchaDraft(p)}
+              />
+            ))}
+          </Box>
+        )}
+        <TextField
+          fullWidth
+          size="small"
+          label={captchaField ? (CAPTCHA_FIELDS[captchaField]?.label ?? '') : ''}
+          value={captchaDraft}
+          onChange={(event) => setCaptchaDraft(event.target.value)}
+          helperText={captchaField ? CAPTCHA_FIELDS[captchaField]?.hint : ''}
+        />
       </FormDrawer>
 
       <FormDrawer

@@ -103,3 +103,66 @@ func TestSetSettingRules(t *testing.T) {
 		t.Errorf("撤销覆盖后应跟随全局 80，得到 %q", v)
 	}
 }
+
+// TestSetSettingCaptchaKeys：入群验证的密钥类设置存 settings 表，写入
+// 规则只有一份（本函数）。重点钉住「选了外部两家但密钥没配齐」的拦截。
+func TestSetSettingCaptchaKeys(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 777)
+	sh := b.Shared
+	const main, sub = 777, 888
+	if err := sh.AddAdmin(sub, "", main); err != nil {
+		t.Fatal(err)
+	}
+
+	// 次级管理员不能动全局设置。
+	if err := setSetting(sh, sub, 0, "captcha_site_key", "sk"); err == nil {
+		t.Error("非主管理员写全局设置应被拒")
+	}
+
+	// 先选 hcaptcha 而密钥没配齐：拒绝。
+	if err := setSetting(sh, main, 0, "captcha_provider", "hcaptcha"); err == nil {
+		t.Error("密钥未配齐时选外部提供方应被拒")
+	}
+	// 配齐两把钥匙后放行。
+	if err := setSetting(sh, main, 0, "captcha_site_key", "sk"); err != nil {
+		t.Fatalf("site key: %v", err)
+	}
+	if err := setSetting(sh, main, 0, "captcha_secret", "sec"); err != nil {
+		t.Fatalf("secret: %v", err)
+	}
+	if err := setSetting(sh, main, 0, "captcha_provider", "HCaptcha"); err != nil {
+		t.Fatalf("配齐后应放行（大小写不敏感）: %v", err)
+	}
+
+	// cap 内置无需密钥。
+	if err := setSetting(sh, main, 0, "captcha_provider", "cap"); err != nil {
+		t.Fatalf("cap 应无需密钥即可选: %v", err)
+	}
+	// 已移除的 reCAPTCHA 必须拒绝。
+	if err := setSetting(sh, main, 0, "captcha_provider", "recaptcha"); err == nil {
+		t.Error("recaptcha 应当被拒")
+	}
+
+	// 测试台密钥格式校验。
+	if err := setSetting(sh, main, 0, "captcha_demo_keys", "turnstile=sk"); err == nil {
+		t.Error("缺 secret 的测试台密钥应被拒")
+	}
+	if err := setSetting(sh, main, 0, "captcha_demo_keys", "hcaptcha=sk,sec"); err != nil {
+		t.Fatalf("合法测试台密钥应通过: %v", err)
+	}
+	// 「-」= 清空。
+	if err := setSetting(sh, main, 0, "captcha_demo_keys", "-"); err != nil {
+		t.Fatalf("清空应通过: %v", err)
+	}
+	if got := sh.Cache.Snap().Setting("captcha_demo_keys"); got != "" {
+		t.Errorf("清空后应为空串，得到 %q", got)
+	}
+
+	// 测试台开关只认 0/1。
+	if err := setSetting(sh, main, 0, "captcha_demo", "2"); err == nil {
+		t.Error("captcha_demo=2 应被拒")
+	}
+	if err := setSetting(sh, main, 0, "captcha_demo", "1"); err != nil {
+		t.Fatalf("captcha_demo=1 应通过: %v", err)
+	}
+}

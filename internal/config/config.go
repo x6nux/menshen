@@ -63,26 +63,6 @@ type Config struct {
 	TurnstileSiteKey string
 	TurnstileSecret  string
 
-	// Captcha* 是**入群人机验证**用的验证码提供方。Provider 为空即关闭
-	// 入群验证；可用值：turnstile（Cloudflare）/ hcaptcha / cap（内置，
-	// 进程内 Go 实现，见 antiad/capserver.go，无需任何配置）。
-	//
-	// 与 TurnstileSiteKey 分开：申诉页固定用 Turnstile 且要核对 action
-	// 与 cdata，入群验证不绑定这两个字段，混用会让两边互相将就。
-	CaptchaProvider string
-	CaptchaSiteKey  string
-	CaptchaSecret   string
-	// CaptchaMinScore 是 hCaptcha Enterprise 的分数下限（0-100，0 = 不
-	// 检查）；普通 hCaptcha 不返回分数，忽略这一项。turnstile 与 cap 无分数。
-	CaptchaMinScore int
-
-	// CaptchaDemo 开启人机验证演示页（_w/demo）：一次展示并校验各验证
-	// 方式，仅用于测试，生产保持 0。cap 是内置的，无需密钥即会出现。
-	CaptchaDemo bool
-	// CaptchaDemoKeys 是演示页里 turnstile / hcaptcha 的密钥，键为提供
-	// 方名。格式见 captcha_demo_keys。
-	CaptchaDemoKeys map[string]CaptchaCred
-
 	// TGAPIID / TGAPIHash 是「客户端应用」标识（my.telegram.org 申请），
 	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，回查历史成员的
 	// 入群时间（Bot API 没有这个字段）。不配时走内置的公开 Telegram Desktop
@@ -112,75 +92,6 @@ const (
 
 // UseWebhook 报告是否走 webhook 模式。
 func (c *Config) UseWebhook() bool { return c.PublicURL != "" }
-
-// CaptchaEnabled 报告入群验证的提供方是否可用。
-//
-// cap 是进程内的 Go 实现，不需要任何密钥；turnstile / hcaptcha 要有
-// site key + secret。缺项时按关闭处理而不是启动报错：入群验证是可选功能，
-// 配置写漏一项不该让整个 bot 起不来 —— 但这意味着用户不会看到验证页。
-func (c *Config) CaptchaEnabled() bool {
-	switch c.CaptchaProvider {
-	case "":
-		return false
-	case "cap":
-		return true
-	default:
-		return c.CaptchaSiteKey != "" && c.CaptchaSecret != ""
-	}
-}
-
-// captchaProviders 是入群验证支持的提供方白名单（cap 为内置实现）。
-var captchaProviders = map[string]bool{
-	"turnstile": true, "hcaptcha": true, "cap": true,
-}
-
-// CaptchaCred 是一组验证码凭据（演示页按提供方各存一份）。
-type CaptchaCred struct {
-	SiteKey string
-	Secret  string
-}
-
-// parseCaptchaDemoKeys 解析 captcha_demo_keys：
-//
-//	provider=site_key,secret;provider=...
-//
-// 用逗号 / 分号这种紧凑写法而不是一堆独立配置键：演示页是测试设施，
-// 不值得为它撑起一整套配置项与环境变量。cap 是内置的（无需密钥），写了
-// 也忽略。
-func parseCaptchaDemoKeys(v string) (map[string]CaptchaCred, error) {
-	out := map[string]CaptchaCred{}
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return out, nil
-	}
-	for _, part := range strings.Split(v, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		name, rest, ok := strings.Cut(part, "=")
-		if !ok {
-			return nil, fmt.Errorf("captcha_demo_keys 片段缺少 '='：%q", part)
-		}
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name == "cap" {
-			continue // 内置实现无需密钥，写了也忽略
-		}
-		if name != "turnstile" && name != "hcaptcha" {
-			return nil, fmt.Errorf("captcha_demo_keys 未知提供方 %q（可用 turnstile / hcaptcha；cap 内置无需配置）", name)
-		}
-		f := strings.Split(rest, ",")
-		if len(f) != 2 {
-			return nil, fmt.Errorf("captcha_demo_keys 的 %s 需要 site_key,secret 两段：%q", name, part)
-		}
-		cred := CaptchaCred{SiteKey: strings.TrimSpace(f[0]), Secret: strings.TrimSpace(f[1])}
-		if cred.SiteKey == "" || cred.Secret == "" {
-			return nil, fmt.Errorf("captcha_demo_keys 的 %s 缺少 site key 或 secret", name)
-		}
-		out[name] = cred
-	}
-	return out, nil
-}
 
 // WebhookURLFor 拼出某个 token 的完整回调地址：<public_url>/<token>/webhook。
 func (c *Config) WebhookURLFor(token string) string {
@@ -301,12 +212,6 @@ var envKeys = []struct{ env, key string }{
 	{"MENSHEN_LISTEN_ADDR", "listen_addr"},
 	{"MENSHEN_TURNSTILE_SITE_KEY", "turnstile_site_key"},
 	{"MENSHEN_TURNSTILE_SECRET", "turnstile_secret"},
-	{"MENSHEN_CAPTCHA_PROVIDER", "captcha_provider"},
-	{"MENSHEN_CAPTCHA_SITE_KEY", "captcha_site_key"},
-	{"MENSHEN_CAPTCHA_SECRET", "captcha_secret"},
-	{"MENSHEN_CAPTCHA_MIN_SCORE", "captcha_min_score"},
-	{"MENSHEN_CAPTCHA_DEMO", "captcha_demo"},
-	{"MENSHEN_CAPTCHA_DEMO_KEYS", "captcha_demo_keys"},
 	{"MENSHEN_CLIENT_IP_HEADER", "client_ip_header"},
 	{"MENSHEN_TG_API_ID", "tg_api_id"},
 	{"MENSHEN_TG_API_HASH", "tg_api_hash"},
@@ -369,37 +274,6 @@ func assign(c *Config, key, val string) error {
 		c.TurnstileSiteKey = strings.TrimSpace(val)
 	case "turnstile_secret":
 		c.TurnstileSecret = strings.TrimSpace(val)
-	case "captcha_provider":
-		p := strings.ToLower(strings.TrimSpace(val))
-		if p != "" && !captchaProviders[p] {
-			return fmt.Errorf("captcha_provider 不支持 %q（可用 turnstile / hcaptcha / cap）", val)
-		}
-		c.CaptchaProvider = p
-	case "captcha_site_key":
-		c.CaptchaSiteKey = strings.TrimSpace(val)
-	case "captcha_secret":
-		c.CaptchaSecret = strings.TrimSpace(val)
-	case "captcha_min_score":
-		if val == "" {
-			c.CaptchaMinScore = 0
-			break
-		}
-		n, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil || n < 0 || n > 100 {
-			return fmt.Errorf("captcha_min_score 应为 0-100 的整数，得到 %q", val)
-		}
-		c.CaptchaMinScore = n
-	case "captcha_demo":
-		c.CaptchaDemo = strings.TrimSpace(val) == "1" || strings.EqualFold(strings.TrimSpace(val), "true")
-	case "captcha_demo_keys":
-		keys, err := parseCaptchaDemoKeys(val)
-		if err != nil {
-			return err
-		}
-		c.CaptchaDemoKeys = keys
-
-	case "client_ip_header":
-		c.ClientIPHeader = strings.TrimSpace(val)
 	case "tg_api_id":
 		// 客户端应用标识（见 Config.TGAPIID）。不配走内置默认值；
 		// 显式配 0 或空串 = 关闭「入群时间」回查。非法值不挡住启动，
