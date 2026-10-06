@@ -74,3 +74,21 @@ describe('MinePage', () => {
     expect(screen.queryByText('运行日志')).not.toBeInTheDocument()
   })
 })
+
+describe('MinePage 测试与演示', () => {
+  it('主管理员 + 测试台开启时显示入口', async () => {
+    useState({
+      ...mockState,
+      global: { ...mockState.global, captcha_demo: '1' },
+    })
+    renderPage(<MinePage />)
+    expect(await screen.findByText('测试与演示')).toBeInTheDocument()
+    expect(screen.getByText('人机验证测试台')).toBeInTheDocument()
+  })
+
+  it('测试台关闭时不显示入口', async () => {
+    renderPage(<MinePage />)
+    expect(await screen.findByText('主管理员')).toBeInTheDocument()
+    expect(screen.queryByText('测试与演示')).not.toBeInTheDocument()
+  })
+})

@@ -5,6 +5,7 @@ import { Box, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { meLabel } from '../lib/format'
+import { CAPTCHA_DEMO_PATH } from '../lib/settings'
 import { useNav } from '../nav'
 import { ErrorState, ListRow, SectionCard, Skeletons } from '../ui'
 
@@ -80,6 +81,18 @@ export function MinePage() {
           </>
         )}
       </SectionCard>
+
+      {/* 测试台只在开启时出现（全局设置里的开关）；没开时入口本身就是 404。 */}
+      {me.main && state.data.global?.captcha_demo === '1' && (
+        <SectionCard title="测试与演示">
+          <ListRow
+            primary="人机验证测试台"
+            secondary="在浏览器里逐个完成 Turnstile / hCaptcha / Cap 验证"
+            chevron
+            onClick={() => window.open(CAPTCHA_DEMO_PATH, '_blank', 'noopener')}
+          />
+        </SectionCard>
+      )}
 
       <Typography
         sx={{ px: 1.5, mt: 1, fontSize: 12, color: 'text.secondary', lineHeight: 1.7 }}

@@ -3,6 +3,12 @@
 import type { Spec } from '../api/types'
 import { durationText } from './format'
 
+/**
+ * CAPTCHA_DEMO_PATH 是人机验证测试台（_w/demo）的固定路径：
+ * 相对同源，网页版 /admin 与 Mini App 里打开都指向本部署。
+ */
+export const CAPTCHA_DEMO_PATH = '/_w/demo/1/x'
+
 export type ControlKind = 'toggle' | 'number' | 'text' | 'select'
 
 /**

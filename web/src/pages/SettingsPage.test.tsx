@@ -311,3 +311,20 @@ describe('SettingsPage 入群人机验证（settings 表，网页配置）', () 
     expect(bodies[0]).toEqual({ scope: 'global', key: 'captcha_demo', value: '1' })
   })
 })
+
+describe('SettingsPage 测试台入口', () => {
+  it('测试台开启时显示「打开测试台」入口', async () => {
+    useState({
+      ...mockState,
+      global: { ...mockState.global, captcha_demo: '1' },
+    })
+    await renderSettings()
+    expect(await screen.findByText('打开人机验证测试台')).toBeInTheDocument()
+  })
+
+  it('测试台关闭时不显示入口（避免 404 死链）', async () => {
+    await renderSettings()
+    expect(await screen.findByText('入群人机验证')).toBeInTheDocument()
+    expect(screen.queryByText('打开人机验证测试台')).not.toBeInTheDocument()
+  })
+})

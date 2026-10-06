@@ -28,6 +28,7 @@ import { useMiniState } from '../api/hooks'
 import { useDigestMutation, useOptimisticMiniMutation, useSetMutation } from '../api/mutations'
 import type { Spec, State } from '../api/types'
 import {
+  CAPTCHA_DEMO_PATH,
   controlKind,
   minutePresets,
   specHint,
@@ -534,6 +535,14 @@ export function SettingsPage() {
           value={global.captcha_demo_keys || '未设置'}
           onClick={() => openCaptcha('captcha_demo_keys')}
         />
+        {global.captcha_demo === '1' && (
+          <SettingRow
+            label="打开人机验证测试台"
+            hint={`在新窗口打开 ${CAPTCHA_DEMO_PATH}，逐个完成各验证方式`}
+            value="新窗口 ↗"
+            onClick={() => window.open(CAPTCHA_DEMO_PATH, '_blank', 'noopener')}
+          />
+        )}
       </SectionCard>
 
       <SectionCard title="形态摘要">
