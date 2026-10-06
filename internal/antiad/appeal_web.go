@@ -147,7 +147,7 @@ func parseWebRoute(p string) (webRoute, bool) {
 	return webRoute{}, false
 }
 
-// IsWebPagePath 报告路径是否指向公开网页的页面路由（ap / apv / v）。
+// IsWebPagePath 报告路径是否指向公开网页的页面路由（ap / apv / v / jv）。
 //
 // 只做形状判断、不验签：SPA 外壳本身不含任何数据，签名校验发生在
 // ?json=1 的数据接口里。main 在把 _w 请求交给 WebHandler 之前用它
@@ -158,7 +158,7 @@ func IsWebPagePath(p string) bool {
 		return false
 	}
 	switch rt.kind {
-	case "ap", "apv", "v":
+	case "ap", "apv", "v", "jv":
 		return true
 	}
 	return false
@@ -182,6 +182,8 @@ func WebHandler(sh *core.Shared) http.Handler {
 			handleAppealDetailPage(sh, w, r, route)
 		case "v":
 			handleLogViewPage(sh, w, r, route)
+		case "jv":
+			handleJoinVerifyPage(sh, w, r, route)
 		default:
 			http.NotFound(w, r)
 		}

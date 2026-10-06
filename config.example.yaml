@@ -130,7 +130,32 @@ bot_token: "123456789:AA..."
 #    否则验证组件在页面上根本加载不出来，所有申诉都卡在网页这一步。
 # turnstile_site_key: ""
 # turnstile_secret: ""
+
+# ---- 入群人机验证（仅 webhook 模式）----
 #
+# 新人进群先禁言，网页上通过人机验证后自动解除；未通过则按等待时长
+# 移出群聊。开关在面板的「进群与验证」里（antiad_joinverify，per-bot），
+# 这里配的是用哪家的验证码：
+#
+#   captcha_provider: turnstile | recaptcha | hcaptcha | cap
+#     - turnstile  → Cloudflare Turnstile（与申诉用的那套密钥**不同**，
+#                    这里用 captcha_secret，申诉用 turnstile_secret）
+#     - recaptcha  → Google reCAPTCHA v2（勾选框）
+#     - hcaptcha   → hCaptcha
+#     - cap        → 自建 Cap 实例（https://github.com/tiagozip/cap）
+#
+# 留空 = 不启用入群验证（面板上的开关即使打开也不生效）。
+# captcha_min_score（0-100，0 = 不检查）只对返回 score 的 v3/企业版有意义，
+# v2 与普通 hCaptcha 忽略它。cap 必须配 captcha_endpoint（自建实例基址，
+# 校验走 <endpoint>/<site_key>/siteverify）。
+#
+# ⚠️ 各家的域名白名单同样要包含 public_url 的主机名。
+# captcha_provider: ""
+# captcha_site_key: ""
+# captcha_secret: ""
+# captcha_endpoint: ""      # 仅 cap
+# captcha_min_score: 0      # 仅 recaptcha / hcaptcha
+
 # 取客户端真实 IP 的请求头（用于网页验证记录与账号关联）。
 # 前提：listen_addr 只绑回环、流量全部经过反代，这个头才可信。
 # Cloudflare 后面填 "CF-Connecting-IP"，nginx 后面填 "X-Real-IP"。

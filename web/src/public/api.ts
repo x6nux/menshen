@@ -4,6 +4,7 @@
 //   - ap  ：GET ?json=1 → 验证页数据；POST {token,signals} → 签发解禁码
 //   - v   ：GET ?json=1 → 门槛数据；POST {e,k} → 原文与判定详情
 //   - apv ：GET ?json=1 → 门槛数据；POST {e,k} → 申诉详情与用户资料
+//   - jv  ：GET ?json=1 → 入群验证数据；POST {token,signals} → 校验并解除禁言
 
 /** WebApiError 带上 HTTP 状态，页面据此区分失效（404/410）与普通失败。 */
 export class WebApiError extends Error {
@@ -46,7 +47,7 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await resp.json()) as T
 }
 
-export type WebRouteKind = 'ap' | 'apv' | 'v'
+export type WebRouteKind = 'ap' | 'apv' | 'v' | 'jv'
 
 export interface WebRoute {
   kind: WebRouteKind
@@ -62,7 +63,7 @@ export function parseRoute(pathname: string): WebRoute | null {
   const i = segs.indexOf('_w')
   if (i < 0 || i + 3 >= segs.length) return null
   const kind = segs[i + 1]
-  if (kind !== 'ap' && kind !== 'apv' && kind !== 'v') return null
+  if (kind !== 'ap' && kind !== 'apv' && kind !== 'v' && kind !== 'jv') return null
   const id = Number(segs[i + 2])
   if (!Number.isInteger(id) || id <= 0) return null
   return { kind, id, sig: segs[i + 3], path: '/' + segs.slice(0, i + 4).join('/') }
@@ -102,6 +103,25 @@ export interface AppealData {
     reason: string
     statement: string
   }
+}
+
+/** JoinVerifyData 是入群验证页（jv）的数据接口返回。 */
+export interface JoinVerifyData {
+  jv_id: number
+  uid: number
+  chat_id: number
+  chat?: string
+  /** turnstile / recaptcha / hcaptcha / cap；空表示未配置。 */
+  provider: string
+  sitekey: string
+  /** Cap 专用：<endpoint>/<sitekey>/。 */
+  endpoint?: string
+  /** pending / verified / failed / expired。 */
+  status: string
+  /** 验证等待分钟数；0 = 不限时。 */
+  minutes: number
+  /** 到期时刻（unix 秒）；0 = 不限时。 */
+  expires: number
 }
 
 export interface Gate {

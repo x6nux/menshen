@@ -214,42 +214,65 @@ func relatedAccounts(sh *core.Shared, fp, ip string, selfUID int64) (strong, wea
 // turnstileVerifyURL 是包级变量：测试时替换成 httptest 地址。
 var turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
-// verifyTurnstile 向 Cloudflare 校验令牌。
+// turnstileResult 是 siteverify 的解析结果。入群验证只用 Success 与
+// Hostname；申诉页还要核对 Action 与 CData（把令牌绑到那一张申诉单上）。
+type turnstileResult struct {
+	Success    bool     `json:"success"`
+	Hostname   string   `json:"hostname"`
+	Action     string   `json:"action"`
+	CData      string   `json:"cdata"`
+	ErrorCodes []string `json:"error-codes"`
+}
+
+// turnstileSiteverify 向 Cloudflare 校验令牌，返回解析结果。
 //
-// 核对 success、hostname（等于 public_url 的主机名）、action 与 cdata，
-// 任一不符即失败。令牌 5 分钟有效、只能校验一次，重放由 Cloudflare 拒绝。
-func verifyTurnstile(sh *core.Shared, token, ip string, appealID int64) (bool, string) {
+// 令牌 5 分钟有效、只能校验一次，重放由 Cloudflare 拒绝。idem 是幂等键：
+// 同一次校验重发时 Cloudflare 会返回同一结果，避免网络重试造成「第二次
+// 校验同一个令牌」。错误只表示请求/解析失败，success=false 不是 error。
+func turnstileSiteverify(secret, token, ip, idem string) (turnstileResult, error) {
+	var out turnstileResult
 	if token == "" {
-		return false, "缺少令牌"
-	}
-	host := ""
-	if u, err := url.Parse(sh.Cfg.PublicURL); err == nil {
-		host = u.Hostname()
+		return out, fmt.Errorf("缺少令牌")
 	}
 	form := url.Values{
-		"secret":          {sh.Cfg.TurnstileSecret},
+		"secret":          {secret},
 		"response":        {token},
 		"remoteip":        {ip},
-		"idempotency_key": {fmt.Sprintf("%d-%d", appealID, time.Now().UnixNano())},
+		"idempotency_key": {idem},
 	}
 	// Transport 为 nil：读 HTTP_PROXY / HTTPS_PROXY 环境变量。
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.PostForm(turnstileVerifyURL, form)
 	if err != nil {
-		return false, "siteverify 请求失败: " + err.Error()
+		return out, fmt.Errorf("siteverify 请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
-	var out struct {
-		Success    bool     `json:"success"`
-		Hostname   string   `json:"hostname"`
-		Action     string   `json:"action"`
-		CData      string   `json:"cdata"`
-		ErrorCodes []string `json:"error-codes"`
-	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, "siteverify 响应无法解析"
+		return out, fmt.Errorf("siteverify 响应无法解析")
 	}
+	return out, nil
+}
+
+// publicHost 是 public_url 的主机名（用于核对验证码返回的 hostname）。
+func publicHost(sh *core.Shared) string {
+	if u, err := url.Parse(sh.Cfg.PublicURL); err == nil {
+		return u.Hostname()
+	}
+	return ""
+}
+
+// verifyTurnstile 校验申诉页的 Turnstile 令牌。
+//
+// 核对 success、hostname（等于 public_url 的主机名）、action 与 cdata，
+// 任一不符即失败。用的是申诉专用的 TurnstileSecret。
+func verifyTurnstile(sh *core.Shared, token, ip string, appealID int64) (bool, string) {
+	out, err := turnstileSiteverify(sh.Cfg.TurnstileSecret, token, ip,
+		fmt.Sprintf("%d-%d", appealID, time.Now().UnixNano()))
+	if err != nil {
+		return false, err.Error()
+	}
+	host := publicHost(sh)
 	switch {
 	case !out.Success:
 		return false, "success=false " + strings.Join(out.ErrorCodes, ",")
@@ -259,6 +282,24 @@ func verifyTurnstile(sh *core.Shared, token, ip string, appealID int64) (bool, s
 		return false, "action 不符: " + out.Action
 	case out.CData != fmt.Sprintf("%d", appealID):
 		return false, "cdata 不符: " + out.CData
+	}
+	return true, ""
+}
+
+// verifyTurnstileToken 校验入群验证页的 Turnstile 令牌：只核对 success 与
+// hostname。入群验证不绑定单个对象，没有 action / cdata 可比，用的是入群
+// 验证自己的 CaptchaSecret（与申诉的 TurnstileSecret 是两套配置）。
+func verifyTurnstileToken(sh *core.Shared, secret, token, ip string) (bool, string) {
+	out, err := turnstileSiteverify(secret, token, ip,
+		fmt.Sprintf("jv-%d", time.Now().UnixNano()))
+	if err != nil {
+		return false, err.Error()
+	}
+	if !out.Success {
+		return false, "success=false " + strings.Join(out.ErrorCodes, ",")
+	}
+	if host := publicHost(sh); host != "" && out.Hostname != host {
+		return false, "hostname 不符: " + out.Hostname
 	}
 	return true, ""
 }

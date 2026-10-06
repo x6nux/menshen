@@ -305,6 +305,31 @@ CREATE INDEX IF NOT EXISTS idx_wc_fp   ON web_checks(fp);
 CREATE INDEX IF NOT EXISTS idx_wc_ip   ON web_checks(ip, created_at);
 CREATE INDEX IF NOT EXISTS idx_wc_user ON web_checks(user_id);
 
+-- 入群人机验证：新人进群先被禁言，通过网页验证后解除。一行 = 一次待验证，
+-- id 是验证链接里的编号（_w/jv/<id>/<签名>），所以必须落库而不是只存内存：
+-- 链接发在群消息里，进程重启后仍要能验证。
+--
+-- 与 join_mutes 分开：那是「资料/前置号判为广告」的可申诉限制，会进申诉
+-- 列表；入群验证是自助门槛，通过即解除，不是处罚。姿势不同，混表会让申诉
+-- 页把「还没点验证」也列成一条处罚。
+CREATE TABLE IF NOT EXISTS join_verify (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot_id      INTEGER NOT NULL,
+  chat_id     INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'pending', -- pending / verified / failed / expired
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  notice_msg  INTEGER NOT NULL DEFAULT 0,         -- 群里那条验证提示，通过/超时后撤回
+  ip          TEXT    NOT NULL DEFAULT '',
+  ua          TEXT    NOT NULL DEFAULT '',
+  fp          TEXT    NOT NULL DEFAULT '',
+  flags       TEXT    NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  verified_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_jv_pending ON join_verify(chat_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_jv_time    ON join_verify(status, created_at);
+
 -- 白名单：bot_id = 0 全平台；chat_id = 0 该 bot 名下所有群；expires_at = 0 永久。
 CREATE TABLE IF NOT EXISTS ad_whitelist (
   bot_id     INTEGER NOT NULL,

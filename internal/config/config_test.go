@@ -124,6 +124,11 @@ func TestEnvFillsAll(t *testing.T) {
 	t.Setenv("MENSHEN_LISTEN_ADDR", "0.0.0.0:8081")
 	t.Setenv("MENSHEN_TG_PROXY", "http://127.0.0.1:7890")
 	t.Setenv("MENSHEN_AI_PROXY", "socks5://127.0.0.1:1080")
+	t.Setenv("MENSHEN_CAPTCHA_PROVIDER", "cap")
+	t.Setenv("MENSHEN_CAPTCHA_SITE_KEY", "site")
+	t.Setenv("MENSHEN_CAPTCHA_SECRET", "secret")
+	t.Setenv("MENSHEN_CAPTCHA_ENDPOINT", "https://cap.example.com/")
+	t.Setenv("MENSHEN_CAPTCHA_MIN_SCORE", "60")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "不存在.yaml"))
 	if err != nil {
@@ -147,6 +152,43 @@ func TestEnvFillsAll(t *testing.T) {
 	}
 	if cfg.TGProxy == nil || cfg.AIProxy == nil {
 		t.Errorf("代理没读到: tg=%v ai=%v", cfg.TGProxy, cfg.AIProxy)
+	}
+	if cfg.CaptchaProvider != "cap" || !cfg.CaptchaEnabled() {
+		t.Errorf("入群验证配置没读全: %+v", cfg)
+	}
+	if cfg.CaptchaEndpoint != "https://cap.example.com" {
+		t.Errorf("captcha_endpoint 应去掉尾部斜杠，得到 %q", cfg.CaptchaEndpoint)
+	}
+	if cfg.CaptchaMinScore != 60 {
+		t.Errorf("captcha_min_score = %d, 期望 60", cfg.CaptchaMinScore)
+	}
+}
+
+// TestCaptchaConfigValidation：提供方白名单与 cap 的端点要求。
+//
+// 拼错的提供方若被静默忽略，入群验证会「开着但不生效」，而面板上
+// 一切正常 —— 正是最难查的那类事故，所以启动时就报错。
+func TestCaptchaConfigValidation(t *testing.T) {
+	if _, err := Load(writeConfig(t, "captcha_provider: \"recaptch\"\n")); err == nil {
+		t.Error("未知的 captcha_provider 应当启动报错")
+	}
+	if _, err := Load(writeConfig(t, "captcha_min_score: \"101\"\n")); err == nil {
+		t.Error("越界的 captcha_min_score 应当启动报错")
+	}
+
+	// cap 缺 endpoint 时按未启用处理（不报错，但 CaptchaEnabled 为假）。
+	cfg, err := Load(writeConfig(t,
+		"captcha_provider: \"cap\"\ncaptcha_site_key: \"s\"\ncaptcha_secret: \"k\"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CaptchaEnabled() {
+		t.Error("cap 缺 endpoint 时不应视为已启用")
+	}
+	if _, err := Load(writeConfig(t,
+		"captcha_provider: \"CAP\"\ncaptcha_site_key: \"s\"\ncaptcha_secret: \"k\"\n"+
+			"captcha_endpoint: \"https://cap.example.com\"\n")); err != nil {
+		t.Fatalf("提供方名应大小写不敏感: %v", err)
 	}
 }
 

@@ -47,6 +47,20 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	}
 
 	snap := b.Cache.Snap()
+
+	// 入群人机验证：拦在门口的第一步（比冷判定还早——它不需要 AI，只是
+	// 要求本人证明是真人）。与冷判定**独立**：这里只禁言并发验证链接，
+	// 冷判定若也开着，随后照常对同一份资料跑一次。验证通过时不解除资料
+	// 类限制，避免成为绕过画像限制的后门（见 passJoinVerify）。
+	//
+	// 放异步段：禁言 + 发链接是两次同步 TG 调用，进群高峰（批量拉人）
+	// 时顺序等在这里会让整个 bot 停摆，与冷判定同一个理由。
+	if joinVerifyEnabled(b) && !adExempt(b, snap, conf.ChatID, u, gm.Whitelisted) {
+		if !b.AdSubmit(func() { startJoinVerify(b, conf, u) }) {
+			slog.Warn("入群验证：判定队列已满，本人放行", "chat", conf.ChatID, "uid", u.ID)
+		}
+	}
+
 	if snap.BotSettingInt(b.BotID(), "antiad_cold", 0) != 1 {
 		return
 	}

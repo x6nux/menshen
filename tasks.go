@@ -91,6 +91,7 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 		go func() {
 			defer b.MinuteBusy.Store(false)
 			antiad.SweepAlertCleanup(b, now) // 到点撤回群内告警：只有发它的 bot 删得掉
+			antiad.SweepJoinVerifies(b, now) // 入群验证超时踢出（见 joinverify.go）
 			// 私聊汇总。启动即跑的这一轮顺带把游标就位：升级后第一次只记位置，
 			// 拖到第一个整分钟的话，这一分钟里的命中会被当成「历史」跳过。
 			antiad.FlushAdSummary(b, now)

@@ -188,6 +188,16 @@ var settingDefaults = map[string]string{
 	// 自助解除的重试间隔基数（秒）。不限次数，但第 n 次要等
 	// base × 2^(n-1)，封顶 1 小时——有耐心的人也磨不动多少 AI 开销。
 	"antiad_unban_base": "60",
+
+	// ---- 入群人机验证（per-bot）----
+	// 新人进群先禁言，发一条带验证链接的群消息（网页上解 reCAPTCHA /
+	// hCaptcha / Turnstile / Cap），通过后自动解除。默认关：它要求每个
+	// 进群的人都点一次网页。提供方在 config 里配（captcha_provider 等），
+	// 没配好时即使打开也发不出验证页。
+	"antiad_joinverify": "0",
+	// 未通过验证的等待分钟数，到点踢出（允许重新进群再试）。验证页的有效
+	// 窗口与它一致。0 = 不踢，一直禁言。
+	"antiad_joinverify_minutes": "10",
 }
 
 // BotRec 是 bots 表的一行。

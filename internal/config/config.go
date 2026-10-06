@@ -62,6 +62,25 @@ type Config struct {
 	// 注意：Turnstile 后台的域名白名单必须包含 public_url 的主机名。
 	TurnstileSiteKey string
 	TurnstileSecret  string
+
+	// Captcha* 是**入群人机验证**用的验证码提供方。Provider 为空即关闭
+	// 入群验证；可用值：turnstile（Cloudflare）/ recaptcha（Google v2
+	// 勾选框）/ hcaptcha / cap（自建，https://github.com/tiagozip/cap）。
+	// reCAPTCHA v3 走无组件 execute 流程，本实现未支持。
+	//
+	// 与 TurnstileSiteKey 分开：申诉页固定用 Turnstile 且要核对 action
+	// 与 cdata，入群验证不绑定这两个字段，混用会让两边互相将就。
+	CaptchaProvider string
+	CaptchaSiteKey  string
+	CaptchaSecret   string
+	// CaptchaEndpoint 只有 cap 需要：自建实例的基址（如
+	// https://cap.example.com），校验时拼成
+	// <endpoint>/<site_key>/siteverify。其余提供方留空。
+	CaptchaEndpoint string
+	// CaptchaMinScore 是返回 score 的两家（reCAPTCHA v3 / hCaptcha
+	// Enterprise）的分数下限（0-100，0 = 不检查）；没有分数的 v2 与普通
+	// hCaptcha 忽略这一项。
+	CaptchaMinScore int
 	// TGAPIID / TGAPIHash 是「客户端应用」标识（my.telegram.org 申请），
 	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，回查历史成员的
 	// 入群时间（Bot API 没有这个字段）。不配时走内置的公开 Telegram Desktop
@@ -91,6 +110,26 @@ const (
 
 // UseWebhook 报告是否走 webhook 模式。
 func (c *Config) UseWebhook() bool { return c.PublicURL != "" }
+
+// CaptchaEnabled 报告入群验证的提供方是否配置齐全。
+//
+// cap 还需要 endpoint（自建实例地址）；其余三家只有 site key + secret 就够。
+// 缺项时按关闭处理而不是启动报错：入群验证是可选功能，配置写漏一项不该
+// 让整个 bot 起不来 —— 但这意味着用户不会看到验证页，所以面板/日志要显眼。
+func (c *Config) CaptchaEnabled() bool {
+	if c.CaptchaProvider == "" || c.CaptchaSiteKey == "" || c.CaptchaSecret == "" {
+		return false
+	}
+	if c.CaptchaProvider == "cap" && c.CaptchaEndpoint == "" {
+		return false
+	}
+	return true
+}
+
+// captchaProviders 是入群验证支持的提供方白名单。
+var captchaProviders = map[string]bool{
+	"turnstile": true, "recaptcha": true, "hcaptcha": true, "cap": true,
+}
 
 // WebhookURLFor 拼出某个 token 的完整回调地址：<public_url>/<token>/webhook。
 func (c *Config) WebhookURLFor(token string) string {
@@ -211,6 +250,11 @@ var envKeys = []struct{ env, key string }{
 	{"MENSHEN_LISTEN_ADDR", "listen_addr"},
 	{"MENSHEN_TURNSTILE_SITE_KEY", "turnstile_site_key"},
 	{"MENSHEN_TURNSTILE_SECRET", "turnstile_secret"},
+	{"MENSHEN_CAPTCHA_PROVIDER", "captcha_provider"},
+	{"MENSHEN_CAPTCHA_SITE_KEY", "captcha_site_key"},
+	{"MENSHEN_CAPTCHA_SECRET", "captcha_secret"},
+	{"MENSHEN_CAPTCHA_ENDPOINT", "captcha_endpoint"},
+	{"MENSHEN_CAPTCHA_MIN_SCORE", "captcha_min_score"},
 	{"MENSHEN_CLIENT_IP_HEADER", "client_ip_header"},
 	{"MENSHEN_TG_API_ID", "tg_api_id"},
 	{"MENSHEN_TG_API_HASH", "tg_api_hash"},
@@ -273,6 +317,30 @@ func assign(c *Config, key, val string) error {
 		c.TurnstileSiteKey = strings.TrimSpace(val)
 	case "turnstile_secret":
 		c.TurnstileSecret = strings.TrimSpace(val)
+	case "captcha_provider":
+		p := strings.ToLower(strings.TrimSpace(val))
+		if p != "" && !captchaProviders[p] {
+			return fmt.Errorf("captcha_provider 不支持 %q（可用 turnstile / recaptcha / hcaptcha / cap）", val)
+		}
+		c.CaptchaProvider = p
+	case "captcha_site_key":
+		c.CaptchaSiteKey = strings.TrimSpace(val)
+	case "captcha_secret":
+		c.CaptchaSecret = strings.TrimSpace(val)
+	case "captcha_endpoint":
+		// 去掉尾部斜杠：拼接侧只补一个。
+		c.CaptchaEndpoint = strings.TrimRight(strings.TrimSpace(val), "/")
+	case "captcha_min_score":
+		if val == "" {
+			c.CaptchaMinScore = 0
+			break
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(val))
+		if err != nil || n < 0 || n > 100 {
+			return fmt.Errorf("captcha_min_score 应为 0-100 的整数，得到 %q", val)
+		}
+		c.CaptchaMinScore = n
+
 	case "client_ip_header":
 		c.ClientIPHeader = strings.TrimSpace(val)
 	case "tg_api_id":

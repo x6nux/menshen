@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { server, startTestServer } from '../test/server'
-import type { AppealData, AppealDossierView, LogRecordView } from './api'
+import type { AppealData, AppealDossierView, JoinVerifyData, LogRecordView } from './api'
 import { PublicApp } from './PublicApp'
 
 startTestServer()
@@ -259,6 +259,51 @@ describe('PublicApp', () => {
     at('/other/path')
     render(<PublicApp />)
     expect(await screen.findByText('链接无效或已被替换。')).toBeInTheDocument()
+  })
+})
+
+const joinVerify: JoinVerifyData = {
+  jv_id: 3,
+  uid: 555,
+  chat_id: -100,
+  chat: '测试群',
+  provider: 'turnstile',
+  sitekey: 'site-key',
+  status: 'pending',
+  minutes: 10,
+  expires: 1893456000,
+}
+
+describe('PublicApp · 入群验证页', () => {
+  it('展示验证说明与组件容器', async () => {
+    at('/_w/jv/3/sig')
+    server.use(http.get('*/_w/jv/3/sig', () => HttpResponse.json(joinVerify)))
+    render(<PublicApp />)
+
+    expect(await screen.findByText('加入「测试群」')).toBeInTheDocument()
+    expect(screen.getByText(/10 分钟内完成/)).toBeInTheDocument()
+    expect(screen.getByText(/Cloudflare Turnstile/)).toBeInTheDocument()
+    expect(screen.getByTestId('captcha')).toBeInTheDocument()
+  })
+
+  it('已完成的验证单显示失效文案', async () => {
+    at('/_w/jv/3/sig')
+    server.use(
+      http.get('*/_w/jv/3/sig', () => HttpResponse.json({ ...joinVerify, status: 'verified' })),
+    )
+    render(<PublicApp />)
+    expect(await screen.findByText(/已经完成或已失效/)).toBeInTheDocument()
+  })
+
+  it('未配置提供方时提示联系管理员', async () => {
+    at('/_w/jv/3/sig')
+    server.use(
+      http.get('*/_w/jv/3/sig', () =>
+        HttpResponse.json({ ...joinVerify, provider: '', sitekey: '' }),
+      ),
+    )
+    render(<PublicApp />)
+    expect(await screen.findByText(/未配置人机验证/)).toBeInTheDocument()
   })
 })
 

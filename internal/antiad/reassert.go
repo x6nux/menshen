@@ -74,6 +74,11 @@ func activeMute(b *core.Bot, chatID, uid int64) (time.Duration, string, bool) {
 		return 0, joinMuteKindLabel(rec.Kind) + "：" +
 			core.TruncateRunes(rec.Reason, 80), true
 	}
+	// 入群人机验证：验证未完成期间的禁言同样会被别的权限覆盖抹掉（验证
+	// 机器人「验证通过即全开权限」正是最常见的成因），按未解除处理。
+	if _, ok := pendingJoinVerify(b.Store, chatID, uid); ok {
+		return 0, "入群人机验证", true
+	}
 	// 消息级禁言：看还没标记解除的流水，按原时长算剩余。
 	minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
 	var at int64

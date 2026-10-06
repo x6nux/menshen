@@ -10,6 +10,7 @@ import { parseRoute } from './api'
 import { InvalidState } from './InvalidState'
 import { AppealVerifyPage } from './pages/AppealVerifyPage'
 import { AppealViewPage } from './pages/AppealViewPage'
+import { JoinVerifyPage } from './pages/JoinVerifyPage'
 import { LogViewPage } from './pages/LogViewPage'
 
 export function PublicApp() {
@@ -45,6 +46,10 @@ export function PublicApp() {
         ) : route.kind === 'ap' ? (
           <ErrorBoundary>
             <AppealVerifyPage route={route} />
+          </ErrorBoundary>
+        ) : route.kind === 'jv' ? (
+          <ErrorBoundary>
+            <JoinVerifyPage route={route} />
           </ErrorBoundary>
         ) : route.kind === 'v' ? (
           <ErrorBoundary>

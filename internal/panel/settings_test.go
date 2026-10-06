@@ -104,7 +104,7 @@ func TestSpecsInSectionsOrder(t *testing.T) {
 			t.Errorf("%s 出现了 %d 次", k, n)
 		}
 	}
-	want := []string{"处置与分档", "判定与模型", "进群冷判定", "通知与展示", "护栏与成本", "学习与名单"}
+	want := []string{"处置与分档", "判定与模型", "进群与验证", "通知与展示", "护栏与成本", "学习与名单"}
 	if !slices.Equal(names, want) {
 		t.Errorf("分组顺序 = %v，期望 %v", names, want)
 	}
