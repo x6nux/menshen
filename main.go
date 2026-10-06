@@ -264,7 +264,7 @@ func startWebhook(cfg *config.Config, reg *core.Registry, sh *core.Shared) *http
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh), public: panel.PublicShellHandler(sh), admin: panel.WebAdminHandler(sh), cap: antiad.CapHandler(sh)},
+		Handler: webRouter{reg: reg, web: antiad.WebHandler(sh), mini: panel.MiniAppHandler(sh), public: panel.PublicShellHandler(sh), admin: panel.AdminPanelHandler(sh), cap: antiad.CapHandler(sh)},
 		// 回调是小 JSON，握手后迟迟不发数据的连接没有留着的理由。
 		// 只设 ReadHeaderTimeout 挡不住慢速发 body 的连接：它会一直占着
 		// goroutine 与内存（暴露到回环之外时就是廉价的 slowloris）。

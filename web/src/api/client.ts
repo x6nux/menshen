@@ -1,5 +1,8 @@
-// /miniapp/api/* 的 fetch 封装：注入 Telegram 鉴权头、解包 {error}、
-// 按 HTTP 状态抛 ApiError（网络失败 status=0），错误交给 UI 层分流。
+// API 的 fetch 封装：注入鉴权头、解包 {error}、按 HTTP 状态抛 ApiError
+// （网络失败 status=0），错误交给 UI 层分流。
+//
+// 两个界面各走各的命名空间：Mini App 在 /miniapp/api/*（initData 鉴权），
+// 桌面端管理面板在 /admin/api/*（会话 cookie + X-Web 头）。前缀由当前地址决定。
 import type { TelegramBridge } from '../telegram'
 
 export class ApiError extends Error {
@@ -32,14 +35,20 @@ export function setApiBridge(bridge: TelegramBridge | null): void {
   setApiAuth({
     initData: bridge?.initData ?? '',
     botId: bridge?.botId ?? '0',
-    web: bridge?.web === true,
+    web: false,
   })
+}
+
+/** apiBase 返回 API 挂载前缀：管理面板在 /admin，Mini App 在 /miniapp。 */
+function apiBase(): string {
+  if (typeof location !== 'undefined' && location.pathname.startsWith('/admin')) return '/admin'
+  return '/miniapp'
 }
 
 /** apiURL 拼出请求地址：浏览器相对地址即可；vitest（Node fetch）不接受
  * 相对 URL，这里按当前 origin 换算成绝对地址，语义等价。 */
 function apiURL(op: string): string {
-  const path = `/miniapp/api/${encodeURIComponent(op)}`
+  const path = `${apiBase()}/api/${encodeURIComponent(op)}`
   const origin = typeof location !== 'undefined' ? location.origin : ''
   if (!origin || origin === 'null') return path
   return origin + path

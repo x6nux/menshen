@@ -17,37 +17,50 @@ go vet ./...
 
 这三项在 CI 上是打包前的门槛（`.github/workflows/docker.yml`）。
 
-## 前端（Mini App，web/）
+## 前端（web/：Mini App + 桌面端管理面板）
 
-Mini App 是独立的 React + MUI 工程（`web/`，源码在 `web/src/`），构建产物由 Go
-在 `/miniapp` 托管。需要 Node ≥ 22.12（Vite 8 的下限）：
+`web/` 是一个 React + MUI 工程，产出两个互相独立的界面，由 Go 分别托管：
+**Telegram Mini App**（`/miniapp`，`vite.config.ts`）与**桌面端管理面板**
+（`/admin`，`vite.admin.config.ts`）。两者只共用数据层（`web/src/api`、`web/src/lib`）
+与通用组件（`web/src/ui`）；页面与外壳各写一份。需要 Node ≥ 22.12（Vite 8 的下限）：
 
 ```bash
 npm --prefix web install          # 安装依赖
-npm --prefix web run dev          # 开发服务器；/miniapp/api 代理到 127.0.0.1:8081
+npm --prefix web run dev          # Mini App 开发服务器；/miniapp/api 代理到 127.0.0.1:8081
 VITE_MOCK=1 npm --prefix web run dev   # 不连后端：MSW 在浏览器里 mock /miniapp/api
+npm --prefix web run dev:admin    # 管理面板开发服务器（http://localhost:5173/admin/）
 npm --prefix web run typecheck    # tsc -b
 npm --prefix web run test         # vitest run
 npm --prefix web run lint         # oxlint
-npm --prefix web run build        # tsc -b && vite build，产物输出到 internal/panel/webdist/
+npm --prefix web run build        # tsc -b && 两次 vite build，产物都输出到 internal/panel/webdist/
 ```
 
 （`VITE_MOCK=1` 只 mock 接口；页面仍要能读到 `window.Telegram.WebApp` 才过得了
-打开检查，通常直接在 Telegram 客户端里开，或在 DevTools 里注入一个假 SDK。）
+打开检查，通常直接在 Telegram 客户端里开，或在 DevTools 里注入一个假 SDK。
+管理面板不吃 SDK，`dev:admin` 直接开 `/admin/`，会话过期时页面给重新获取
+登录链接的指引。）
 
+- **两个入口、两次构建**：`npm run build` 先用 `vite.config.ts`（base `/miniapp/`）
+  构建 `index.html`（Mini App）与 `public.html`（公开页），再用 `vite.admin.config.ts`
+  （base `/admin/`）构建 `admin.html`（管理面板）。两次产物都落在
+  `internal/panel/webdist/`，所以后者 `emptyOutDir: false` —— 顺序不能反，否则
+  第二次构建会把第一次的 `index.html` 清掉。发现目录共用一个 `assets/`，
+  但引用前缀不同（`/miniapp/assets/*` vs `/admin/assets/*`），互不影响。
 - **Telegram SDK 自托管**：`web/public/telegram-web-app.js`（2026-10-02 取自
   telegram.org 的官方脚本，sha256 `3549138a7934039fe7dfd1291a4ee739bd2b705a614308053a8b08a87d85c451`）
   随产物发布到 `/miniapp/telegram-web-app.js`，`index.html` 用根绝对路径
   `/telegram-web-app.js` 引用（public 资源交给 Vite 按 base 重写）。不要改回 CDN
   外链——外链一旦拿不到，Mini App 就停在引导页。升级 SDK：替换该文件、更新此处的
-  sha256，并重跑前端测试与 Go 托管测试。
+  sha256，并重跑前端测试与 Go 托管测试。管理面板不加载它。
 - **构建产物不入库、默认嵌入**（`internal/panel/webdist/` 只提交一个 `.gitkeep` 占位；
   其余内容 gitignore）。Go 侧 `go:embed all:webdist` **默认编译**，不需要任何 build tag：
   - 跑过 `npm --prefix web run build` 后，`go build` / `go test` 直接嵌入真实前端；
   - 没跑过（全新克隆）时目录里只有占位文件，编译与测试照常工作，`/miniapp`
-    运行时返回「前端未构建」提示（503），提示页会告诉你怎么构建。
-- 托管路由：`/miniapp/assets/*` 长期强缓存；产物根下的文件（自托管 SDK 等）短缓存
-  `max-age=3600`；其余未匹配路径回退入口页，`/miniapp/api` 绝不回退。
+    与管理面板 `/admin` 分别返回各自的「前端未构建」提示（503）。
+- 托管路由（`internal/panel/miniapp.go` 与 `admin_panel.go`）：`/miniapp/assets/*`
+  与 `/admin/assets/*` 长期强缓存；产物根下的文件（自托管 SDK 等）短缓存
+  `max-age=3600`；其余未匹配路径回退各自入口页，`/miniapp/api` 与 `/admin/api`
+  绝不回退。
 - 本地要看真实页面：先 `npm --prefix web run build`，再 `go build`（无需 tag）。
 - `docker build` 会自动构建前端并嵌入（Dockerfile 的 web 阶段），部署无需手工构建前端。
 - CI 顺序：先 `npm ci / lint / test / typecheck / build`，再 `go vet`、`go test ./...`

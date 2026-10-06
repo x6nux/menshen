@@ -1,7 +1,7 @@
 // App 外壳测试：三条主路径（不可用引导 / 就绪外壳 / 错误分流）+ 主题实时性。
 // telegram 与 api/client 只替换必要的导出（api 换成 spy，ApiError/setApiBridge 保真）。
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { ApiError, api } from './api/client'
 import { mockAppealDetail, mockAppeals, mockLogDetail, mockLogs, mockState, mockUser } from './mocks/fixtures'
@@ -296,64 +296,5 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: '白名单' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '资料放行' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '次级管理员' })).not.toBeInTheDocument()
-  })
-})
-
-describe('App · 网页版', () => {
-  const realMatchMedia = window.matchMedia
-
-  beforeEach(() => {
-    // jsdom 没有 matchMedia：桌面判定用 stub 固定为宽屏；路径切到 /admin。
-    window.matchMedia = ((query: string) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    })) as unknown as typeof window.matchMedia
-    window.history.pushState({}, '', '/admin/?bot=42')
-  })
-
-  afterEach(() => {
-    window.history.pushState({}, '', '/')
-    window.matchMedia = realMatchMedia
-  })
-
-  it('已登录（state 正常）：桌面外壳列出管理入口', async () => {
-    mockApiByOp()
-    render(<App />)
-
-    // 侧栏：管理分区与直达入口
-    expect(await screen.findByText('AI 必封规则')).toBeInTheDocument()
-    expect(screen.getByText('上游渠道')).toBeInTheDocument()
-    expect(screen.getByText('全局设置')).toBeInTheDocument()
-    expect(screen.getByText('退出登录')).toBeInTheDocument()
-    // 内容区渲染概览
-    expect(await screen.findByText('近 24 小时')).toBeInTheDocument()
-  })
-
-  it('会话过期（state 401）：显示获取登录链接的指引', async () => {
-    mockApi.mockImplementation((async (op: string) => {
-      if (op === 'state') throw new ApiError(401, '网页版登录已过期')
-      return { ok: true }
-    }) as never)
-    render(<App />)
-
-    expect(await screen.findByText('需要登录')).toBeInTheDocument()
-    expect(screen.getByText(/🖥 网页版（浏览器打开）/)).toBeInTheDocument()
-  })
-
-  it('侧栏点击管理入口：push 对应页面并可返回', async () => {
-    mockApiByOp()
-    render(<App />)
-
-    fireEvent.click(await screen.findByText('全局设置'))
-    expect(await screen.findByText('总开关')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '← 返回' }))
-    // 管理入口挂在「我的」Tab 下，返回后回到该 Tab（侧栏也有同名入口）。
-    expect((await screen.findAllByText('名单管理')).length).toBeGreaterThan(0)
   })
 })

@@ -54,9 +54,9 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {
-      // 两个入口：index 是 Telegram Mini App / 网页版管理面板；
-      // public 是申诉验证、原文查看、申诉详情等公开网页（_w 路由），
-      // 单独分包避免公开页加载整个管理端。
+      // 两个入口：index 是 Telegram Mini App；public 是申诉验证、原文查看、
+      // 申诉详情等公开网页（_w 路由），单独分包避免公开页加载整个管理端。
+      // 桌面端管理面板是独立构建（vite.admin.config.ts，base /admin/），不在这里。
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         public: resolve(import.meta.dirname, 'public.html'),

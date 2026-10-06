@@ -1,26 +1,26 @@
-// App 外壳：Telegram Mini App 与网页版管理面板共用入口。
+// App 外壳：Telegram Mini App（只在 Telegram 内使用）。
+//
+// 浏览器的桌面端管理面板是独立入口与独立应用（web/src/admin，挂在 /admin），
+// 不走这里，也不加载 Telegram SDK。
 //
 //   1) 初始化中：整页骨架；
-//   2) 网页版（/admin）：跳过 Telegram SDK，走会话 cookie 鉴权；
-//      宽屏渲染桌面外壳（DesktopShell），窄屏退回移动端外壳；
-//   3) Telegram 里：initData 鉴权；SDK 不可用时渲染引导页。
+//   2) SDK 不可用（不在 Telegram / 拉不到 SDK）：渲染引导页；
+//   3) Telegram 里：initData 鉴权，就绪后挂载数据查询。
 //
-// 契约：鉴权信息就绪前不得发请求（api 鉴权头为空会 401）——两个分支都
-// 在注入桥之后才挂载数据查询。
-import { Box, CssBaseline, Skeleton, Typography, useMediaQuery } from '@mui/material'
+// 契约：鉴权信息就绪前不得发请求（api 鉴权头为空会 401）——桥注入之后才挂载。
+import { Box, CssBaseline, Skeleton, Typography } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ApiError, setApiBridge } from './api/client'
 import { useMiniState } from './api/hooks'
-import { DesktopShell, isWebMode } from './DesktopShell'
 import { meLabel } from './lib/format'
 import { NavProvider, PageScope, useNav } from './nav'
 import { routeSlug } from './route'
 import { detailTitle, renderStackPage, renderTabPage, TAB_NAMES } from './shellPages'
 import { buildMiniTheme } from './theme'
-import { botIdFromURL, initTelegram, webBridge } from './telegram'
+import { initTelegram } from './telegram'
 import type { TelegramBridge, TelegramTheme } from './telegram'
 import { ActionSheetProvider, ErrorBoundary, ErrorState, Skeletons, TabBar, ToastProvider, TopBar } from './ui'
 
@@ -34,16 +34,6 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
-    if (isWebMode()) {
-      // 网页版：不加载 Telegram SDK。会话是否有效由首个 state 请求裁决，
-      // 401 交给桌面外壳渲染「获取登录链接」的指引。
-      const bridge = webBridge(botIdFromURL())
-      setApiBridge(bridge)
-      setBoot({ phase: 'ready', bridge })
-      return () => {
-        alive = false
-      }
-    }
     void initTelegram()
       .then((bridge) => {
         if (!alive) return
@@ -104,7 +94,7 @@ function ReadyApp({ bridge }: { bridge: TelegramBridge }) {
           <ActionSheetProvider>
             <ToastProvider>
               <ErrorBoundary>
-                <ShellChoice web={bridge.web === true} />
+                <Shell />
               </ErrorBoundary>
             </ToastProvider>
           </ActionSheetProvider>
@@ -112,13 +102,6 @@ function ReadyApp({ bridge }: { bridge: TelegramBridge }) {
       </QueryClientProvider>
     </ThemeProvider>
   )
-}
-
-/** ShellChoice 在网页版宽屏用桌面外壳，其余（Telegram 内、窄屏浏览器）用移动端外壳。 */
-function ShellChoice({ web }: { web: boolean }) {
-  const wide = useMediaQuery('(min-width: 900px)')
-  if (web && wide) return <DesktopShell />
-  return <Shell />
 }
 
 function Shell() {

@@ -57,15 +57,13 @@ describe('route', () => {
     })
   })
 
-  it('网页版前缀 /admin：pathOf 跟随当前地址，parseRoute 认 /admin 路径', () => {
+  it('Mini App 只认 /miniapp 前缀：路径恒定，/admin 不归它管', () => {
+    // 桌面端面板有独立路由（src/admin/route.ts）。Mini App 的 pathOf 不随
+    // 当前地址变化；误把 /admin 路径喂进来按未知路径回退到概览。
     window.history.replaceState(null, '', '/admin/')
-    expect(pathOf('bots', [{ k: 'bot', id: 1 }])).toBe('/admin/bots/1')
-    expect(pathOf('overview', [])).toBe('/admin/')
-    expect(parseRoute('/admin/bots/1')).toEqual({
-      tab: 'bots',
-      stack: [{ k: 'bot', id: 1 }],
-    })
-    expect(parseRoute('/admin/records')).toEqual({ tab: 'records', stack: [] })
+    expect(pathOf('bots', [{ k: 'bot', id: 1 }])).toBe('/miniapp/bots/1')
+    expect(pathOf('overview', [])).toBe('/miniapp/')
+    expect(parseRoute('/admin/bots/1')).toEqual({ tab: 'overview', stack: [] })
   })
 
   it('未知路径回退到概览', () => {

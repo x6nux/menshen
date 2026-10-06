@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>门神管理面板</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 桌面端管理面板的独立入口：不加载 Telegram SDK，鉴权走会话 cookie。
+         产物由 Go 在 /admin 下托管（internal/panel/admin_panel.go）。 -->
+    <script type="module" src="/src/admin/main.tsx"></script>
+  </body>
+</html>

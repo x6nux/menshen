@@ -31,6 +31,9 @@ import (
 // 鉴权用 Telegram WebApp 的 initData：HMAC-SHA256 校验通过、且 24 小时内，
 // 再看此人是不是服务管理员。读写走与面板同一套规则（主管理员全通，
 // 次级管理员只碰自己名下的 bot），上游 / 模型 / 全局设置 / 名单只有主管理员能动。
+//
+// Mini App 只服务 Telegram。浏览器的网页版管理面板走 /admin（见 admin_panel.go），
+// 用会话 cookie 鉴权，不再复用这里的入口与鉴权路径。
 
 const miniInitDataHeader = "X-Tg-Init-Data"
 const miniBotIDHeader = "X-Bot-Id"
@@ -240,24 +243,13 @@ func validateMiniInitData(token, initData string) (int64, string, error) {
 	return u.ID, u.Username, nil
 }
 
-// miniAuth 校验请求并返回操作者（uid + username）与目标 bot；失败时已写好响应。
+// miniAuth 校验 Telegram initData 并返回操作者（uid + username）与目标 bot；
+// 失败时已写好响应。浏览器面板不走这里——见 admin_panel.go 的 adminAuth。
 func miniAuth(sh *core.Shared, w http.ResponseWriter, r *http.Request) (uid int64, username string, botID int64, ok bool) {
 	botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
 	rec := sh.Cache.Snap().Bots[botID]
 	if rec == nil {
 		miniErr(w, http.StatusBadRequest, "未知的 bot")
-		return 0, "", 0, false
-	}
-	// 网页版会话：浏览器没有 initData，带 X-Web: 1 与 HttpOnly cookie。
-	// 未带该头时仍走下面的 initData 校验（Telegram 内的正常路径）。
-	if r.Header.Get(webAuthHeader) == "1" {
-		if c, err := r.Cookie(webSessionCookie); err == nil {
-			if uid, ok := antiad.VerifyAdminSession(sh, c.Value); ok {
-				return uid, "", botID, true
-			}
-		}
-		miniErr(w, http.StatusUnauthorized,
-			"网页版登录已过期，请在 Telegram 私聊里重新获取登录链接")
 		return 0, "", 0, false
 	}
 	uid, username, err := validateMiniInitData(rec.Token, r.Header.Get(miniInitDataHeader))
@@ -300,12 +292,18 @@ func specMeta(sp settingSpec) map[string]any {
 	}
 }
 
-// miniAPI 是 /miniapp/api/* 的总分发。
+// miniAPI 是 /miniapp/api/* 的总分发：先按 initData 鉴权，再交给共用的 op 分发。
 func miniAPI(sh *core.Shared, w http.ResponseWriter, r *http.Request, op string) {
 	uid, username, _, ok := miniAuth(sh, w, r)
 	if !ok {
 		return
 	}
+	miniDispatch(sh, w, r, uid, username, op)
+}
+
+// miniDispatch 解析请求体并按 op 调用对应的操作函数；鉴权由调用方各自完成
+// （Mini App 走 initData，网页版面板走会话 cookie），操作实现只此一份。
+func miniDispatch(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64, username, op string) {
 	var body map[string]any
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body); err != nil {

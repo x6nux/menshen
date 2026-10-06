@@ -1,7 +1,7 @@
 // 路由编码：导航位置（一级 tab + 二级页栈）与 URL 路径互转。
 //
-// 应用挂在 /miniapp（Telegram Mini App、开发服务器）或 /admin（网页版）下，
-// 路径一律相对该前缀：
+// 这是 Mini App 的路由，应用挂载在 /miniapp 下，路径一律相对该前缀。
+// 桌面端管理面板有自己的路由（src/admin/route.ts，挂在 /admin）。
 //
 //   /            概览            /bots           机器人
 //   /bots/12     机器人详情      /chats/3/456    群组详情
@@ -21,10 +21,9 @@ const TAB_SLUG: Record<TabKey, string> = {
   mine: 'mine',
 }
 
-/** appBase 返回应用挂载前缀。网页版是 /admin，其余（Mini App、开发服务器）是 /miniapp。 */
-export function appBase(pathname?: string): string {
-  const p = pathname ?? (typeof location !== 'undefined' ? location.pathname : '/miniapp')
-  return p.startsWith('/admin') ? '/admin' : '/miniapp'
+/** appBase 返回 Mini App 的挂载前缀（开发服务器与线上都是 /miniapp）。 */
+export function appBase(): string {
+  return '/miniapp'
 }
 
 /** toInt 解析整数路径段；负数（chat_id）也算，非整数返回 null。 */
@@ -93,7 +92,7 @@ export interface Route {
  * （如 /logs/9 的 tab 是「记录」），这样刷新后返回上一级落在合理的列表页。
  */
 export function parseRoute(pathname: string): Route {
-  const base = appBase(pathname)
+  const base = appBase()
   let rest = pathname.startsWith(base) ? pathname.slice(base.length) : pathname
   rest = rest.replace(/^\/+/, '').replace(/\/+$/, '')
   if (rest === '') return { tab: 'overview', stack: [] }

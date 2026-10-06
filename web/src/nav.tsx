@@ -143,8 +143,9 @@ export function usePageParam<T extends string = string>(
   return [value, setValue]
 }
 
-// urlBot 读网页版登录链接带进来的目标 bot（/admin/?bot=123）。它不属于导航状态，
-// 但一旦丢失刷新就会退回主 bot；我们写 URL 时始终带上，因此从当前地址现读即可。
+// urlBot 读链接带进来的目标 bot（?bot=123，Mini App 的菜单按钮会带上它）。
+// 它不属于导航状态，但一旦丢失刷新就会退回主 bot；我们写 URL 时始终带上，
+// 因此从当前地址现读即可。
 function urlBot(): string | null {
   if (typeof location === 'undefined') return null
   return new URLSearchParams(location.search).get('bot')
