@@ -3,15 +3,14 @@ import { Box } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { filterRows } from '../lib/filters'
-import { useNav } from '../nav'
+import { useNav, usePageParam } from '../nav'
 import { Badge, EmptyState, ErrorState, ListRow, SearchField, SectionCard, Skeletons } from '../ui'
 import { BotStatusBadge } from './shared'
-import { useState } from 'react'
 
 export function BotsPage() {
   const nav = useNav()
   const state = useMiniState(true)
-  const [q, setQ] = useState('')
+  const [q, setQ] = usePageParam('q')
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {

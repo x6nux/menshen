@@ -19,6 +19,8 @@ import { useMiniState } from './api/hooks'
 import { meLabel } from './lib/format'
 import { useNav } from './nav'
 import type { Page, TabKey } from './nav'
+import { PageScope } from './nav'
+import { routeSlug } from './route'
 import { detailTitle, renderStackPage, renderTabPage, TAB_NAMES } from './shellPages'
 import { ErrorState, Skeletons } from './ui'
 
@@ -180,7 +182,15 @@ export function DesktopShell() {
           <Typography sx={{ fontSize: 18, fontWeight: 700 }}>{title}</Typography>
         </Box>
         <Box sx={{ px: 4, py: 3, maxWidth: 1280, mx: 'auto' }}>
-          {top ? renderStackPage(top) : renderTabPage(nav.tab)}
+          {top ? (
+            <PageScope key={routeSlug(nav.tab, nav.stack)} scope={routeSlug(nav.tab, nav.stack)} active>
+              {renderStackPage(top)}
+            </PageScope>
+          ) : (
+            <PageScope key={routeSlug(nav.tab, [])} scope={routeSlug(nav.tab, [])} active>
+              {renderTabPage(nav.tab)}
+            </PageScope>
+          )}
         </Box>
       </Box>
     </Box>

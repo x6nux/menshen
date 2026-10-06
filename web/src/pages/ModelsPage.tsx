@@ -9,7 +9,7 @@ import { useMiniState } from '../api/hooks'
 import { useModelMutation, useOptimisticMiniMutation } from '../api/mutations'
 import type { Model, State } from '../api/types'
 import { filterRows } from '../lib/filters'
-import { useNav } from '../nav'
+import { useNav, usePageParam } from '../nav'
 import {
   Badge,
   EmptyState,
@@ -40,7 +40,7 @@ export function ModelsPage() {
   const state = useMiniState(true)
   const addMut = useModelMutation()
 
-  const [q, setQ] = useState('')
+  const [q, setQ] = usePageParam('q')
   const [addOpen, setAddOpen] = useState(false)
   const [upstream, setUpstream] = useState('')
   const [modelID, setModelID] = useState('')

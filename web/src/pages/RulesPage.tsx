@@ -28,7 +28,7 @@ import type {
   RuleTest,
 } from '../api/types'
 import { actionLabel, displayTz, fmtTS, verdictLabel } from '../lib/format'
-import { useNav } from '../nav'
+import { useNav, usePageParam } from '../nav'
 import {
   Badge,
   EmptyState,
@@ -360,9 +360,17 @@ export function RulesPage() {
   // testResult 绑定提交时的 pattern：请求在途时改了输入，迟到的响应不能当
   // 当前输入的结果展示（否则会用旧统计误导「用此正则新建规则」）。
   const [testResult, setTestResult] = useState<{ test: RuleTest; pattern: string } | null>(null)
-  const [filter, setFilter] = useState<RuleFilter>('all')
-  const [sort, setSort] = useState<RuleSort>('default')
-  const [search, setSearch] = useState('')
+  const [filter, setFilter] = usePageParam<RuleFilter>(
+    'filter',
+    'all',
+    RULE_FILTERS.map((f) => f.key),
+  )
+  const [sort, setSort] = usePageParam<RuleSort>(
+    'sort',
+    'default',
+    RULE_SORTS.map((s) => s.key),
+  )
+  const [search, setSearch] = usePageParam('q')
 
   if (state.isPending) return <Skeletons rows={3} />
   if (state.isError) {

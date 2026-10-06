@@ -19,6 +19,7 @@ import {
 import type { AdminRow, Bot, Chat, GbanRow, ProfileOKRow, State, WhiteRow } from '../api/types'
 import { filterRows, gbanKey, profileOKKey, whiteKey } from '../lib/filters'
 import { displayTz, fmtTS, meLabel, whiteSourceLabel } from '../lib/format'
+import { usePageParam } from '../nav'
 import {
   Badge,
   ErrorState,
@@ -75,14 +76,18 @@ export function ListsPage({ section }: { section?: string }) {
   const ownListMut = useGbanOwnMutation()
   const adminMut = useAdminMutation()
 
-  // 分段：主管理员按 section 进入，缺省白名单；次级管理员永远只在联封。
-  const [seg, setSeg] = useState<MainSection>(() => (isMainSection(section) ? section : 'white'))
-  const [gbanSub, setGbanSub] = useState<'global' | 'own'>('global')
+  // 分段与各段搜索词都进 URL：刷新/深链后回到同一分段与筛选。
+  const [seg, setSeg] = usePageParam<MainSection>(
+    'seg',
+    isMainSection(section) ? section : 'white',
+    MAIN_SECTIONS,
+  )
+  const [gbanSub, setGbanSub] = usePageParam<'global' | 'own'>('sub', 'global', ['global', 'own'])
 
-  const [whiteQ, setWhiteQ] = useState('')
-  const [profileQ, setProfileQ] = useState('')
-  const [gbanQ, setGbanQ] = useState('')
-  const [ownQ, setOwnQ] = useState('')
+  const [whiteQ, setWhiteQ] = usePageParam('wq')
+  const [profileQ, setProfileQ] = usePageParam('pq')
+  const [gbanQ, setGbanQ] = usePageParam('gq')
+  const [ownQ, setOwnQ] = usePageParam('oq')
 
   // 白名单添加
   const [whiteOpen, setWhiteOpen] = useState(false)

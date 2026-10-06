@@ -9,7 +9,7 @@ import { useInfiniteAppeals, useInfiniteLogs, useMiniState } from '../api/hooks'
 import type { AppealRow, LogRow } from '../api/types'
 import { actionLabel, displayTz, fmtTS } from '../lib/format'
 import { appealStatusInfo, appealSummary, verdictInfo } from '../lib/status'
-import { useNav } from '../nav'
+import { useNav, usePageParam } from '../nav'
 import {
   Badge,
   EmptyState,
@@ -39,17 +39,23 @@ const APPEAL_FILTERS: { value: string; label: string }[] = [
 const MONO = 'ui-monospace, Menlo, monospace'
 const SEARCH_DEBOUNCE_MS = 300
 
+/** 分段与筛选进 URL 时的合法取值；地址栏被手改成别的值时退回默认。 */
+const SECTION_VALUES: readonly string[] = ['logs', 'appeals']
+const LOG_FILTER_VALUES: readonly string[] = LOG_FILTERS.map((f) => f.value)
+const APPEAL_FILTER_VALUES: readonly string[] = APPEAL_FILTERS.map((f) => f.value)
+
 export function RecordsPage() {
   const nav = useNav()
   const { intent, clearIntent } = nav
   const state = useMiniState(true)
 
-  const [section, setSection] = useState<Section>(() => (intent === 'appeals' ? 'appeals' : 'logs'))
+  const [section, setSection] = usePageParam<Section>('seg', 'logs', SECTION_VALUES)
   const [handledIntent, setHandledIntent] = useState<string | null>(null)
-  const [logFilter, setLogFilter] = useState('deleted')
-  const [appealFilter, setAppealFilter] = useState('open')
-  const [q, setQ] = useState('')
-  const [serverQ, setServerQ] = useState('')
+  const [logFilter, setLogFilter] = usePageParam('lf', 'deleted', LOG_FILTER_VALUES)
+  const [appealFilter, setAppealFilter] = usePageParam('af', 'open', APPEAL_FILTER_VALUES)
+  const [q, setQ] = usePageParam('q')
+  // 搜索词防抖后再发请求；初值取已还原的 q，刷新后直接按该词查询。
+  const [serverQ, setServerQ] = useState(q)
   const debounceRef = useRef<number | null>(null)
 
   // 消费导航意图（React「渲染期调整状态」模式）：概览的「未结申诉」进入时默认申诉

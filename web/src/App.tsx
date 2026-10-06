@@ -16,7 +16,8 @@ import { ApiError, setApiBridge } from './api/client'
 import { useMiniState } from './api/hooks'
 import { DesktopShell, isWebMode } from './DesktopShell'
 import { meLabel } from './lib/format'
-import { NavProvider, useNav } from './nav'
+import { NavProvider, PageScope, useNav } from './nav'
+import { routeSlug } from './route'
 import { detailTitle, renderStackPage, renderTabPage, TAB_NAMES } from './shellPages'
 import { buildMiniTheme } from './theme'
 import { botIdFromURL, initTelegram, webBridge } from './telegram'
@@ -165,9 +166,22 @@ function Shell() {
           pb: top ? 4 : 'calc(72px + env(safe-area-inset-bottom))',
         }}
       >
-        {/* Tab 根页常驻：push 二级页时只隐藏不卸载，返回后搜索词/批量选择等内存状态不丢。 */}
-        <Box sx={{ display: top ? 'none' : 'block' }}>{renderTabPage(nav.tab)}</Box>
-        {top && renderStackPage(top)}
+        {/* Tab 根页常驻：push 二级页时只隐藏不卸载，返回后搜索词/批量选择等内存状态不丢。
+            页面级筛选/搜索由 PageScope 写进 URL；被盖住时 active=false，只留内存不写 URL。 */}
+        <Box sx={{ display: top ? 'none' : 'block' }}>
+          <PageScope
+            key={routeSlug(nav.tab, [])}
+            scope={routeSlug(nav.tab, [])}
+            active={top === null}
+          >
+            {renderTabPage(nav.tab)}
+          </PageScope>
+        </Box>
+        {top && (
+          <PageScope key={routeSlug(nav.tab, nav.stack)} scope={routeSlug(nav.tab, nav.stack)} active>
+            {renderStackPage(top)}
+          </PageScope>
+        )}
       </Box>
       <TabBar />
     </>

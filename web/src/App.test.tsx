@@ -198,6 +198,51 @@ describe('App', () => {
     expect(await screen.findByText('申诉 #77')).toBeInTheDocument()
   })
 
+  it('概览待办跳转：意图落到 URL 参数上，消费后只剩合法分段', async () => {
+    const { bridge } = makeBridge()
+    mockInit.mockResolvedValue(bridge)
+    mockApiByOp()
+
+    render(<App />)
+    await screen.findByText('门神')
+    fireEvent.click(await screen.findByText('未结申诉'))
+
+    await waitFor(() => expect(location.pathname).toBe('/miniapp/records'))
+    // 意图被记录页消费成 seg 参数：刷新仍停在申诉分段，且地址栏不再挂 intent。
+    await waitFor(() => expect(new URLSearchParams(location.search).get('seg')).toBe('appeals'))
+    expect(new URLSearchParams(location.search).get('intent')).toBeNull()
+  })
+
+  it('位置与筛选进 URL：刷新后回到原处，不丢进度', async () => {
+    const { bridge } = makeBridge()
+    mockInit.mockResolvedValue(bridge)
+    mockApiByOp()
+
+    const first = render(<App />)
+    await screen.findByText('门神')
+
+    fireEvent.click(screen.getByRole('button', { name: '群组' }))
+    await screen.findByText('测试群')
+    fireEvent.change(screen.getByLabelText('搜索群组'), { target: { value: '第二个' } })
+    await waitFor(() => expect(location.pathname).toBe('/miniapp/chats'))
+    await waitFor(() => expect(new URLSearchParams(location.search).get('q')).toBe('第二个'))
+
+    // 刷新 = 卸载后按同一地址重挂载：tab 与搜索词都还原。
+    first.unmount()
+    render(<App />)
+    expect(await screen.findByText('第二个群')).toBeInTheDocument()
+    expect(screen.getByLabelText('搜索群组')).toHaveValue('第二个')
+    expect(screen.queryByText('测试群')).not.toBeInTheDocument()
+
+    // 进详情后返回：列表筛选仍留着（内存状态随 tab 根页常驻）。
+    fireEvent.click(screen.getByText('第二个群'))
+    expect(await screen.findByText('实际执行')).toBeInTheDocument()
+    await waitFor(() => expect(location.pathname).toBe('/miniapp/chats/1/-1001111111111'))
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    await waitFor(() => expect(location.pathname).toBe('/miniapp/chats'))
+    expect(screen.getByLabelText('搜索群组')).toHaveValue('第二个')
+  })
+
   it('我的 Tab：名单/上游/设置的页面栈接线', async () => {
     const { bridge } = makeBridge()
     mockInit.mockResolvedValue(bridge)

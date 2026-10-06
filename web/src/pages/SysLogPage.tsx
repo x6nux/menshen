@@ -11,6 +11,7 @@ import { useInfiniteSysLogs, useMiniState } from '../api/hooks'
 import type { SysLogRow } from '../api/types'
 import { displayTz, fmtTSFull } from '../lib/format'
 import { logLevelInfo } from '../lib/status'
+import { usePageParam } from '../nav'
 import { Badge, EmptyState, ErrorState, SearchField, Skeletons } from '../ui'
 import { InfiniteFooter, ListCount, ListLoading } from './shared'
 
@@ -28,9 +29,10 @@ const LEVELS: { value: string; label: string }[] = [
 
 export function SysLogPage() {
   const state = useMiniState(true)
-  const [level, setLevel] = useState('')
-  const [q, setQ] = useState('')
-  const [serverQ, setServerQ] = useState('')
+  const [level, setLevel] = usePageParam('level', '', LEVELS.map((l) => l.value))
+  const [q, setQ] = usePageParam('q')
+  // 搜索词防抖后再发请求；初值取已还原的 q，刷新后直接按该词查询。
+  const [serverQ, setServerQ] = useState(q)
   const debounceRef = useRef<number | null>(null)
 
   // 卸载时清掉未触发的防抖，避免对已卸载组件 setState。

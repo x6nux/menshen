@@ -20,7 +20,7 @@ import type { Bot, Chat } from '../api/types'
 import { filterRows } from '../lib/filters'
 import { muteOptLabel } from '../lib/format'
 import { BULK_CHAT_LIMIT, toggleChatSelection } from '../lib/selection'
-import { useNav } from '../nav'
+import { useNav, usePageParam } from '../nav'
 import {
   EmptyState,
   ErrorState,
@@ -64,7 +64,7 @@ export function ChatsPage({ bulkLimit = BULK_CHAT_LIMIT }: { bulkLimit?: number 
   const addMut = useChatMutation()
   const bulkMut = useChatMutation()
 
-  const [q, setQ] = useState('')
+  const [q, setQ] = usePageParam('q')
   const [batch, setBatch] = useState(false)
   const [selected, setSelected] = useState<Chat[]>([])
   const [addOpen, setAddOpen] = useState(false)
