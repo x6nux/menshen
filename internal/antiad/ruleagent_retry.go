@@ -65,10 +65,19 @@ func retryableModelError(err error) bool {
 		return false
 	}
 	// HTTP 错误按状态码分类：429 与 5xx 可重试，其余 4xx 是确定性的。
+	// go-openai 有两种错误类型：RequestError（请求构造/传输层失败，带
+	// 期待的状态码）与 APIError（读到 HTTP 状态与 JSON 错误体）—— 网关
+	// 回整包 429/5xx 时是后者，两处都要按状态码判断，漏一处就会把可
+	// 自愈的故障当成确定性错误直接放弃。
 	var reqErr *openai.RequestError
 	if errors.As(err, &reqErr) {
 		return reqErr.HTTPStatusCode == http.StatusTooManyRequests ||
 			reqErr.HTTPStatusCode >= 500
+	}
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.HTTPStatusCode == http.StatusTooManyRequests ||
+			apiErr.HTTPStatusCode >= 500
 	}
 	// 传输层错误：超时、连接重置、DNS 抖动等都算 net.Error。
 	var netErr net.Error

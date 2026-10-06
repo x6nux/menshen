@@ -10,9 +10,10 @@ package antiad
 //     竞态写库并重复烧钱），见 ruleAgentRT；
 //   - 模型优先用全局设置 antiad_rule_model 显式指定的那个；没指定时从
 //     已启用的复判模型列表里挑第一个。无论哪条路径都要求模型已登记且
-//     启用、上游已启用且支持 chat、渠道是 OpenAI 兼容：Eino 的 OpenAI
-//     ChatModel 只会说 /chat/completions，Anthropic / Gemini /
-//     Cloudflare / Responses 的协议它不认，宁可在 start 时用中文错误
+//     启用、上游已启用且支持 chat、渠道带原生工具调用（OpenAI
+//     Completions / Responses / Anthropic / Gemini）：Eino 的 ReAct 图只
+//     认 chat/completions，其余渠道由传输层双向翻译（eino_kind.go），
+//     Cloudflare Workers AI 没有工具调用，宁可在 start 时用中文错误
 //     说清楚，也不要在半路拿 404；
 //   - 工具全部只读 DB 或复用 T-A 的 TestRulePattern / CompileRulePattern，
 //     create_rule 的写库防线与面板 miniRuleSave 完全同源（严格编译 +
@@ -106,12 +107,13 @@ var ruleAgentToolNames = []string{
 // 规则发现不可用的错误。文案直接回给 Mini App，保持中文。
 var (
 	errRuleAgentRunning = errors.New("规则发现 Agent 已在运行，请等待本轮结束或先停止")
-	errRuleAgentNoModel = errors.New("规则发现需要 OpenAI 兼容渠道的上游：" +
-		"当前没有已启用、且绑定了 OpenAI 兼容 chat 上游的复判模型")
-	errRuleAgentNoCompat = errors.New("规则发现需要 OpenAI 兼容渠道的上游：" +
-		"当前复判模型走的是 Anthropic / Gemini / Cloudflare 等渠道，暂不支持")
-	errRuleAgentNoModels = errors.New("规则发现需要 OpenAI 兼容渠道的上游：" +
-		"还没有配置任何复判模型（antiad_llm_models）")
+	errRuleAgentNoModel = errors.New("规则发现需要支持工具调用的上游（OpenAI Completions / " +
+		"Responses / Anthropic / Gemini）：当前没有已启用、且绑定了这类 chat 上游的复判模型")
+	errRuleAgentNoCompat = errors.New("规则发现需要支持工具调用的上游（OpenAI Completions / " +
+		"Responses / Anthropic / Gemini）：当前复判模型走的是 Cloudflare Workers AI 等" +
+		"没有工具调用的渠道，暂不支持")
+	errRuleAgentNoModels = errors.New("规则发现需要支持工具调用的上游（OpenAI Completions / " +
+		"Responses / Anthropic / Gemini）：还没有配置任何复判模型（antiad_llm_models）")
 )
 
 // ---- 运行状态 ----
@@ -401,7 +403,7 @@ const ruleAgentModelHint = "请在「全局设置 → 默认模型 → 规则发
 // pickRuleAgentModel 选择本轮规则发现的模型。
 //
 // 优先读全局设置 antiad_rule_model（形如 <上游名>/<模型ID>）：非空时必须
-// 指向一个「已登记且启用、绑定上游已启用、支持 chat、渠道 OpenAI 兼容」
+// 指向一个「已登记且启用、绑定上游已启用、支持 chat、渠道带工具调用」
 // 的模型，任何一条不满足都在 start 阶段返回明确的中文错误；留空则回退到
 // 复判模型列表（snap.ModelsFor(0)）里第一个满足同样条件的模型。
 func pickRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
@@ -448,22 +450,35 @@ func pickConfiguredRuleAgentModel(snap *store.Snapshot,
 	if !u.Supports(upstream.EPChat) {
 		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 未开启 chat 能力", name, upName))
 	}
-	if k := u.EffectiveKind(); k != upstream.KindOpenAI {
-		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 是 %s 渠道，规则发现只支持 OpenAI 兼容渠道",
+	if k := u.EffectiveKind(); !ruleAgentKindSupported(k) {
+		return fail(fmt.Sprintf("模型 %s 绑定的上游 %s 是 %s 渠道，没有工具调用能力，暂不支持规则发现",
 			name, upName, k.Label()))
 	}
 	return name, u, nil
 }
 
+// ruleAgentKindSupported 报告渠道能否承载规则发现：ReAct 图需要原生工具
+// 调用。OpenAI Completions / Responses / Anthropic Messages / Gemini 都
+// 支持（后三者由传输层翻译，见 eino_kind.go）；Cloudflare Workers AI 只
+// 服务 Clef 判定，没有可用的工具调用，明确拒绝。
+func ruleAgentKindSupported(k upstream.Kind) bool {
+	switch k {
+	case upstream.KindOpenAI, upstream.KindOpenAIResp,
+		upstream.KindAnthropic, upstream.KindGemini:
+		return true
+	}
+	return false
+}
+
 // pickFallbackRuleAgentModel 从全局复判模型列表（snap.ModelsFor(0)）里挑
-// 第一个满足「模型已启用 + 有支持 chat 的上游 + 上游是 OpenAI Completions
-// 渠道」的模型。返回模型全名（含上游前缀）与命中的上游。
+// 第一个满足「模型已启用 + 有支持 chat 的上游 + 渠道支持工具调用」的模型。
+// 返回模型全名（含上游前缀）与命中的上游。
 func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
 	_, llmModels := snap.ModelsFor(0)
 	if len(llmModels) == 0 {
 		return "", nil, errRuleAgentNoModels
 	}
-	sawNonCompat := false
+	sawUnsupported := false
 	for _, name := range llmModels {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -474,14 +489,14 @@ func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstrea
 			continue
 		}
 		for _, u := range upstreamFor(snap, upstream.EPChat, name) {
-			if u.EffectiveKind() != upstream.KindOpenAI {
-				sawNonCompat = true
+			if !ruleAgentKindSupported(u.EffectiveKind()) {
+				sawUnsupported = true
 				continue
 			}
 			return name, u, nil
 		}
 	}
-	if sawNonCompat {
+	if sawUnsupported {
 		return "", nil, errRuleAgentNoCompat
 	}
 	return "", nil, errRuleAgentNoModel
@@ -489,10 +504,11 @@ func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstrea
 
 // newRuleAgentChatModel 按上游配置构建 Eino 的 OpenAI ChatModel。
 //
-// base_url 约定与判定链路一致：只填到域名/网关前缀，路径由客户端补。
-// 本项目自己的 URL 拼接是 base + "/v1/chat/completions"，而 Eino 客户端
-// 只补 "/chat/completions"，所以这里显式接上 "/v1"（已经带 /v1 的配置
-// 不再重复加）。temperature=0：规则发现要的是稳定复现，不是创造力。
+// Eino 的 OpenAI 客户端只会发 chat/completions，各渠道差异全部在传输层
+// 解决：OpenAI Completions 渠道沿用流式转换（eino_stream.go，请求改
+// stream=true、SSE 重建成整包）；Responses / Anthropic / Gemini 渠道由
+// eino_kind.go 做请求/响应双向翻译（非流式）。temperature=0：规则发现要
+// 的是稳定复现，不是创造力。
 func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 	fullName string) (model.ToolCallingChatModel, error) {
 
@@ -500,26 +516,36 @@ func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 	if modelID == "" {
 		return nil, fmt.Errorf("模型 %q 缺少模型 ID", fullName)
 	}
-	base := strings.TrimRight(u.BaseURL, "/")
-	if base == "" {
-		return nil, fmt.Errorf("上游 %s 未配置 base_url", upName(u))
-	}
-	if !strings.HasSuffix(base, "/v1") {
-		base += "/v1"
-	}
 	zero := float32(0)
 	cfg := &einoopenai.ChatModelConfig{
 		APIKey:      u.APIKey,
-		BaseURL:     base,
 		Model:       modelID,
 		Temperature: &zero,
 	}
-	// 复用判定链路的客户端（同样的代理配置、连接池与总超时），并在传输层
-	// 套一层流式转换：Eino 的 Generate 发的是非流式请求，这里把请求改成
-	// stream=true、把 SSE 响应重建成非流式 JSON 再交给 SDK（见 eino_stream.go）。
-	// 这样规则发现的线上请求也是流式的，而 SDK 看到的仍是普通 completion，
-	// tool_calls / usage / 回调都不受影响。
-	cfg.HTTPClient = einoStreamHTTPClient(sh.AIClient)
+	switch u.EffectiveKind() {
+	case upstream.KindOpenAI:
+		// 本项目自己的 URL 拼接是 base + "/v1/chat/completions"，而 Eino
+		// 客户端只补 "/chat/completions"，所以这里显式接上 "/v1"（已经带
+		// /v1 的配置不再重复加）。
+		base := strings.TrimRight(u.BaseURL, "/")
+		if base == "" {
+			return nil, fmt.Errorf("上游 %s 未配置 base_url", upName(u))
+		}
+		if !strings.HasSuffix(base, "/v1") {
+			base += "/v1"
+		}
+		cfg.BaseURL = base
+		cfg.HTTPClient = einoStreamHTTPClient(sh.AIClient)
+	default:
+		// 翻译渠道的 RT 自带真实端点与鉴权，Eino 的 BaseURL 随便给个
+		// 合法值即可（请求会被整体改写）。
+		cfg.BaseURL = strings.TrimRight(u.BaseURL, "/")
+		client, err := einoKindHTTPClient(sh.AIClient, u, fullName)
+		if err != nil {
+			return nil, err
+		}
+		cfg.HTTPClient = client
+	}
 	m, err := einoopenai.NewChatModel(context.Background(), cfg)
 	if err != nil {
 		return nil, err

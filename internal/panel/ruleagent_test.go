@@ -83,13 +83,13 @@ func TestMiniRulesAgentOps(t *testing.T) {
 		t.Errorf("空态 stop 应返回 ok+stopped=false：%v", out)
 	}
 
-	// 没有可用的 OpenAI 兼容上游：start 返回 400 中文错误。
+	// 没有可用的支持工具调用的上游：start 返回 400 中文错误。
 	w := mainDo(map[string]any{"action": "agent_start"})
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("无兼容上游时 start 应 400，得到 %d：%s", w.Code, w.Body.String())
+		t.Fatalf("无可用上游时 start 应 400，得到 %d：%s", w.Code, w.Body.String())
 	}
-	if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "OpenAI 兼容") {
-		t.Errorf("错误文案应说明需要 OpenAI 兼容渠道：%q", msg)
+	if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "支持工具调用") {
+		t.Errorf("错误文案应说明需要支持工具调用的渠道：%q", msg)
 	}
 
 	// 配一个立即回文本的 OpenAI 兼容假上游：agent 一轮即收尾。

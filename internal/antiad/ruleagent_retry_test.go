@@ -217,6 +217,23 @@ func TestRetryChatModelStreamRetriesCreation(t *testing.T) {
 	}
 }
 
+// TestRetryChatModelRetriesAPIError429：网关回整包 429 时 SDK 产生的是
+// APIError 而不是 RequestError，同样必须重试（线上踩过：整轮 7 秒收场）。
+func TestRetryChatModelRetriesAPIError429(t *testing.T) {
+	sleeps := setupRetryTest(t)
+	inner := &fakeRetryModel{errs: []error{
+		&openai.APIError{HTTPStatusCode: http.StatusTooManyRequests,
+			Message: "当前分组上游负载已饱和，请稍后再试"},
+	}}
+
+	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err != nil {
+		t.Fatalf("APIError 429 后应重试成功：%v", err)
+	}
+	if inner.callCount() != 2 || len(*sleeps) != 1 {
+		t.Errorf("应 2 次请求 / 1 次等待，得到 %d / %d", inner.callCount(), len(*sleeps))
+	}
+}
+
 // TestRetryableModelError 锁住分类边界。
 func TestRetryableModelError(t *testing.T) {
 	cases := []struct {
@@ -230,6 +247,9 @@ func TestRetryableModelError(t *testing.T) {
 		{"429", &openai.RequestError{HTTPStatusCode: 429}, true},
 		{"500", &openai.RequestError{HTTPStatusCode: 500}, true},
 		{"400", &openai.RequestError{HTTPStatusCode: 400}, false},
+		{"APIError 429", &openai.APIError{HTTPStatusCode: 429, Message: "rate limited"}, true},
+		{"APIError 503", &openai.APIError{HTTPStatusCode: 503, Message: "unavailable"}, true},
+		{"APIError 400", &openai.APIError{HTTPStatusCode: 400, Message: "bad request"}, false},
 		{"取消", context.Canceled, false},
 		{"未知错误", errors.New("boom"), false},
 		{"nil", nil, false},

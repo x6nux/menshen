@@ -304,10 +304,10 @@ func TestRuleAgentSingleFlightAndStop(t *testing.T) {
 	}
 }
 
-// TestStartRuleDiscoveryRequiresOpenAICompat：没有可用的 OpenAI 兼容
-// 模型时，start 直接返回明确的中文错误，且不进入运行态。
-func TestStartRuleDiscoveryRequiresOpenAICompat(t *testing.T) {
-	const wantPrefix = "规则发现需要 OpenAI 兼容渠道的上游"
+// TestStartRuleDiscoveryRequiresToolCallingUpstream：没有可用的支持工具
+// 调用的模型时，start 直接返回明确的中文错误，且不进入运行态。
+func TestStartRuleDiscoveryRequiresToolCallingUpstream(t *testing.T) {
+	const wantPrefix = "规则发现需要支持工具调用的上游"
 
 	t.Run("没有配置复判模型", func(t *testing.T) {
 		b, _ := testutil.NewTestBot(t, 1)
@@ -320,25 +320,25 @@ func TestStartRuleDiscoveryRequiresOpenAICompat(t *testing.T) {
 		}
 	})
 
-	t.Run("只有非兼容渠道", func(t *testing.T) {
+	t.Run("只有不支持工具调用的渠道", func(t *testing.T) {
 		b, _ := testutil.NewTestBot(t, 1)
 		if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
 			(name,base_url,api_key,weight,status,supports_chat,supports_systemone,kind)
-			VALUES ('gem','http://x','k',1,1,1,0,'anthropic')`); err != nil {
+			VALUES ('cf','http://x','k',1,1,1,0,'cloudflare')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := b.Store.Write.Exec(`INSERT INTO models
 			(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
-			VALUES ('gem/claude-x',0,0,0,0,1)`); err != nil {
+			VALUES ('cf/clef',0,0,0,0,1)`); err != nil {
 			t.Fatal(err)
 		}
-		if err := b.PutSetting("antiad_llm_model", "gem/claude-x"); err != nil {
+		if err := b.PutSetting("antiad_llm_model", "cf/clef"); err != nil {
 			t.Fatal(err)
 		}
 		err := StartRuleDiscovery(b.Shared, 1)
 		if err == nil || !strings.Contains(err.Error(), wantPrefix) ||
 			!strings.Contains(err.Error(), "暂不支持") {
-			t.Fatalf("非兼容渠道应报明确错误，得到 %v", err)
+			t.Fatalf("不支持工具调用的渠道应报明确错误，得到 %v", err)
 		}
 	})
 
@@ -506,15 +506,15 @@ func TestStartRuleDiscoveryConfiguredModelInvalid(t *testing.T) {
 			want: "未开启 chat 能力",
 		},
 		{
-			name: "非 OpenAI 兼容渠道",
+			name: "不支持工具调用的渠道",
 			setup: func(t *testing.T, b *core.Bot) {
-				insertRuleTestUpstream(t, b, "ghost", 1, 1, "anthropic")
+				insertRuleTestUpstream(t, b, "ghost", 1, 1, "cloudflare")
 				insertRuleTestModel(t, b, "ghost/m1", 1)
 				if err := b.PutSetting("antiad_rule_model", "ghost/m1"); err != nil {
 					t.Fatal(err)
 				}
 			},
-			want: "只支持 OpenAI 兼容渠道",
+			want: "没有工具调用能力",
 		},
 		{
 			name: "旧格式没有上游前缀",
