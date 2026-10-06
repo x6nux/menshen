@@ -2,6 +2,7 @@ package antiad
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -47,6 +48,12 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 		"chat_id": chatID, "user_id": uid,
 	})
 	if err != nil {
+		// 查无此人（已离群/从未入群）是 TG 的确定回答，按普通成员处理
+		// 即可：结果与查询失败同向（不得放大权限），但不算故障，别刷警告。
+		var apiErr *tg.APIError
+		if errors.As(err, &apiErr) && apiErr.NotFound() {
+			return false, false
+		}
 		slog.Warn("反广告：查询群管理员失败，按普通成员处理",
 			"chat", chatID, "uid", uid, "err", err)
 		return false, false
@@ -90,6 +97,14 @@ func userInfo(b *core.Bot, uid int64) bioEntry {
 	var empty bioEntry
 	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": uid})
 	if err != nil {
+		// 对方从未与 bot 私聊过（或已不在任何共群）时 TG 以 400 chat
+		// not found 拒答，这是常态而非故障：按空资料缓存下来，避免
+		// 每条消息都重试一次。其余错误才值得警告。
+		var apiErr *tg.APIError
+		if errors.As(err, &apiErr) && apiErr.NotFound() {
+			cache.Set(uid, empty, bioTTL)
+			return empty
+		}
 		slog.Warn("反广告：查询账号资料失败", "uid", uid, "err", err)
 		return empty
 	}

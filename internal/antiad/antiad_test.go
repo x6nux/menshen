@@ -414,6 +414,41 @@ func TestIsChatAdminFailClosed(t *testing.T) {
 	}
 }
 
+// TestIsChatAdminMemberNotFoundFailClosed：人已不在群里时 TG 直接回 400
+// member not found——同样按普通成员处理（不得放大权限），但这是 TG 的
+// 确定回答而非故障：走静默分支，不刷「查询群管理员失败」的警告。
+func TestIsChatAdminMemberNotFoundFailClosed(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	fake.Err["getChatMember"] = testutil.TGNotFound("getChatMember",
+		"Bad Request: member not found")
+
+	if IsChatAdmin(b, -100, 42) {
+		t.Error("查无此人时必须按普通成员处理")
+	}
+	// 查无此人也不缓存：人可能随时重新进群。
+	if IsChatAdmin(b, -100, 42); fake.CountCalls("getChatMember") != 2 {
+		t.Error("查无此人的结果不该被缓存")
+	}
+}
+
+// TestUserInfoChatNotFoundCachedQuietly：对方从未与 bot 私聊过（或已不在
+// 任何共群）时，getChat 以 400 chat not found 拒答——常态而非故障，按空
+// 资料缓存。此前 400 走错误分支：既不缓存也不停刷「查询账号资料失败」，
+// 从未私聊过的用户每条消息都白打一次 TG。
+func TestUserInfoChatNotFoundCachedQuietly(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	fake.Err["getChat"] = testutil.TGNotFound("getChat",
+		"Bad Request: chat not found")
+
+	if bio := userBio(b, 5001); bio != "" {
+		t.Errorf("查无此人应得空简介，得到 %q", bio)
+	}
+	userBio(b, 5001)
+	if n := fake.CountCalls("getChat"); n != 1 {
+		t.Errorf("空资料应按常态缓存，两次查询只该发一次请求，实际 %d 次", n)
+	}
+}
+
 // TestAdExemptLinkedChannelForward：关联频道自动转发进讨论群时，发送者是
 // 777000（is_bot=false）。能往关联频道发帖的只有频道方，判它等于判频道自己
 // 的帖子，处置还会去禁言这个官方账号。

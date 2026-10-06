@@ -615,8 +615,9 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 	cachesOf(b.Shared).bio.Delete(uid)
 	info := userInfo(b, uid)
 	// getChat 全空（名字、用户名、简介都没有）有两种可能：人已离群
-	// （left/kicked，资料永远拉不到）或拉取失败（429/抖动）。离群者直接
-	// 退避 7 天；拉取失败不能算首查完成落指纹，按阶梯重试。
+	// （left/kicked，或 TG 直接答 400 member not found，资料永远拉不到）
+	// 或拉取失败（429/抖动）。离群者直接退避 7 天；拉取失败不能算首查
+	// 完成落指纹，按阶梯重试。
 	if info.bio == "" && info.username == "" && info.firstName == "" && info.lastName == "" {
 		if chatMemberGone(b, chatID, uid) {
 			slog.Info("前置号复查：成员已离群，退避 7 天", "chat", chatID, "uid", uid)
@@ -846,12 +847,18 @@ func markPrewarmGone(b *core.Bot, chatID, uid int64) {
 }
 
 // chatMemberGone 查一次 getChatMember，报告此人是否已离群（left/kicked）。
-// 查询失败按「不确定」返回 false：宁可下一档再试一次，别把在群的人推后
-// 7 天。也用于「资料拉取全空」时区分离群与拉取失败。
+// 人已不在群里时 TG 干脆回 400 member not found——同样是离群的确定证据，
+// 不当成「查询失败」：否则离群成员会在复查阶梯里永远空转。查询失败
+// （429/网络）仍按「不确定」返回 false：宁可下一档再试一次，别把在群
+// 的人推后 7 天。也用于「资料拉取全空」时区分离群与拉取失败。
 func chatMemberGone(b *core.Bot, chatID, uid int64) bool {
 	raw, err := b.TG.Call("getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid})
 	if err != nil {
+		var apiErr *tg.APIError
+		if errors.As(err, &apiErr) && apiErr.NotFound() {
+			return true
+		}
 		return false
 	}
 	var resp tg.ChatMemberResp

@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"encoding/json"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -26,6 +27,10 @@ type FakeTG struct {
 	// RespFunc 优先于 Resp：需要按调用参数给不同响应时用它（比如按
 	// chat_id 返回不同的成员状态）。返回 false 表示交给 Resp。
 	RespFunc func(method string, payload map[string]any) (string, bool)
+	// Err 优先于 Resp/RespFunc：按方法名给定要返回的错误，模拟生产
+	// 传输层收到的 HTTP 4xx/5xx——FakeTG 本身只会返回 ok:false + nil
+	// error，那走的是与 400 不同的代码分支。
+	Err map[string]error
 }
 
 type fakeCall struct {
@@ -33,7 +38,17 @@ type fakeCall struct {
 	payload map[string]any
 }
 
-func NewFakeTG() *FakeTG { return &FakeTG{Resp: map[string]string{}} }
+func NewFakeTG() *FakeTG {
+	return &FakeTG{Resp: map[string]string{}, Err: map[string]error{}}
+}
+
+// TGNotFound 造一个 Bot API「查无此人/此群」的 400 错误，desc 用 TG 的
+// 原文（如 "Bad Request: chat not found"），与生产传输层解析出的错误同构。
+func TGNotFound(method, desc string) error {
+	body := `{"ok":false,"error_code":400,"description":"` + desc + `"}`
+	return &tg.APIError{Method: method, Code: http.StatusBadRequest,
+		Body: body, Desc: desc}
+}
 
 func (f *FakeTG) Call(method string, payload any) (json.RawMessage, error) {
 	f.mu.Lock()
@@ -48,6 +63,11 @@ func (f *FakeTG) Call(method string, payload any) (json.RawMessage, error) {
 	}
 	f.calls = append(f.calls, fakeCall{method: method, payload: m})
 
+	if f.Err != nil {
+		if err, ok := f.Err[method]; ok {
+			return nil, err
+		}
+	}
 	if f.RespFunc != nil {
 		if r, ok := f.RespFunc(method, m); ok {
 			return json.RawMessage(r), nil

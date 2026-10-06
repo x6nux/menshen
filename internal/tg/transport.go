@@ -84,11 +84,42 @@ func (h *httpTransport) Call(method string, payload any) (json.RawMessage, error
 		if readErr == nil && resp.StatusCode >= 400 {
 			// 把状态码与响应片段带进错误：调用方原本只看到「响应无法解析」，
 			// 而 429/5xx 与 400 的处置方式完全不同。
-			return raw, fmt.Errorf("%s: HTTP %d: %s", method, resp.StatusCode,
-				clip(string(raw), 200))
+			body := clip(string(raw), 200)
+			var parsed struct {
+				Description string `json:"description"`
+			}
+			// 解析失败不碍事：Body 原文照带，Desc 为空时 NotFound 不误判。
+			json.Unmarshal(raw, &parsed)
+			return raw, &APIError{Method: method, Code: resp.StatusCode,
+				Body: body, Desc: parsed.Description}
 		}
 		return raw, readErr
 	}
+}
+
+// APIError 是 Bot API 明确拒绝（HTTP ≥400）时的错误：方法、状态码、
+// 响应体原文与解析出的 description 都在，调用方据此区分「TG 答了不行」
+// 与「网络没答上来」——前者常是预期内的回答（查无此人之类），后者才是
+// 故障。
+type APIError struct {
+	Method string
+	Code   int
+	// Body 是截断后的响应体原文，用于日志与兜底匹配。
+	Body string
+	// Desc 是解析出的 description 字段，响应体不是 JSON 时为空。
+	Desc string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: HTTP %d: %s", e.Method, e.Code, e.Body)
+}
+
+// NotFound 报告这是不是 Bot API 对「查无此人/此群」的标准回答（400 的
+// chat not found、member not found 等）。这不是故障而是 TG 的确定答案：
+// 对象从未与 bot 产生过关联，或已不在原处。
+func (e *APIError) NotFound() bool {
+	return e != nil && e.Code == http.StatusBadRequest &&
+		strings.Contains(strings.ToLower(e.Desc), "not found")
 }
 
 // retryAfter 从 429 响应体里取 parameters.retry_after（秒）。
