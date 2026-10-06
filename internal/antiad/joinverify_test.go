@@ -90,12 +90,29 @@ func TestCaptchaProviders(t *testing.T) {
 	}
 	hc.minScore = 0
 
-	// hostname 不符一律失败：令牌必须由我们自己域名上的页面签出。
-	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"success":true,"hostname":"evil.example.com"}`))
-	})
-	if ok, _ := hc.verify(b.Shared, "tok", "1.2.3.4"); ok {
-		t.Error("hostname 不符时应判失败")
+	// hostname：hCaptcha 对子域页面返回可注册域（如 free.edu.kg），
+	// 高峰期还可能返回 "not-provided"，所以相等/父域/缺省都算过；
+	// 无关域名与「兄弟子域」仍然拒绝。
+	hostCases := []struct {
+		hostname string
+		ok       bool
+	}{
+		{"ad.example.com", true},      // 完整主机名
+		{"example.com", true},         // 父域（可注册域）
+		{"EXAMPLE.COM", true},         // 大小写不敏感
+		{"not-provided", true},        // hCaptcha 高峰期的占位值
+		{"", true},                    // 对端没给
+		{"evil.com", false},           // 无关域
+		{"vil.example.com", false},    // 兄弟子域
+		{"sub.ad.example.com", false}, // 本站不是它的子域
+	}
+	for _, c := range hostCases {
+		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"success":true,"hostname":"%s"}`, c.hostname)
+		})
+		if ok, _ := hc.verify(b.Shared, "tok", "1.2.3.4"); ok != c.ok {
+			t.Errorf("hostname %q: 期望 ok=%v", c.hostname, c.ok)
+		}
 	}
 
 	// 空令牌不发请求直接失败。

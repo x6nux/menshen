@@ -78,7 +78,29 @@ func (p captchaProvider) verify(sh *core.Shared, token, ip string) (bool, string
 // hcaptchaVerifyURL 是包级变量，测试时替换成 httptest。
 var hcaptchaVerifyURL = "https://api.hcaptcha.com/siteverify"
 
-// verifyHCaptcha 校验 hCaptcha 令牌：success / hostname（/ score，若返回）。
+// captchaHostOK 报告 siteverify 返回的 hostname 是否可接受。
+//
+// hCaptcha 文档明确：hostname 由用户浏览器派生，「不得用于任何鉴权」，
+// 高峰期还可能直接返回 "not-provided"；真正绑定域名的是 sitekey 的
+// Domain allowlist（不匹配时 siteverify 自己 success=false）。
+// 实测它对子域页面返回的是可注册域（menshen.free.edu.kg → free.edu.kg，
+// .edu.kg 在公共后缀列表里），严格相等会把正常用户拦下。
+//
+// 规则：相等、是本站主机名的父域（本站以「.它」结尾）、或对端没给有效
+// 值，都算过。反向不收：令牌在别人域上解出时，返回值不可能是本站主机名
+// 的父域。
+func captchaHostOK(returned, host string) bool {
+	if host == "" || returned == "" || strings.EqualFold(returned, "not-provided") {
+		return true
+	}
+	if strings.EqualFold(returned, host) {
+		return true
+	}
+	return strings.HasSuffix(strings.ToLower(host), "."+strings.ToLower(returned))
+}
+
+// verifyHCaptcha 校验 hCaptcha 令牌：success（/ score，若返回）；
+// hostname 按 captchaHostOK 宽松核对。
 func (p captchaProvider) verifyHCaptcha(sh *core.Shared, token, ip string) (bool, string) {
 	if token == "" {
 		return false, "缺少令牌"
@@ -102,7 +124,7 @@ func (p captchaProvider) verifyHCaptcha(sh *core.Shared, token, ip string) (bool
 	if !out.Success {
 		return false, "success=false " + strings.Join(out.ErrorCodes, ",")
 	}
-	if host := publicHost(sh); host != "" && out.Hostname != "" && out.Hostname != host {
+	if !captchaHostOK(out.Hostname, publicHost(sh)) {
 		return false, "hostname 不符: " + out.Hostname
 	}
 	// 分数只有 hCaptcha Enterprise 才返回；普通 hCaptcha 没有分数，跳过。
