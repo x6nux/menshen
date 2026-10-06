@@ -1,5 +1,5 @@
-// 页面映射与标题：移动端外壳（App.tsx）与网页版桌面外壳（DesktopShell）
-// 共用同一份，避免两套导航各映射一套页面。
+// 页面映射与标题：Mini App 外壳（App.tsx）的一级 Tab 与二级页映射。
+// 桌面端管理面板有自己的页面组织（web/src/admin），不用这份。
 import type { ReactNode } from 'react'
 import type { State } from './api/types'
 import type { Page, TabKey } from './nav'

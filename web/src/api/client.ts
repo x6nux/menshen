@@ -19,7 +19,7 @@ export class ApiError extends Error {
 export interface ApiAuth {
   initData: string
   botId: string
-  /** web=true 时按网页版会话鉴权：带 X-Web 头，服务端读 cookie。 */
+  /** web=true 时按桌面端面板的会话鉴权：带 X-Web 头，服务端读 cookie。 */
   web: boolean
 }
 
