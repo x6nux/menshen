@@ -12,9 +12,8 @@ import (
 
 // ---- 设置项的写入规则（TG 面板与 Mini App 共用）----
 //
-// 权限、取值校验、「-」的含义、清旧键都只在这里写一次。两个界面曾经各写
-// 一份，结果识图模型填「-」一边清空一边报错、布尔开关一边放行两个一边
-// 放行四个 —— 同一个设置项在不同入口有不同规则，是最难排查的那种问题。
+// 权限、取值校验、`-` 的含义、清旧键都只在这里实现一次，避免同一设置项
+// 在不同入口有不同规则。
 
 // globalToggles 是一键切换的全局 0/1 开关（不在 settingSpecs 里）。
 var globalToggles = []string{"antiad_enabled", "alert_copy_main", "gban_enabled",
@@ -24,7 +23,7 @@ var globalToggles = []string{"antiad_enabled", "alert_copy_main", "gban_enabled"
 var singleModelKeys = []string{"antiad_vision_model", "antiad_rule_model"}
 
 // setSetting 写一项设置。botID 为 0 写全局值（只有主管理员能写）；否则写
-// 该 bot 的覆盖值（只有 antiad / both 组的整数项能覆盖），val 为空或「-」
+// 该 bot 的覆盖值（只有 antiad / both 组的整数项能覆盖），val 为空或 `-`
 // 表示撤销覆盖、跟随全局。
 func setSetting(sh *core.Shared, uid, botID int64, key, val string) error {
 	val = strings.TrimSpace(val)
@@ -60,7 +59,7 @@ func setSetting(sh *core.Shared, uid, botID int64, key, val string) error {
 		}
 
 	case key == captchaProviderSpec.key:
-		// 提供方名统一小写；「-」= 关闭（清空）。
+		// 提供方名统一小写；`-` = 关闭（清空）。
 		if reset {
 			val = ""
 		} else {
@@ -69,9 +68,8 @@ func setSetting(sh *core.Shared, uid, botID int64, key, val string) error {
 				return core.Bad("提供方必须是 turnstile / hcaptcha / cap")
 			}
 		}
-		// 选外部两家时密钥必须已经配齐——「开着但没人能验证」的状态在
-		// 面板上一切正常，是最难查的那类事故，所以在写入点拦住。
-		// cap 是内置实现，无需密钥，这里不查。
+		// 选外部两家时密钥必须已配齐：开启但无人能验证的状态在面板上
+		// 无异常，故在写入点拦截。cap 是内置实现，无需密钥，这里不查。
 		if val == "turnstile" || val == "hcaptcha" {
 			snap := sh.Cache.Snap()
 			if snap.Setting("captcha_site_key") == "" || snap.Setting("captcha_secret") == "" {
@@ -111,8 +109,8 @@ func setSetting(sh *core.Shared, uid, botID int64, key, val string) error {
 		if err := sh.PutSetting(key, modelsJSON(models)); err != nil {
 			return err
 		}
-		// 旧单值键也要清：留着的话列表被清空后读侧会回退到它，出现
-		// 「面板显示空、实际还跑着旧模型」的错位。
+		// 旧单值键也要清：保留时列表被清空后读侧会回退到它，导致面板
+		// 显示为空而实际仍使用旧模型。
 		return sh.PutSetting(legacyModelKey(key), "")
 
 	default:
@@ -160,8 +158,8 @@ func checkSpecValue(sp *settingSpec, val string) error {
 
 // modelUsable 校验一个模型名存在且启用。
 //
-// 必须校验：配了不存在的模型名，链路会在每条消息上向上游拿回 404，而
-// 404 在 bot 侧只表现为「判定失败 → 放行」，功能静默失效。
+// 必须校验：配置不存在的模型名时，链路会在每条消息上从上游得到 404，
+// 而 bot 侧只表现为判定失败后放行，功能静默失效。
 func modelUsable(sh *core.Shared, name string) error {
 	m := sh.Cache.Snap().Models[name]
 	if m == nil {
@@ -174,7 +172,7 @@ func modelUsable(sh *core.Shared, name string) error {
 }
 
 // setBotModels 设置某个 bot 专用的判定 / 复判模型列表（which = so / llm），
-// 空或「-」= 沿用全局默认。模型直接决定判定质量与花掉多少钱，只有主管理员能配。
+// 空或 `-` = 沿用全局默认。模型直接决定判定质量与花掉多少钱，只有主管理员能配。
 func setBotModels(sh *core.Shared, uid, botID int64, which, text string) ([]string, error) {
 	if !sh.IsMain(uid) {
 		return nil, core.Denied("模型由主管理员配置")
@@ -193,7 +191,7 @@ func setBotModels(sh *core.Shared, uid, botID int64, which, text string) ([]stri
 }
 
 // setDigest 改形态摘要（fix=false）或给总结模型的修正文本（fix=true）。
-// 「-」= 清空；摘要按 antiad_digest_max 截断 —— 它会注入此后每一条判定。
+// `-` = 清空；摘要按 antiad_digest_max 截断 —— 它会注入此后每一条判定。
 func setDigest(sh *core.Shared, uid int64, fix bool, text string) error {
 	if !sh.IsMain(uid) {
 		return core.Denied("形态摘要由主管理员维护")

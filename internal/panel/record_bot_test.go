@@ -43,11 +43,11 @@ func activeMutes(t *testing.T, sh *core.Shared, uid int64) int {
 	return n
 }
 
-// TestFalsePositiveRunsOnRecordBot：管理员在**另一个 bot**（典型是不入群的
-// 主 bot）的面板上点误判，解禁必须由记录所属的工作 bot 去做 —— 面板所在
-// 的 bot 不在群里，restrictChatMember 必然失败（线上真实问题：误判后人
-// 一直发不了言）。源群里由这条判定派生的联合封禁禁言也要一起解开：
-// 先改判再撤名单，否则撤名单时这条判定还算「群里另有生效处罚」。
+// TestFalsePositiveRunsOnRecordBot：管理员在另一个 bot（典型是不入群的
+// 主 bot）的面板上点误判，解禁必须由记录所属的工作 bot 去做——面板所在
+// 的 bot 不在群里，restrictChatMember 必然失败。源群里由这条判定派生的
+// 联合封禁禁言也要一起解开：先改判再撤名单，否则撤名单时这条判定还算
+// 群里另有生效处罚。
 func TestFalsePositiveRunsOnRecordBot(t *testing.T) {
 	reg, panelBot := testutil.NewTestRegistry(t, dispatch)
 	sh := panelBot.Shared
@@ -80,7 +80,7 @@ func TestFalsePositiveRunsOnRecordBot(t *testing.T) {
 	}
 }
 
-// TestReleaseRunsOnRecordBot：「解封（判定维持）」同理，由记录所属 bot 执行。
+// TestReleaseRunsOnRecordBot：解封（判定维持）同理，由记录所属 bot 执行。
 func TestReleaseRunsOnRecordBot(t *testing.T) {
 	reg, panelBot := testutil.NewTestRegistry(t, dispatch)
 	sh := panelBot.Shared

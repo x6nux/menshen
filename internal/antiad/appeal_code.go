@@ -45,7 +45,7 @@ func newUnlockCode() (string, error) {
 // issueUnlockCode 给申诉单签发解禁码（唯一索引兜底，撞码时重试）。
 //
 // 带状态条件：并发提交（同一张单的两个 POST）只该有一个签出码，否则先返回
-// 的那个码会被后一次 UPDATE 覆盖成无效码，用户拿着它去兑换只会得到「已失效」。
+// 的那个码会被后一次 UPDATE 覆盖成无效码，用户拿着它去兑换只会得到已失效的提示。
 func issueUnlockCode(sh *core.Shared, appealID int64) (string, bool) {
 	for attempt := 0; attempt < 5; attempt++ {
 		code, err := newUnlockCode()
@@ -167,12 +167,12 @@ func redeemInChat(b *core.Bot, ap appealRec, chatID, byUID int64) {
 		slog.Warn("申诉：兑换时解除禁言失败", "chat", chatID,
 			"uid", ap.UserID, "err", desc)
 	}
-	// 1.1) 记录上是封禁的还要解封：只发「权限全开」不会把人放回群里。
+	// 1.1) 记录上是封禁的还要解封：只发权限全开不会把人放回群里。
 	// only_if_banned 是必须的——对没被封的人解封等于把他踢出去。
 	b.CallOK("unbanChatMember", map[string]any{
 		"chat_id": chatID, "user_id": ap.UserID, "only_if_banned": true})
 	// 永久禁言不会自己到期：解除后必须落标记，否则申诉入口会一直把
-	// 这个人列为「仍在限制中」。
+	// 这个人列为仍在限制中。
 	MarkPenaltiesLifted(b, chatID, ap.UserID)
 	// 2) 冷判定的限制记录与群通知。
 	if rec, ok := loadJoinMute(b.Store, chatID, ap.UserID); ok {
@@ -252,7 +252,7 @@ func sendWhitelistNotice(b *core.Bot, uid int64) {
 
 // HandleDirectRedeem 处理管理员私聊里的解禁码。
 //
-// 权限按申诉单的 bot_id 判，与「发给哪个 bot」无关：
+// 权限按申诉单的 bot_id 判，与发给哪个 bot 无关：
 //   - 主管理员：全平台，并解除联合封禁（名单是全平台的决定，只有他能动）
 //   - 申诉所属 bot 的归属人：该 bot 名下所有群；名单不动，只在范围内解封
 //   - 其他人：无权

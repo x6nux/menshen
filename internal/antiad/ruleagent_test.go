@@ -47,7 +47,7 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-// oaToolCallReply 造一条 OpenAI 形状的「模型请求调用工具」响应。
+// oaToolCallReply 造一条 OpenAI 形状的模型请求调用工具响应。
 func oaToolCallReply(id, name string, args map[string]any) string {
 	rawArgs, _ := json.Marshal(args)
 	call := map[string]any{
@@ -612,7 +612,7 @@ func TestRuleAgentTimeoutAndStepExhaustion(t *testing.T) {
 
 // TestRuleAgentFindAlignsWithTestPattern：find 是宽松试跑工具，但它的
 // 计数口径必须与正式测试（TestRulePattern）一致，否则模型会被两套数字
-// 带偏。by_verdict 是命中行的原始 verdict 分布。
+// 误导。by_verdict 是命中行的原始 verdict 分布。
 func TestRuleAgentFindAlignsWithTestPattern(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	insertRuleAgentLog(t, b, "贷款刷单加微信 aaa", "ad", "deleted", "scam")
@@ -983,7 +983,7 @@ func TestRuleAgentToolErrorsDoNotKillRun(t *testing.T) {
 }
 
 // TestRuleAgentScanCancellation：find/test_rule 的扫描在 ctx 取消后
-// 尽快返回「已停止」，不必扫完全库；未取消时同一批数据完整扫完。
+// 尽快返回已停止，不必扫完全库；未取消时同一批数据完整扫完。
 func TestRuleAgentScanCancellation(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	// 超过 ruleScanCtxCheckEvery 行才会经过取消检查点。
@@ -1234,7 +1234,7 @@ func TestRuleAgentCreateRuleNotesOnlyValidEvidence(t *testing.T) {
 }
 
 // TestRuleAgentTestRuleBlocksFP：test_rule 对命中正常消息的正则必须给出
-// 明确的「不可创建」结论与误封样本。
+// 明确的不可创建结论与误封样本。
 func TestRuleAgentTestRuleBlocksFP(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	insertRuleAgentLog(t, b, "正常聊天记录", "clean", "none", "")

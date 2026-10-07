@@ -40,8 +40,7 @@ func showMyBots(b *core.Bot, chatID, msgID, uid int64) {
 		}
 		fmt.Fprintf(&sb, "%s <b>%s</b>", mark, html.EscapeString(r.Label()))
 		if r.IsMain {
-			// 主 bot 没有生效群、没有阈值、没有流水，列「0 个群」只会
-			// 让人以为没配完。
+			// 主 bot 没有生效群、阈值与流水，显示 0 个群会让人误以为未配置完成。
 			sb.WriteString(" 🔧 主 bot")
 			if main {
 				fmt.Fprintf(&sb, " ｜ 归属 <code>%d</code>", r.OwnerID)
@@ -74,19 +73,18 @@ func showMyBots(b *core.Bot, chatID, msgID, uid int64) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
-// addBotAndReport 在后台完成接入，并把结果写回那条「正在验证」的消息。
+// addBotAndReport 在后台完成接入，并把结果写回进度消息。
 //
-// 整条链路要打三次 TG（getMe、setMyCommands、setWebhook），最坏要等到
-// 传输层超时，所以它必须跑在独立 goroutine 上：更新处理是串行的，
-// 卡在这里会让整个 bot 停摆，包括别人正在用的面板。
+// 整条链路依次调用 getMe、setMyCommands、setWebhook，最坏需等到传输层
+// 超时，因此必须运行在独立 goroutine：更新处理是串行的，阻塞会使整个
+// bot 停摆，包括其他管理员正在使用的面板。
 //
-// 成功失败都编辑同一条消息而不是另发：接入本来就只是一件事，
-// 刷三条消息只会把刚才的面板挤出屏幕。
+// 成功与失败都编辑同一条消息，不另发新消息。
 func addBotAndReport(b *core.Bot, chatID, uid int64, token string, progressMsg int64) {
 	rec, err := b.Reg.Register(token, uid, false)
 	if err != nil {
-		// 接入失败最常见的原因是 token 复制少了几个字符。续上会话让他
-		// 直接重发，而不是逼他回面板重点一遍按钮。
+		// 接入失败最常见于 token 复制缺字符。续上输入会话让用户直接重发，
+		// 无需回到面板重新点击按钮。
 		b.KeepInput(uid, "bot_add", "")
 		b.EditOrSend(chatID, progressMsg,
 			"❌ "+err.Error()+"\n\n请重新发送 token：", nil)
@@ -134,9 +132,9 @@ func showBotDetail(b *core.Bot, chatID, msgID, uid, botID int64) {
 	fmt.Fprintf(&sb, "🤖 <b>%s</b>\n\n", html.EscapeString(rec.Label()))
 	if rec.Enabled {
 		sb.WriteString("状态: ✅ 已启用\n")
-		// 「已启用」是表里的状态，「在运行」是进程里的事实。切到长轮询
-		// 模式之后，子 bot 的记录还在、面板还写着已启用，但没有实例去
-		// 收它的更新 —— 不点破的话，这是个查不出来的失效。
+		// 已启用是数据库中的状态，在运行是进程中的事实。长轮询模式下
+		// 子 bot 的记录仍存在、面板仍显示已启用，但没有实例接收其更新，
+		// 属于难以察觉的失效状态。
 		if b.Reg != nil {
 			if _, live := b.Reg.LookupID(botID); !live {
 				sb.WriteString("⚠️ <b>但它没有在运行</b>：本服务是长轮询模式，" +
@@ -295,8 +293,8 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 		sb.WriteString("群内展示: 🔕 关\n")
 	}
 	snap := b.Cache.Snap()
-	// 显示实际会执行的处罚：只写「禁言」而不写时长，很容易让人以为
-	// 永久封禁已经生效（默认 24 小时，而「改为封禁」是另一个开关）。
+	// 显示实际会执行的处罚：只写禁言而不写时长，容易误以为永久封禁
+	// 已经生效；封禁出群是另一个开关。
 	muteMinutes := snap.BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
 	punish := "🔇 " + antiad.MuteLabel(muteMinutes)
 	if snap.BanMode(c) {
@@ -311,8 +309,8 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 			"要改成永久封禁出群：把「禁言改为封禁」设为 1，或把本群处罚方式切成「封禁出群」。</i>\n")
 	}
 
-	// 实时查一次权限：bot 不是群管理员的话，整条链路静默失效，
-	// 面板一切正常、日志干净、什么都没判。这是最常见的部署事故。
+	// 实时查询一次权限：若 bot 不是群管理员，整条判定链路会静默失效，
+	// 面板与日志均无异常。
 	sb.WriteString("\n权限自检: " + adChatHealth(b, c.ChatID) + "\n")
 
 	enLabel := "⛔ 关闭"
@@ -341,9 +339,8 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 
 // handleMyBotsCallback 处理 a:mb:* 全部回调。
 //
-// 每个会改动状态的分支都单独调 canManageBot，不能只在入口判一次：
-// callback_data 是客户端发上来的，任何次级管理员都能把别人 bot 的 id
-// 拼进去试一下。
+// 每个会改动状态的分支都单独调用 canManageBot，不能只在入口判一次：
+// callback_data 由客户端提交，任何次级管理员都能拼入他人 bot 的 id。
 func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 	chatID, msgID := q.Message.Chat.ID, q.Message.MessageID
 	uid := q.From.ID
@@ -357,8 +354,8 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 
 	if parts[2] == "add" {
 		snap := b.Cache.Snap()
-		// 长轮询模式下接不了子 bot，在这里就说清楚 —— 让人把 token
-		// 发进来再告诉他不行，等于白白让一串凭证过了一遍聊天记录。
+		// 长轮询模式下无法接入子 bot，在此处即拒绝，避免 token
+		// 凭证先进入聊天记录。
 		if !b.Cfg.UseWebhook() {
 			b.AnswerCallback(q.ID, "本服务是长轮询模式，接不了更多 bot")
 			b.EditOrSend(chatID, msgID,
@@ -404,8 +401,8 @@ func handleMyBotsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		return
 	}
 
-	// 主 bot 只有只读页：详情页上的按钮已经收起来了，这里再挡一道 ——
-	// callback_data 是客户端发上来的，任何人都能手工拼出来。
+	// 主 bot 只有只读页：此处在分发前再次校验，因为 callback_data
+	// 由客户端提交，任何人都可手工构造。
 	if rec := b.Cache.Snap().Bots[botID]; rec != nil && rec.IsMain {
 		b.AnswerCallback(q.ID, "主 bot 只做配置管理与接入其他 bot")
 		return
@@ -743,8 +740,8 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 // 群里的 /white 是另一回事（本群白名单 + 本群解封，见 antiad.HandleAdwCommand）。
 func HandleWhiteDM(b *core.Bot, m *tg.Message, text string) {
 	chatID := m.Chat.ID
-	// 与面板内所有 a:mb:* 分支同一条权限规则：次管只能管自己名下的 bot。
-	// 少了这道门，任何次管都能给别人的 bot 加豁免，把它变成漏判通道。
+	// 与面板内所有 a:mb:* 分支同一条权限规则：次管只能管理自己名下的 bot。
+	// 缺少该校验，次管即可为他人 bot 添加豁免，形成漏判通道。
 	if !b.CanManageBot(m.From.ID, b.BotID()) {
 		b.Send(chatID, "你只能管理自己名下的 bot。", nil)
 		return

@@ -1,6 +1,6 @@
-// 申诉详情（计划 4.5）：数据一律 POST appeal {id}——列表接口把 statement/ai_reason
+// 申诉详情：数据一律 POST appeal {id}——列表接口把 statement/ai_reason
 // 截到 300 字且不含解禁码/兑换/网页验证记录，详情必须单独请求、完整展示。
-// 底部操作栏按状态渲染（沿用旧页规则）：未结状态显示人工解除/驳回；
+// 底部操作栏按状态渲染：未结状态显示人工解除/驳回；
 // web/noweb 追加签发解禁码，web/noweb/ai 追加重跑 AI 复核。操作走 appealact。
 import { Box, Button, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
@@ -14,7 +14,7 @@ import { Badge, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from 
 import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
-/** 未结状态集合：与旧页 viewAppealDetail 的 open 数组一致。 */
+/** 未结状态集合。 */
 const OPEN_STATUSES = ['statement', 'ai', 'web', 'noweb', 'code']
 
 /** 底部操作栏兜底高度（4 按钮 + 说明）；有 ResizeObserver 时以实测为准。 */

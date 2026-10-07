@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// TestSplitModelName 守的是模型名的唯一解析规则：<上游名>/<模型ID>，
-// **按第一个 "/" 切** —— 模型 ID 自身可以带 "/"（OpenRouter 形态），
-// 切错了就会把 openrouter/openai/gpt-4o 发给错误的上游。
+// TestSplitModelName 验证模型名的唯一解析规则：<上游名>/<模型ID>，
+// 按第一个 "/" 切 —— 模型 ID 自身可以带 "/"（OpenRouter 形态），
+// 切错会把模型发给错误的上游。
 func TestSplitModelName(t *testing.T) {
 	cases := []struct{ in, wantUp, wantID string }{
 		{"a/b", "a", "b"},
 		{"openrouter/openai/gpt-4o", "openrouter", "openai/gpt-4o"},
-		{"gpt-4o", "", "gpt-4o"}, // 旧格式：无前缀
+		{"gpt-4o", "", "gpt-4o"}, // 无前缀形式
 		{"/x", "", "/x"},         // 空上游名按无前缀处理
 		{"a/", "", "a/"},         // 空模型 ID 同样按无前缀
 		{"", "", ""},
@@ -60,8 +60,8 @@ func TestPickWeightedSticky(t *testing.T) {
 	}
 }
 
-// TestPickHugeWeightDoesNotBlowUp：权重被写成 1e9 时不得按权重物化切片
-// （旧实现会一次性分配 ~8GB，直接 OOM 掉整个多租户进程）。
+// TestPickHugeWeightDoesNotBlowUp 验证权重被写成 1e9 时不会按权重物化切片
+// （那会一次性分配数 GB，拖垮整个多租户进程）。
 func TestPickHugeWeightDoesNotBlowUp(t *testing.T) {
 	ups := []*Upstream{
 		{ID: 1, Status: 1, Weight: 1e9, SupportsChat: true},

@@ -1,4 +1,4 @@
-// 全局轻提示（计划 3.3）：单例 Toast，屏幕中下、黑 75% 圆角 8、约 2.2s 自动消失。
+// 全局轻提示：单例 Toast，屏幕中下、黑 75% 圆角 8、约 2.2s 自动消失。
 // 连续 show 会替换文案并重置计时；组件始终挂载一个固定定位节点，用 opacity 过渡。
 import { Box } from '@mui/material'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -73,7 +73,7 @@ export function ToastProvider({ children }: ToastProviderProps) {
 }
 
 /** useToast 返回全局 show(message)；必须在 ToastProvider 内使用。 */
-// oxlint-disable-next-line react/only-export-components -- Provider 与 hook 必须共享同一个 context，拆分反而绕。
+// oxlint-disable-next-line react/only-export-components -- Provider 与 hook 共享同一 context，故同文件导出。
 export function useToast(): (message: string) => void {
   const ctx = useContext(ToastContext)
   if (!ctx) throw new Error('useToast 必须在 ToastProvider 内使用')

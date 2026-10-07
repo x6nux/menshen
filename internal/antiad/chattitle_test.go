@@ -12,7 +12,7 @@ func TestEmptyChatTitleRefreshesOnMessage(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 
-	// 模拟「先加配置、后入群」：标题空着。
+	// 模拟“先加配置、后入群”：标题空着。
 	if _, err := b.Store.Write.Exec(
 		`UPDATE bot_chats SET title='' WHERE bot_id=? AND chat_id=?`,
 		b.BotID(), int64(-100)); err != nil {

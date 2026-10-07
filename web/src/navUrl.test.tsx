@@ -1,4 +1,4 @@
-// URL 即导航状态：位置进路径、页面筛选进查询串。这些用例覆盖「刷新不丢进度」
+// URL 即导航状态：位置进路径、页面筛选进查询串。这些用例覆盖刷新不丢进度
 // 依赖的四件事——写地址、读地址、浏览器前进后退、隐藏页不越权写参数。
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'

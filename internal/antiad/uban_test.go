@@ -13,9 +13,9 @@ const (
 	memberFree   = `{"ok":true,"result":{"status":"member"}}`
 )
 
-// TestUbanEverywhere：私聊 /uban 是「全解」—— 撤名单、逐群按真实状态解封 /
-// 解禁言、清处罚记录与进群限制，但**不加白名单**（之后的发言照常判定）。
-// 没被限制的群不碰（「权限全开」对没被禁言的人等于提权到群默认之上）。
+// TestUbanEverywhere：私聊 /uban 是全解 —— 撤名单、逐群按真实状态解封 /
+// 解禁言、清处罚记录与进群限制，但不加白名单（之后的发言照常判定）。
+// 没被限制的群不碰（权限全开对没被禁言的人等于提权到群默认之上）。
 func TestUbanEverywhere(t *testing.T) {
 	reg, a := testutil.NewTestRegistry(t, dispatch)
 	sh := a.Shared
@@ -48,7 +48,7 @@ func TestUbanEverywhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	// -300 里 TG 侧已经能发言（被验证机器人放开了），库里却还挂着未解除的
-	// 处罚流水 —— 这正是「二次封禁」的来源：复查任务会按它把人再禁回去。
+	// 处罚流水 —— 复查任务会按它把人再次禁言。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log (chat_id,user_id,message_id,
 		text,verdict,confidence,decider,ad_kind,action,reason,created_at,bot_id)
 		VALUES (-300,?,8,'广告','ad',0.95,'systemone','scam','deleted_muted','',?,?)`,

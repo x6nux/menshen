@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// TestLogPathFor：日志文件与数据库同目录、同前缀（data.db → data.log），
-// 运维按 db_path 就能推出来它在哪。
+// TestLogPathFor 验证日志文件与数据库同目录、同前缀（data.db → data.log），
+// 可由 db_path 推出日志路径。
 func TestLogPathFor(t *testing.T) {
 	cases := []struct{ db, want string }{
 		{"data.db", "data.log"},
@@ -95,8 +95,8 @@ func TestRotatingFileRotatesOnSize(t *testing.T) {
 	}
 }
 
-// TestRotatingFileEnforcesTotal：总上限按「备份 + 给当前文件留一个单文件
-// 的余量」执行 —— 当前文件永远 ≤ 单文件上限，于是落盘总量不超总上限。
+// TestRotatingFileEnforcesTotal 验证总上限按备份 + 给当前文件留一个单文件
+// 的余量执行 —— 当前文件永远 ≤ 单文件上限，于是落盘总量不超总上限。
 func TestRotatingFileEnforcesTotal(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "data.log")
@@ -126,9 +126,9 @@ func TestRotatingFileEnforcesTotal(t *testing.T) {
 	}
 }
 
-// TestRotatingFileAppliesShrunkLimit：运行中把总上限调小，下一次写入就
-// 按新上限清理备份 —— 关键场景是这次写入**不触发滚动**（当前文件还没满），
-// 靠滚动兜底的话超量的备份会一直留着。
+// TestRotatingFileAppliesShrunkLimit 验证运行中把总上限调小后，下一次写入
+// 就按新上限清理备份 —— 关键场景是这次写入不触发滚动（当前文件还没满），
+// 仅靠滚动兜底的话超量备份会一直留着。
 func TestRotatingFileAppliesShrunkLimit(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "data.log")
@@ -148,7 +148,7 @@ func TestRotatingFileAppliesShrunkLimit(t *testing.T) {
 	}
 
 	maxTotal = 1200 // 调小：预算 1200-1000=200 → 备份全部删掉
-	// 这一行让当前文件到 600，仍不触发滚动 —— 清理只能来自「上限改动」分支。
+	// 这一行让当前文件到 600，仍不触发滚动 —— 清理只能来自上限改动的分支。
 	if _, err := f.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}

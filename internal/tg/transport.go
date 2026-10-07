@@ -26,7 +26,7 @@ type httpTransport struct {
 }
 
 // httpTimeout 是单次 Bot API 调用的超时。必须大于长轮询 getUpdates 自带的
-// 挂起时长（25 秒，见 core 的 runPolling），否则每一轮空闲轮询都会被
+// 挂起时长（25 秒，见 core 的 RunPolling），否则每一轮空闲轮询都会被
 // 客户端超时掐断，表现为日志里持续刷 getUpdates 失败而更新照收。
 const httpTimeout = 40 * time.Second
 
@@ -53,7 +53,7 @@ const callMaxBody = 8 << 20
 
 // retryAfterMax 是 429 自动重试的最长等待。TG 的 flood wait 可能报几百秒，
 // 全等会把调用方（尤其串行的更新处理）一起卡死；超过这个值就直接失败，
-// 由上层按「这次没成」处理。
+// 由上层按本次调用失败处理。
 const retryAfterMax = 5 * time.Second
 
 func (h *httpTransport) Call(method string, payload any) (json.RawMessage, error) {
@@ -82,7 +82,7 @@ func (h *httpTransport) Call(method string, payload any) (json.RawMessage, error
 			}
 		}
 		if readErr == nil && resp.StatusCode >= 400 {
-			// 把状态码与响应片段带进错误：调用方原本只看到「响应无法解析」，
+			// 把状态码与响应片段带进错误：否则调用方只能看到响应无法解析，
 			// 而 429/5xx 与 400 的处置方式完全不同。
 			body := clip(string(raw), 200)
 			var parsed struct {
@@ -98,9 +98,8 @@ func (h *httpTransport) Call(method string, payload any) (json.RawMessage, error
 }
 
 // APIError 是 Bot API 明确拒绝（HTTP ≥400）时的错误：方法、状态码、
-// 响应体原文与解析出的 description 都在，调用方据此区分「TG 答了不行」
-// 与「网络没答上来」——前者常是预期内的回答（查无此人之类），后者才是
-// 故障。
+// 响应体原文与解析出的 description 都在，调用方据此区分 TG 明确拒绝
+// 与网络无响应——前者常是预期内的回答（查无此人之类），后者才是故障。
 type APIError struct {
 	Method string
 	Code   int
@@ -114,7 +113,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: HTTP %d: %s", e.Method, e.Code, e.Body)
 }
 
-// NotFound 报告这是不是 Bot API 对「查无此人/此群」的标准回答。有两类
+// NotFound 报告这是不是 Bot API 对查无此人/此群的标准回答。有两类
 // 文本：Bot API 自述的 chat/member/user not found，与透传的 MTProto 错误
 // PARTICIPANT_ID_INVALID、PEER_ID_INVALID、USER_ID_INVALID——含义一致：
 // 对象不存在或与 bot 已无关联，是确定答案而非故障（人已离群、从未与
@@ -163,8 +162,7 @@ func clip(s string, n int) string {
 // *url.Error。原样往上抛的话，每一次网络抖动都会在日志里写一遍**明文
 // bot token** —— 拿到它就等于完全接管这个 bot。
 //
-// 只剥掉外层的 url.Error，内层原因（dial tcp ...: i/o timeout 之类）
-// 原样保留：排障需要的恰恰是它，而它不含 URL。
+// 只剥掉外层的 url.Error，内层原因原样保留：排障需要它，而它不含 URL。
 func CallError(method string, err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {

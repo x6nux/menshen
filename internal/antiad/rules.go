@@ -38,7 +38,7 @@ const ruleScanCtxCheckEvery = 1000
 //   - enabled=1 且 enforce=0：命中立即删除 + 临时禁言，**跳过 systemone**，
 //     规则以 matched_rules 作为强证据直接交大模型复判定案（复判正常会
 //     自动解除临时禁言）；没有复判模型时按处置矩阵定案；
-//   - enabled=1 且 enforce=1：命中即最高档处置，不花 AI 的钱。
+//   - enabled=1 且 enforce=1：命中即最高档处置，不调用 AI。
 //
 // 防误封：任何保存都先跑全库测试（TestRulePattern），enforce 只允许在
 // 最近一轮测试 last_fp=0 且 last_undone=0 时打开（服务端强制）。
@@ -48,7 +48,7 @@ const ruleScanCtxCheckEvery = 1000
 const rulePatternMax = 500
 
 // ruleScanLimit 是单轮全库测试最多扫描的流水条数。防误封只需要覆盖足够的
-// 历史，而不是无限翻旧账；100000 条足以覆盖任何正常群的判定历史。
+// 历史，而不是无限扩大扫描范围；100000 条足以覆盖任何正常群的判定历史。
 const ruleScanLimit = 100000
 
 // 测试样本的上限与单条正文的截断长度。样本是给人复核的：够了就行，
@@ -60,7 +60,7 @@ const (
 	ruleSampleTextMax = 200
 )
 
-// MatchRules 返回所有「已启用且正则在 text 中命中」的规则，按 id 升序。
+// MatchRules 返回所有已启用且正则在 text 中命中的规则，按 id 升序。
 //
 // 只做纯内存匹配：enforce 规则的门在同步段上，不能有数据库往返。
 // Re 为 nil 的行不会进快照（编译失败已在加载时跳过）。
@@ -236,7 +236,7 @@ func CompileRulePattern(pattern string) (*regexp.Regexp, error) {
 }
 
 // compileRuleLenient 只做全库测试需要的基础校验：空串、超长、可编译。
-// 刻意不拒绝「匹配空文本」——人工试跑一条 `a*` 看它命中什么是合理需求。
+// 刻意不拒绝匹配空文本——人工试跑一条 `a*` 看它命中什么是合理需求。
 func compileRuleLenient(pattern string) (*regexp.Regexp, error) {
 	if strings.TrimSpace(pattern) == "" {
 		return nil, errRuleEmpty
@@ -324,7 +324,7 @@ func ParseRuleKindsJSON(raw string) []map[string]any {
 //
 // 盲区：语料是 antiad_log 里**落库截断后**的文本（adTextLimit=1000 rune），
 // 而判定门匹配的是消息完整正文。超过 1000 rune 的长消息，其尾部特征在
-// 这里看不见：一条只依赖被截掉尾部的规则可能测出 fp=0 却在线上误封。
+// 这里看不见：一条只依赖被截掉尾部的规则可能测出 fp=0 却在实际运行中误封。
 // 所以规则应尽量锚定出现在前 1000 字内的形态组合。
 func TestRulePattern(sh *core.Shared, pattern string) (RuleTestResult, error) {
 	// 无取消需求的老入口：面板、保存流程都走这里。
@@ -392,7 +392,7 @@ func testRulePatternCtx(ctx context.Context, sh *core.Shared,
 			res.FP++
 			addRuleSample(&res.FPSamples, s, ruleFPSamples)
 		case verdict == "skipped" || verdict == "error":
-			// 没送检或判定失败，不构成「误封」证据，但要在结果里可见。
+			// 没送检或判定失败，不构成误封证据，但要在结果里可见。
 			res.Neutral++
 		}
 	}

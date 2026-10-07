@@ -10,8 +10,8 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- 官方 SDK 自托管：telegram.org 在部分网络不可达，不能依赖外链加载。
-         根绝对路径由 Vite 按 base 重写（dev 与 build 都得到 /miniapp/telegram-web-app.js）；
+    <!-- 官方 SDK 自托管：部分网络无法直连官方 CDN，不能依赖外链加载。
+         根绝对路径由 Vite 按 base 重写（开发与构建都得到 /miniapp/telegram-web-app.js）；
          经典脚本同步执行，模块脚本默认 defer，因此 main.tsx 启动时 SDK 已就绪；
          telegram.ts 仍保留轮询兜底。 -->
     <script src="/telegram-web-app.js"></script>

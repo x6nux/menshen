@@ -159,7 +159,7 @@ func (sh *Shared) UpdateUpstream(id int64, p UpstreamPatch) error {
 }
 
 // DeleteUpstream 删除上游。名下有模型时拒绝：模型名里嵌着上游名，删掉
-// 上游会留下一批「绑定的上游不存在」的死引用 —— 判定每次都失败，而
+// 上游会留下一批绑定的上游不存在的死引用 —— 判定每次都失败，而
 // 面板上看不出原因。
 func (sh *Shared) DeleteUpstream(id int64) error {
 	if names := ModelsOfUpstream(sh.Cache.Snap(), id); len(names) > 0 {

@@ -1,4 +1,4 @@
-// 导航栈（计划 2.2）：tab + 页面栈，二级页与 Telegram BackButton 双绑。
+// 导航栈：tab + 页面栈，二级页与 Telegram BackButton 双绑。
 //
 // URL 是导航状态的唯一镜像：位置（tab + 栈）编进路径，页面内的筛选/搜索/分段
 // 通过 usePageParam 写进查询串。刷新、深链、浏览器前进后退都据此还原。
@@ -102,7 +102,7 @@ export interface PageScopeProps {
 }
 
 /**
- * PageScope 圈出「当前可见页面」。只有 active 的页面会把自己的查询参数写进 URL，
+ * PageScope 圈出当前可见页面。只有 active 的页面会把自己的查询参数写进 URL，
  * 被二级页盖住、仍在挂载的 tab 根页只保住内存状态，返回时再写回去。
  * 调用方要用 routeSlug 作 key，使换页时重新取一次 URL 上的初始值。
  */
@@ -152,7 +152,7 @@ function urlBot(): string | null {
 }
 
 /**
- * buildUrl 组装「路径 + 查询串」。
+ * buildUrl 组装路径 + 查询串。
  *
  * 页面参数按 scope 分组，只有当前路由那个 scope 的值会进 URL；其余 scope 的键
  * （上一个页面留下的）一律清掉。既不属于任何已登记页面的键原样保留——刷新或
@@ -196,7 +196,7 @@ export interface NavProviderProps {
 }
 
 /**
- * NavState 把导航位置、当前页面的查询参数与「这次变化该怎么写历史」放在
+ * NavState 把导航位置、当前页面的查询参数与这次变化该走 push 还是 replace 放在
  * 同一个 state 里：单一 effect 负责拼 URL，就不必在渲染期读写 ref 来同步。
  */
 interface NavState {

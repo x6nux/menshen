@@ -50,7 +50,7 @@ func TestAdwByIDAndChannel(t *testing.T) {
 }
 
 // TestAdwRequiresAdminSilently：白名单等于对此人关掉反广告，普通成员不能用；
-// 与 /ban 同理静默忽略，不告诉刷屏的人这条命令存在。
+// 与 /ban 一致静默忽略，不向非授权者暴露该命令存在。
 func TestAdwRequiresAdminSilently(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

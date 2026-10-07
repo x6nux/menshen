@@ -18,8 +18,8 @@ import (
 // ---- 申诉通道：入口、有效限制、AI 复判、自动解除、卡片 ----
 //
 // 流程：私聊 /start（或群内通知上的 deep link）→ 列出有效限制 →
-// 「写申诉理由 / 直接申诉」→ AI 复判 → 撤销则自动解除；维持或出错
-// 则进网页验证（阶段 3），网页不可用时降级 noweb。
+// 写申诉理由 → AI 复判 → 撤销则自动解除；维持或出错则进网页验证，
+// 网页不可用时降级 noweb。
 
 // appealRec 是 appeals 的一行。
 type appealRec struct {
@@ -54,7 +54,7 @@ type appealPenalty struct {
 	Reason string
 	At     int64
 	// Action 是流水里的处置动作（muted / deleted_banned / …）。解除时
-	// 要据此选解禁还是解封：对已被封禁的人发「权限全开」不会把他放回群里。
+	// 要据此选解禁还是解封：对已封禁者只解除禁言无法使其回到群里。
 	Action string
 }
 
@@ -62,8 +62,8 @@ const appealStatementMax = 200
 
 // ---- 存储 ----
 
-// AppealColumns 是 appeals 表的完整投影。它出现在三处读单（按 id、按未结、
-// 按解禁码）与 Mini App 详情里，任何一处漏改列都会在运行期才炸——统一放这里。
+// AppealColumns 是 appeals 表的完整投影。它被多处读单（按 id、按未结、
+// 按解禁码）与 Mini App 详情共用，任一读点漏改列都只在运行期暴露，故统一放这里。
 const AppealColumns = `id,bot_id,user_id,status,statement,ai_result,ai_conf,
 	ai_reason,ai_model,ai_cost,web_attempts,web_since,code,code_expires,
 	created_at,updated_at`
@@ -125,14 +125,14 @@ func updateAppeal(sh *core.Shared, id int64, sets string, args ...any) {
 // effectivePenalties 列出此人在本 bot 名下仍在生效的处罚。
 //
 // 三类：冷判定禁言（join_mutes）、消息判定禁言（antiad_log 的处置行）、
-// 联合封禁（快照）。都为空时没有申诉可言。
+// 联合封禁（快照）。都为空时没有可申诉的内容。
 //
-// 时间窗按「禁言时长」取：禁言档是限时的，过期的处罚不必再列。禁言时长
+// 时间窗按禁言时长取：禁言档是限时的，过期的处罚不必再列。禁言时长
 // 配成 0（永久禁言）时不设时间窗，改由 lifted_at 标记人工解除——永久禁言
-// 不会自己到期，不这样区分的话入口会永远显示「限制中」。
+// 不会自己到期，不这样区分入口会永远显示仍在限制中。
 //
-// 参数是 Shared + botID 而不是 *Bot：网页处理器也要用它（验证页要展示
-// 「为什么被限制」），而那一刻 bot 实例可能根本没在运行。
+// 参数是 Shared + botID 而不是 *Bot：网页处理器也要用它（验证页要展示被
+// 限制的原因），而那一刻 bot 实例可能根本没在运行。
 func effectivePenalties(sh *core.Shared, botID, uid int64) []appealPenalty {
 	var out []appealPenalty
 
@@ -205,7 +205,7 @@ type PenaltyInfo struct {
 // ActivePenalties 列出某人仍在生效的限制，供面板展示与逐条解除。
 //
 // 与申诉入口同一口径（effectivePenalties），额外带出 gban_own 的归属人
-// 与处置动作：面板要按动作决定「解封」还是「解禁言」，也要把账本归属
+// 与处置动作：面板要按动作决定解封还是解禁言，也要把账本归属
 // 写清楚（是全局组还是某个管理员的专属组）。
 func ActivePenalties(sh *core.Shared, botID, uid int64) []PenaltyInfo {
 	ps := effectivePenalties(sh, botID, uid)
@@ -228,15 +228,15 @@ func ActivePenalties(sh *core.Shared, botID, uid int64) []PenaltyInfo {
 
 // HandleNonStaffPrivate 处理非管理员的私聊。返回 true 表示已接管这条消息。
 //
-// 它排在私聊的权限判断之前：被限制发言的是普通用户，按「非管理员一律
-// 忽略」处理会把整条申诉通道堵死。
+// 它排在私聊的权限判断之前：被限制发言的是普通用户，按非管理员一律
+// 忽略处理会把整条申诉通道堵死。
 func HandleNonStaffPrivate(b *core.Bot, m *tg.Message, text string) bool {
 	uid := m.From.ID
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
 		payload := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
-		// 联合封禁状态块里的「前往对应 bot 解除」是给管理员用的深链；
-		// 普通用户点进来（群里谁都能看到按钮）落到他自己的申诉页 —— 只认
-		// 账户自己的限制，绝不按深链里的 uid 展示别人的状态。
+		// 联合封禁状态块里的解除深链是给管理员用的；普通用户点进来（群里
+		// 谁都能看到按钮）落到他自己的申诉页：只认账户自己的限制，绝不按
+		// 深链里的 uid 展示别人的状态。
 		if _, ok := ParseUserPayload(payload); ok {
 			payload = "appeal"
 		}
@@ -256,7 +256,7 @@ func HandleNonStaffPrivate(b *core.Bot, m *tg.Message, text string) bool {
 // showAppealEntry 渲染申诉入口。payload 非空表示从 deep link 进来。
 func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 	// 只接管我们发出的 deep link：冷判定通知的 ub<记录号>、群内告警与
-	// 私聊卡片的 log<记录号>、老的 appeal；其余 payload 放回去给别的处理器。
+	// 私聊卡片的 log<记录号>、appeal；其余 payload 放回去给别的处理器。
 	if payload != "" && payload != "appeal" {
 		if _, ok := ParseUnbanPayload(payload); !ok {
 			if _, ok := ParseLogPayload(payload); !ok {
@@ -271,7 +271,7 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 			return false // 交给通用介绍语
 		}
 		// 库里没有记录就结案会漏掉残留限制（库里的账本与 Telegram 的
-		// 权限是两回事，见 residualSweep）：顺手核对一遍他在各群的
+		// 权限是两回事，见 residualSweep）：此处核对一遍他在各群的
 		// 真实状态，有残留就当场解掉。
 		if residualSweepAsync(b, dmChat, uid) {
 			b.Send(dmChat, "你目前没有被本 bot 限制。我再去你名下的群里核对一遍，"+
@@ -302,9 +302,9 @@ func showAppealEntry(b *core.Bot, dmChat, uid int64, payload string) bool {
 	return true
 }
 
-// penaltyLines 渲染限制清单。带上理由：只写「消息判定处置（群 X）」时
-// 用户根本不知道自己为什么被罚，申诉就无从谈起；理由里那句 AI 结论
-// （原文摘要 + 判定依据）才是他需要看到的东西。
+// penaltyLines 渲染限制清单。带上理由：只写处置类型与群号时用户不知道
+// 自己为什么被罚，申诉无从谈起；理由里那句 AI 结论（原文摘要 + 判定依据）
+// 才是他需要看到的内容。
 func penaltyLines(penalties []appealPenalty) string {
 	var sb strings.Builder
 	for _, p := range penalties {
@@ -347,8 +347,8 @@ func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec) {
 		b.Send(dmChat, "⏳ 你的申诉正在由 AI 复核，请稍候。", nil)
 	case "web":
 		// 窗口过期后自动续一个 24 小时并重发链接。不续的话用户会永久卡在
-		// 一个 410 的链接上：页面让他「回 bot 重新申诉」，而回到这里时
-		// openAppeal 仍认这张单，只会再发回同一条死链。
+		// 一个 410 的链接上：页面让他回 bot 重新申诉，而回到这里时
+		// openAppeal 仍认这张单，只会再发回同一条失效链接。
 		if ap.WebSince == 0 ||
 			time.Now().Unix()-ap.WebSince >= int64(appealWebWindow/time.Second) {
 			now := time.Now().Unix()
@@ -374,8 +374,8 @@ func showAppealProgress(b *core.Bot, dmChat int64, ap appealRec) {
 
 // captureAppealStatement 把此人的下一条私聊当作申诉理由。
 //
-// 10 分钟内没发视为作废（惰性判定，不另起定时任务）：留着的话，
-// 他几天后随手发的一句话会莫名其妙变成申诉理由。
+// 10 分钟内没发视为作废（惰性判定，不另起定时任务）：否则他几天后的
+// 一句无关发言会变成申诉理由。
 func captureAppealStatement(b *core.Bot, dmChat, uid int64, text string) bool {
 	ap, ok := openAppeal(b.Store, b.BotID(), uid)
 	if !ok || ap.Status != "statement" {
@@ -421,8 +421,8 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 		// 已有未结单就不再建：同一人同一 bot 只能有一张。
 		if ap, ok := openAppeal(b.Store, b.BotID(), uid); ok {
 			if parts[2] == "go" && ap.Status == "statement" {
-				// 老消息里的「直接申诉」按钮还会被点到：申诉理由现在必填，
-				// 不再放行，把话说明白并留在这张单上等理由。
+				// 旧消息里的直接申诉按钮仍可能被点到：申诉理由必填，
+				// 不放行，说明清楚并留在这张单上等理由。
 				b.AnswerCallback(q.ID, "申诉理由必填")
 				b.Send(dmChat, "⚠️ 申诉理由必须填写，不能跳过。\n\n"+
 					"请直接发送理由（不超过 200 字），说明为什么应当撤销；"+
@@ -440,7 +440,7 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 				humanDuration(wait)), nil)
 			return
 		}
-		// 理由必填：两条入口（st / 老消息里的 go）都建在「等理由」状态。
+		// 理由必填：两条入口都建在 statement 状态（等待理由）。
 		if _, err := createAppeal(b, uid, "statement"); err != nil {
 			slog.Error("创建申诉单失败", "uid", uid, "err", err)
 			b.Send(dmChat, "系统繁忙，请稍后再试。", nil)
@@ -464,8 +464,8 @@ func HandleAppealCallback(b *core.Bot, q *tg.CallbackQuery) {
 
 // ---- AI 复判 ----
 
-// appealAIRunning 保证同一张申诉单同时只有一次 AI 复核在跑。用户重复点
-// 「直接申诉」、管理员连点「重跑复核」、以及队列重试都可能触发第二次，
+// appealAIRunning 保证同一张申诉单同时只有一次 AI 复核在跑。用户重复
+// 点申诉、管理员连点重跑复核、以及队列重试都可能触发第二次，
 // 重复跑会双倍花钱并竞态流转状态。
 var appealAIRunning sync.Map // appealID -> struct{}
 
@@ -522,7 +522,7 @@ func runAppealAI(b *core.Bot, appealID, uid int64) {
 
 	v, err := judgeAppeal(b, snap, uid, penalties, ap.Statement)
 	if err != nil {
-		// 出错**不**自动解除：现在有网页验证加解禁码兜底，而自动解除
+		// 出错时不自动解除：有网页验证加解禁码兜底，而自动解除
 		// 覆盖联合封禁——出错就放行等于让人靠打挂上游来解开全平台封禁。
 		slog.Warn("申诉：AI 复核失败，转网页", "appeal", appealID, "uid", uid, "err", err)
 		updateAppeal(b.Shared, appealID, `ai_result='error', ai_reason=?`,
@@ -563,7 +563,7 @@ func judgeAppeal(b *core.Bot, snap *store.Snapshot, uid int64,
 
 	// 简介绕开缓存重新拉取：对方可能刚改完资料，读到一小时前的旧值
 	// 会让他无论怎么改都通不过。昵称与用户名一并取回：prewarm 的
-	// 「补齐任意一项」出口需要看见它们。
+	// 补齐任意一项出口需要看见它们。
 	ForgetUserInfo(b, uid)
 	info := userInfo(b, uid)
 	p := buildProfile(b, &tg.Message{From: &tg.TGUser{ID: uid,
@@ -714,7 +714,7 @@ func liftAppealPenalties(b *core.Bot, appealID, uid int64, penalties []appealPen
 				continue
 			}
 		case "message":
-			// 记录上是封禁的就解封：对已被封禁的人发「权限全开」不会把他
+			// 记录上是封禁的就解封：对已封禁者只解除禁言不会把他
 			// 放回群里，而他重新进群又会被当广告号处理。
 			if p.Action == "banned" || p.Action == "deleted_banned" {
 				if ok, desc := Unban(b, p.ChatID, uid); !ok {

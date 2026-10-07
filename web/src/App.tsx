@@ -183,7 +183,7 @@ function BootSkeleton() {
   )
 }
 
-/** UnavailableGuide 复刻旧页的引导文案：SDK 没加载出来时给出可操作提示。 */
+/** UnavailableGuide 在 SDK 未加载出来时给出可操作提示。 */
 function UnavailableGuide() {
   return (
     <Box data-testid="unavailable-guide" sx={{ minHeight: '100dvh', bgcolor: '#F5F6F7', p: 2, pt: 6 }}>

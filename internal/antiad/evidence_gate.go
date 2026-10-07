@@ -2,26 +2,21 @@ package antiad
 
 // ---- 判词-输入一致性门 ----
 //
-// 实测误判（2026-10，antiad_log #21276 与 #26266）：复判模型在 prior 的
-// 引导下给 is_ad=true 配上了凭空编造的理由——留底正文只有「适合你自己的」
-// 「现在不怕CF封了 无限邮箱 小号整起！」，判词却写着「载荷全在外部引用的
-// 贴纸里（裸聊约炮招揽、ldd26.xyz、LINE 账号）」「正文「约炮」并附联系
-// 方式」。这些内容在库内任何输入字段里都不存在（全库搜索只命中判词自身），
-// 只能出自模型生成；提示词 4.1/6 明令不得编造，但没有程序化校验，
-// 高置信度的编造照样直接删消息、禁言。
+// 复判模型可能在 prior 引导下给 is_ad=true 配上凭空编造的理由：判词描写的
+// 载荷在判定对象的任何输入字段里都不存在，只能出自模型生成。提示词虽明令
+// 不得编造，但没有程序化校验，高置信度的编造会直接导致删消息、禁言。
 //
 // 防线有两层。第一层是提示词（17 条 / 冷判定 11 条）：判为广告必须给
-// evidence 数组——从判定对象原文**逐字摘出**的关键词，可多项。第二层是
+// evidence 数组——从判定对象原文逐字摘出的关键词，可多项。第二层是
 // 这里的机械核对：证据必须能在判定对象字段（正文、quoted、资料、
-// bio_links、上下文、命中规则）里逐字找到，判词说「载荷在引用里」时
-// state 里必须有 quoted，判词里出现的域名/@用户名/链接引用也得真实存在。
-// 对不上说明判词在描写一个不存在的输入，结论按未定放行——
-// 宁可漏判，不按编造的证据处罚。放行的条目在流水与复查卡片里
-// 带前缀说明，管理员看得见为什么。
+// bio_links、上下文、命中规则）里逐字找到，判词称载荷在引用里时 state
+// 里必须有 quoted，判词里出现的域名/@用户名/链接引用也得真实存在。对不上
+// 说明判词在描写一个不存在的输入，结论按未定放行，不按编造的证据处罚。
+// 放行的条目在流水与复查卡片里带前缀说明，管理员能看到原因。
 //
 // reason 本身可以概括、可以变形还原（那是给人看的说明）：核对只咬
-// evidence 与硬 token 两条通道，不咬判词措辞——原文写「看煮页」、
-// 判词写「看主页」不算不一致，只要 evidence 摘的是「看煮页」。
+// evidence 与硬 token 两条通道，不咬判词措辞——只要 evidence 摘的是
+// 判定对象原文，措辞的变形还原不算不一致。
 
 import (
 	"log/slog"
@@ -31,14 +26,14 @@ import (
 )
 
 // evidenceTokenRe 抽取判词里的硬证据 token：链接引用、@用户名、域名、
-// 长数字串。域名一段刻意要求末级标签是 2~12 个字母，版本号（4.6.1）与
-// 模型名（gpt-6.1）不会误中。
+// 长数字串。域名一段刻意要求末级标签是 2~12 个字母，版本号与模型名
+// 不会误中。
 var evidenceTokenRe = regexp.MustCompile(
 	`(?i)t\.me/[+%]?[a-z0-9_-]+|@[a-z][a-z0-9_]{3,31}|` +
 		`[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,12}|\+?\d{7,}`)
 
-// stripInvisible 去掉空白与零宽字符：广告文案爱用零宽字符拆词
-// （「首‌发」），判词引用时通常已剥掉；两边都归一化后才比得上。
+// stripInvisible 去掉空白与零宽字符：广告文案常用零宽字符拆词，
+// 判词引用时通常已剥掉；两边都归一化后才比得上。
 func stripInvisible(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) || (r >= 0x200b && r <= 0x200f) ||
@@ -64,8 +59,7 @@ func evidenceKey(tok string) string {
 }
 
 // promptEvidenceVocab 是提示词自身出现的 token。判词有时会复述提示词里的
-// 规则原文（「t.me/joinchat 开头的私密群邀请链接几乎只用于引流」），
-// 这些 token 不构成「输入中不存在」的证据，核对时跳过。
+// 规则原文，这些 token 不构成输入中不存在的证据，核对时跳过。
 var promptEvidenceVocab = func() map[string]bool {
 	m := map[string]bool{}
 	for _, tok := range evidenceTokenRe.FindAllString(stripInvisible(
@@ -151,8 +145,8 @@ func evidenceMisses(st adState, v adVerdict) []string {
 	}
 	var misses []string
 
-	// 门一：判词把载荷归到「引用」头上，判定对象却根本没有 quoted 字段。
-	// recent_context / review_history 里带「［引用·别人的话］」时另说：
+	// 门一：判词把载荷归到引用头上，判定对象却根本没有 quoted 字段。
+	// recent_context / review_history 里带 `［引用·别人的话］` 时另说：
 	// 那是历史条目的引用段，判词提它不算捏造。
 	corpus := stripInvisible(evidenceCorpus(st))
 	corpusNorm := strings.ToLower(corpus)
@@ -175,12 +169,11 @@ func evidenceMisses(st adState, v adVerdict) []string {
 	}
 
 	// 门三：核对模型声明的证据（evidence，提示词要求逐字摘自判定对象原文，
-	// 可多项）。判为广告却给不出证据、或给出的「原文」在判定对象里找不到，
+	// 可多项）。判为广告却给不出证据、或给出的原文在判定对象里找不到，
 	// 都说明判词在描写一个不存在的输入。
 	//
-	// 判词正文（reason）可以概括、变形还原——那是给人看的说明，不再逐字
-	// 核对（旧做法从判词里抽引号段核对，会把「原文写看煮页、判词写看主页」
-	// 这类还原误拦）；判广告的依据是否真实存在，由 evidence 这条通道保证。
+	// 判词正文（reason）可以概括、变形还原，那是给人看的说明，不逐字核对；
+	// 判广告的依据是否真实存在，由 evidence 这条通道保证。
 	if len(v.Evidence) == 0 {
 		misses = append(misses, "判为广告但没有声明证据（evidence 为空）")
 	}
@@ -194,10 +187,9 @@ func evidenceMisses(st adState, v adVerdict) []string {
 		if strings.Contains(corpusNorm, seg) {
 			continue
 		}
-		// 严格比对不上再走一遍「只留字符」的宽松口径：广告文案靠零宽字符与
-		// 怪标点拆词（「　急‌招‌‧拍·照‍📷⁠　​日⁠结百左右」），模型摘录时
-		// 通常归一成常规写法。容忍标点与表情差异、要求字符顺序一致——
-		// 换字（看煮页→看主页）仍然对不上。
+		// 严格比对不上再走一遍只留字符的宽松口径：广告文案靠零宽字符与
+		// 特殊标点拆词，模型摘录时通常归一成常规写法。容忍标点与表情差异、
+		// 要求字符顺序一致——换字仍然对不上。
 		if sq := squashEvidence(seg); sq != "" &&
 			strings.Contains(squashEvidence(corpus), sq) {
 			continue

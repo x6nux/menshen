@@ -41,7 +41,7 @@ func (w *window) add(now time.Time, n int64) {
 	w.last = now
 }
 
-// ponytail: 单进程内存限流器。多实例部署时整体替换为 Redis 实现，接口不变。
+// Limiter 是单进程内存限流器。多实例部署时整体替换为 Redis 实现，接口不变。
 type Limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*window
@@ -56,7 +56,7 @@ func (l *Limiter) Allow(key string, limit int64) bool {
 }
 
 // AllowAt 检查并在放行时记入一次。limit <= 0 表示不限（不是全禁），
-// 并且不留下任何窗口记录——否则限流从关到开的那一刻会带着历史包袱立刻触顶。
+// 并且不留下任何窗口记录——否则限流从关到开的那一刻会立即触顶。
 func (l *Limiter) AllowAt(key string, limit int64, now time.Time) bool {
 	if limit <= 0 {
 		return true
@@ -76,8 +76,8 @@ func (l *Limiter) AllowAt(key string, limit int64, now time.Time) bool {
 	return true
 }
 
-// GCAt 回收长期无人问津的窗口。阈值取 5 个窗口长度，远大于窗口本身，
-// 避免把一个正在被稀疏使用的 key 反复建了删、删了建。
+// GCAt 回收长期未使用的窗口。阈值取 5 个窗口长度，远大于窗口本身，
+// 避免把一个稀疏使用的 key 反复创建与删除。
 func (l *Limiter) GCAt(now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

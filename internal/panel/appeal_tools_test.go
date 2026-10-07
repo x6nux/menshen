@@ -37,7 +37,7 @@ func TestHandleWhiteDM(t *testing.T) {
 }
 
 // TestHandleWhiteDMRejectsOtherAdminsBot：次管只能改自己名下 bot 的
-// 豁免名单，对别人的 bot 一律拒绝（否则等于给人开漏判通道）。
+// 豁免名单，对别人的 bot 一律拒绝（否则等于为其开放漏判途径）。
 func TestHandleWhiteDMRejectsOtherAdminsBot(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	if err := b.AddAdmin(888, "测试次管", 777); err != nil {

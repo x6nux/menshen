@@ -1,4 +1,4 @@
-// 机器人列表（计划 4.2）：本地搜索（label/username/bot_id）+ 状态徽标 + 空态引导。
+// 机器人列表：本地搜索（label/username/bot_id）+ 状态徽标 + 空态引导。
 import { Box } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'

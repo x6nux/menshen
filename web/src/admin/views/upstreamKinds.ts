@@ -1,5 +1,5 @@
-// 上游渠道类型的展示名与默认能力开关：被列表页与详情页共用，抽成模块避免
-// 「页面文件同时导出组件与常量」的 fast-refresh 警告。
+// 上游渠道类型的展示名与默认能力开关：由列表页与详情页共用；独立成模块，
+// 避免页面文件同时导出组件与常量而触发 fast-refresh 警告。
 import type { UpstreamKind } from '../../api/types'
 
 export const KINDS: { value: UpstreamKind; label: string }[] = [

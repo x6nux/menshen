@@ -1,5 +1,5 @@
-// 名单管理：可见性矩阵（次管只有联封）、四处本地搜索（过滤 + 焦点不丢，
-// 对应旧 TestMiniAppListSearch 的迁移不变量）、各分段的增删参数与确认文案。
+// 名单管理测试：可见性矩阵（次级管理员只有联合封禁）、四处本地搜索
+// （过滤 + 焦点不丢）、各分段的增删参数与确认文案。
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -272,7 +272,7 @@ describe('ListsPage 写操作参数', () => {
     ).toBeInTheDocument()
     expect(bodies).toHaveLength(0)
 
-    // 合法值仍照常提交
+    // 合法值正常提交
     fireEvent.change(screen.getByLabelText('小时（留空 = 永久）'), { target: { value: '24' } })
     fireEvent.click(screen.getByRole('button', { name: '加入' }))
     await waitFor(() => expect(bodies).toHaveLength(1))
@@ -330,7 +330,7 @@ describe('ListsPage 写操作参数', () => {
     await waitFor(() => expect(bodies).toHaveLength(1))
     expect(bodies[0]).toEqual({ action: 'enable', on: false })
 
-    // 生效群：勾上未圈定的「演练群」
+    // 生效群：勾上未圈定的演练群
     fireEvent.click(screen.getByRole('switch', { name: '演练群' }))
     await waitFor(() => expect(bodies).toHaveLength(2))
     expect(bodies[1]).toEqual({ action: 'chat', chat_id: -1009876543210, on: true })

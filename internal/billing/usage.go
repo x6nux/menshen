@@ -58,7 +58,7 @@ type openAIUsage struct {
 	CompletionTokens    int `json:"completion_tokens"`
 	PromptTokensDetails struct {
 		CachedTokens     int `json:"cached_tokens"`
-		CacheWriteTokens int `json:"cache_write_tokens"` // newapi 扩展，实测存在
+		CacheWriteTokens int `json:"cache_write_tokens"` // newapi 扩展字段
 	} `json:"prompt_tokens_details"`
 }
 

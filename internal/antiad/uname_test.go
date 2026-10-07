@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// 随机度算法：注册机吐出的无词形随机串要过线，人取的用户名要被压下去。
+// 随机度算法：注册机生成的无词形随机串应达到阈值，人工取的常规用户名
+// 应低于阈值。
 func TestIdentifierRand(t *testing.T) {
 	random := []string{
-		// 提示词里的三个真实样本
+		// 提示词中的三个样本
 		"tpiw33abik", "vwzbc32xc7", "dmfh9r1dgm",
 		"xk7dp2mqn9", "ahmx88kd3", "q7zt4vxr2m",
 	}

@@ -5,9 +5,9 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
 import type { Plugin } from 'vite'
 
-// msw 浏览器 mock（VITE_MOCK=1）需要 /miniapp/mockServiceWorker.js，而工程
-// 关掉了 publicDir（产物根目录不留额外文件）。开发时由这个插件从 msw 依赖
-// 里直接送出，仓库因此不需要提交一份生成文件。
+// msw 浏览器 mock（VITE_MOCK=1）需要 /miniapp/mockServiceWorker.js。该文件不在
+// public/ 下，不会被复制进产物；开发时由本插件从 msw 依赖里直接送出，
+// 仓库因此不需要提交一份生成文件。
 function mswWorkerPlugin(): Plugin {
   return {
     name: 'menshen-msw-worker',
@@ -61,9 +61,8 @@ export default defineConfig({
         main: resolve(import.meta.dirname, 'index.html'),
         public: resolve(import.meta.dirname, 'public.html'),
       },
-      // 不手动切 vendor：多入口下手工分包会把 CJS 包装函数与 MUI 拆进
-      // 互相 import 的两个 chunk，模块初始化顺序反过来时直接 TypeError
-      // （线上白屏事故）。交给 Rolldown 自动分组，它知道谁依赖谁。
+      // vendor 分包交给 Rolldown 自动分组：多入口下手工分包会把 CJS 包装函数
+      // 与 MUI 拆进互相 import 的两个 chunk，模块初始化顺序反转时触发 TypeError。
     },
   },
   server: {

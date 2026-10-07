@@ -24,7 +24,7 @@ import (
 const (
 	// adSummaryList 是汇总里逐条列出的命中上限，其余只给条数。
 	adSummaryList = 20
-	// adSummaryButtons 是带「进记录卡片」按钮的条数，多了键盘会比正文还长。
+	// adSummaryButtons 是带进记录卡片按钮的条数，多了键盘会比正文还长。
 	adSummaryButtons = 8
 )
 
@@ -47,8 +47,8 @@ func FlushAdSummary(b *core.Bot, now time.Time) {
 	if cursor >= maxID {
 		return
 	}
-	// 游标为 -1 是升级后第一次运行：只记下位置，不把过去的命中翻出来发。
-	// 私聊关着时游标照走，再打开不补发。
+	// 游标为 -1（初始值，尚无历史游标）时只记下位置，不把过去的命中翻出来
+	// 发。私聊关闭时游标照走，再打开不补发。
 	notify := cursor >= 0 && snap.BotSettingInt(id, "antiad_dm_admins", 1) == 1
 	if notify {
 		text, kb, ok := renderAdSummary(b, cursor, maxID)
@@ -77,8 +77,8 @@ type summaryHit struct {
 // renderAdSummary 渲染 (from, to] 区间的汇总。没有命中、复判为正常与判定失败时
 // ok 为假。不带原文与昵称：要看的点进记录卡片。
 //
-// 「复判为正常」是初判先删了、复判又说不是广告的（见 judgeAndAct）：
-// 误删了一条正常消息，管理员得知道。
+// 复判为正常是初判先删、复判又判为非广告的（见 judgeAndAct）：
+// 正常消息被误删，管理员需要知道。
 func renderAdSummary(b *core.Bot, from, to int64) (string, map[string]any, bool) {
 	id := b.BotID()
 	var hits, cleared, errs, skipped int64
@@ -144,7 +144,7 @@ func renderAdSummary(b *core.Bot, from, to int64) (string, map[string]any, bool)
 		if strings.Contains(h.Reason, purgeNote) {
 			sb.WriteString(" · 全删")
 		}
-		// 失败说明都是「xx失败: 原因」的形状（见 ApplyAction）；模型写的理由
+		// 失败说明都是 `xx失败: 原因` 的形状（见 ApplyAction）；模型写的理由
 		// 用全角标点，不会误中。
 		if strings.Contains(h.Reason, "失败: ") {
 			sb.WriteString(" ⚠️")

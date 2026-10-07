@@ -8,7 +8,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestLeaderHit：领导人姓名的几种写法都要命中，同时不误伤普通人名。
+// TestLeaderHit：领导人姓名的几种写法都要命中，同时不误判普通姓名。
 func TestLeaderHit(t *testing.T) {
 	hits := []string{
 		"习近平", "Xi Jinping", "xi-jinping", "xijinping3616", "习 近 平",
@@ -37,8 +37,8 @@ func TestLeaderHit(t *testing.T) {
 }
 
 // TestLeaderGateBansImpersonator：昵称/用户名里出现领导人姓名时直接封禁
-// 出群（删消息 + banChatMember + 落流水），不送检、不花 AI 的钱；
-// 正文里只是提到不算（管理员口径「提到不管，只查资料」）。
+// 出群（删消息 + banChatMember + 落流水），不送检、不消耗 AI 额度；
+// 正文里只是提到不算（管理员口径：提到不管，只查资料）。
 func TestLeaderGateBansImpersonator(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -82,7 +82,7 @@ func TestLeaderGateBansImpersonator(t *testing.T) {
 		t.Errorf("用户名冒用也该封禁，得到 %d 次", n)
 	}
 
-	// 正文里只是「提到」姓名：不封禁（管理员口径「提到不管，只查资料」），
+	// 正文里只是提到姓名：不封禁（管理员口径：提到不管，只查资料），
 	// 照常走判定链路。
 	b3, fake3 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b3, -100)
@@ -108,7 +108,7 @@ func TestLeaderGateBansImpersonator(t *testing.T) {
 }
 
 // TestLeaderGateSkipsExempt：管理员与白名单不受这条硬规则影响 —— 豁免在
-// 规则之前，机器人不能因为管理员聊到政治就把自己的管理员踢出去。
+// 规则之前，机器人不应因管理员聊到政治而封禁自己的管理员。
 func TestLeaderGateSkipsExempt(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -129,7 +129,7 @@ func TestLeaderGateSkipsExempt(t *testing.T) {
 }
 
 // TestLeaderBanRespectsDryrun：演练群只落流水（dryrun:deleted_banned），
-// 不动手也不发群内告警。
+// 不执行处置也不发群内告警。
 func TestLeaderBanRespectsDryrun(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiadMode(t, b, -100, true)

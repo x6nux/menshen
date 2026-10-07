@@ -1,4 +1,4 @@
-// ErrorBoundary：渲染异常不再整页白屏，给出原因与刷新入口。
+// ErrorBoundary：渲染异常时给出原因与刷新入口。
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ErrorBoundary } from './ErrorBoundary'

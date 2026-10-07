@@ -10,9 +10,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestMigrateOldDB 在一个「老形状」的库上启动：schemaSQL 全是
+// TestMigrateOldDB 在一个老形状的库上启动：schemaSQL 全是
 // CREATE TABLE IF NOT EXISTS，对已存在的表完全无效，新列只能靠 migrate 补。
-// 只在新库上验证过的迁移，恰好会在唯一有数据的那些部署上炸。
 func TestMigrateOldDB(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	old, err := sql.Open("sqlite", "file:"+path)
@@ -128,7 +127,7 @@ func TestMigrateOldDB(t *testing.T) {
 	if nextAt != 0 {
 		t.Errorf("老成员 prewarm_next_at 默认应为 0，得到 %d", nextAt)
 	}
-	// 老上游没有类型：迁移默认 openai，行为与升级前一致。
+	// 老上游没有类型：迁移默认按 openai 处理。
 	var kind string
 	if err := s.Read.QueryRow(`SELECT kind FROM upstreams WHERE name='old'`).Scan(&kind); err != nil {
 		t.Fatalf("读老上游 kind 失败: %v", err)
@@ -266,9 +265,8 @@ func hasIndex(db *sql.DB, table, name string) (bool, error) {
 	return false, rows.Err()
 }
 
-// TestReloadWithConcurrentWrites：写连接与 Reload 的读事务并发时不互锁。
-// WAL 下读者不阻塞写者、写者也不阻塞读者；Reload 现在整轮跑在一个读事务里，
-// 这里守的是「加事务之后仍然不会互相饿死」。
+// TestReloadWithConcurrentWrites 验证写连接与 Reload 的读事务并发时不互锁：
+// WAL 下读者不阻塞写者、写者也不阻塞读者，Reload 整轮跑在一个读事务里。
 func TestReloadWithConcurrentWrites(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "rw.db"))
 	if err != nil {
@@ -310,7 +308,7 @@ func TestReloadWithConcurrentWrites(t *testing.T) {
 
 // TestOpenPragmas 确认每条连接都带上了 WAL 与 synchronous=NORMAL。
 // pragma 是按连接生效的：只在某一条连接上 Exec 一次，连接池新开的
-// 连接就悄悄回到默认的 FULL，每次写都要多等一次 fsync。
+// 连接会回到默认的 FULL，每次写都要多等一次 fsync。
 func TestOpenPragmas(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "p.db"))
 	if err != nil {

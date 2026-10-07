@@ -1,9 +1,9 @@
-// 上游渠道（计划 4.8，仅主管理员）：
+// 上游渠道（仅主管理员）：
 // - 列表：名称 + 启用徽标 + base_url 副行；
-// - 「＋」抽屉：名称 / 渠道类型 / base_url / api_key / 能力 / 启用 → upstream add；
+// - `＋` 抽屉：名称 / 渠道类型 / base_url / api_key / 能力 / 启用 → upstream add；
 // - 详情：渠道配置抽屉（api_key 留空 = 不改，显示当前掩码）、启停 Switch（乐观）、
 //   改名抽屉、危险区删除（ActionSheet 写明对象与后果）；
-// - 「测试连通」（T6）：upstream {action:'test'} 发一次最小请求，结果行内
+// - `测试连通`：upstream {action:'test'} 发一次最小请求，结果行内
 //   展示延迟/模型或可读错误，pending 时禁用自身按钮、不阻塞其他操作。
 import NetworkCheckOutlined from '@mui/icons-material/NetworkCheckOutlined'
 import { Box, Button, TextField, Typography } from '@mui/material'

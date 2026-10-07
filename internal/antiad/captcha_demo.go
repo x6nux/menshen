@@ -137,11 +137,10 @@ func captchaDemoPost(sh *core.Shared, w http.ResponseWriter, r *http.Request) {
 // 与人机验证演示页（_w/demo）同一套测试台：校验走与申诉页完全相同的
 // verifyTurnstile（config 的 Turnstile 密钥、action / cdata / hostname
 // 全部照查），所以这里通过即代表申诉验证那条路也通。申诉页本身只回
-// 一句「验证未通过」，排查密钥、域名白名单或 cdata 绑定问题时，具体
+// 一句`验证未通过`，排查密钥、域名白名单或 cdata 绑定问题时，具体
 // 原因全靠这页显示。
 //
-// cdata 用路由里的 <id>（任意正整数即可，固定链接用 /1/x），不落库、
-// 不影响任何真实申诉单。
+// cdata 取路由里的 <id>（任意正整数即可），不落库、不影响任何真实申诉单。
 
 // handleAppealDemoPage 处理 GET ?json=1（sitekey 与 cdata）与 POST 校验。
 func handleAppealDemoPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {

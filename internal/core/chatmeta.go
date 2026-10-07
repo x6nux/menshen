@@ -8,7 +8,7 @@ import (
 
 // RefreshChatTitle 用本 bot 的 token 查一次群标题并写回 bot_chats。
 //
-// 群标题只在「添加群」那一刻抓一次，而先加配置、后把 bot 拉进群是合法的
+// 群标题只在添加群那一刻抓一次，而先加配置、后把 bot 拉进群是合法的
 // 操作顺序：那时 getChat 还看不到这个群，标题就永久空着，面板与 Mini App
 // 只能显示裸 chat_id。启动回填与收到群消息时的按需刷新都走这里。
 // 返回是否真的把标题写进了库。
@@ -31,7 +31,7 @@ func (b *Bot) RefreshChatTitle(chatID int64) bool {
 		return false
 	}
 	// 只在真的变了时写库并重载缓存：按需刷新会反复调用，标题没变时
-	// 一次 UPDATE + Reload 都是白费。
+	// 一次 UPDATE + Reload 都是多余开销。
 	res, err := b.Store.Write.Exec(
 		`UPDATE bot_chats SET title=? WHERE bot_id=? AND chat_id=? AND title<>?`,
 		title, b.BotID(), chatID, title)

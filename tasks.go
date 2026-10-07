@@ -96,7 +96,7 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 			// 与上面两个清扫同批，慢了就下一轮再试。
 			b.SweepUnconfiguredChats(now)
 			// 私聊汇总。启动即跑的这一轮顺带把游标就位：升级后第一次只记位置，
-			// 拖到第一个整分钟的话，这一分钟里的命中会被当成「历史」跳过。
+			// 拖到第一个整分钟的话，这一分钟里的命中会被当成历史跳过。
 			antiad.FlushAdSummary(b, now)
 			// 空标题补一次：先加配置、后入群的群，长期没人发言时消息路径
 			// 等不到，只有这里能自愈。有标题的群不查 TG。
@@ -107,7 +107,7 @@ func tickMinute(sh *core.Shared, reg *core.Registry) {
 
 func tickHourly(sh *core.Shared) {
 	antiad.CleanupData(sh)
-	// 规则发现自动运行只负责「发车」：同步扫一遍游标后就起后台 goroutine。
+	// 规则发现自动运行只负责启动：同步扫一遍游标后就起后台 goroutine。
 	// 放在小时任务最前面，避免被下面可能长达几十分钟的禁言复查/形态总结堵住
 	// ——它一旦在下一小时 tick 时还没跑完，整轮小时任务都会被跳过。
 	antiad.AutoRuleDiscovery(sh)
@@ -124,7 +124,7 @@ func tickHourly(sh *core.Shared) {
 //
 // 标题只在添加群那一刻抓过：先加配置、后入群的群会一直空着，群改名也不会
 // 跟着变。onlyEmpty 为真只查空标题（分钟级快速自愈）；否则全量（小时级，
-// 跟进群改名）。按 bot 限量、逐条间隔，别把 TG 速率限制打满。
+// 跟进群改名）。按 bot 限量、逐条间隔，避免触发 TG 速率限制。
 func refreshChatTitles(b *core.Bot, onlyEmpty bool) {
 	q := `SELECT chat_id FROM bot_chats WHERE bot_id=?`
 	if onlyEmpty {

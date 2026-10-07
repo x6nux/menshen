@@ -3,7 +3,7 @@
 //
 // 契约：所有读 hook 都带 enabled（默认 true）。页面必须在 Telegram bridge 就绪、
 // 拿到 initData 之后再传 enabled: true —— 否则请求会带着空 initData 发出，
-// 服务端回 401，UI 会显示误导性的「身份失效」。外壳可以在 initTelegram()
+// 服务端回 401，UI 会显示误导性的身份失效提示。外壳可以在 initTelegram()
 // resolve 前先用 enabled: false 挂载页面。
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { api } from './client'
@@ -39,8 +39,8 @@ export const miniQueryKeys = {
 }
 
 /**
- * 记录筛选归一化：不传（undefined）= 默认「已删除」（旧页 LOGF='deleted'）；
- * ''/'all' = 全部，统一成 'all' 共用 queryKey；其余原样透传。
+ * 记录筛选归一化：不传（undefined）默认 'deleted'（已删除）；
+ * ''/'all' 表示全部，统一成 'all' 共用 queryKey；其余原样透传。
  */
 function normalizeLogFilter(filter?: string): string {
   if (filter === undefined) return 'deleted'
@@ -162,7 +162,7 @@ export function useRuleAgent(enabled = true) {
 
 // ---- 无限列表（记录/申诉/用户页）----
 //
-// 全部用 total/shown 与「已加载条数」比较来决定下一页：
+// 全部用 total/shown 与已加载条数比较来决定下一页：
 // - logs/appeals 的 total 是同一 WHERE 的总数；
 // - user 用 shown（当前筛选下的总数）——用 total 会因筛选偏大而多翻一页。
 // 页大小 20 由后端 LIMIT 固定。keepPreviousData 让切换筛选时列表不闪空，

@@ -1,6 +1,6 @@
-// 群组详情（计划 4.3 / 5.1 迁移不变量）：
+// 群组详情：
 // - 三个开关（启用/演练/群内展示）乐观更新失败回滚；
-// - 处罚方式 Select + 「实际执行」行 + 防错提示（称呼语时长用 muteOptLabel）；
+// - 处罚方式 Select + `实际执行` 行 + 防错提示（称呼语时长用 muteOptLabel）；
 // - 补全历史入群时间（成功 toast 用服务端 note）；危险区移除该群。
 import FolderOpenOutlined from '@mui/icons-material/FolderOpenOutlined'
 import { Box, Button, MenuItem, TextField, Typography } from '@mui/material'

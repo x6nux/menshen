@@ -29,7 +29,7 @@ func dmCount(fake *testutil.FakeTG, to int64) int {
 	return n
 }
 
-// TestSummaryFirstRunOnlyMarksCursor：升级后第一次运行只记位置，不翻旧账。
+// TestSummaryFirstRunOnlyMarksCursor：首次运行只记录游标位置，不汇总历史命中。
 func TestSummaryFirstRunOnlyMarksCursor(t *testing.T) {
 	b, fake, _ := testutil.NewTestBotOwned(t, 1, 100)
 	testutil.EnableAntiad(t, b, -100)
@@ -208,7 +208,7 @@ func TestActionLabel(t *testing.T) {
 	}
 }
 
-// prewarm_checked 与 join_checked 同口径：不算处置，用户页的「被处置过」
+// prewarm_checked 与 join_checked 同口径：不算处置，用户页的被处置过
 // 与私聊汇总都要排除它。
 func TestPrewarmCheckedNotProcessed(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -225,7 +225,7 @@ func TestPrewarmCheckedNotProcessed(t *testing.T) {
 }
 
 // TestRecordCardShowsContentWithoutWebJump：管理员的记录卡片直接把原文与
-// 理由印在卡片上，不再要求去网页查看（配了 public_url 也一样）。
+// 理由印在卡片上，不要求去网页查看（配了 public_url 也一样）。
 func TestRecordCardShowsContentWithoutWebJump(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"

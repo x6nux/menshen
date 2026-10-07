@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// TestSnapshotLocation：展示时区优先取 tz_name（IANA 名称）；没配或
-// 配错的部署要回落到旧的 tz_offset 小时偏移——升级不能改变现有行为。
+// TestSnapshotLocation：展示时区优先取 tz_name（IANA 名称）；未配或
+// 配错时回落到 tz_offset 小时偏移。
 func TestSnapshotLocation(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -20,7 +20,7 @@ func TestSnapshotLocation(t *testing.T) {
 	}
 	snap := c.Snap()
 
-	// 默认 tz_name=Asia/Shanghai：与旧默认 tz_offset=8 同为 UTC+8。
+	// 默认 tz_name=Asia/Shanghai：与默认 tz_offset=8 同为 UTC+8。
 	if got := snap.Location().String(); got != "Asia/Shanghai" {
 		t.Errorf("默认时区应为 Asia/Shanghai，得到 %s", got)
 	}
@@ -44,7 +44,7 @@ func TestSnapshotLocation(t *testing.T) {
 		t.Errorf("应使用 tz_name，得到 %s", got)
 	}
 
-	// 配错了回落 tz_offset；tz_offset 本身也不再是默认值 8。
+	// 配错时回落 tz_offset；tz_offset 此处已显式设为 -3。
 	put("tz_name", "Not/AZone")
 	put("tz_offset", "-3")
 	off := time.Unix(1700000000, 0).In(c.Snap().Location()).Format("-07:00")

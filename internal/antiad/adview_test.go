@@ -101,7 +101,7 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 	if err := EnsureWebSecret(b.Shared); err != nil {
 		t.Fatal(err)
 	}
-	testutil.EnableAntiad(t, b, -100) // 建群，标题「测试群」
+	testutil.EnableAntiad(t, b, -100) // 建群，标题`测试群`
 	botID := b.BotID()
 	now := time.Now().Unix()
 
@@ -225,8 +225,8 @@ func TestAppealDetailShowsUserDossier(t *testing.T) {
 	}
 }
 
-// TestJoinNoticePairedEitherOrder：入群服务消息与冷判定禁言谁先到，
-// 都能把「XXX 已加入群组」删掉。
+// TestJoinNoticePairedEitherOrder：入群服务消息与冷判定禁言无论谁先到，
+// 都能删掉对应的服务消息。
 func TestJoinNoticePairedEitherOrder(t *testing.T) {
 	// 服务消息先到，判定后命中。
 	b, fake := testutil.NewTestBot(t, 1)
@@ -256,8 +256,7 @@ func TestJoinNoticePairedEitherOrder(t *testing.T) {
 }
 
 // TestAppealViewJSONArraysNeverNull：申诉详情的数组字段必须序列化成 []，
-// 不能是 null —— 前端对 null 调 length/map 会抛错并卸载整页
-// （线上真实事故：点「查看内容」后白屏）。
+// 不能是 null：前端对 null 调 length/map 会抛错并卸载整页。
 func TestAppealViewJSONArraysNeverNull(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
@@ -305,7 +304,7 @@ func TestAppealViewJSONArraysNeverNull(t *testing.T) {
 }
 
 // TestDossierMarksPrewarmMutedGreeting：Layer 1 命中会删掉那条招呼，
-// 申诉页的历史留底要把它标成「被拦」—— 否则管理员只看到人被禁言，
+// 申诉页的历史留底要把它标成`被拦`—— 否则管理员只看到人被禁言，
 // 看不到被删的内容是句招呼。
 func TestDossierMarksPrewarmMutedGreeting(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

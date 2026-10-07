@@ -17,18 +17,17 @@ import (
 
 // ---- 残留限制复查（后备） ----
 //
-// 库里「查不到生效限制」不等于 Telegram 侧真的解除了。最典型的是名单
-// 扇出的禁言：它有一段时间没有落流水（见 gbanLogAction），撤名单又只
-// 解封禁不解禁言 —— 用户看到的是「申诉结案写着限制已不存在，人还是发
-// 不了言」。所以他把申诉链接再点一次时，除了告诉他「查不到限制」，
-// 还要真去群里核对一遍：库里的记录只是我们自己的账本，权限在 Telegram
-// 手里。
+// 库里查不到生效限制不等于 Telegram 侧真的解除了。最典型的是名单扇出的
+// 禁言：它不落流水（见 gbanLogAction），撤名单又只解封禁不解禁言，于是
+// 申诉结案写着限制已不存在，人却仍然发不了言。因此再次点击申诉链接时，
+// 除了告知查不到限制，还要真去群里核对一遍：库里的记录只是我们自己的
+// 账本，权限在 Telegram 手里。
 
 const (
-	// residualCooldown 是同一个人的复查间隔：连点几下申诉链接不该把
-	// 名下所有群一遍遍问过去。
+	// residualCooldown 是同一个人的复查间隔：避免重复点击申诉链接时
+	// 反复问询名下所有群。
 	residualCooldown = 10 * time.Minute
-	// residualMaxChats 是一次复查的问询上限，防止极端部署下把申诉入口
+	// residualMaxChats 是一次复查的问询上限，防止极端情况下把申诉入口
 	// 拖成全量巡检。
 	residualMaxChats = 50
 )
@@ -58,8 +57,8 @@ func residualSweepAsync(b *core.Bot, dmChat, uid int64) bool {
 	})
 }
 
-// residualSweep 挨个核对用户在归属人名下各群里的状态，把「库里没有任何
-// 记录、Telegram 侧却还被限制」的残留修掉：
+// residualSweep 挨个核对用户在归属人名下各群里的状态，把库里没有任何
+// 记录、Telegram 侧却仍被限制的残留修掉：
 //
 //	被封禁出群 → unbanChatMember（必须带 only_if_banned，否则等于把
 //	            没被封的人踢出去再解封）
@@ -186,7 +185,7 @@ func chatMemberState(bots []*core.Bot, chatID, uid int64) *memberState {
 	return nil
 }
 
-// chatDisplayName 给群配一个能在私聊里念出来的名字。
+// chatDisplayName 给群取一个可读的显示名。
 func chatDisplayName(c store.BotChat) string {
 	if t := strings.TrimSpace(c.Title); t != "" {
 		return t

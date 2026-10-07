@@ -82,7 +82,7 @@ func TestVisualOf(t *testing.T) {
 	}
 }
 
-// TestPurePhotoNeedsVisionModel：没配识图模型时纯图照旧不判，零额外开销。
+// TestPurePhotoNeedsVisionModel：没配识图模型时纯图仍不判定，零额外开销。
 func TestPurePhotoNeedsVisionModel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -94,7 +94,7 @@ func TestPurePhotoNeedsVisionModel(t *testing.T) {
 	}
 }
 
-// TestPurePhotoJudgedWithVision：配了识图模型，图里的文字以「［图片］」行并进正文送检，
+// TestPurePhotoJudgedWithVision：配了识图模型，图里的文字以`［图片］`行并进正文送检，
 // 留底也带上；同一张图按 file_unique_id 只识一次。
 func TestPurePhotoJudgedWithVision(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -123,9 +123,8 @@ func TestPurePhotoJudgedWithVision(t *testing.T) {
 	}
 }
 
-// TestVisionFallsBackToReasoning：推理模型偶发把话全说在思考里、正文为空
-// （线上真实发生过：completion_tokens=55、content 一个字没有）。思考同样是
-// 模型对图片的描述，拿来当描述用，比整条判定失败放行强。
+// TestVisionFallsBackToReasoning：推理模型偶发把话全说在思考里、正文为空。
+// 思考同样是模型对图片的描述，拿来当描述用，比整条判定失败放行更好。
 func TestVisionFallsBackToReasoning(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

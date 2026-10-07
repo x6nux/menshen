@@ -8,7 +8,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestProfileShape 守归一化表：链接/数字/@/零宽都折叠成同一形状；
+// TestProfileShape 验证归一化表：链接/数字/@/零宽都折叠成同一形状；
 // 太短或只剩占位符时返回空串（不参与复用，避免扩大误伤）。
 func TestProfileShape(t *testing.T) {
 	cases := []struct {

@@ -9,7 +9,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestManualMarkByRecordDropsProfileOK：配置台「标记广告」与群内 /banad 是
+// TestManualMarkByRecordDropsProfileOK：配置台的标记广告与群内 /banad 是
 // 同一个语义，人工结论落地后先前的资料放行必须一起作废 —— 否则这份放行还能
 // 继续挡后续判定的资料一路，等于人工结论被一份过期的自动放行架空。演练群
 // 不动真实状态，与 /banad 的分支保持一致（见 TestAdbDropsProfileOK）。
@@ -41,7 +41,7 @@ func TestManualMarkByRecordDropsProfileOK(t *testing.T) {
 	}
 }
 
-// TestReleaseUserKeepsVerdict：解封是「单纯放人」，判定维持不变 ——
+// TestReleaseUserKeepsVerdict：解封是单纯的放行，判定维持不变 ——
 // 记录动作不改写、内容哈希不被撤、命中数不回退，只撤掉生效中的限制、
 // 清掉记录，并在理由里留一行痕。
 func TestReleaseUserKeepsVerdict(t *testing.T) {
@@ -95,7 +95,7 @@ func TestReleaseUserKeepsVerdict(t *testing.T) {
 		WHERE id=? AND lifted_at=0`, id); n != 0 {
 		t.Errorf("处罚流水应标成已解除，剩 %d 条", n)
 	}
-	// 解禁言那次调用是「权限全开」。
+	// 解禁言那次调用是权限全开。
 	sawUnmute := false
 	for _, p := range fake.Calls("restrictChatMember") {
 		if perms, ok := p["permissions"].(map[string]any); ok &&
@@ -175,7 +175,7 @@ func TestUndoVerdictPrewarmMuted(t *testing.T) {
 	}
 }
 
-// TestAdHitsCounted：只有当初真的加过 ad_hits 的记录才允许在「误判」时递减。
+// TestAdHitsCounted：只有当初真的加过 ad_hits 的记录才允许在`误判`时递减。
 // 进群类处置、manual-ban 与演练记录都会让无条件递减抹掉真实命中数。
 func TestAdHitsCounted(t *testing.T) {
 	cases := []struct {

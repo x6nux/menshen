@@ -157,8 +157,8 @@ func TestCloudflareStreamAdapter(t *testing.T) {
 	}
 }
 
-// TestStreamAdapterErrorEvents：各家的错误事件都要变成 readChatStream
-// 认得的 error 块，不能让一条挂掉的上游被当成正常空回复。
+// TestStreamAdapterErrorEvents 验证各家的错误事件都变成 readChatStream
+// 认得的 error 块，避免上游出错被当成正常空回复。
 func TestStreamAdapterErrorEvents(t *testing.T) {
 	cases := []struct {
 		kind Kind

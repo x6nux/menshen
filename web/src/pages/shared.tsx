@@ -62,7 +62,7 @@ export function InfoRow({ label, children }: { label: ReactNode; children: React
 }
 
 /**
- * ListCount 是列表顶部的「共 N 条」行。total 未知或正在切换筛选（占位数据）
+ * ListCount 是列表顶部的 `共 N 条` 行。total 未知或正在切换筛选（占位数据）
  * 时显示占位符，避免旧筛选的总数误导。
  */
 export function ListCount({

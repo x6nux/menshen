@@ -10,12 +10,12 @@ import (
 
 // ---- 申诉详情页左栏：用户资料 ----
 //
-// 管理员打开一张申诉单，先要回答三个问题：这是谁、他以前干过什么、
-// 现在还有哪些限制生效。左栏把这些「资料」一次列全，右栏才是申诉单
+// 管理员打开一张申诉单，需回答三个问题：这是谁、历史行为如何、
+// 当前还有哪些限制生效。左栏把这些资料一次列全，右栏才是申诉单
 // 本身的复核与解禁码。数据只取本 bot 名下（它自己的流水与群），不跨
 // bot 泄露别的群主的数据。
 
-// 各种上限：资料栏不能被一个刷了几千条的号撑爆。
+// 各种上限：避免单个账号的条目数量把资料栏填满。
 const (
 	dossierMsgLimit   = 100 // 留底发言
 	dossierMsgShow    = 30  // 留底先展开几条，其余折叠
@@ -88,7 +88,7 @@ func penaltyLabel(t string) string {
 	return t
 }
 
-// penaKey 是「同一条处罚」的身份：类型 + 群 + 时间，用来把最近流水里
+// penaKey 是同一条处罚的身份：类型 + 群 + 时间，用来把最近流水里
 // 的条目与仍在生效的限制对上。
 func penaKey(typ string, chatID, at int64) string {
 	return fmt.Sprintf("%s|%d|%d", typ, chatID, at)
@@ -172,7 +172,7 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	}
 
 	// 当前生效的限制：进群资料审核 + 禁言期内未解除的消息处置 + 联合封禁。
-	// 这份名单是「为什么他还在被限制」的权威答案，与下面的历史流水分开。
+	// 这份名单是当前限制的权威来源，与下面的历史流水分开。
 	active := map[string]bool{}
 	for _, p := range effectivePenalties(sh, ap.BotID, ap.UserID) {
 		v := appealViewPenalty{Type: p.Type, ChatID: p.ChatID, Label: penaltyLabel(p.Type),
@@ -191,7 +191,7 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 	}
 
 	// 处罚记录：最近 20 条。生效中的已经单列一张卡（还含联合封禁），这里
-	// 只留不再生效的历史，免得同一条罚款在页面上出现两遍。
+	// 只留不再生效的历史，避免同一条处罚在页面上重复显示。
 	rows, err = sh.Store.Read.Query(`SELECT type,chat_id,text,reason,at FROM (
 			SELECT CASE WHEN kind=? THEN 'prewarm' ELSE 'join_profile' END AS type,
 			       chat_id, '' AS text, reason, created_at AS at
@@ -247,9 +247,9 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		rows.Close()
 	}
 
-	// 留底发言：本 bot 各群里最近的 100 条。这是「他到底发了什么」最
-	// 直接的证据，也是判断申诉是否可信的主要依据。同一个群的连续发言
-	// 只在第一条上标群名，否则一列全是一样的群名。
+	// 留底发言：本 bot 各群里最近的 100 条。这是最直接的证据，也是判断
+	// 申诉是否可信的主要依据。同一个群的连续发言只在第一条上标群名，
+	// 否则一列全是一样的群名。
 	args = append([]any{ap.UserID}, inArgs...)
 	args = append(args, dossierMsgLimit)
 	rows, err = sh.Store.Read.Query(`SELECT chat_id,message_id,text,at FROM group_messages
@@ -274,7 +274,7 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		}
 		rows.Close()
 	}
-	// 太长的留底折起来：资料栏不能被一个刷了一百条的号顶到底。
+	// 过长的留底折叠：避免单个账号的消息把资料栏占满。
 	data.HistoryCount = len(data.History)
 	if len(data.History) > dossierMsgShow {
 		data.History, data.HistoryMore = data.History[:dossierMsgShow], data.History[dossierMsgShow:]
@@ -299,8 +299,8 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		rows.Close()
 	}
 
-	// 网页验证记录：IP、指纹、UA 对核对关联账号与「是不是同一个人」有用，
-	// 所以按账号取全部验证（不只本单）。
+	// 网页验证记录：IP、指纹、UA 可用于核对关联账号，所以按账号取全部
+	// 验证（不只本单）。
 	var fp, ip string
 	rows, err = sh.Store.Read.Query(`SELECT result,flags,ip,fp,ua,created_at FROM web_checks
 		WHERE bot_id=? AND user_id=? ORDER BY id DESC LIMIT ?`,

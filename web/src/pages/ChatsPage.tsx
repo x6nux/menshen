@@ -1,5 +1,5 @@
-// 群组列表（计划 4.3）：本地搜索 + intent 过滤条 + 添加群抽屉 +
-// 「管理」批量模式（一次只允许同一 bot，底部操作条走 chat.bulk_update）。
+// 群组列表：本地搜索 + intent 过滤条 + 添加群抽屉 +
+// `管理` 批量模式（一次只允许同一 bot，底部操作条走 chat.bulk_update）。
 import Add from '@mui/icons-material/Add'
 import Close from '@mui/icons-material/Close'
 import {
@@ -94,7 +94,7 @@ export function ChatsPage({ bulkLimit = BULK_CHAT_LIMIT }: { bulkLimit?: number 
   const [prunedFor, setPrunedFor] = useState<string | null>(null)
 
   // 过滤条件（搜索词/意图）变化时清理不可见的选中项，避免误改被藏起来的群。
-  // 用「渲染期调整状态」的官方模式：不引入 effect 的额外一轮渲染。
+  // 用渲染期调整状态的官方模式：不引入 effect 的额外一轮渲染。
   if (data && prunedFor !== filterSignature) {
     setPrunedFor(filterSignature)
     const keys = new Set(

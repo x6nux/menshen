@@ -1,4 +1,4 @@
-// AI 必封规则：Agent 启停/运行状态（不再展示步骤内容）/完成后刷新列表与多条
+// AI 必封规则：Agent 启停/运行状态、完成后刷新列表与多条
 // 创建、启动竞态、约 2 秒自动轮询与卸载停止、状态读取失败重试、列表徽标与
 // TP/FP/覆盖率摘要、筛选/搜索/排序、详情全库误封测试（覆盖率与按类型细分）与
 // 强制防误封门、开关乐观更新与失败回滚、400 toast、手动新增参数与保留输入、
@@ -89,7 +89,7 @@ describe('RulesPage · Agent', () => {
     // 等 mutation 结算：onSuccess 会把初始运行态写进缓存，抢跑会被它盖掉。
     expect(await screen.findByText('已开始规则发现，完成后会给出新规则')).toBeInTheDocument()
 
-    // 轮询返回运行中 + 已执行 2 步（不再下发步骤内容，只显示状态）。
+    // 轮询返回运行中 + 已执行 2 步（只下发状态，不含步骤内容）。
     agent = {
       ...agent,
       running: true,
@@ -161,7 +161,7 @@ describe('RulesPage · Agent', () => {
         case 'agent_status':
           statusCalls++
           if (statusCalls === 1) {
-            // 挂载期第一次状态请求卡住，模拟它在「开始发现」之后才带着空闲
+            // 挂载期第一次状态请求卡住，模拟它在 `开始发现` 之后才带着空闲
             // 旧数据返回——没有竞态防护时会把 running 改回 false。
             return slowGate.then(() => HttpResponse.json({ agent: { ...mockRuleAgent } }))
           }
@@ -181,7 +181,7 @@ describe('RulesPage · Agent', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始发现' }))
     expect(await screen.findByText('已开始规则发现，完成后会给出新规则')).toBeInTheDocument()
 
-    // 迟到的空闲响应现在才 resolve：卡片必须保持「运行中」。
+    // 迟到的空闲响应现在才 resolve：卡片必须保持 `运行中`。
     releaseSlow()
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(screen.getByText('运行中')).toBeInTheDocument()
@@ -285,7 +285,7 @@ describe('RulesPage · 列表与新增', () => {
 
     expect(await screen.findByText('（mock）兼职押金话术')).toBeInTheDocument()
     expect(screen.getByText('（mock）联系方式引流')).toBeInTheDocument()
-    // 「启用/候选」徽标与筛选 chip 同名：按行内 scope 断言，避免撞多元素。
+    // 启用/候选徽标与筛选 chip 同名：按行内 scope 断言，避免撞多元素。
     const row1 = screen.getByRole('button', { name: /（mock）兼职押金话术/ })
     const row2 = screen.getByRole('button', { name: /（mock）联系方式引流/ })
     expect(within(row1).getByText('启用')).toBeInTheDocument()
@@ -425,7 +425,7 @@ describe('RulesPage · 列表与新增', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
 
-    // 覆盖率格/按类型小节在 Task 10 才加，这里只验结果面板与预填。
+    // 这里只验结果面板与预填；覆盖率格与按类型小节由其它用例覆盖。
     expect(await screen.findByTestId('rule-test-result')).toBeInTheDocument()
     expect(screen.getByTestId('rule-test-tp')).toHaveTextContent('12')
     // 试跑必须不带 id（否则服务端会写回 last_*）。
@@ -472,7 +472,7 @@ describe('RulesPage · 列表与新增', () => {
     })
     renderPage(<RulesPage />)
     expect(await screen.findByTestId('rule-tpfp-1')).toHaveTextContent('覆盖 7.5%')
-    // 迁移前的老规则 last_ads_total=0：整段省略覆盖率，不能出现 NaN%。
+    // last_ads_total=0：整段省略覆盖率，不能出现 NaN%。
     const old = await screen.findByTestId('rule-tpfp-2')
     expect(old).toHaveTextContent('TP 4 · FP 2')
     expect(old.textContent).not.toContain('覆盖')
@@ -521,7 +521,7 @@ describe('RulesPage · 列表与新增', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始测试' }))
     expect(await screen.findByTestId('rule-test-result')).toBeInTheDocument()
 
-    // 旧统计不能留在屏幕上误导「用此正则新建规则」。
+    // 旧统计不能留在屏幕上误导 `用此正则新建规则`。
     fireEvent.change(screen.getByLabelText('正则（RE2）'), { target: { value: '兼职押金' } })
     expect(screen.queryByTestId('rule-test-result')).not.toBeInTheDocument()
   })
@@ -583,7 +583,7 @@ describe('RuleDetailPage', () => {
     expect(screen.getByTestId('rule-sample-undone')).toBeInTheDocument()
     expect(screen.getByText('（mock）正常消息被误匹配。')).toBeInTheDocument()
     expect(screen.getByText('误封')).toBeInTheDocument()
-    // 这一版规则仍有 fp：测试完仍不允许开启强制
+    // 规则仍有 fp：测试完仍不允许开启强制
     expect(screen.getByRole('switch', { name: '强制' })).toBeDisabled()
   })
 

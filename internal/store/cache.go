@@ -25,41 +25,39 @@ import (
 //   - per-bot：本表的值是**默认**，bot_settings 可逐 bot 覆盖
 //   - per-chat：不在本表，直接是 bot_chats 的列
 //
-// DefaultSoTrust 是「采信线」的默认值（百分数）：初判置信度低于它才转
-// 大模型复判；达到它就直接采信初判，不再花钱复判。
+// DefaultSoTrust 是采信线的默认值（百分数）：初判置信度低于它才转
+// 大模型复判；达到它就直接采信初判，不再复判。
 const DefaultSoTrust = 95
 
-// DefaultSoFloor 是「初判下限」的默认值（百分数）：初判置信度低于它的
-// 「广告」是噪声，直接放行、连复判都不跑。
+// DefaultSoFloor 是初判下限的默认值（百分数）：初判置信度低于它的
+// 广告结论是噪声，直接放行、连复判都不跑。
 const DefaultSoFloor = 30
 
-// DefaultPreActConf 是「初判线」的默认值（百分数）：初判置信度低于它时
+// DefaultPreActConf 是初判线的默认值（百分数）：初判置信度低于它时
 // 只送复判，不先删消息、不临时禁言。
 //
 // 放在 store 里是因为它有两个消费者：settingDefaults（配置缺省）与 antiad
-// 的调用点（读不到设置时的回落）。两边各写一个 75 的话，改一处忘一处就会
-// 出现「面板显示 75、实际按 80 跑」这种对不上的情况。
+// 的调用点（读不到设置时的回落），两处使用同一常量。
 const DefaultPreActConf = 75
 
-// DefaultMuteConf 是「禁言置信度下限」的默认值（百分数）：终判要禁言/封禁
+// DefaultMuteConf 是禁言置信度下限的默认值（百分数）：终判要禁言/封禁
 // 时，置信度低于它一律降级成只删/仅告警。
 //
-// 「按模型结论定档」（antiad_bool_verdict）设计上不看置信度，因为同一类
-// 广告的置信度会在 88%/95% 之间抖动；但实测模型会偶尔输出 is_ad=true、
-// confidence=0、reason 还写着「正常讨论」的结论，不卡这条线就会删消息 +
-// 禁言（本群禁言还是永久的）。低于处置线的结论交给管理员在告警卡片上补刀。
+// 按模型结论定档（antiad_bool_verdict）设计上不看置信度，因为同一类广告的
+// 置信度波动较大；但低置信度结论仍需卡这条线，否则会删消息并禁言（本群禁言
+// 为永久）。低于处置线的结论交由管理员在告警卡片上处理。
 const DefaultMuteConf = 75
 
 var settingDefaults = map[string]string{
-	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是旧的小时
-	// 偏移键，仅在 tz_name 无效时作回落用，面板上已不再直接暴露。
-	// gban_global 是 bot 级的「加入全局联合封禁组」：1 = 共享命中并接收
+	// tz_name 是 IANA 时区名（如 Asia/Shanghai）；tz_offset 是小时偏移键，
+	// 仅在 tz_name 无效时作回落用，面板上不直接暴露。
+	// gban_global 是 bot 级的加入全局联合封禁组开关：1 = 共享命中并接收
 	// 全局组执行，0 = 只在本归属人的专属组里联动。每 bot 可关。
 	"gban_global":        "1",
 	"tz_name":            "Asia/Shanghai",
 	"tz_offset":          "8",
 	"log_retention_days": "30",
-	// 运行日志文件（与数据库同目录，data.db → data.log）的大小上限（MB）。
+	// 运行日志文件（与数据库同目录）的大小上限（MB）。
 	// 任一为 0 关闭文件日志；总上限小于单文件时按单文件算（不留备份）。
 	"log_file_max_mb":   "10",
 	"log_file_total_mb": "50",
@@ -84,19 +82,19 @@ var settingDefaults = map[string]string{
 	"antiad_digest_last_id": "0",
 	"antiad_digest_min":     "5",
 	"antiad_digest_max":     "1200",
-	// 联合封禁：默认关。它会跨 bot 跨群批量封人，打开前要想清楚。
+	// 联合封禁：默认关。它会跨 bot 跨群批量封人，打开前需谨慎。
 	"gban_enabled": "0",
 	// 每个次级管理员能接入的 bot 数上限。主管理员不受限。
 	"max_bots_per_admin": "5",
-	// 是否把所有 bot 的命中告警抄送主管理员。默认关——
-	// 分发出去之后，主管的私聊不该被每一个次管的群刷屏。
+	// 是否把所有 bot 的命中告警抄送主管理员。默认关：
+	// 开启后主管私聊会收到所有次管名下群的告警。
 	"alert_copy_main": "0",
 	// ---- AI 请求（全局）：不稳定的是上游模型本身，与哪个 bot 发起无关 ----
 	// systemone 平均不到 1 秒出结果，整次请求超过这个时限就当卡住，换一个立即重试。
 	"antiad_so_timeout_ms": "2000",
 	// 复判走流式，首字超过这个时限就当卡住，换一个立即重试。默认给到
-	// 15 秒：复判等的是大模型，推理模型的思考期可以到十几秒，卡在 5 秒
-	// 会在上游吃紧时把正常请求判成卡住、立即重试，反而放大负载。
+	// 15 秒：复判等的是大模型，推理模型的思考期可以到十几秒，时限过短
+	// 会在上游压力较大时把正常请求判成卡住并立即重试，反而放大负载。
 	"antiad_llm_ttft_ms": "15000",
 	// 1 分钟内重试超过这个次数就进入并发模式（每轮同时发多路，先到先得）。0 = 关闭。
 	"antiad_hedge_retries": "5",
@@ -110,7 +108,7 @@ var settingDefaults = map[string]string{
 	"antiad_rule_model": "",
 	// 规则发现自动运行：1 = 每小时最多一轮，且只在有**新的未覆盖广告**时
 	// 才真正启动（游标 antiad_rule_cursor 累积）；0 = 只在 Mini App 手动运行。
-	// 一轮会反复调模型、可能持续几十分钟，升级默认关，避免悄悄烧钱。
+	// 一轮会反复调模型、可能持续几十分钟，默认关以避免意外开销。
 	"antiad_rule_auto": "0",
 	// antiad_rule_cursor 是自动运行的内部游标：已处理到的 antiad_log id。
 	// 不在面板暴露，只由 AutoRuleDiscovery/规则发现结束时推进。
@@ -118,7 +116,7 @@ var settingDefaults = map[string]string{
 
 	// ---- per-bot（owner 或主管可覆盖，下面是默认值）----
 	// 三条线都用百分数整数：settingSpec 只支持 int64 校验，
-	// 引入浮点要改动整套设置面板机制，不值当。
+	// 引入浮点需改动整套设置面板机制。
 	"antiad_so_trust":     strconv.Itoa(DefaultSoTrust),    // systemone 置信度采信线
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
 	"antiad_mute_conf":    strconv.Itoa(DefaultMuteConf),   // 禁言/封禁的置信度下限
@@ -136,8 +134,8 @@ var settingDefaults = map[string]string{
 	"antiad_cmd_rpm":   "3",  // 每人每分钟 /check、/ban 次数上限
 	"antiad_ctx_msgs":  "6",
 	"antiad_alert_ttl": "300", // 群内告警自动撤回秒数，0 = 永不撤回
-	// 明显到不用人盯的（置信度 ≥ antiad_act_hard 且危害度 ≥ antiad_alert_severe）
-	// 群内提醒只弹一小会：处置已经落地，通知只是让在场的人知道发生了什么。
+	// 高确定性的（置信度 ≥ antiad_act_hard 且危害度 ≥ antiad_alert_severe）
+	// 群内提醒短暂显示：处置已执行，通知仅用于告知在场成员。
 	// 0 = 关闭短撤回，一律用 antiad_alert_ttl。
 	"antiad_alert_ttl_hard": "30",
 	"antiad_alert_severe":   "2",  // 短撤回的危害度阈值（0-3 的整数）
@@ -145,54 +143,54 @@ var settingDefaults = map[string]string{
 	"antiad_exempt_users":   "[]", // 该 bot 的豁免名单
 	// 禁言时长（分钟）：0 = 永久禁言。每群可单独覆盖处罚方式（bot_chats.punish）。
 	"antiad_ban": "0",
-	// 仅删除档附一记 5 分钟短禁言：只删不罚的话，发广告的人删完就能接着发；
-	// 而老人档的长禁言又太伤。短禁言只堵连发，社交代价小。
+	// 仅删除档附一次 5 分钟短禁言：只删不罚无法阻止继续发送，而老人档的
+	// 长禁言代价过大。短禁言仅抑制连发，影响较小。
 	"antiad_short_mute": "0",
 	// 按模型结论定档：1 = 模型判为广告就按最高档处置（新人删除+禁言/封禁，
-	// 老人仍只删不禁），不看置信度。大模型的置信度在同一类内容上抖动很大
-	// （同一条广告可能 88% 也可能 95%），卡 90% 硬线会让同一种内容时而
-	// 只删、时而禁言。**默认开**；置 0 回到按置信度分档。
+	// 老人仍只删不禁），不看置信度。大模型对同一类内容的置信度波动较大，
+	// 按固定阈值分档会使同类内容时而只删、时而禁言。**默认开**；置 0 回到
+	// 按置信度分档。
 	"antiad_bool_verdict": "1",
 	// 群内提示附加链接：群内告警与进群限制通知的尾部原样附上这段文本
-	// （例如「② 电报使用指南 (https://t.me/xxx)」）。全局一份，主管理员可改。
+	// （形如带链接的说明）。全局一份，主管理员可改。
 	"antiad_group_footer": "",
 	// 判定普通成员 bot：默认开。豁免只给**有管理员权限**的 bot（由群
-	// 管理员判断兜住）；工具 bot 发什么判什么，0 = 豁免所有 bot（旧行为）。
+	// 管理员判断承担）；工具 bot 的消息正常判定，0 = 豁免所有 bot。
 	// bot 默认看不见其他 bot 的消息，判到也要对方满足 Bot-to-Bot 条件才收得到。
 	"antiad_judge_bots": "1",
-	// 管理员私聊改为汇总：每隔这么多分钟最多一条。
+	// 管理员私聊汇总：每隔这么多分钟最多一条。
 	"antiad_alert_every": "5",
-	// 汇总游标（antiad_log.id，按 bot 存在 bot_settings）。-1 = 还没初始化：
-	// 升级后第一次运行只记位置，不翻旧账。
+	// 汇总游标（antiad_log.id，按 bot 存在 bot_settings）。-1 = 未初始化：
+	// 首次运行只记录当前位置，不回溯历史。
 	"antiad_alert_last_id": "-1",
 
 	// ---- 进群冷判定（per-bot）----
-	// 新人进群时不等他发言，先就账号画像（昵称/用户名/简介）判一次，
+	// 新人进群时无需发言，先就其账号画像（昵称/用户名/简介）判定一次，
 	// 判为广告号即无限期限制发言，由本人改正后自助解除。默认关：
-	// 它对每个进群的人都要花一次 AI 的钱。
+	// 对每个进群的人都会产生一次 AI 调用开销。
 	"antiad_cold":          "0",
 	"antiad_prewarm":       "0",
 	"antiad_prewarm_sweep": "0",
 	"antiad_prewarm_conf":  "85",
 	// 群内静默：打开后这个 bot 在群里不发任何消息（告警、限制通知、
-	// 兑换回执、命令回复都不发），判定与处置照常。默认关。
+	// 兑换回执、命令回复都不发），判定与处置不受影响。默认关。
 	"antiad_group_silent": "0",
-	// 冷判定的采信线，比消息判定的处置线更高——进群画像的证据比一条
-	// 具体消息少得多，宁可漏也不要在人刚进门时就误伤。
+	// 冷判定的采信线，高于消息判定的处置线：进群画像的证据少于一条具体
+	// 消息，阈值更高以避免误伤。
 	"antiad_cold_conf": "85",
-	// 本地预筛：只有昵称/简介出现可疑特征的人才送检。关掉就是每个
-	// 进群的人都送检，大群里这是数量级的成本差别。
-	// 默认关：判定模型很便宜，进群这道门口不漏人比省一次调用重要；
+	// 本地预筛：只有昵称/简介出现可疑特征的人才送检。关掉则每个进群的
+	// 人都送检，大群中成本差别是数量级的。
+	// 默认关：判定模型成本低，进群环节不漏判比节省一次调用更重要；
 	// 打开则只有资料可疑的才送检（见 coldSuspicious）。
 	"antiad_cold_prefilter": "0",
 	// 自助解除的重试间隔基数（秒）。不限次数，但第 n 次要等
-	// base × 2^(n-1)，封顶 1 小时——有耐心的人也磨不动多少 AI 开销。
+	// base × 2^(n-1)，封顶 1 小时，以限制 AI 开销。
 	"antiad_unban_base": "60",
 
 	// ---- 入群人机验证 ----
 	// per-bot 开关：antiad_joinverify（0/1）与等待分钟数。提供方与密钥是
-	// **全局**设置（settings 表，网页面板配置），不走 config.yaml —— 密钥
-	// 要能随时在面板上换，与上游 API key 同一待遇。
+	// **全局**设置（settings 表，网页面板配置），不走 config.yaml，以便
+	// 随时在面板更换，与上游 API key 一致。
 	"antiad_joinverify": "0",
 	// 未通过验证的等待分钟数，到点踢出（允许重新进群再试）。验证页的有效
 	// 窗口与它一致。0 = 不踢，一直禁言。
@@ -218,7 +216,7 @@ type BotRec struct {
 	OwnerID  int64
 	// SoModels / LLMModels 是判定模型列表（按重试顺序），空表示沿用全局。
 	// 每项形如 <上游名>/<模型ID>；旧单值列读出来会并成单元素列表。
-	// 只有主管理员能改——模型直接决定判定质量与花掉多少钱。
+	// 只有主管理员能改——模型直接决定判定质量与开销。
 	SoModels  []string
 	LLMModels []string
 	Enabled   bool
@@ -249,7 +247,7 @@ type BotChat struct {
 	CreatedAt int64
 }
 
-// BanMode 报告这个群的「禁言档」是否改为封禁出群。
+// BanMode 报告这个群的禁言档是否配置为封禁出群。
 // 每群设置优先；跟随时读 bot 级的 antiad_ban（再回落到全局默认）。
 func (s *Snapshot) BanMode(c BotChat) bool {
 	if c.Punish >= 0 {
@@ -381,8 +379,8 @@ func (s *Snapshot) Location() *time.Location {
 	return resolveLocation(s.Settings)
 }
 
-// resolveLocation 优先 tz_name（IANA 名称），未配或配错时回落到旧的
-// tz_offset 小时偏移——老部署升级后行为不变，也不必做数据迁移。
+// resolveLocation 优先取 tz_name（IANA 名称），未配或配错时回落到
+// tz_offset 小时偏移。
 func resolveLocation(settings map[string]string) *time.Location {
 	if name := strings.TrimSpace(settings["tz_name"]); name != "" {
 		if loc, err := time.LoadLocation(name); err == nil {
@@ -404,8 +402,8 @@ func (s *Snapshot) SettingInt64List(k string) []int64 {
 
 // SettingStrings 读一个字符串数组设置（JSON 数组）。
 //
-// 解析失败返回 nil 而不是报错：设置项被手工改坏时，上层按「没配」处理，
-// 比让整条判定链路起不来强。逗号分隔的形态也认，方便手工改库。
+// 解析失败返回 nil 而不是报错：设置项被手工改坏时，上层按未配置处理，
+// 避免整条判定链路起不来。逗号分隔的形态也认，便于手工改库。
 func (s *Snapshot) SettingStrings(k string) []string {
 	return parseStringList(s.Settings[k])
 }
@@ -440,8 +438,8 @@ func trimAll(in []string) []string {
 
 // botSetting 三级回退：bot 覆盖 → 全局值 → 默认值（全局值本身已铺满默认）。
 //
-// botID 为 0 时退化成纯全局读取，这让定时任务这类「不属于任何 bot」的
-// 调用方不必分叉。
+// botID 为 0 时退化成纯全局读取，让定时任务这类不属于任何 bot 的调用方
+// 不必分叉。
 func (s *Snapshot) BotSetting(botID int64, k string) string {
 	if m, ok := s.BotSettings[botID]; ok {
 		if v, ok := m[k]; ok {
@@ -490,7 +488,7 @@ func (s *Snapshot) ChatsOf(botID int64) []BotChat {
 // bots 表的覆盖优先，否则全局默认。
 //
 // 新键是 JSON 数组；旧单值键（antiad_so_model / bots.so_model）作为
-// 单元素回退 —— 升级不要求管理员重配，读出来就是一条元素的列表。
+// 单元素回退，读出来即为单元素列表。
 func (s *Snapshot) ModelsFor(botID int64) (so, llm []string) {
 	so = s.modelList("antiad_so_models", "antiad_so_model")
 	llm = s.modelList("antiad_llm_models", "antiad_llm_model")
@@ -516,8 +514,8 @@ func (s *Snapshot) modelList(listKey, singleKey string) []string {
 	return nil
 }
 
-// listOrSingle 新列（JSON 数组）优先，空则把旧单值列当单元素列表。
-// 升级读侧用，与 modelList 是同一套回退规则。
+// listOrSingle 新列（JSON 数组）优先，空则把旧单值列当单元素列表，
+// 与 modelList 是同一套回退规则。
 func listOrSingle(list, single string) []string {
 	if l := ParseStringList(list); len(l) > 0 {
 		return l
@@ -569,15 +567,15 @@ func NewCache(s *Store) (*Cache, error) {
 
 func (c *Cache) Snap() *Snapshot { return c.cfg.Load() }
 
-// reload 重建整个配置快照并原子替换。任何配置变更后调用。
+// Reload 重建整个配置快照并原子替换。任何配置变更后调用。
 //
-// 任何一段扫描都要查 rows.Err()：rows.Next() 因中途出错（如 WAL 写锁竞争）
-// 提前返回 false 时不会自己报错，不查就会把「只扫到一半」悄悄当成「扫完了」，
-// 而这里扫的是权限与生效群——静默少一半等于静默改权限。
+// 每段扫描都要查 rows.Err()：rows.Next() 因中途出错（如 WAL 写锁竞争）
+// 提前返回 false 时不会自行报错，不查会把只扫到一半当成扫完，而这里扫的是
+// 权限与生效群，静默少一半等于静默改权限。
 //
-// 整轮读放在一个事务里：否则并发写入会让快照出现「一半新、一半旧」的
-// 拼接状态（如 bots 已更新而 bot_chats 还没跟上），而这种错位在面板上
-// 完全看不出来。WAL 下读事务不阻塞写连接。
+// 整轮读放在一个事务里：否则并发写入会让快照出现一半新、一半旧的拼接状态
+// （如 bots 已更新而 bot_chats 未跟上），这种错位在面板上难以发现。
+// WAL 下读事务不阻塞写连接。
 func (c *Cache) Reload() error {
 	c.reloadMu.Lock()
 	defer c.reloadMu.Unlock()
@@ -950,7 +948,7 @@ func (s *Snapshot) GbanOwnOn(ownerID int64) bool {
 
 // ProfileAllowed 返回该账号资料放行的到期时间（0 = 没有放行或已失效）。
 //
-// 要求资料指纹一致：放行的是「当时那份资料」，他改了简介就得重新判。
+// 要求资料指纹一致：放行绑定当时那份资料，资料变更后需重新判定。
 // 快照里只装未过期的行，这里仍复核一次到期时间——快照不重建时，
 // 过期行会留在内存里。
 func (s *Snapshot) ProfileAllowed(botID, uid int64, phash string, now int64) int64 {

@@ -235,7 +235,7 @@ describe('RecordsPage', () => {
     expect(await screen.findByText('没有记录')).toBeInTheDocument()
     expect(screen.getByTestId('logs-total')).toHaveTextContent('共 0 条')
 
-    // 切「命中」后请求被 gate 拦住：不得再显示空态，改为加载行 + 总数占位
+    // 切到 `命中` 后请求被 gate 拦住：不得再显示空态，改为加载行 + 总数占位
     fireEvent.click(screen.getByText('命中'))
     await waitFor(() => expect(screen.queryByText('没有记录')).not.toBeInTheDocument())
     expect(screen.getByTestId('list-loading')).toHaveTextContent('加载中…')

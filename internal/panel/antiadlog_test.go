@@ -31,7 +31,7 @@ func seedLog(t *testing.T, b *core.Bot, uid int64, text, action string) int64 {
 	return id
 }
 
-// TestRecordCardRespectsTenancy：汇总里的「📋 #id」进记录卡片，带原文，只发到私聊；
+// TestRecordCardRespectsTenancy：汇总里的记录按钮进入记录卡片，带原文，只发到私聊；
 // callback_data 是客户端发上来的，别人 bot 的记录不能看。
 func TestRecordCardRespectsTenancy(t *testing.T) {
 	b, fake, sh := testutil.NewTestBotOwned(t, 1, 100)
@@ -52,7 +52,7 @@ func TestRecordCardRespectsTenancy(t *testing.T) {
 }
 
 // TestFalsePositiveForgetsHashAndUnbans：误判要撤掉内容哈希（否则同样的内容会
-// 一直被直接删下去），封禁过的要解封且带 only_if_banned。
+// 持续被直接删除），封禁过的要解封且带 only_if_banned。
 func TestFalsePositiveForgetsHashAndUnbans(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	id := seedLog(t, b, 42, "日入过万", "deleted_banned")
@@ -113,14 +113,14 @@ func TestAdChatHealthCached(t *testing.T) {
 }
 
 // TestChatDetailShowsPunishDuration：群详情要写明禁言的时长与实际处罚，
-// 并在未开启封禁时给出改法。只写「禁言」会让人以为永久封禁已生效。
+// 并在未开启封禁时给出改法。只写禁言会让人以为永久封禁已生效。
 func TestChatDetailShowsPunishDuration(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 
 	showChatDetail(b, 777, 0, b.BotID(), -100)
 	text := fmt.Sprint(fake.LastCall("sendMessage")["text"])
-	// 默认 1440 分钟 → 渲染成「禁言 1 天」。
+	// 默认 1440 分钟 → 渲染成禁言 1 天。
 	if !strings.Contains(text, "禁言 1 天") || !strings.Contains(text, "要改成永久禁言") {
 		t.Fatalf("应写明禁言时长与改法:\n%s", text)
 	}
@@ -150,8 +150,7 @@ func TestChatDetailShowsPunishDuration(t *testing.T) {
 }
 
 // TestFalsePositiveLiftsGban：误判时由这条判定派生的联合封禁也要撤——
-// 名单跨所有接入群执行，留着等于让一条被判错的记录继续全平台封人
-// （线上真实事件：ping0.cc 被误判后，人还留在名单里）。
+// 名单跨所有接入群执行，留着等于让一条被判错的记录继续全平台封人。
 func TestFalsePositiveLiftsGban(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	sh := b.Shared
@@ -184,7 +183,7 @@ func TestFalsePositiveLiftsGban(t *testing.T) {
 }
 
 // TestFalsePositiveLiftsRecordOwnerGban：主管理员在别人的 bot 记录上点误判，
-// 既要撤操作者自己的账本，也要撤**记录所属 bot 归属人**的专属组——否则
+// 既要撤操作者自己的账本，也要撤记录所属 bot 归属人的专属组——否则
 // 误判撤了，人在那个归属人的群里还封着。
 func TestFalsePositiveLiftsRecordOwnerGban(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
@@ -222,7 +221,7 @@ func TestFalsePositiveLiftsRecordOwnerGban(t *testing.T) {
 }
 
 // TestUserCardShowsProfileAndProcessedOnly：/user 要给出资料卡（昵称/用户名/
-// ID/简介/发言数/首见/最近/判定统计），并且**默认只列被处置过的**记录；
+// ID/简介/发言数/首见/最近/判定统计），并且默认只列被处置过的记录；
 // 点切换才连未处置的一起列出来。
 func TestUserCardShowsProfileAndProcessedOnly(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -279,9 +278,9 @@ func TestUserCardShowsProfileAndProcessedOnly(t *testing.T) {
 	}
 }
 
-// TestConfirmBypassesVeteranExemption：管理员点「✅ 判定正确」等于给判定背书，
-// 该按本群处罚方式补一次正式处置（绕过老成员免禁言），动作标签同步更新 ——
-// 之后点「误判」仍能按标签解禁。
+// TestConfirmBypassesVeteranExemption：管理员点判定正确等于给判定背书，
+// 该按本群处罚方式补一次正式处置（绕过老成员免禁言），动作标签同步更新——
+// 之后点误判仍能按标签解禁。
 func TestConfirmBypassesVeteranExemption(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -311,7 +310,7 @@ func TestConfirmBypassesVeteranExemption(t *testing.T) {
 		t.Errorf("理由里应写明绕过资历，得到 %q", reason)
 	}
 
-	// 反悔：点误判应把这条禁言解掉（按动作标签走既有解禁路径）。
+	// 再点误判应把这条禁言解掉（按动作标签走既有解禁路径）。
 	before := fake.CountCalls("restrictChatMember")
 	HandleAdminCallback(b, cb(1, "a:ad:fp:"+itoa(id)))
 	if fake.CountCalls("restrictChatMember") <= before {
@@ -319,8 +318,8 @@ func TestConfirmBypassesVeteranExemption(t *testing.T) {
 	}
 }
 
-// TestUserCardShowsAndLiftsPenalties：/user 卡片要列出「生效中的限制」与
-// 「联合封禁」，并给出解除按钮；点解除后限制记录与名单条目都要清掉。
+// TestUserCardShowsAndLiftsPenalties：/user 卡片要列出生效中的限制与
+// 联合封禁，并给出解除按钮；点解除后限制记录与名单条目都要清掉。
 func TestUserCardShowsAndLiftsPenalties(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -350,7 +349,7 @@ func TestUserCardShowsAndLiftsPenalties(t *testing.T) {
 	if !strings.Contains(kb, "a:ad:gbl:555:1") {
 		t.Fatalf("应给出「解除联合封禁」按钮：%s", kb)
 	}
-	// 点「解除联合封禁」：专属组条目清掉。
+	// 点解除联合封禁：专属组条目清掉。
 	HandleAdminCallback(b, cb(777, "a:ad:gbl:555:1"))
 	if _, ok := sh.Cache.Snap().GbanOwnBans[b.Owner()][555]; ok {
 		t.Error("点解除后专属组条目该没了")
@@ -371,9 +370,9 @@ func TestUserCardShowsAndLiftsPenalties(t *testing.T) {
 	}
 }
 
-// TestManualDeleteAlreadyGone：管理员点「删除」时消息已被别人先删掉，
-// deleteMessage 报 not found —— 目标已达成，回执应是「已删除」而不是
-// 「删除失败」，记录也要落成 deleted。
+// TestManualDeleteAlreadyGone：管理员点删除时消息已被别人先删掉，
+// deleteMessage 报 not found——目标已达成，回执应为已删除而不是
+// 删除失败，记录也要落成 deleted。
 func TestManualDeleteAlreadyGone(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	id := seedLog(t, b, 42, "广告原文", "alerted")
@@ -394,7 +393,7 @@ func TestManualDeleteAlreadyGone(t *testing.T) {
 }
 
 // TestManualMuteGoneUser：人已被封禁出群时人工禁言必然失败，
-// 二次判断后回执「无需禁言」，且不把记录改成已禁言。
+// 二次判断后回执无需禁言，且不把记录改成已禁言。
 func TestManualMuteGoneUser(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	id := seedLog(t, b, 42, "广告原文", "deleted")
@@ -439,7 +438,7 @@ func TestManualConfirmGoneUserSkipsMute(t *testing.T) {
 	}
 }
 
-// TestRelIsDispositionCallback：群管理员的「解封（判定维持）」按钮走 a:ad:rel。
+// TestRelIsDispositionCallback：群管理员的解封（判定维持）按钮走 a:ad:rel。
 // 它必须与 ok/fp/del/mute/ban 一起被放行，否则非 staff 的群管理员点下去
 // 会被 dispatch 的处置白名单挡掉，静默无反应。
 func TestRelIsDispositionCallback(t *testing.T) {
@@ -451,8 +450,8 @@ func TestRelIsDispositionCallback(t *testing.T) {
 	}
 }
 
-// TestUndoneRecordNotRepunished：已标记误判的记录不能再被残留的「确认/禁言/
-// 封禁」按钮重新罚一遍 —— 误判是负样本，一次误点就把放行的人重新禁回去。
+// TestUndoneRecordNotRepunished：已标记误判的记录不能再被残留的确认/禁言/
+// 封禁按钮重新罚一遍——误判是负样本，一次误点就把放行的人重新禁回去。
 func TestUndoneRecordNotRepunished(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

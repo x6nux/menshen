@@ -9,7 +9,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// adbMsg 造一条「回复某人后发 /ban」的命令消息。
+// adbMsg 造一条回复某人后发 /banad 的命令消息。
 func adbMsg(chatID, from int64, target *tg.Message) *tg.Message {
 	m := testutil.GroupMsg(chatID, from, 900, "/banad")
 	m.ReplyToMessage = target
@@ -31,7 +31,7 @@ func lastLog(t *testing.T, b *core.Bot) (verdict, decider, action string, uid in
 	return verdict, decider, action, uid, n
 }
 
-// TestAdbRequiresAdmin 是 /ban 的权限门。
+// TestAdbRequiresAdmin 是 /banad 的权限门。
 //
 // 它绕过 AI 直接删消息 + 禁言，对普通成员开放等于把删消息的权力交给全群：
 // 任何人回复一句就能让别人闭嘴。testutil.FakeTG 的 getChatMember 默认不返回
@@ -59,7 +59,7 @@ func TestAdbRequiresAdmin(t *testing.T) {
 	}
 }
 
-// TestAdbByOwnerActs 确认授权者的标记真的动手了，且落的是人工流水。
+// TestAdbByOwnerActs 确认授权者的标记会真正处置，且落的是人工流水。
 func TestAdbByOwnerActs(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -91,8 +91,7 @@ func TestAdbByOwnerActs(t *testing.T) {
 	}
 }
 
-// TestAdbRespectsDryrun 确认演练群里只报告不动手。
-// 演练的全部意义就是「先看看会拦到谁」，动了手就不叫演练了。
+// TestAdbRespectsDryrun 确认演练群只报告不处置。
 func TestAdbRespectsDryrun(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiadMode(t, b, -100, true)
@@ -143,9 +142,9 @@ func TestAdbNeedsReply(t *testing.T) {
 	}
 }
 
-// TestAdbIgnoresSelf 确认不会把 bot 自己的告警标成广告，并回一条指路提示。
-// 告警里带着原文，回复它发 /banad 是很自然的手滑；静默失败会被当成
-// 「命令没生效」（线上真实反馈），必须告诉管理员正确用法。
+// TestAdbIgnoresSelf 确认不会把 bot 自己的告警标成广告，并回一条用法提示。
+// 告警里带着原文，回复它发 /banad 是常见误操作；静默失败会被当成
+// 命令未生效，因此必须回一条正确用法提示。
 func TestAdbIgnoresSelf(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -166,9 +165,9 @@ func TestAdbIgnoresSelf(t *testing.T) {
 	}
 }
 
-// TestBanByUserID：/ban <user_id> 按该用户**最新一条留底**处置（删除 + 按本群
-// 处罚方式禁言/封禁），落一条人工标记流水；没有留底时只罚人、不删消息，
-// 仍落流水（别让 deleteMessage 必然失败）。
+// TestBanByUserID：/ban <user_id> 按该用户最新一条留底处置（删除 + 按本群
+// 处罚方式禁言/封禁），落一条人工标记流水；没有留底时只处罚、不删消息，
+// 仍落流水（留底不存在时 deleteMessage 必然失败）。
 func TestBanByUserID(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -226,9 +225,9 @@ func TestBanByUserID(t *testing.T) {
 	}
 }
 
-// TestAdbDropsProfileOK：人工标记广告后，这个人已有的资料放行要一起作废。
-// 否则 /ban 之后这份资料还能继续挡后续判定的资料一路，等于人工结论被一份
-// 过期的自动放行架空；演练群则不该动真实状态。
+// TestAdbDropsProfileOK：人工标记广告后，该用户已有的资料放行要一并作废，
+// 否则这份放行会继续挡后续的资料判定，使人工结论被过期的自动放行架空；
+// 演练群不处置，也不该撤销真实放行。
 func TestAdbDropsProfileOK(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

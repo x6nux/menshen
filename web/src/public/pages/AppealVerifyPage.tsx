@@ -1,5 +1,5 @@
 // 申诉验证页（_w/ap/<id>/<sig>）：展示处罚依据 + Turnstile + 采集浏览器
-// 特征提交，换取解禁码。原服务端模板页的 React 重写。
+// 特征提交，换取解禁码。
 import { Box, Button, CircularProgress, Typography } from '@mui/material'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, postJSON } from '../api'
@@ -25,8 +25,8 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
   const [result, setResult] = useState<{ ok: boolean; code?: string; msg: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   // 提交失败后组件里的令牌已被服务端核销，重试需要 reset 重新挑战；
-  // reset 由「重试」按钮驱动，不自动进行（非交互挑战会自动出新令牌，
-  // 自动 reset 会无人操作地连续烧掉失败次数）。
+  // reset 由重试按钮驱动、不自动进行（非交互挑战会自动出新令牌，
+  // 自动 reset 会在无人操作时连续消耗失败次数）。
   const [resetKey, setResetKey] = useState(0)
   const busyRef = useRef(false)
 

@@ -37,7 +37,7 @@ const PRIMARY: { section: Section; label: string }[] = [
   { section: 'records', label: '记录' },
 ]
 
-/** 管理类入口；主管理员全见，次级管理员只看名单（联封）。 */
+/** 管理类入口；主管理员全见，次级管理员只看名单（联合封禁）。 */
 const MANAGE: { section: Section; label: string; mainOnly: boolean }[] = [
   { section: 'lists', label: '名单管理', mainOnly: false },
   { section: 'upstreams', label: '上游渠道', mainOnly: true },
@@ -60,7 +60,7 @@ const SECTION_TITLES: Record<Section, string> = {
   syslog: '运行日志',
 }
 
-/** DETAIL_TITLES 二级页标题；具体名称由各详情视图自己补。 */
+/** MAIN_ONLY_ROUTES 是主管理员专属路由集合；DETAIL_TITLES 是二级页标题（具体名称由各详情视图补全）。 */
 const MAIN_ONLY_ROUTES = new Set<AdminRoute['k']>([
   'upstreams',
   'upstream',

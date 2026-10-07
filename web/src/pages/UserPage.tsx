@@ -1,5 +1,5 @@
-// 用户资料页（计划 4.4 / 5.1 迁移不变量）：
-// 资料卡 + 分段「只看被处置过的（默认）/ 全部判定记录」+ 无限滚动记录列表。
+// 用户资料页：
+// 资料卡 + 分段（只看被处置过的，默认 / 全部判定记录）+ 无限滚动记录列表。
 // 数据来自 user op（每页都带完整资料字段），默认 filter=act，hasMore 用 shown 判断。
 import { Box } from '@mui/material'
 import { useState } from 'react'

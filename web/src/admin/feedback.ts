@@ -1,4 +1,4 @@
-// 操作反馈：所有写操作统一「成功提示 / 失败提示（用服务端文案）」，
+// 操作反馈：所有写操作统一成功提示或失败提示（用服务端文案），
 // 避免每个视图各写一遍 toast 分流。
 import { ApiError } from '../api/client'
 import { useToast } from '../ui'

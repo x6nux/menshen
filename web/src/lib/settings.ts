@@ -1,5 +1,5 @@
 // 设置项（state.specs/sections）的纯逻辑：控件类型推断、时长预设、覆盖键集合。
-// 规则见实施计划 3.5；这里不依赖任何 React 组件。
+// 这里不依赖任何 React 组件。
 import type { Spec } from '../api/types'
 import { durationText } from './format'
 
@@ -53,9 +53,9 @@ export function minutePresets(spec: Spec): MinutePreset[] {
 }
 
 /**
- * overrideKeys 从 specs 里挑出该 bot 已显式覆盖的项（bot 参数页的「已覆盖」视图）。
+ * overrideKeys 从 specs 里挑出该 bot 已显式覆盖的项（bot 参数页的已覆盖视图）。
  * 条件：分组是 antiad/both 且键存在于覆盖表。这样 antiad_exempt_users、
- * antiad_alert_last_id 这类不在 specs 的键不会漏出来（走 set 必然 400）。
+ * antiad_alert_last_id 这类不在 specs 的键不会被选出（走 set 必然 400）。
  */
 export function overrideKeys(
   specs: readonly Spec[],
@@ -83,16 +83,15 @@ export function specUnit(spec: Spec): string {
   return ''
 }
 
-/** specHint 设置项说明；后端 hint 没写单位时补上，表单不必每处手写。
- * T1b 的设置表单会用它做输入框辅助文案（当前 T1a 暂无调用点）。 */
+/** specHint 设置项说明；后端 hint 没写单位时补上，表单不必每处手写。 */
 export function specHint(spec: Spec): string {
   const unit = specUnit(spec)
   return unit && !spec.hint.includes(unit) ? `${spec.hint}（单位：${unit}）` : spec.hint
 }
 
 /**
- * specValueText 把设置值换算成人话：时长类把分钟数换算成「= 1 天」这类文案，
- * 其余类型原样返回。T1b 的设置行/抽屉用它展示「= 1 天」换算（当前暂无调用点）。
+ * specValueText 把设置值换算为展示文案：时长类把分钟数换算成 `= 1 天` 这类文案，
+ * 其余类型原样返回。
  */
 export function specValueText(value: number | string, spec: Spec): string {
   const raw = String(value)
@@ -106,7 +105,7 @@ export function specValueText(value: number | string, spec: Spec): string {
 
 /**
  * validateSpecValue 校验参数覆盖抽屉里的输入；返回错误文案，合法返回 null。
- * 空串表示「跟随全局/恢复全局」，是合法提交；范围与后端 miniSet 一致：
+ * 空串表示跟随全局或恢复全局，是合法提交；范围与后端 miniSet 一致：
  * n < min 或（max != 0 且 n > max）都会被服务端 400，这里提前拦住。
  */
 export function validateSpecValue(spec: Spec, raw: string): string | null {

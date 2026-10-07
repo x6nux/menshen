@@ -1,4 +1,4 @@
-// 运行日志（主管理员）：进程内 slog 环形缓冲的只读视图。级别按「不低于」筛选。
+// 运行日志（主管理员）：进程内 slog 环形缓冲的只读视图。级别按不低于所选级别筛选。
 import { useState } from 'react'
 import { Box, Button, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material'
 import { useInfiniteSysLogs, useMiniState } from '../../api/hooks'

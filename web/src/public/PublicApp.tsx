@@ -1,6 +1,6 @@
 // 公开网页外壳：按 _w 路径分发到申诉验证 / 原文查看 / 申诉详情。
 //
-// 主题跟系统深浅色；不依赖任何 Telegram SDK——这一层就是给浏览器直开的。
+// 主题跟随系统深浅色；不依赖 Telegram SDK，供浏览器直接访问。
 import { Box, Container, CssBaseline, Typography } from '@mui/material'
 import { ThemeProvider } from '@mui/material/styles'
 import { useMemo } from 'react'

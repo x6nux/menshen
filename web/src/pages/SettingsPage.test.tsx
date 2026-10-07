@@ -1,5 +1,5 @@
 // 全局设置：
-// - 迁移不变量 1：三个总开关提交 set 时 value 必须是字符串 '1'/'0'，成功后刷新；
+// - 总开关不变量：三个总开关提交 set 时 value 必须是字符串 '1'/'0'，成功后刷新；
 // - 智能控件：controlKind（toggle → Switch）、时长预设按 min/max 过滤；
 // - 默认模型快选、时区、附加链接、形态摘要与修正文本；
 // - 次管访问按 403 处理。
@@ -108,14 +108,14 @@ describe('SettingsPage 主题折叠卡（智能控件）', () => {
 
   it('「已设置 N 项」只数显式写过的键（global 里的默认值不算）', async () => {
     await renderSettings()
-    // global 是生产形状：铺满了代码默认值（antiad_so_trust=95、
+    // global 是生产形状：包含全部代码默认值（antiad_so_trust=95、
     // antiad_hedge_minutes=5…）；settings_set 只列 fixture 显式配置的键。
     expect(screen.getByText('已设置 2 项')).toBeInTheDocument()
     // 其余分段（判定与模型 / 其他 / 护栏与成本）的键在 global 里都是默认值。
     expect(screen.getAllByText('已设置 0 项')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: /判定与模型/ }))
-    // 默认值行照常展示，但不计入「已设置」
+    // 默认值行照常展示，但不计入 `已设置`
     expect(screen.getByText('采信线：systemone 置信度')).toBeInTheDocument()
     expect(screen.getByText('并发模式持续（分钟）')).toBeInTheDocument()
   })

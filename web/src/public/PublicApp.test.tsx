@@ -229,7 +229,7 @@ describe('PublicApp', () => {
 
   it('申诉详情数组字段为 null 时也正常渲染（不再整页白屏）', async () => {
     at('/_w/apv/7/sig')
-    // 模拟服务端旧版本/异常返回 null：前端必须自己兜底，否则 React 卸载整页。
+    // 模拟服务端异常返回 null：前端必须自己兜底，否则 React 卸载整页。
     const nullArrays = {
       ...appealView,
       limits: null,

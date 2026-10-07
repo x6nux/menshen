@@ -39,9 +39,8 @@ ai_proxy: "socks5://10.0.0.1:1080"
 	}
 }
 
-// TestProxyEmptyMeansEnv 锁住「留空 = 沿用环境变量」。
-// 改成「留空即直连」会让现在靠 HTTPS_PROXY 跑着的部署升级后突然断网，
-// 而表现只是一条连接超时。
+// TestProxyEmptyMeansEnv 验证留空表示沿用环境变量（返回 nil，
+// 由 http.Transport 落到 ProxyFromEnvironment）。
 func TestProxyEmptyMeansEnv(t *testing.T) {
 	cfg, err := Load(writeConfig(t, "tg_proxy: \"\"\n"))
 	if err != nil {
@@ -53,13 +52,13 @@ func TestProxyEmptyMeansEnv(t *testing.T) {
 	}
 }
 
-// TestProxyRejectsSchemeless 是这个功能最容易踩的坑，两类要分别挡：
+// TestProxyRejectsSchemeless 验证无 scheme 的代理地址被拒绝，两类分别处理：
 //
-//   - "127.0.0.1:7890" 由 url.Parse 自己报错（scheme 不能以数字开头）
-//   - "localhost:1080" **不报错**，Scheme 会变成 "localhost"、Host 为空，
-//     http.ProxyURL 拿着它既连不上也不吭声 —— 只有 scheme 白名单挡得住
+//   - 纯 主机:端口 形态由 url.Parse 自身报错（scheme 不能以数字开头）
+//   - 主机名形态不报错：Scheme 变成主机名、Host 为空，
+//     http.ProxyURL 接受它但不会报错 —— 只有 scheme 白名单能拦住
 //
-// 漏掉后一类的话，表现是所有出网请求超时而配置文件看着完全正常。
+// 漏掉后一类时，表现为所有出网请求超时而配置文件正常。
 func TestProxyRejectsSchemeless(t *testing.T) {
 	for _, bad := range []string{"127.0.0.1:7890", "localhost:1080", "proxy:8080", "://x"} {
 		if _, err := Load(writeConfig(t, "tg_proxy: \""+bad+"\"\n")); err == nil {
@@ -104,8 +103,8 @@ func TestProxyTransportUsesURL(t *testing.T) {
 	}
 
 	// Clone 自 DefaultTransport，连接池等调优必须还在。
-	// 直接 &http.Transport{Proxy: …} 会把它们全部清零，
-	// 表现是高频请求下连接不复用、句柄涨得飞快。
+	// 直接构造 &http.Transport{Proxy: …} 会丢失这些设置，
+	// 表现为高频请求下连接不复用、文件句柄持续增长。
 	if tr.MaxIdleConns == 0 || tr.IdleConnTimeout == 0 {
 		t.Errorf("丢掉了 DefaultTransport 的连接池设置: MaxIdleConns=%d IdleConnTimeout=%v",
 			tr.MaxIdleConns, tr.IdleConnTimeout)
@@ -150,8 +149,8 @@ func TestEnvFillsAll(t *testing.T) {
 	}
 }
 
-// TestMissingFileWithoutEnvStillFails 确认「文件不存在」没有把必填项的
-// 校验一起放过 —— 否则配置路径写错会表现成一个莫名其妙的运行时错误。
+// TestMissingFileWithoutEnvStillFails 验证文件不存在时必填项校验仍然生效 ——
+// 否则配置路径写错会表现为运行时错误。
 func TestMissingFileWithoutEnvStillFails(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "无.yaml")); err == nil {
 		t.Error("既没有文件也没有环境变量时应当报错")
@@ -159,7 +158,7 @@ func TestMissingFileWithoutEnvStillFails(t *testing.T) {
 }
 
 // TestTGAPIDefaults：tg_api_id/tg_api_hash 不配时走内置默认值（入群时间
-// 回查开箱可用）；配了就用自己的；配 0 或空串则关闭这一项。
+// 回查默认可用）；配了就用自己的；配 0 或空串则关闭这一项。
 func TestTGAPIDefaults(t *testing.T) {
 	cfg, err := Load(writeConfig(t, ""))
 	if err != nil {

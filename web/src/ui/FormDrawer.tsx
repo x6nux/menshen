@@ -1,4 +1,4 @@
-// 底部表单抽屉（计划 3.3）：标题 + children + 全宽提交按钮。
+// 底部表单抽屉：标题 + children + 全宽提交按钮。
 // pending 由调用方从 mutation.isPending 传入：提交中禁用关闭（关闭按钮/遮罩/Esc）
 // 与提交按钮；错误时不自动关闭——失败由调用方 toast，抽屉保持打开、输入不丢。
 import Close from '@mui/icons-material/Close'

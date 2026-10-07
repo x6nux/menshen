@@ -10,7 +10,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// showMainMenu 渲染管理主菜单。本 bot 没有面向普通用户的功能，
+// ShowMainMenu 渲染管理主菜单。本 bot 没有面向普通用户的功能，
 // 主菜单就是管理面板本身，按角色决定露出哪些入口。
 func ShowMainMenu(b *core.Bot, chatID, msgID, uid int64) {
 	snap := b.Cache.Snap()
@@ -38,8 +38,8 @@ func ShowMainMenu(b *core.Bot, chatID, msgID, uid int64) {
 		}
 	}
 	if main {
-		// 主 bot 不入群、不判定：和「生效群 0 个」混在一起报，会让人以为
-		// 是没配完，而不是设计如此。
+		// 主 bot 不入群、不判定，其计数单列；并入生效群计数会让人误以为
+		// 配置未完成。
 		fmt.Fprintf(&sb, "已接入机器人: %d 个（主 bot %d · 工作 bot %d）｜ 生效群: %d 个\n",
 			len(mine), len(mine)-workers, workers, chats)
 	} else {
@@ -74,11 +74,10 @@ func ShowMainMenu(b *core.Bot, chatID, msgID, uid int64) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
-// bootstrapHint 返回还缺什么配置，全部就绪时返回空串。
+// bootstrapHint 返回还缺哪些配置，全部就绪时返回空串。
 //
-// 判定链路有四个前置条件，缺任何一个都表现为「一条都没拦到」而不报错，
-// 所以要逐条点名——否则新部署的人只能靠猜。次级管理员看不到上游与模型
-// 那两条：他也改不了，说了只会让他去找主管理员，而那正是要说的。
+// 判定链路有四个前置条件，缺任一个都表现为不拦截且不报错，故逐条列出。
+// 次级管理员看不到上游与模型两条：他改不了，列出只会让他去找主管理员。
 func bootstrapHint(b *core.Bot, uid int64, main bool) string {
 	snap := b.Cache.Snap()
 	var miss []string
@@ -109,9 +108,9 @@ func bootstrapHint(b *core.Bot, uid int64, main bool) string {
 	if len(bots) == 0 {
 		miss = append(miss, "• 还没接入任何机器人")
 	} else {
-		// 主 bot 不入群、不判定，它名下没有群是设计如此，不能拿它判断
-		// 「配完了没有」——否则只有主 bot 的新部署会一直看到一条永远
-		// 消不掉的提示。真正要检查的是工作 bot。
+		// 主 bot 不入群、不判定，名下没有群是设计如此，不能拿它判断配置
+		// 是否完成，否则只接了主 bot 的部署会一直看到无法消除的提示。
+		// 真正要检查的是工作 bot。
 		workers, hasChat := 0, false
 		for _, r := range bots {
 			if r.IsMain {
@@ -136,9 +135,9 @@ func bootstrapHint(b *core.Bot, uid int64, main bool) string {
 	return strings.Join(miss, "\n")
 }
 
-// handleAdminCallback 是 a:* 回调的总分发。
+// HandleAdminCallback 是 a:* 回调的总分发。
 //
-// 这里只做路由，权限判断在各分支内部按「这个操作动的是谁的东西」来做：
+// 这里只做路由，权限判断在各分支内部按操作对象的归属来做：
 // callback_data 是客户端发上来的，路由层放行不等于操作层放行。
 func HandleAdminCallback(b *core.Bot, q *tg.CallbackQuery) {
 	parts := strings.Split(q.Data, ":")
@@ -152,7 +151,7 @@ func HandleAdminCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, "")
 		ShowMainMenu(b, q.Message.Chat.ID, q.Message.MessageID, q.From.ID)
 
-	// 纯展示用的占位按钮（如分页里的「2 / 5」），点了什么也不做
+	// 纯展示用的占位按钮（如分页里的 `2 / 5`），点击不做任何事
 	case "noop":
 		b.AnswerCallback(q.ID, "")
 
@@ -162,8 +161,8 @@ func HandleAdminCallback(b *core.Bot, q *tg.CallbackQuery) {
 	case "ad": // a:ad —— 形态摘要与告警上的人工处置
 		handleAntiAdCallback(b, q)
 
-	// 以下四棵树只有主管理员能进：它们要么花的是他的钱（上游、模型），
-	// 要么影响全平台（管理员、联合封禁、全局设置）。
+	// 以下分支只有主管理员能进：它们或消耗主管理员的资源（上游、模型），
+	// 或影响全平台（管理员、联合封禁、全局设置）。
 	case "ga":
 		handleAdminsCallback(b, q)
 	case "gb":
@@ -188,10 +187,10 @@ func HandleAdminCallback(b *core.Bot, q *tg.CallbackQuery) {
 	}
 }
 
-// handlePendingInput 把管理员补发的那条文本交给对应的处理器。
+// HandlePendingInput 把管理员补发的那条文本交给对应的处理器。
 //
-// 入口处只验「是不是管理员」，具体到「能不能动这个 bot」由各处理器
-// 自己判断：从登记到输入之间有 5 分钟窗口，权限必须在执行点复查。
+// 入口处只验是否为管理员，具体到能否操作这个 bot 由各处理器自己判断：
+// 从登记到输入之间有 5 分钟窗口，权限必须在执行点复查。
 func HandlePendingInput(b *core.Bot, m *tg.Message, p core.PendingInput) {
 	if !b.IsStaff(m.From.ID) {
 		b.DropPending(m.From.ID)

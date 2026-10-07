@@ -10,14 +10,14 @@ import (
 // caches 是反广告的进程级内存状态，挂在 Shared 上（见 core.Ext），
 // 由分钟任务的 GCCaches 统一回收。全部只存内存：重启后丢了无非多查一次。
 type caches struct {
-	// chatAdmin 缓存「某人是否为某群管理员」，键 "chatID:uid"。
+	// chatAdmin 缓存某人是否为某群管理员，键 "chatID:uid"。
 	// 全量送检时不缓存等于每条群消息一次 getChatMember，
 	// 必然撞上 Telegram 的全局速率限制。
 	chatAdmin core.TTLMap[string, bool]
 	// bio 缓存 TG 个人资料（getChat），键 "botID:uid"。广告号的强特征常写在
 	// 简介里，但全量送检下不缓存就是每条群消息多一次 TG 往返。键里带 bot：
 	// 查不查得到取决于该 bot 与用户有没有共同会话，共用一个键会让查不到的
-	// 「空」盖掉另一个 bot 查得到的结果（见 bioCacheKey）。
+	// 空结果盖掉另一个 bot 查得到的结果（见 bioCacheKey）。
 	bio core.TTLMap[string, bioEntry]
 	// photo 缓存 getUserProfilePhotos 的结果（头像张数），键 uid。
 	// 前置号/申诉路径才查；头像数很少变，查一次管一天。
@@ -33,13 +33,13 @@ type caches struct {
 	// unbanGate 是申诉的重试闸，键为 uid。
 	// 不限次数但间隔递增，见 nextUnbanDelay。
 	unbanGate core.TTLMap[int64, unbanAttempt]
-	// joinNotice 把「XXX 已加入群组」服务消息与冷判定结果配对
+	// joinNotice 把入群服务消息与冷判定结果配对
 	// （见 noteJoinNotice）：命中禁言时那条服务消息也要删掉，
 	// 而它与判定结果谁先到都有可能。键 "chatID:uid"。
 	joinNotice core.TTLMap[string, joinNoticeEntry]
 	// tempMutes 记下我们刚上的临时禁言（见 NoteTempMute），键 chat:uid。
 	tempMutes core.TTLMap[string, struct{}]
-	// justLifted 记下「这是我们主动解除的」（见 NoteLifted），键 chat:uid。
+	// justLifted 记下这是我们主动解除的标记（见 NoteLifted），键 chat:uid。
 	justLifted core.TTLMap[string, struct{}]
 	// reasserts 记重新施加的时间点（限流用），键 chat:uid。
 	reasserts core.TTLMap[string, []time.Time]

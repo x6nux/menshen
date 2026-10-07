@@ -1,9 +1,8 @@
 package antiad
 
-// 判词-输入一致性门的测试。两起线上误判（#21276、#26266）的判词原样
-// 进来必须被拦下；模型声明了真实证据的判词必须放行——包括「原文写看煮页、
-// 判词写看主页」这类变形还原（旧做法从判词抽引号段核对时会误拦，现在
-// 只核对 evidence 与硬 token，不再咬判词措辞）。
+// 判词-输入一致性门的测试。判词引用了输入中不存在的证据时必须被拦下；
+// 模型声明了真实证据的判词必须放行，包括对原文做变形还原的写法
+// （只核对 evidence 与硬 token，不核对判词措辞）。
 
 import (
 	"encoding/json"
@@ -31,10 +30,9 @@ func gateVerdict(reason string, evidence ...string) adVerdict {
 		Decider: "llm", Reason: reason, Evidence: evidence}
 }
 
-// 两起线上误判的判词，进门前必须被降为未定。
+// 引用了输入中不存在证据的判词，进入门后必须被降为未定。
 func TestEvidenceGateCatchesFabricatedReasons(t *testing.T) {
-	// #21276：正文只有六个字，判词引了不存在的域名与外部引用贴纸，
-	// 且没给出任何真实证据。
+	// 正文极短，判词引用了不存在的域名与外部引用贴纸，且未给出真实证据。
 	v := evidenceGate(gateState("适合你自己的"), gateVerdict(
 		"正文为典型的规避形态：本人正文几乎为空，载荷全在外部引用的贴纸里"+
 			"（裸聊约炮招揽、大尺度学校视频、访问色情网站 ldd26 .xyz 并加 LINE 账号），"+
@@ -46,7 +44,7 @@ func TestEvidenceGateCatchesFabricatedReasons(t *testing.T) {
 		t.Errorf("前缀应说明不符项，得到 %q", v.Reason)
 	}
 
-	// #26266：正文里没有「约炮」，模型把它当成正文原文声明的证据。
+	// 正文中不含 `约炮`，模型却把它声明为正文原文中的证据。
 	v = evidenceGate(gateState("现在不怕CF封了  无限邮箱 小号整起！"), gateVerdict(
 		"正文「约炮」等招揽话术并附联系方式，属色情招揽", "约炮", "联系方式"))
 	if v.IsAd {
@@ -63,9 +61,7 @@ func TestEvidenceGateCatchesFabricatedReasons(t *testing.T) {
 	}
 }
 
-// 零宽字符与怪标点拆词的原文，evidence 摘归一后的写法：算同一份原文
-// （线上 #27345：「　急‌招‌‧拍·照‍📷⁠　​日⁠结百左右」被判词引成
-// 「急招·拍照·日结百左右」，旧口径逐字比对会误拦一条真广告）。
+// 零宽字符与异形标点拆词的原文，evidence 摘归一化后的写法，算同一份原文。
 func TestEvidenceGateToleratesObfuscatedPunctuation(t *testing.T) {
 	st := gateState("　急\u200c招\u200c‧拍·照\u200d📷\u2060　\u200b日\u2060结百左右")
 	v := evidenceGate(st, gateVerdict("正文『急招·拍照·日结百左右』是兼职招揽",
@@ -73,7 +69,7 @@ func TestEvidenceGateToleratesObfuscatedPunctuation(t *testing.T) {
 	if !v.IsAd {
 		t.Fatalf("标点归一后的证据不该被拦：%q", v.Reason)
 	}
-	// 但换字不行：原文写「看煮页」，证据写成「看主页」仍算不存在。
+	// 但换字不行：原文用词被替换成另一词后仍算不存在。
 	v = evidenceGate(gateState("看煮页 日结"), gateVerdict("引导看主页", "看主页"))
 	if v.IsAd {
 		t.Fatal("换字改写的证据应被拦下")
@@ -82,8 +78,8 @@ func TestEvidenceGateToleratesObfuscatedPunctuation(t *testing.T) {
 
 // 证据逐字摘自原文：放行。判词措辞可以概括、可以变形还原。
 func TestEvidenceGatePassesGroundedReasons(t *testing.T) {
-	// 原提示词要求「变形还原后再判断」：原文写「看煮页」，判词写「看主页」，
-	// 只要 evidence 摘的是原文，就不算不一致（旧口径的残余误拦已修）。
+	// 提示词要求先做变形还原再判断：判词措辞可与原文不同，
+	// 只要 evidence 摘自原文就不算不一致。
 	st := gateState("看煮页 日入5000 私聊我")
 	v := evidenceGate(st, gateVerdict("正文引导看主页、日入话术，属诈骗引流",
 		"看煮页", "日入5000 私聊我"))
@@ -116,7 +112,7 @@ func TestEvidenceGatePassesGroundedReasons(t *testing.T) {
 
 // 引用语境的放行条件：state 里真有 quoted，或历史条目带引用段标记。
 func TestEvidenceGateQuoteContext(t *testing.T) {
-	// 判词提「引用」而本条没有 quoted、历史里也没有引用段：拦。
+	// 判词提引用而本条没有 quoted、历史里也没有引用段：拦。
 	v := evidenceGate(gateState("u"), gateVerdict("载荷全在引用里，按广告论处", "u"))
 	if v.IsAd {
 		t.Fatal("无引用却谈引用载荷，应拦")
@@ -129,7 +125,7 @@ func TestEvidenceGateQuoteContext(t *testing.T) {
 		t.Fatalf("真有 quoted 时不应拦：%q", v.Reason)
 	}
 
-	// 复查历史里带「［引用·别人的话］」标记：判词提引用是在说历史，放行。
+	// 复查历史里带 `［引用·别人的话］` 标记：判词提引用是在说历史，放行。
 	st = gateState("u")
 	st.ReviewHistory = append(st.ReviewHistory,
 		core.CtxMsg{Name: "路人", Text: "［引用·别人的话］日入5000 私聊我"})
@@ -167,7 +163,7 @@ func TestEvidenceGateCatchesFabricatedHandle(t *testing.T) {
 	}
 }
 
-// 改正重试的提示词要点名不符项，并把「逐字摘录、不得变形还原」写死。
+// 改正重试的提示词要点名不符项，并把逐字摘录、不得变形还原写死。
 func TestEvidenceRetryNote(t *testing.T) {
 	if !strings.Contains(evidenceRetryNote, "%s") ||
 		strings.Count(evidenceRetryNote, "%s") != 1 {
@@ -334,7 +330,7 @@ func TestFormalMessageMuteActive(t *testing.T) {
 	}
 }
 
-// 流水理由里要带上复判声明的证据，管理员事后回看才知道凭什么判的。
+// 流水理由中要带上复判声明的证据，便于管理员事后回看判定依据。
 func TestLogAdKeepsEvidence(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

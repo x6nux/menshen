@@ -10,8 +10,8 @@ import (
 // 禁言与解除禁言的权限集。它们是处置动作本身，不是面板的一部分 ——
 // 判定链路（applyAction）、冷判定与自助解除都要用。
 
-// mutedPermissions 是禁言用的全 false 权限集。
-// 抽出来供 applyAction 与人工禁言共用，避免两处写歪一个字段。
+// MutedPermissions 是禁言用的全 false 权限集。
+// 抽出来供 applyAction 与人工禁言共用，避免两处权限字段不一致。
 func MutedPermissions() map[string]any {
 	return map[string]any{
 		"can_send_messages":         false,
@@ -27,7 +27,7 @@ func MutedPermissions() map[string]any {
 	}
 }
 
-// MuteLabel 把禁言时长渲染成人话。参数是**分钟**：0 = 永久禁言；
+// MuteLabel 把禁言时长渲染成可读文本。参数是分钟：0 = 永久禁言；
 // 能整除的按天/小时渲染（1440 → 1 天、360 → 6 小时），余下的按分钟。
 func MuteLabel(minutes int64) string {
 	if minutes <= 0 {
@@ -42,11 +42,11 @@ func MuteLabel(minutes int64) string {
 	return fmt.Sprintf("禁言 %d 分钟", minutes)
 }
 
-// unmute 恢复默认权限。必须逐项给 true —— 再发一次全 false
+// Unmute 恢复默认权限。必须逐项给 true —— 再发一次全 false
 // 等于又禁言了一次，这是误判处置里最容易写反的一处。
 // 返回 TG 调用是否成功，调用方要据此决定给管理员的提示措辞。
 //
-// 频道身份（负 ID）当初是 banChatSenderChat 封的，解除走 unbanChatSenderChat。
+// 频道身份（负 ID）走 unbanChatSenderChat 解除（封禁侧是 banChatSenderChat）。
 func Unmute(b *core.Bot, chatID, uid int64) (bool, string) {
 	if uid < 0 {
 		return Unban(b, chatID, uid)

@@ -105,7 +105,7 @@ export interface OptimisticVars<TBody> {
 }
 
 /**
- * useOptimisticMiniMutation 是「开关类」写操作的乐观更新：立即把预期结果写进
+ * useOptimisticMiniMutation 是开关类写操作的乐观更新：立即把预期结果写进
  * ['state']，失败回滚到调用前的快照并冒泡错误（页面 toast），无论成败最后都
  * 失效 ['state'] 用服务端真值校正。
  *

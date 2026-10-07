@@ -1,9 +1,9 @@
-// 全局设置（计划 3.5 / 4.10，仅主管理员；次管按无权限处理）：
+// 全局设置（仅主管理员；次级管理员按无权限处理）：
 // - 总开关：antiad_enabled / alert_copy_main / gban_enabled，Switch 乐观更新，
-//   提交必须是字符串 '1'/'0'（对应旧 TestMiniAppGlobalTogglesValidJS 的迁移不变量）；
+//   提交必须是字符串 '1'/'0'；
 // - 默认模型：判定/复判/识图/规则发现，抽屉内已启用模型快选；判定与复判
 //   是逗号列表（按重试顺序），识图与规则发现是单项；
-// - 主题折叠卡（state.sections）：卡头「已设置 N 项」；逐项智能控件——
+// - 主题折叠卡（state.sections）：卡头显示已设置 N 项；逐项智能控件——
 //   toggle → Switch、number → 抽屉（时长类预设按 spec.min/max 过滤并显示换算）；
 // - 展示时区 / 群内提示附加链接 / 形态摘要 / 修正文本。
 import AddCircleOutline from '@mui/icons-material/AddCircleOutline'
@@ -46,7 +46,7 @@ import {
   useToast,
 } from '../ui'
 
-/** parseModelList 把模型列表键（JSON 数组或旧逗号串）转成逗号分隔文本。 */
+/** parseModelList 把模型列表键（JSON 数组或逗号串）转成逗号分隔文本。 */
 function parseModelList(raw: string | undefined): string {
   if (!raw) return ''
   try {
@@ -55,7 +55,7 @@ function parseModelList(raw: string | undefined): string {
       return parsed.filter((v): v is string => typeof v === 'string').join(', ')
     }
   } catch {
-    // 旧格式（逗号串）原样展示。
+    // 非 JSON（逗号串）原样展示。
     return raw
   }
   return ''
@@ -190,7 +190,7 @@ export function SettingsPage() {
   const data = state.data
   const global = data.global ?? {}
   const enabledModels = (data.models ?? []).filter((m) => m.enabled)
-  // 「已设置」只认显式写过的键（settings 表里有行）；global 里的是代码默认值。
+  // 已设置只统计显式写过的键（settings 表里有行）；global 里的是代码默认值。
   const settingsSet = new Set(data.settings_set ?? [])
 
   /** toggleKey 是总开关与 spec 开关共用的乐观写：全局值只认字符串 '1'/'0'。 */

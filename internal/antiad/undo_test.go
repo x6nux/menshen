@@ -8,10 +8,10 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestUndoVerdictNotReasserted：误判解禁之后 TG 会推一条「restricted → 能发言」
+// TestUndoVerdictNotReasserted：误判解禁后 TG 会推一条 restricted → 能发言
 // 的 chat_member 更新。解禁若不走 LiftMute（落主动解除标记、清进群限制、
-// 标记同群其余禁言流水），外部解除复查会把它当成「被别人抹掉了」，当场
-// 再禁回去 —— 表现就是误判点了，人还是说不了话。
+// 标记同群其余禁言流水），外部解除复查会把它当成被外部抹掉，当场再禁回去，
+// 导致误判已点但用户仍无法发言。
 func TestUndoVerdictNotReasserted(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

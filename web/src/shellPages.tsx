@@ -77,7 +77,7 @@ export function renderStackPage(page: Page): ReactNode {
     case 'appeal':
       return <AppealDetailPage key={page.id} id={page.id} />
     case 'lists':
-      // key 带上 section：白名单 → 联封等分段切换时重挂载，初始化到正确的分段。
+      // key 带上 section：白名单 → 联合封禁等分段切换时重挂载，初始化到正确的分段。
       return <ListsPage key={page.section ?? 'default'} section={page.section} />
     case 'upstreams':
       return <UpstreamsPage />

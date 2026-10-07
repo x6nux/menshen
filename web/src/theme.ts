@@ -1,4 +1,4 @@
-// Telegram themeParams → MUI theme（实施计划 3.1/3.4）。
+// Telegram themeParams → MUI theme。
 // 无 SDK 或缺少某个颜色时用国内风浅色兜底；深色跟随 colorScheme 实时重建。
 import { createTheme } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
@@ -36,7 +36,7 @@ const LIGHT_FALLBACK: FallbackPalette = {
   bg: '#F5F6F7',
   paper: '#FFFFFF',
   text: '#1A1A1A',
-  // 次要文字要满足正文 AA（白底对比度 ≈5.3:1）；#8A8A8E 只有约 3.5:1。
+  // 次要文字需满足正文 AA（白底对比度 ≈5.3:1）。
   hint: '#6B6B70',
   button: '#1677FF',
   buttonText: '#FFFFFF',
@@ -54,7 +54,7 @@ const DARK_FALLBACK: FallbackPalette = {
   destructive: '#FF6B6B',
 }
 
-/** 成功/运行中（3.1 的语义色，Telegram 主题里没有对应项）。 */
+/** 成功/运行中语义色（Telegram 主题里没有对应项）。 */
 export const SUCCESS_COLOR = '#07C160'
 export const WARNING_COLOR = '#FF9F0A'
 
@@ -90,7 +90,7 @@ export function buildMiniTheme(options: BuildMiniThemeOptions = {}): Theme {
       button: { fontSize: 15 },
     },
     components: {
-      // 按钮：国内 App 风格——不转大写、圆角 10、触控高度 ≥44（3.1）。
+      // 按钮：国内 App 风格——不转大写、圆角 10、触控高度 ≥44。
       MuiButton: {
         defaultProps: { disableElevation: true },
         styleOverrides: {

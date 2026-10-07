@@ -31,10 +31,10 @@ type adVerdict struct {
 	// Severity 是 systemone 给的危害度（0-3，可带小数）。复判的 JSON 里
 	// 没有这一项，所以复判结论恒为 0；群内提醒的短撤回只认初判这条。
 	Severity float64
-	// ProfileOKHours 是复判给的「资料临时放行」时长（1~72 小时，0 = 不放行）。
+	// ProfileOKHours 是复判给的资料临时放行时长（1~72 小时，0 = 不放行）。
 	// 只有复判判为正常、且可疑的只是资料本身时才会给（见 profile_ok.go）。
 	ProfileOKHours int
-	// Evidence 是复判模型声明判广告的证据：从判定对象原文**逐字摘出**的
+	// Evidence 是复判模型声明判广告的证据：从判定对象原文逐字摘出的
 	// 关键词/短语，可多项。一致性门（evidence_gate.go）拿它与判定对象
 	// 核对，流水与复查卡片也展示它——管理员不用再从判词里猜依据。
 	Evidence []string
@@ -45,8 +45,7 @@ type adVerdict struct {
 // buildSystemOneReq 构造 jev 请求体。
 //
 // instructions 由调用方给：消息判定与进群冷判定看的是同一份 state 结构，
-// 但问的是完全不同的问题（「这条消息是不是广告」vs「这个账号是不是
-// 广告号」），提示词必须分开。
+// 但问题不同（消息判定 vs 进群冷判定），提示词必须分开。
 //
 // 不带 model 字段：模型名是 aiCall 按当前尝试填的（要剥掉上游前缀）。
 func buildSystemOneReq(st adState, instructions string) map[string]any {
@@ -54,7 +53,7 @@ func buildSystemOneReq(st adState, instructions string) map[string]any {
 		"state": st,
 		"questions": map[string]any{
 			// criteria 的值不要留 nil：那等于让模型自己猜两个选项的边界在哪，
-			// 而「账号资料就是广告位」「变形词还原后才成立」这两类恰恰是
+			// 而账号资料就是广告位、变形词还原后才成立这两类恰恰是
 			// 它猜不到、必须明写的。
 			"is_ad": map[string]any{
 				"type":         "choice",
@@ -95,7 +94,7 @@ func buildSystemOneReq(st adState, instructions string) map[string]any {
 				"type":         "score",
 				"instructions": "危害程度：0 = 无害，3 = 诈骗、露骨色情或大规模刷屏。",
 				// score 题的 criteria 必须是有序列表，下标即分值；缺失或写成
-				// map 上游直接 422。4xx 不重试，主判随之静默回落成「只有大模型」。
+				// map 上游直接 422。4xx 不重试，主判随之静默回落成只有大模型。
 				"criteria": []string{"无害", "轻度推广", "明显引流", "诈骗、露骨色情或大规模刷屏"},
 			},
 		},
@@ -134,7 +133,7 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	isAd, ok := resp.Answers["is_ad"]
 	if !ok || isAd.Choice == "" {
 		// 模型换版本、模型名配错都会走到这里。必须报错而不是当成 clean，
-		// 否则整个功能静默失效，运维只看到「一条都没拦到」。
+		// 否则整个功能静默失效，运维只看到一条都没拦到。
 		return adVerdict{}, fmt.Errorf("反广告：systemone 未返回 is_ad")
 	}
 
@@ -151,8 +150,8 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	}
 	v.Reason = fmt.Sprintf("判定 %s 置信度:%.0f%%，危害度:%.1f",
 		soChoiceLabel(isAd.Choice), isAd.Confidence*100, v.Severity)
-	// is_ad=true 却把 ad_kind 选成 none，是模型自相矛盾（问题里明写「判为
-	// 广告时不得选 none」）。按模型结论定档只看 is_ad，照它会删消息、禁言、
+	// is_ad=true 却把 ad_kind 选成 none，是模型自相矛盾（问题里明写
+	// `判为广告时不得选 none`）。按模型结论定档只看 is_ad，照它会删消息、禁言、
 	// 连带删除并把正文记成哈希；说不出广告类别就不算广告，与 judgeLLM
 	// 里同一条兜底保持同一口径。
 	if v.IsAd && v.Kind == "none" {
@@ -163,9 +162,9 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	return v, nil
 }
 
-// soChoiceLabel 把 systemone 的 is_ad 选项翻成人话。decider 不进这句：
-// 来源在记录卡片上另有字段，理由里再写一遍只是噪音。模型回出名单外的
-// 值时原样带出 —— 猜成「正常」会把异常吞掉。
+// soChoiceLabel 把 systemone 的 is_ad 选项翻成中文标签。decider 不写进
+// 这句：来源在记录卡片上另有字段，理由里重复只是冗余。模型返回名单外的
+// 值时原样带出 —— 归为正常会掩盖异常。
 func soChoiceLabel(choice string) string {
 	switch choice {
 	case "ad":
@@ -178,10 +177,10 @@ func soChoiceLabel(choice string) string {
 
 // judgeLLM 用大模型复判，sysPrompt 由调用方给（消息判定与进群冷判定各一份）。
 //
-// prior 是上一级的结论（systemone 初判 / 命中规则 / 内容哈希）。**只有内容
-// 哈希那一档会进载荷**：另外两档是别的判定的输出，传过去会把复判锚定在它
-// 上面（见下面 prior_verdict 的注释）。调用方照旧把上一级结论传进来，由
-// 这里统一决定放不放行 —— 策略只写在一处。
+// prior 是上一级的结论（systemone 初判 / 命中规则 / 内容哈希）。只有内容
+// 哈希那一档会进载荷：另外两档是别的判定的输出，传过去会把复判锚定在它
+// 上面（见下面 prior_verdict 的注释）。调用方无论哪一档都传入上一级结论，
+// 由这里统一决定是否放行 —— 策略只写在一处。
 func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	sysPrompt string) (adVerdict, error) {
 
@@ -196,11 +195,11 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	// prior_verdict 只传内容哈希那一档：它不是模型的意见，是本服务自己的
 	// 账本（同样的内容此前已判为广告），对复判是硬证据。
 	//
-	// systemone（jev）与命中规则的结论**不传**：那是另一个判定的输出，
-	// 传过去只会把复判锚定在它上面 —— 实测出过错判顺着 prior 编造理由
-	// （#26266 的「正文约炮」），也让「两模型独立互证」变成「复判复述初判」，
-	// 复查就失去了交叉验证的意义。规则命中的证据本来就以 matched_rules
-	// 出现在 state 里，不需要再借 prior 说一遍。
+	// systemone（jev）与命中规则的结论不传：那是另一个判定的输出，
+	// 传过去只会把复判锚定在它上面 —— 会让模型顺着 prior 编造理由，
+	// 也使两模型独立互证变成复判复述初判，复查失去交叉验证的意义。
+	// 规则命中的证据本来就以 matched_rules 出现在 state 里，不需要再借
+	// prior 说一遍。
 	if prior.Decider == deciderHash {
 		payload["prior_verdict"] = map[string]any{
 			"is_ad": prior.IsAd, "confidence": prior.Confidence,
@@ -241,9 +240,9 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	}
 
 	// 证据与判定对象对不上：给模型一次改正机会 —— 原提示词原样重发，
-	// 附上它上一轮的输出与错误说明，把「evidence 必须逐字摘自判定对象」
-	// 二次强调一遍。上游抖动导致的偶发编造与提示词漂移都在这一轮里
-	// 有一次自纠的机会；重试仍不符才按未定放行（见 evidenceDemote）。
+	// 附上它上一轮的输出与错误说明，把 evidence 必须逐字摘自判定对象的要求
+	// 二次强调一遍。上游抖动导致的偶发编造与提示词漂移都在这一轮里有
+	// 一次自纠的机会；重试仍不符才按未定放行（见 evidenceDemote）。
 	retryReq := map[string]any{
 		"temperature":    0,
 		"stream":         true,
@@ -321,15 +320,15 @@ func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 		Reason     string  `json:"reason"`
 		// Evidence 是模型声明的判广告证据（原文逐字摘录，见 adVerdict）。
 		Evidence []string `json:"evidence"`
-		// ProfileOKHours 是「资料临时放行」时长：只在判为正常、且可疑的
+		// ProfileOKHours 是资料临时放行时长：只在判为正常、且可疑的
 		// 只是资料本身时有意义。判为广告时一律忽略。
 		ProfileOKHours int `json:"profile_ok_hours"`
 	}
 	if err := json.Unmarshal([]byte(obj), &out); err != nil {
 		return adVerdict{}, "", fmt.Errorf("反广告：大模型 JSON 解析失败: %w", err)
 	}
-	// is_ad=true 却说不出广告类别是模型自相矛盾（实测理由写着「按正常交流
-	// 处理」）。按模型结论定档只看 is_ad，照它会删消息、记哈希，按正常走。
+	// is_ad=true 却说不出广告类别是模型自相矛盾。按模型结论定档只看
+	// is_ad，照它会删消息、记哈希，故按正常处理。
 	if out.IsAd && out.Kind == "none" {
 		out.IsAd = false
 	}
@@ -360,8 +359,8 @@ func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 	}, obj, nil
 }
 
-// extractJSONObject 从模型输出里抠出首个完整的 JSON 对象。
-// 模型爱用 ```json 包裹、爱在前面加一句「好的」，严格解析会全军覆没。
+// extractJSONObject 从模型输出中提取首个完整的 JSON 对象。
+// 模型常用 ```json 包裹、并在前面加一句说明，严格解析会失败。
 func extractJSONObject(s string) string {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
@@ -373,9 +372,9 @@ func extractJSONObject(s string) string {
 
 // judgeBoth 是 /check 复查用的判定：两个模型都跑，不看采信线。
 //
-// 与 judge 的「低置信才升级」刻意不同 —— 复查是人主动发起的二次判断，
-// 目的就是拿到两方结论互相印证；省那一次调用等于把复查降级成重判一遍。
-// 消息复查与资料复查共用，提示词由调用方按口径各给一份。
+// 与自动判定（低置信或需处罚才升级）刻意不同 —— 复查是人主动发起的二次
+// 判断，目的就是拿到两方结论互相印证；省去那一次调用等于把复查降级成
+// 重判一遍。消息复查与资料复查共用，提示词由调用方按口径各给一份。
 //
 // report 在每级跑完后被调一次（stage 为 "so"/"llm"，带该级结论或错误），
 // 调用方用它把中间结论编辑进进度消息；为 nil 时静默。回调之后才有合并
@@ -388,7 +387,7 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState,
 		report("so", so, soErr)
 	}
 	// 即使 soErr 非空也照样跑大模型：so 此时是零值，judgeLLM 会自动
-	// 略过 prior_verdict，退化成「只有大模型」的判定而不是整体失败。
+	// 略过 prior_verdict，退化成只有大模型的判定而不是整体失败。
 	llm, llmErr := judgeLLM(b, snap, st, so, llmPrompt)
 	if report != nil {
 		report("llm", llm, llmErr)
@@ -398,7 +397,7 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState,
 	case soErr != nil && llmErr != nil:
 		return adVerdict{}, fmt.Errorf("systemone: %v; llm: %v", soErr, llmErr)
 	case llmErr != nil:
-		// 复查同理：低于采信线的初判不因为「大模型没跑成」就变成可处置的。
+		// 复查同理：低于采信线的初判不因为大模型没跑成就变成可处置的。
 		if demoteUnconfirmed(b, snap, &so, "大模型复查失败："+llmErr.Error()) {
 			slog.Warn("反广告：大模型复查失败且初判低于采信线，按未定放行",
 				"置信度", so.Confidence, "err", llmErr)
@@ -449,9 +448,9 @@ func judgeFirst(b *core.Bot, snap *store.Snapshot, st adState) (adVerdict, error
 	}
 	// 主判定器不可用：大模型顶上，不能因此整条链路瘫痪。
 	//
-	// 这条回落是静默的——判定照常给出结论，面板上看不出任何异样，
-	// 于是 systemone 可以坏上几个月都没人发现。至少留一行日志，
-	// 并把回落写进 reason，让流水里看得见。
+	// 这条回落是静默的——判定照常给出结论，面板上看不出异常，
+	// systemone 可能长期不可用而无人发现。因此至少留一行日志，
+	// 并把回落写进 reason，让流水里可见。
 	slog.Warn("反广告：systemone 不可用，回落到大模型", "err", soErr)
 	v, err := judgeLLM(b, snap, st, adVerdict{}, llmSystemPrompt)
 	if err != nil {
@@ -488,13 +487,11 @@ func needReview(b *core.Bot, snap *store.Snapshot, v adVerdict, act adAction) bo
 func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysPrompt string) adVerdict {
 	llm, err := judgeLLM(b, snap, st, prior, sysPrompt)
 	if err != nil {
-		// 复判失败时回退采信初判 —— 但只在初判自己有把握时。低于采信线的
-		// 初判本来就是要靠复判定生死的（那是我们自己设的「这条不可靠」的
-		// 门槛），复判没跑成还照它删消息、禁言、连带删除，等于把最不可靠
-		// 的一路当成了最终结论。实测：一条「我活了」被 systemone 判 13%
-		// 广告、复判超时，结果删了消息、临时禁言，还连带删了此人近期全部消息。
-		// 哈希命中不是「模型拿不准」：它是同一条内容此前已被判定为广告的
-		// 硬证据，不该被采信线降级（复判失败时照旧采信它）。
+		// 复判失败时回退采信初判 —— 但只在初判有把握时。低于采信线的
+		// 初判本就要靠复判定生死（采信线是我们设的该结论不可靠的门槛），
+		// 复判没跑成还照它删消息、禁言、连带删除，等于把最不可靠的一路
+		// 当成了最终结论。哈希命中不是模型拿不准：它是同一条内容此前已被
+		// 判定为广告的硬证据，不该被采信线降级（复判失败时仍然采信它）。
 		if prior.Decider != deciderHash &&
 			demoteUnconfirmed(b, snap, &prior, "大模型复判失败："+err.Error()) {
 			slog.Warn("反广告：大模型复判失败且初判低于采信线，按未定放行",
@@ -503,8 +500,8 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 			prior.Usage = billing.MergeUsage(prior.Usage, llm.Usage)
 			return prior
 		}
-		// 有把握的初判照旧采信：扔掉它等于白判一次。但必须看得见，否则
-		// 面板上只剩一条低置信结论，复判坏了多久都没人发现。
+		// 有把握的初判仍采信：丢弃它等于浪费一次判定。但必须可见，否则
+		// 面板上只剩一条低置信结论，复判故障长期无法发现。
 		slog.Warn("反广告：大模型复判失败，仅采信初判", "err", err)
 		prior.Reason = "（大模型复判失败：" + core.TruncateRunes(err.Error(), 120) +
 			"；仅采信初判）" + prior.Reason
@@ -518,12 +515,12 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 	return llm
 }
 
-// demoteUnconfirmed 把「复判没跑成、初判又没把握」的结论降级成未定。
+// demoteUnconfirmed 把复判没跑成、初判又没把握的结论降级成未定。
 //
-// 采信线（antiad_so_trust）就是「这条初判不可靠、要再问一次」的门槛：
-// 低于它的广告结论本来要靠复判定生死。复判失败时照它处置，等于把最不
-// 可靠的一路当成最终结论 —— 而按模型结论定档（antiad_bool_verdict）
-// 又恰恰不看置信度，两件事叠在一起就会出现「13% 的广告删消息+禁言」。
+// 采信线（antiad_so_trust）是初判不可靠、要再问一次的门槛：低于它的
+// 广告结论本要靠复判定生死。复判失败时照它处置，等于把最不可靠的一路
+// 当成最终结论 —— 而按模型结论定档（antiad_bool_verdict）又恰恰不看
+// 置信度，两者叠加就会出现低置信广告被删消息并禁言的情况。
 // 返回是否降级（降级后 IsAd=false，按未定走：留流水、不处置）。
 func demoteUnconfirmed(b *core.Bot, snap *store.Snapshot, v *adVerdict, why string) bool {
 	trust := float64(snap.BotSettingInt(b.BotID(), "antiad_so_trust", store.DefaultSoTrust)) / 100

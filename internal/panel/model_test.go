@@ -9,9 +9,9 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestParseModelListValidates 守的是模型列表输入的校验：顺序保留、
-// 去重、每个都必须存在且启用 —— 配一个不存在的名字，判定链路会在
-// 每条消息上拿 404，而表现只是「判定失败 → 放行」。
+// TestParseModelListValidates 验证模型列表输入的校验：顺序保留、
+// 去重、每个都必须存在且启用——配一个不存在的名字，判定链路会在
+// 每条消息上拿 404，而表现只是判定失败后放行。
 func TestParseModelListValidates(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	if _, err := b.Store.Write.Exec(`INSERT INTO models (name,prompt_price,

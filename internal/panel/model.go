@@ -28,7 +28,7 @@ var modelPriceFields = map[string]struct {
 }
 
 // handleModelCallback 处理 a:md:*。模型名放在 callback_data 的最后一段，
-// 因为模型名本身常含冒号（qwen3:30b、OpenRouter 的 :free），放中间会被切碎。
+// 因为模型名本身常含冒号，放中间会被切碎。
 func handleModelCallback(b *core.Bot, q *tg.CallbackQuery) {
 	chatID, msgID := q.Message.Chat.ID, q.Message.MessageID
 
@@ -211,7 +211,7 @@ func showModelUpstreamPick(b *core.Bot, chatID, msgID int64) {
 			continue
 		}
 		if core.ValidUpstreamName(u.Name) != nil {
-			skipped++ // 名字含 / 或 : 的旧上游，拼不成前缀
+			skipped++ // 名字含 / 或 : 的上游，拼不成前缀
 			continue
 		}
 		rows = append(rows, [][2]string{{

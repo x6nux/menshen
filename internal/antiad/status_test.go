@@ -67,8 +67,7 @@ func TestRestrictionStatusText(t *testing.T) {
 	if !mainLink || !ownLink {
 		t.Errorf("应分别给出主 bot 与归属人 bot 的解除链接，得到 %v", links)
 	}
-	// 没有任何限制时不返回状态块。原空状态探针从 556 改为 557：
-	// 556 现在有一条 prewarm 记录，会被打穿。
+	// 没有任何限制时不返回状态块。用 557 探空状态：556 已有 prewarm 记录。
 	if s, rows := RestrictionStatusText(sh, b.BotID(), 557); s != "" || len(rows) != 0 {
 		t.Errorf("没有限制不该有状态块：%q %v", s, rows)
 	}

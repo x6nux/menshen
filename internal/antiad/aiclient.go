@@ -24,18 +24,17 @@ import (
 
 const (
 	// aiMaxAttempts 是一次判定允许的总尝试次数（含首次）。
-	// 网络抖动、上游 5xx、限流都会吃掉一次，而每失败一次的代价是
-	// 「这条消息被放行」——重试便宜，漏判不便宜。
+	// 网络抖动、上游 5xx、限流都会消耗一次尝试；每次失败都意味着
+	// 这条消息被放行，因此重试的代价低于漏判。
 	aiMaxAttempts = 5
 	// aiTotalBudget 是全部尝试的总时间预算。
 	//
 	// 没有它，5 次 × 单次 20 秒超时 = 最坏 100 秒，而每个 bot 的判定
 	// worker 只有 32 路：上游整体变慢时，积压会迅速填满判定队列，
-	// 后面的消息全部走「队列已满，放行」。预算到了就不再重试。
-	// aiTotalBudget 是整轮重试的总预算。按 aiAttemptCap（45 秒）切段，
-	// 90 秒只够两路模型各试一次；列表里有三路时，前两路一起卡住的话第三路
-	// 连试都轮不上 —— 给到 150 秒，三路都能轮到一次。复判期间被临时禁言的
-	// 人是 5 分钟窗口（tempMute），150 秒仍在窗口内。
+	// 后面的消息全部按队列已满放行。预算到了就不再重试。
+	//
+	// 按 aiAttemptCap（45 秒）切段，150 秒够三路模型各试一次；复判期间
+	// 被临时禁言的人是 5 分钟窗口（tempMute），150 秒仍在窗口内。
 	aiTotalBudget = 150 * time.Second
 	// aiRetryBase 是退避基数，按 2 的幂增长，封顶 2 秒。
 	aiRetryBase = 200 * time.Millisecond
@@ -46,19 +45,17 @@ const (
 //
 // 固定一个值是为了让上游把同一路判定的 KV 前缀留在同一个会话/副本上：判定
 // 用的 system 提示词对所有消息都一样（几 KB 的稳定前缀），固定会话才谈得上
-// 命中前缀缓存，也省掉跨副本的冷启动。实测 oc 网关按前缀自动缓存（894 个
-// prompt token 里 768 命中），aiwave 不报缓存字段但接受该参数。
+// 命中前缀缓存，也省掉跨副本的冷启动。
 //
-// 只加在 chat 端点上：systemone 是 TypeSafe 原生形态，实测多带字段直接
-// 400 Invalid request —— 加了等于把初判整条打挂。
+// 只加在 chat 端点上：systemone 是 TypeSafe 原生形态，多带字段会直接返回
+// 400 Invalid request，导致初判整条失败。
 const aiSessionID = "menshen-antiad"
 
 // aiAttemptCap 是单次尝试的时间上限（测试可调）。
 //
-// 光有总预算不够：预算是「两次尝试之间」才检查的，一路慢模型（实测
-// lfree/mimo-v2.5 配大提示词时能拖到 45 秒客户超时）就能把整个预算吃光，
-// 列表里那个快模型（lfree/big-pickle，3 秒出结果）连试都轮不上，于是复判
-// 整条失败。按上限切成两段，慢的一路被切掉之后还有机会换人。
+// 只有总预算不够：预算在两次尝试之间才检查，一路慢模型（大提示词下可拖到
+// 客户端超时）就能把整个预算耗尽，列表里更快的模型连试都轮不上，复判整条
+// 失败。按上限切成多段，慢的一路被切掉之后还能换到下一路。
 var aiAttemptCap = 45 * time.Second
 
 // retryDelay 返回第 n 次失败后的等待时长（n 从 0 开始）。
@@ -71,12 +68,12 @@ func retryDelay(n int) time.Duration {
 }
 
 // hedgeKey 是并发模式的统计粒度：同一个模型（列表）在两个端点上的表现
-// 互不相干。传进来的是逗号连接后的列表，单模型时与旧键完全一致。
+// 互不相干。传进来的是逗号连接后的列表。
 func hedgeKey(ep upstream.Endpoint, models string) string {
 	return ep.String() + ":" + models
 }
 
-// aiReply 是一次成功请求的结果：响应体、用量、成本与**实际命中的模型**。
+// aiReply 是一次成功请求的结果：响应体、用量、成本与实际命中的模型。
 type aiReply struct {
 	Raw   json.RawMessage
 	Usage billing.Usage
@@ -88,8 +85,8 @@ type aiReply struct {
 
 // aiCall 按配置顺序尝试模型列表，向上游发请求。
 //
-// 模型名形如 <上游名>/<模型ID>：带前缀的只用它绑定的那一个上游；旧格式
-// （无前缀）保持「任选可用上游」的旧行为。发给上游的 model 字段剥掉前缀
+// 模型名形如 <上游名>/<模型ID>：带前缀的只走它绑定的那一个上游；
+// 无前缀的任选一个可用上游。发给上游的 model 字段剥掉前缀
 // —— 上游认的是模型 ID，不认我们的命名前缀。
 //
 // 可恢复的失败（网络错误、5xx、429、卡住）会重试：第 n 次尝试用
@@ -161,7 +158,7 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 			break
 		}
 		// 卡住说明这一路走不通，换一个立即重来；退避只留给 5xx、429 与网络
-		// 错误——那些是上游过载的信号，给它喘口气才有意义。
+		// 错误——那些是上游过载的信号，退避后才可能恢复。
 		var wait time.Duration
 		if !r.noBackoff {
 			wait = retryDelay(attempt)
@@ -170,8 +167,8 @@ func aiCall(sh *core.Shared, ep upstream.Endpoint, models []string, payload map[
 			lastErr = fmt.Errorf("%v（已用尽 %s 重试预算）", lastErr, aiTotalBudget)
 			break
 		}
-		// 这条日志不能省：没有它，运维只看到最终的「判定失败」，
-		// 完全不知道底下其实已经试了四次。
+		// 这条日志不能省：没有它，运维只看到最终的判定失败，
+		// 不知道实际已经重试了多次。
 		slog.Warn("反广告：上游调用失败，重试",
 			"模型", model, "第几次", attempt+1, "并发", fan,
 			"阶段", r.stage, "耗时", r.elapsed.Round(time.Millisecond), "err", r.err)
@@ -200,7 +197,7 @@ func cleanModels(in []string) []string {
 }
 
 // upstreamFor 返回这个模型该走的上游候选：带前缀的只走它绑定的那一个
-// （不存在、停用或不支持该端点时返回空）；旧格式走 Pick 的 sticky 结果。
+// （不存在、停用或不支持该端点时返回空）；无前缀的走 Pick 的 sticky 结果。
 func upstreamFor(snap *store.Snapshot, ep upstream.Endpoint, model string) []*upstream.Upstream {
 	name, _ := upstream.SplitModelName(model)
 	if name == "" {
@@ -214,7 +211,7 @@ func upstreamFor(snap *store.Snapshot, ep upstream.Endpoint, model string) []*up
 	return nil
 }
 
-// upstreamNotifier 返回把上游异常告警发给「bot 归属人 + 全部主管理员」的函数。
+// upstreamNotifier 返回把上游异常告警发给 bot 归属人与全部主管理员的函数。
 // 上游是主管理员配置的，只有他能修；归属人则要知道自己的群正在漏判。
 // 没有可发的对象时返回 nil，调用方据此跳过告警。
 func upstreamNotifier(b *core.Bot) func(string) {
@@ -242,8 +239,8 @@ func upstreamNotifier(b *core.Bot) func(string) {
 
 // alertUpstreamTrouble 累计连续失败，达到阈值且过了冷却就告警一次。
 //
-// 计数与冷却都是进程级：坏上游是全局资源，同一个上游出问题时每个群
-// 各告一次只会把管理员的私聊淹掉。阈值 0 = 关闭。
+// 计数与冷却都是进程级：上游是全局资源，同一个上游出问题时每个群
+// 各告一次会让管理员收到重复私聊。阈值 0 = 关闭。
 func alertUpstreamTrouble(sh *core.Shared, snap *store.Snapshot, notify func(string),
 	ep upstream.Endpoint, model string, lastErr error) {
 
@@ -291,8 +288,8 @@ type aiResult struct {
 	reply aiReply
 	err   error
 	// stage 说明这次失败卡在哪一步：连接 / 首字超时 / 流中断 / HTTP 状态 /
-	// 解析。日志里带着它，运维一眼能看出是上游连不上、卡在首字，还是
-	// 吐了一半就不动了 —— 三种毛病的处置完全不同。
+	// 解析。日志里带着它，运维能区分是上游连不上、卡在首字，还是流中途
+	// 中断 —— 三种情况的处置不同。
 	stage string
 	// elapsed 是这一次尝试实际花掉的时间。
 	elapsed   time.Duration
@@ -304,11 +301,11 @@ type aiResult struct {
 }
 
 // aiRound 发一轮请求。fan 为 1 时就是单发；大于 1 时同时发 fan 路：
-// 带前缀的模型各自走各自绑定的上游，所以并发试的是**相邻的多个模型**；
-// 旧格式模型没有绑定上游，按原样轮换上游。先成功的生效，其余立即取消。
+// 带前缀的模型各自走各自绑定的上游，所以并发试的是相邻的多个模型；
+// 无前缀的模型没有绑定上游，按原样轮换上游。先成功的生效，其余立即取消。
 //
 // 全部失败时：只要有一路可重试，这一轮就可重试（某个上游不认这个模型，
-// 换一个也许就认）；只有每一路都不可退避，才按「立即换」处理。
+// 换一个也许就认）；只有每一路都不可退避，才按立即换处理。
 func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint,
 	models []string, attempt, fan int, payload map[string]any, cap time.Duration) aiResult {
 
@@ -356,7 +353,7 @@ func aiRound(sh *core.Shared, snap *store.Snapshot, ep upstream.Endpoint,
 	return agg
 }
 
-// modelUnavailable 是「模型绑定的上游不存在/停用/不支持该端点」的错误。
+// modelUnavailable 是模型绑定的上游不存在、停用或不支持该端点的错误。
 // 可重试且不退避：让 aiCall 立刻切到列表里的下一个模型。
 func modelUnavailable(model string) error {
 	return fmt.Errorf("模型 %s 绑定的上游不存在、未启用或不支持该端点", model)
@@ -374,12 +371,12 @@ func msSetting(snap *store.Snapshot, key string, def int64) time.Duration {
 
 // aiAttempt 发一次请求。
 //
-// 两个端点各有各的「卡住」判据：systemone 平均不到 1 秒出结果，整次请求限时
+// 两个端点各有各的卡住判据：systemone 平均不到 1 秒出结果，整次请求限时
 // antiad_so_timeout_ms；复判是流式的，只限首字 antiad_llm_ttft_ms ——首字之后
-// 吐字慢不等于卡住，整次仍受 AIClient 的总超时约束。
+// 输出慢不等于卡住，整次仍受 AIClient 的总超时约束。
 //
 // payload 里的 model 由这里按当前模型覆写（剥掉上游前缀），所以并发试多个
-// 模型时每路各拷一份 map，不会互相踩。
+// 模型时每路各拷一份 map，互不影响。
 func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	ep upstream.Endpoint, model string, up *upstream.Upstream,
 	payload map[string]any) aiResult {
@@ -388,9 +385,9 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	for k, v := range payload {
 		p[k] = v
 	}
-	// 稳定会话标识（见 aiSessionID）。systemone 不加：实测会 400。
+	// 稳定会话标识（见 aiSessionID）。systemone 不加：会返回 400。
 	// 只有 OpenAI Completions 渠道会原样带上它；其余渠道的协议适配层
-	// 只挑自己认识的字段，多余字段不会漏给上游。
+	// 只挑自己认识的字段，多余字段不会传给上游。
 	if ep == upstream.EPChat {
 		p["user"] = aiSessionID
 		p["session_id"] = aiSessionID
@@ -412,7 +409,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	defer watchdog.Stop()
 
 	// 阶段：连接 → 首字 → 流中。失败时带着它，日志里能分清是连不上、
-	// 卡在首字，还是吐了一半就不动了。
+	// 卡在首字，还是流中途中断。
 	stage := "连接"
 	fail := func(err error) aiResult {
 		if stuck.Load() {
@@ -420,7 +417,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 				stage: "首字超时", elapsed: time.Since(start),
 				retryable: true, noBackoff: true}
 		}
-		// 连不上、连接被掐断——都是值得再试一次的瞬时故障。
+		// 连不上、连接中断——都是值得再试一次的瞬时故障。
 		return aiResult{err: err, stage: stage, elapsed: time.Since(start), retryable: true}
 	}
 
@@ -475,7 +472,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	var raw []byte
 	stage = "流中"
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		// 上游不理 stream、直接回整包 JSON 的照样能用：此时看门狗限的是整次请求。
+		// 上游忽略 stream、直接返回整包 JSON 时同样可用：此时看门狗限的是整次请求。
 		raw, err = io.ReadAll(resp.Body)
 		if err != nil {
 			return fail(err)
@@ -491,15 +488,14 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		}
 	} else {
 		// 首字看门狗在首字到达时停掉，之后只剩两种兜底：客户端的整体超时
-		// （45 秒）与这里的**流空闲**超时。上游「吐两个字就挂住」时只有
-		// 空闲超时能把它掐掉 —— 否则一次判定白等几十秒，重试预算也一起
-		// 烧光，日志里只剩一句 context deadline exceeded。
+		// （45 秒）与这里的流空闲超时。上游只输出少量内容后挂住时只有
+		// 空闲超时能终止它 —— 否则一次判定长时间等待，重试预算也一并
+		// 耗尽，日志里只剩一句 context deadline exceeded。
 		idle := msSetting(snap, "antiad_llm_idle_ms", 10000)
 		var idleTripped, firstSeen atomic.Bool
-		// 空闲计时由**有效内容**驱动，不看字节：很多网关会持续发心跳注释
-		// （": ping"），按字节计的话永远不空闲，上游一个字都不吐也能拖到
-		// 45 秒客户端超时 —— 实测形态总结就是这么失败的（日志「最后卡在
-		// 流中」）。首字之前归首字看门狗管，所以这里只在首字之后生效。
+		// 空闲计时由有效内容驱动，不看字节：很多网关会持续发心跳注释
+		// （": ping"），按字节计则永远不空闲，上游不输出任何内容也能拖到
+		// 45 秒客户端超时。首字之前归首字看门狗管，所以这里只在首字之后生效。
 		idleTimer := time.AfterFunc(idle, func() {
 			if !firstSeen.Load() {
 				return
@@ -530,7 +526,7 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	// 各渠道的响应翻译（流式在适配器里完成、非流式在上一段完成）。
 	usage := billing.ExtractUsage(ep, raw)
 	cost := int64(0)
-	// 按**全名**查价：模型表的主键就是 <上游名>/<模型ID>。
+	// 按全名查价：模型表的主键就是 <上游名>/<模型ID>。
 	if m := snap.Models[model]; m != nil {
 		cost = billing.ComputeCost(usage, m)
 	}
@@ -549,8 +545,8 @@ func upName(u *upstream.Upstream) string {
 // （choices[0].message.content + usage），调用方与 ExtractUsage 都照常解析。
 //
 // onFirst 在收到首字时调用一次。首字指第一段非空的正文或思考内容：只带
-// role 的空块不算（有的网关会立刻回它，算进去首字检测就形同虚设）；思考
-// 内容要算（推理模型先吐思考，不算的话它们每次都会被当成卡住）。
+// role 的空块不算（有的网关会立刻返回它，算进去首字检测就形同虚设）；思考
+// 内容要算（推理模型先输出思考内容，不算的话每次都会被当成卡住）。
 func readChatStream(r io.Reader, onFirst, onData func()) (json.RawMessage, error) {
 	var content, thinking strings.Builder
 	var usage json.RawMessage
@@ -618,7 +614,7 @@ func readChatStream(r io.Reader, onFirst, onData func()) (json.RawMessage, error
 	})
 }
 
-// hedging 报告该「端点:模型」当前是否处于并发模式；到期时退出并记一行日志。
+// hedging 报告该端点:模型键当前是否处于并发模式；到期时退出并记一行日志。
 func hedging(sh *core.Shared, key string) bool {
 	v, ok := sh.AIHedge.Load(key)
 	if !ok {
@@ -638,7 +634,7 @@ func hedging(sh *core.Shared, key string) bool {
 // 期间再次超过会顺延。
 //
 // 计数借用 AdLimits 的 1 分钟滑动窗口：Allow 在窗口未满时记一笔并放行，
-// 满了返回 false——返回 false 的那一次恰好就是「超过阈值」。阈值为 0 时
+// 满了返回 false——返回 false 的那一次恰好就是超过阈值。阈值为 0 时
 // Allow 一律放行，并发模式永不触发，所以 0 即关闭。
 func noteRetry(sh *core.Shared, snap *store.Snapshot, key string) {
 	if sh.AdLimits.Allow("ai:retry:"+key, snap.SettingInt("antiad_hedge_retries", 5)) {

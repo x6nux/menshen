@@ -3,7 +3,7 @@ package antiad
 // 网页版管理面板（/admin）的登录基础设施。
 //
 // 浏览器里没有 Telegram initData，登录靠 bot 私聊里生成的**签名链接**：
-//   - 登录链接：<public_url>/admin/login/<uid>/<exp>/<sig>，10 分钟内有效，
+//   - 登录链接：<public_url>/admin/login/<bot_id>/<uid>/<exp>/<sig>，10 分钟内有效，
 //     一次性语义（签名绑定 uid 与过期时间）；
 //   - 打开后由 panel 种 HttpOnly 会话 cookie（12 小时），签名密钥仍是
 //     web_secret——轮换密钥即让所有已发出的链接与会话一起失效。

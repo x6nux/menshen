@@ -4,8 +4,8 @@
 #      删掉即可。适合把 token 交给 secret / CI 变量管理的部署。
 #   B. 配置文件 —— 挂 config.yaml，个别项再用 environment 覆盖。
 #
-# 环境变量**压过**配置文件：镜像里已经烤好了容器内唯一正确的 db_path 与
-# listen_addr（见 Dockerfile），这两项不必再操心。
+# 环境变量**优先于**配置文件：镜像里已经烤好了容器内固定的 db_path 与
+# listen_addr（见 Dockerfile），这两项无需再配置。
 services:
   menshen:
     build: .
@@ -21,13 +21,13 @@ services:
       # ---- 可选 ----
       # 填了它就是 webhook 模式（多 bot 必须），否则长轮询。
       # MENSHEN_PUBLIC_URL: "https://ad.example.com"
-      # Bot API 基址。默认走反代，直连 api.telegram.org 常常握不上手。
+      # Bot API 基址。默认走反代，直连 api.telegram.org 通常无法建立连接。
       # MENSHEN_TG_API_BASE: "https://api.telegram.org"
       #
       # 出网代理，两类请求分开配。留空 = 沿用 HTTPS_PROXY 环境变量。
-      # ⚠️ 容器里的 127.0.0.1 指的是容器自己。要用宿主机上的代理得写
-      #    host.docker.internal（Docker Desktop）或宿主机在 docker0 上的
-      #    地址（Linux 常见为 172.17.0.1）。
+      # ⚠️ 容器里的回环地址指的是容器自身。要用宿主机上的代理须写宿主机
+      #    可达的地址（Docker Desktop 为 host.docker.internal，Linux 下为
+      #    宿主机在 docker0 上的地址）。
       # MENSHEN_TG_PROXY: "http://host.docker.internal:7890"
       # MENSHEN_AI_PROXY: ""
 
@@ -38,7 +38,7 @@ services:
       - ./data:/app/data
 
     # 仅 webhook 模式需要。长轮询模式把这两行删掉，不开任何端口。
-    # 只绑宿主机回环：这个端口上的请求等同于「以 bot 身份收发消息」，
+    # 只绑宿主机回环：该端口上的请求等同于以 bot 身份收发消息，
     # 前面必须有反代做 TLS 终止。
     ports:
       - "127.0.0.1:8081:8081"

@@ -22,7 +22,7 @@ import (
 
 // ---- 待输入会话 ----
 
-// ponytail: 待输入会话仅存内存，进程重启后丢失。重新点一次菜单即可。
+// PendingInput 是等待用户输入的多步操作会话，仅存于内存，进程重启后失效。
 type PendingInput struct {
 	Op     string // "up_new_url" / "md_new_pp" / "ad_m_so" / ...
 	Target string // 上游 id / 模型名 / 设置键
@@ -33,14 +33,12 @@ const pendingTTL = 5 * time.Minute
 
 // ---- 进程级共享资源 ----
 
-// Shared 是所有 bot 实例共用的东西。
+// Shared 是所有 bot 实例共用的进程级资源：库、配置快照与几类缓存。
 //
-// 拆出它是因为 webhook 模式下一个进程可以同时服务任意多个 bot（见
-// webhook.go）：库、配置快照与几类缓存都是进程级事实，按 bot 复制一份
-// 只会换来 N 倍的 TG 往返和 N 份互相不一致的配置。
+// webhook 模式下一个进程可同时服务任意多个 bot（见 webhook.go），这些
+// 资源按 bot 复制只会带来 N 倍的 TG 往返与多份互相不一致的配置。
 //
-// Bot 以匿名字段嵌入它，因此 b.Store / b.Cache / b.Cfg 的写法与
-// 单 bot 时代完全一致。
+// Bot 以匿名字段嵌入它，故 b.Store / b.Cache / b.Cfg 可直接访问。
 type Shared struct {
 	Cfg   *config.Config
 	Store *store.Store
@@ -50,10 +48,10 @@ type Shared struct {
 	// 告警节流），窗口长度 1 分钟。
 	//
 	// 跨 bot 共享是有意的：两个 bot 同在一个群时，护栏该拦的是
-	// 「这个群每分钟送检多少条」，各算各的等于把成本翻倍。
+	// 这个群每分钟送检多少条，各算各的等于把成本翻倍。
 	AdLimits *ratelimit.Limiter
 
-	// Logs 是进程内运行日志环形缓冲（网页版「运行日志」页读它）。进程级而
+	// Logs 是进程内运行日志环形缓冲（网页版运行日志页读它）。进程级而
 	// 非 bot 级：slog 只有一份默认 logger，日志本就混着所有 bot 的上下文。
 	// main 启动时用 logbuf.Handler 把它接进 slog（见 main.go）。
 	Logs *logbuf.Buffer
@@ -65,12 +63,12 @@ type Shared struct {
 	// aiClient 专供反广告判定调用上游。http.Client 并发安全，
 	// 共享还能复用连接池。
 	AIClient *http.Client
-	// AIHedge 记录各「端点:模型列表」并发模式的截止时刻（见 antiad 的 aiCall）。
+	// AIHedge 记录各端点:模型列表并发模式的截止时刻（见 antiad 的 aiCall）。
 	// 进程级而非 bot 级：不稳定的是上游模型本身，与哪个 bot 发起的请求无关。
 	AIHedge sync.Map // string -> time.Time
 
 	// AIFailStreak 是连续失败计数，成功一次清零；AIAlertAt 是上一次
-	// 「上游可能有问题」告警的时刻（unix 秒）。两者都是进程级：坏上游是
+	// 上游可能有问题告警的时刻（unix 秒）。两者都是进程级：坏上游是
 	// 全局资源，同一个上游出问题时不该每个群各告一次。
 	AIFailStreak atomic.Int64
 	AIAlertAt    atomic.Int64
@@ -92,7 +90,7 @@ type Shared struct {
 	// transportFor 非空时用它建传输层，供测试整体替换掉真实 HTTP。
 	TransportFor func(token string) tg.Transport
 
-	// reg 是 bot 实例总表。联合封禁要遍历「所有 bot 的所有群」，
+	// reg 是 bot 实例总表。联合封禁要遍历所有 bot 的所有群，
 	// 而那件事不属于任何一个 bot。由 newBotRegistry 回填。
 	Reg *Registry
 
@@ -106,7 +104,7 @@ func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 		Logs:      logbuf.New(logbuf.DefaultCapacity),
 		reviewSem: make(chan struct{}, adReviewConcurrency),
 		// 两类出网请求各用各的代理：TG 常被墙，而 AI 上游往往是国内
-		// 可达的中转，把它也绕一圈只是白多一跳。两者都可留空。
+		// 可达的中转，把它也绕一圈只会多一跳网络开销。两者都可留空。
 		AIClient: &http.Client{Timeout: aiClientTimeout,
 			Transport: config.ProxyTransport(cfg.AIProxy)},
 		tgRoundTripper: config.ProxyTransport(cfg.TGProxy)}
@@ -116,9 +114,9 @@ func NewShared(cfg *config.Config, s *store.Store, c *store.Cache) *Shared {
 //
 // 必须大于 antiad 的单次尝试上限（aiAttemptCap，45 秒）：复判是流式，出了
 // 首字之后还要把话说完，客户端超时先到的话，一个还在预算内的正常复判会被
-// 当成失败重试 —— 那时日志里只剩一句 context deadline exceeded，看不出是
-// 哪一段出的问题（每次尝试自己带的 context 会先切）。systemone 不受影响 ——
-// 它有自己的看门狗（2 秒）先掐。
+// 当成失败重试，而日志里只剩一句 context deadline exceeded，看不出是哪一段
+// 出的问题（每次尝试自带的 context 会先超时）。systemone 不受影响，它有自己
+// 的看门狗（2 秒）会更早返回。
 const aiClientTimeout = 100 * time.Second
 
 // ---- Bot ----
@@ -155,9 +153,9 @@ type Bot struct {
 	SelfID atomic.Int64
 
 	// adJobs 是反广告判定的任务队列，由 adWorkers 个常驻 worker 消费。
-	// 判定已经挪出更新处理的同步段，但不设上限的话 goroutine 数就等于
-	// 群消息速率，上游一慢就会堆成几千个在飞的请求——把「卡住更新处理」
-	// 换成「打爆内存和上游」而已。
+	// 判定在更新处理的同步段之外执行，但不设上限的话 goroutine 数就等于
+	// 群消息速率，上游一慢就会堆起大量在飞请求，从卡住更新处理变成打爆
+	// 内存与上游。
 	adJobs chan func()
 	// adReviews 是大模型复判的队列（先删后判的后半段），与 adJobs 分开：
 	// 大模型慢，排在一起的话初判会堵在它后面。
@@ -168,16 +166,16 @@ type Bot struct {
 	// updates 是 webhook 模式下的串行投递队列。
 	//
 	// 必须串行：同一个人的更新有先后依赖——资历累计、留底，以及
-	// recent_context 取的是「这条之前」的留底。每个 HTTP 请求各起一个
+	// recent_context 取的是这条之前的留底。每个 HTTP 请求各起一个
 	// goroutine 会让它们随调度乱序，模型就可能把此人之后说的话当成上下文。
-	// 队列把轮询的「单 goroutine 依次处理」语义原样搬了过来。
+	// 队列保证与轮询一致的单 goroutine 依次处理语义。
 	updates chan *tg.Update
 
 	// dispatch 是 Update 的业务分发入口，由 main 在构造时注入。
 	//
-	// core 不能 import antiad/panel（它们都要回调 b.Send），所以分发
-	// 只能反向注入。做成 NewBot 的必填参数而不是可选字段：漏传直接
-	// 编译不过，不会变成又一个「配置漏了但一切看起来正常」的失效点。
+	// core 不能 import antiad/panel（它们都要回调 b.Send），因此分发
+	// 只能反向注入。它是 NewBot 的必填参数而非可选字段：漏传直接编译
+	// 不过，不会变成配置缺失却看起来正常的失效点。
 	dispatch Dispatcher
 
 	// SummaryAt 是上一次发出私聊汇总的时刻（unix 秒），节流用。
@@ -190,7 +188,7 @@ type Bot struct {
 	// seenUpdates 是最近处理过的 update_id，用来挡住 Telegram 的重推。
 	//
 	// webhook 模式下 TG 没收到 200（或网络中断）时会重推同一条更新；
-	// 重复处理会让 msg_count 双计（把新人刷成老人）、让「切换」类按钮
+	// 重复处理会让 msg_count 双计（把新人刷成老人）、让切换类按钮
 	// 反转回原状态、再花一次 AI 的钱。长轮询靠 offset 天然去重，不走这里。
 	seenMu    sync.Mutex
 	seenOrder []int64
@@ -225,7 +223,7 @@ func (b *Bot) MarkUpdateSeen(updateID int64) bool {
 	return true
 }
 
-// UnmarkUpdateSeen 撤掉「已见」标记：队列满丢弃一条更新时用（见 Enqueue）。
+// UnmarkUpdateSeen 撤掉已见标记：队列满丢弃一条更新时用（见 Enqueue）。
 // 让 TG 之后重推同一 update_id 时还能被当成首次投递处理，而不是被去重
 // 逻辑静默吞掉。update_id 为 0 不参与去重，无需处理。
 func (b *Bot) UnmarkUpdateSeen(updateID int64) {
@@ -249,11 +247,11 @@ func (b *Bot) UnmarkUpdateSeen(updateID int64) {
 }
 
 const (
-	// adWorkers 是每个 bot 的并发判定数。8 路在活跃群里排不开：单次判定
-	// 最坏要几十秒（AI 重试预算 45 秒），几条慢请求就能把通道占满。
+	// adWorkers 是每个 bot 的并发判定数。单次判定最坏要几十秒（AI 重试
+	// 预算 45 秒），几条慢请求就能把通道占满。
 	//
-	// ponytail: 每个 bot 独立一个池，初判叠加到上游的总并发上限仍是
-	// adWorkers × bot 数；复判已经改成 Shared 级总闸（reviewSem）。
+	// 每个 bot 独立一个池，初判叠加到上游的总并发上限仍是
+	// adWorkers × bot 数；复判则有 Shared 级总闸（reviewSem）。
 	adWorkers = 32
 	// adQueueCap 是排队上限。worker 全忙时先排队而不是直接放行；
 	// 队列也满说明上游整体慢了，此时再放行，防止积压无限增长。
@@ -266,7 +264,7 @@ const (
 
 // UpdateQueueCap 是 webhook 队列容量。
 // 满了就丢弃而不是阻塞：阻塞会让 TG 的投递超时并重推，重推又落到同一个
-// 满队列上，雪崩只会更快。丢弃与「判定队列已满放行」是同一个失败方向。
+// 满队列上，雪崩只会更快。丢弃与判定队列已满时放行是同一个失败方向。
 const UpdateQueueCap = 256
 
 func NewBot(t tg.Transport, sh *Shared, token string, d Dispatcher) *Bot {
@@ -327,7 +325,7 @@ func (b *Bot) adEnqueue(jobs chan func(), job func()) bool {
 // AdBusy 返回排队中与执行中的判定数，测试靠它等判定跑完。
 func (b *Bot) AdBusy() int64 { return b.adBusy.Load() }
 
-// shutdown 停掉这一个 bot 的 worker（更新队列与判定池）。可重复调用。
+// Shutdown 停掉这一个 bot 的 worker（更新队列与判定池）。可重复调用。
 //
 // 在飞的判定不等：它们最长几十秒，且并发有上限，全部只会写自己的流水。
 // 与进程退出同策略。
@@ -335,7 +333,7 @@ func (b *Bot) Shutdown() {
 	b.doneOnce.Do(func() { close(b.done) })
 }
 
-// owner 返回这个 bot 的归属人。
+// Owner 返回这个 bot 的归属人。
 func (b *Bot) Owner() int64 { return b.OwnerID.Load() }
 
 // IsMainBot 报告本实例是不是配置里的主 bot。
@@ -348,7 +346,7 @@ func (b *Bot) IsMainBot() bool {
 	return rec != nil && rec.IsMain
 }
 
-// alertTargets 返回这次告警该私聊谁。
+// AlertTargets 返回这次告警该私聊谁。
 //
 // 归属人一定收到（bot 是他的，群也是他管的）；主管理员默认**不**收 ——
 // 服务分发出去之后，每个次管的群都往主管私聊里灌等于把它变成日志流。
@@ -398,7 +396,7 @@ func (b *Bot) DownloadFile(path string) ([]byte, error) {
 //
 // noPreview 为真时关掉链接预览：群内提示里有 deep link，客户端会挂一张
 // 预览卡片（bot 链接常带 START 按钮），把一行提示撑成好几行，而群里
-// 要的只是「谁、因为什么、点哪里申诉」。
+// 要的只是谁、因为什么、点哪里申诉。
 func (b *Bot) messagePayload(chatID int64, text string, kb map[string]any,
 	noPreview bool) map[string]any {
 	p := map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
@@ -411,9 +409,9 @@ func (b *Bot) messagePayload(chatID int64, text string, kb map[string]any,
 	return p
 }
 
-// kb 用 map 而不是 any：把 nil map 存进 any 之后接口值并不等于 nil，
-// 直接塞进 payload 会序列化成 null，TG 回「object expected as reply markup」。
-// 类型是 map 时 nil 判断才可靠。
+// Send 发送一条消息。kb 用 map 而不是 any：把 nil map 存进 any 之后接口值
+// 并不等于 nil，直接塞进 payload 会序列化成 null，TG 回
+// "object expected as reply markup"。类型是 map 时 nil 判断才可靠。
 func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
 	if _, err := b.TG.Call("sendMessage",
 		b.messagePayload(chatID, text, kb, false)); err != nil {
@@ -421,7 +419,7 @@ func (b *Bot) Send(chatID int64, text string, kb map[string]any) {
 	}
 }
 
-// sendGetID 与 send 相同，但返回新消息的 message_id（失败返回 0）。
+// SendGetID 与 Send 相同，但返回新消息的 message_id（失败返回 0）。
 // 自动撤回要靠它：没有 message_id 就无从撤回。
 func (b *Bot) SendGetID(chatID int64, text string, kb map[string]any) int64 {
 	return b.sendMessageID(b.messagePayload(chatID, text, kb, false))
@@ -475,7 +473,7 @@ func (b *Bot) EditNoPreview(chatID, msgID int64, text string, kb map[string]any)
 	}
 }
 
-// editOrSend 统一处理「回调里编辑原消息 / 文本输入后新发一条」两种入口。
+// EditOrSend 统一处理回调内编辑原消息与文本输入后新发一条两种入口。
 func (b *Bot) EditOrSend(chatID, msgID int64, text string, kb map[string]any) {
 	if msgID == 0 {
 		b.Send(chatID, text, kb)
@@ -489,7 +487,7 @@ func (b *Bot) AnswerCallback(id, text string) {
 		"callback_query_id": id, "text": text})
 }
 
-// callOK 发起调用并解析 TG 的 ok 字段。
+// CallOK 发起调用并解析 TG 的 ok 字段。
 // TG 的错误是 HTTP 200 + {"ok":false}，只看 err 会把业务失败当成功。
 func (b *Bot) CallOK(method string, payload any) (bool, string) {
 	raw, err := b.TG.Call(method, payload)
@@ -508,11 +506,11 @@ func (b *Bot) CallOK(method string, payload any) (bool, string) {
 
 // ---- 待输入会话 ----
 
-// askInput 登记待输入会话并弹出输入框。
-// keepInput 续上一次输入会话但不另发提示 —— 提示已经写在别的消息里了。
+// KeepInput 登记待输入会话，不发送提示（提示已写在别的消息里）。
+// AskInput 用它登记后再弹出输入框。
 //
-// 不能只是「不删 pending」：会话有 TTL，输错一次之后隔几分钟才重发的人
-// 会撞上一个已经过期的会话，而他看到的提示明明写着「请重新发送」。
+// 不能只是不删 pending：会话有 TTL，输错一次之后隔几分钟才重发的人会
+// 撞上一个已经过期的会话，而他看到的提示写着请重新发送。
 func (b *Bot) KeepInput(uid int64, op, target string) {
 	b.pending.Store(uid, PendingInput{Op: op, Target: target,
 		expire: time.Now().Add(pendingTTL)})
@@ -526,7 +524,7 @@ func (b *Bot) AskInput(chatID, uid int64, op, target, prompt string) {
 	})
 }
 
-// takePending 取出未过期的会话。过期条目顺手删除。
+// TakePending 取出未过期的会话，过期条目一并删除。
 func (b *Bot) TakePending(uid int64) (PendingInput, bool) {
 	v, ok := b.pending.Load(uid)
 	if !ok {
@@ -540,7 +538,7 @@ func (b *Bot) TakePending(uid int64) (PendingInput, bool) {
 	return p, true
 }
 
-// DropPending 丢弃某人的待输入会话。面板在「权限不足」「输入无法解析」
+// DropPending 丢弃某人的待输入会话。面板在权限不足、输入无法解析
 // 这类分支里要主动清掉它，否则下一条无关消息会被当成这次的输入。
 func (b *Bot) DropPending(uid int64) { b.pending.Delete(uid) }
 
@@ -567,8 +565,8 @@ type Dispatcher func(*Bot, *tg.Update)
 //
 // /white 与 /uad 也是群管理员及以上能用（前者永久放行、后者一次性解封）。
 // /ban 只有群管理员及以上能用，但命令菜单是全群可见的 —— TG 的
-// setMyCommands 没有「只给管理员看」的 scope。非授权者用了会被静默
-// 忽略，这比藏起来更好：藏不住，还不如让群管一眼看见自己有这个工具。
+// setMyCommands 没有只给管理员看的 scope。非授权者用了会被静默忽略，
+// 这比藏起来更好：藏不住，不如让群管直接看到自己有这个工具。
 var adGroupCmds = []map[string]string{
 	{"command": "check", "description": "复查某人是否在发广告（回复消息或 /check user_id）"},
 	{"command": "ban", "description": "封禁某人出群（群管理员：回复消息或 /ban user_id）"},
@@ -590,7 +588,7 @@ func (b *Bot) RegisterCommands() {
 	// 群聊 scope：/check /ban /white /uad（见 adGroupCmds）。与默认 scope
 	// 分开设置，否则私聊里也会冒出一堆在私聊中毫无意义的群命令。
 	//
-	// 主 bot 不入群，这份菜单永远不会被看到；升级前注册过的还要清掉，
+	// 主 bot 不入群，这份菜单永远不会被看到；但仍要清掉可能残留的注册，
 	// 否则它短暂停留在某个群里时，群成员会看到一组点不动的命令。
 	if b.IsMainBot() {
 		if ok, desc := b.CallOK("deleteMyCommands", map[string]any{
@@ -662,9 +660,9 @@ var adminCmds = []map[string]string{
 // registerAdminCommands 为单个管理员设置 chat scope 的命令菜单。
 //
 // 这一步在服务启动时很可能失败：setMyCommands 的 chat scope 要求会话已经
-// 存在，而全新部署时管理员往往还没和 bot 说过话，TG 会返回 chat not found。
-// 因此失败要记日志，并在该管理员首次发消息时由 ensureAdminCommands 补上
-// ——否则命令菜单会一直是空的，且无人知晓。
+// 存在，而管理员可能还没和 bot 说过话，TG 会返回 chat not found。
+// 因此失败要记日志，并在该管理员首次发消息时由 EnsureAdminCommands 补上，
+// 否则命令菜单会一直是空的，且无人知晓。
 func (b *Bot) registerAdminCommands(id int64) {
 	ok, desc := b.CallOK("setMyCommands", map[string]any{
 		"commands": adminCmds,
@@ -678,7 +676,7 @@ func (b *Bot) registerAdminCommands(id int64) {
 		"admin", id, "tg_error", desc)
 }
 
-// ensureAdminCommands 在管理员交互时补注册，只成功一次。
+// EnsureAdminCommands 在管理员交互时补注册，只成功一次。
 func (b *Bot) EnsureAdminCommands(id int64) {
 	if !b.Cfg.IsAdmin(id) {
 		return
@@ -691,18 +689,19 @@ func (b *Bot) EnsureAdminCommands(id int64) {
 
 // ---- 两种接入模式 ----
 
-// pollAllowedUpdates 是 allowed_updates 清单，轮询与 setWebhook 共用。
+// PollAllowedUpdates 是 allowed_updates 清单，轮询与 setWebhook 共用。
 //
 // 必须显式声明：Telegram 的默认清单不含 chat_member，不声明就一条进群
-// 事件都收不到，反广告的「新人 / 老人」分档会全部退化成「年龄未知」。
+// 事件都收不到，反广告的新人 / 老人分档会全部退化成年龄未知。
 // 而一旦显式声明，默认清单就整体失效，因此 message 与 callback_query
 // 也要原样列出，漏写哪一个哪一个就彻底收不到，且 TG 不会因此报任何错。
-// edited_message 同理：不列就收不到编辑，「先发正常、再编辑成广告」畅通无阻。
+// edited_message 同理：不列就收不到编辑事件，无法拦截先发正常、再编辑成
+// 广告的消息。
 func PollAllowedUpdates() []string {
 	return []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
 }
 
-// enqueue 把一条 update 投进串行队列，队列已满时返回 false。
+// Enqueue 把一条 update 投进串行队列，队列已满时返回 false。
 //
 // 重推的更新在这里被挡下：TG 没收到 200 时会重发同一条 update_id，
 // 重复处理等于把同一条消息再判一次（msg_count 双计、按钮反转、重复花钱）。
@@ -719,7 +718,7 @@ func (b *Bot) Enqueue(u *tg.Update) bool {
 	case b.updates <- u:
 		return true
 	default:
-		// 队列满：丢弃并回 200。但要把「已见」标记撤掉 —— 否则这次 200
+		// 队列满：丢弃并回 200。但要把已见标记撤掉 —— 否则这次 200
 		// 一旦在网络上丢失、TG 重推同一 update_id，重推会被当成重复投递
 		// 直接丢弃，这条更新就永远处理不到了。撤掉后重推仍有机会入队。
 		b.UnmarkUpdateSeen(u.UpdateID)
@@ -727,7 +726,7 @@ func (b *Bot) Enqueue(u *tg.Update) bool {
 	}
 }
 
-// runQueueWorker 串行消费 webhook 投递进来的 update。
+// RunQueueWorker 串行消费 webhook 投递进来的 update。
 //
 // 只有这一个 goroutine 在跑 handleUpdate，因此语义与长轮询完全一致：
 // 反广告的上下文入环顺序、待输入会话的先后都得到保证。
@@ -744,7 +743,7 @@ func (b *Bot) RunQueueWorker(stop <-chan struct{}) {
 	}
 }
 
-// setWebhook 把回调地址注册到 Telegram。
+// SetWebhook 把回调地址注册到 Telegram。
 //
 // allowed_updates 与轮询共用同一份清单——这里漏一项的后果与轮询侧
 // 完全相同，且同样不会报错。
@@ -761,11 +760,11 @@ func (b *Bot) SetWebhook(url string) error {
 	return nil
 }
 
-// dropWebhook 撤掉已注册的 webhook。
+// DropWebhook 撤掉已注册的 webhook。
 //
 // 轮询模式启动前必须调用：getUpdates 与 webhook 互斥，库里还留着上一次
 // 的 webhook 时，getUpdates 会一直拿 409 Conflict，而 bot 表现为
-// 「一条消息都收不到」，日志里只有一行看不出所以然的 409。
+// 一条消息都收不到，日志里只有一行看不出所以然的 409。
 func (b *Bot) DropWebhook() {
 	if ok, desc := b.CallOK("deleteWebhook", map[string]any{}); !ok {
 		slog.Warn("撤销 webhook 失败，若此前设过 webhook，长轮询可能收不到更新",

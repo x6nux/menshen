@@ -17,15 +17,15 @@ import (
 // ---- Eino 客户端的流式传输层 ----
 //
 // 判定链路的 AI 请求（复判 / 识图 / 摘要 / 申诉）都由 aiCall 显式走流式。
-// 规则发现 Agent 用的是 Eino 的 OpenAI ChatModel，它的 Generate 只会发
-// 非流式请求（CreateChatCompletion），而且 Agent 依赖 SDK 自己解析流式
-// tool_calls 分片的能力 —— 直接把它切成流式会让「上游忽略 stream、回整包
-// JSON」的网关丢掉 tool_calls（实测 Agent 会直接收尾、一条规则都建不出）。
+// 规则发现 Agent 用的是 Eino 的 OpenAI ChatModel，它的 Generate 只发非流式
+// 请求（CreateChatCompletion），而 Agent 依赖 SDK 自行解析流式 tool_calls
+// 分片的能力：直接切成流式时，若上游忽略 stream、只回整包 JSON，tool_calls
+// 会丢失，Agent 直接收尾，建不出规则。
 //
-// 所以这里在**传输层**做转换，且只包 Eino 那个客户端：请求发出前把 body
-// 改成 stream=true，响应若是 SSE 就重建成 OpenAI 非流式响应体再交给 SDK。
-// 这样线上请求确实是流式的（首字可判卡顿、长响应不会被整包超时拖死），
-// 而 SDK 看到的仍是普通 completion，tool_calls、usage 与回调全部照旧。
+// 所以这里在传输层做转换，且只包 Eino 那个客户端：请求发出前把 body 置为
+// stream=true，响应若是 SSE 就重建成 OpenAI 非流式响应体再交给 SDK。这样
+// 实际请求是流式的（首字可判卡顿、长响应不会被整包超时拖死），而 SDK 看到
+// 的仍是普通 completion，tool_calls、usage 与回调不变。
 
 // einoStreamRT 是只给 Eino 客户端用的 RoundTripper。
 type einoStreamRT struct {
@@ -60,7 +60,7 @@ func (t *einoStreamRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// forceStreamBody 把 JSON 请求体里的 stream 改成 true。
+// forceStreamBody 把 JSON 请求体里的 stream 置为 true。
 // 非 JSON 体原样放行（Eino 的 chat 请求都是 JSON，兜底而已）。
 func forceStreamBody(req *http.Request) error {
 	if req.Body == nil || req.Method != http.MethodPost {

@@ -9,9 +9,9 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestUpstreamDeleteRefusedWhenModelsBound：模型名里嵌着上游名，删掉
-// 有模型在用的上游会留下一批「绑定的上游不存在」的死引用 —— 判定每次
-// 都失败，而面板上看不出原因。删除必须被挡下。
+// TestUpstreamDeleteRefusedWhenModelsBound：模型名中嵌有上游名，删除
+// 仍被模型使用的上游会留下绑定的上游不存在的死引用，导致判定持续失败
+// 而面板无异常。删除必须被拒绝。
 func TestUpstreamDeleteRefusedWhenModelsBound(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
@@ -69,7 +69,7 @@ func newUpstreamCallback(data string) *tg.CallbackQuery {
 }
 
 // TestUpstreamNewCloudflareFlow：新增流程里选 Cloudflare 后直接落库，
-// 能力固定为「主判定」（chat=0 / systemone=1），草稿用完即清。
+// 能力固定为主判定（chat=0 / systemone=1），草稿用完即清。
 func TestUpstreamNewCloudflareFlow(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	b.UpstreamNewDraft.Store(int64(777),

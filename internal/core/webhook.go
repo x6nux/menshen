@@ -15,12 +15,12 @@ import (
 // 的东西用一条巨大的 POST 把内存吃光。
 const maxUpdateBytes = 1 << 20 // 1 MiB
 
-// tokenFromPath 从回调路径里取出 bot token。
+// TokenFromPath 从回调路径里取出 bot token。
 //
-// 不做前后缀的死板匹配，而是切段之后找出「长得像 token 的那一段」：
-// 部署形态五花八门 —— <public_url>/<token>/webhook 是本项目的默认，
-// 反代可能再套一层子路径，历史形态还有 /bot<TOKEN>。把识别锚在 token
-// 自身的格式上，这些形态就全都不用单独适配。
+// 不做前后缀的死板匹配，而是切段之后找出形如 token 的那一段：回调路径的
+// 部署形态多样，token 可能是不带前缀的一段，也可能带 /bot 前缀，反代还
+// 可能再套一层子路径。把识别锚在 token 自身的格式上，这些形态就不必
+// 单独适配。
 //
 // token 里没有斜杠，所以切段不会把它切碎。
 func TokenFromPath(p string) string {
@@ -46,7 +46,7 @@ func TokenFromPath(p string) string {
 // 多出任何权限，所以不再叠一层 secret。
 //
 // 但接入是**注册制**：token 必须已由某个管理员登记过（见 Registry
-// 的 register）。没登记的一律 401 —— 没有归属就谈不上谁能管它、
+// 的 Register）。没登记的一律 401 —— 没有归属就谈不上谁能管它、
 // 谁为它的开销负责。
 func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/healthz" {
@@ -82,8 +82,8 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if !b.Enqueue(&u) {
 		// 丢弃而不是阻塞：阻塞会让 TG 投递超时并重推，重推又落到同一个
-		// 满队列上。与「判定队列已满放行」是同一个失败方向——
-		// 宁可漏一条，也不让投递链路反过来拖垮自己。
+		// 满队列上。与判定队列已满时放行是同一个失败方向 ——
+		// 丢弃一条优于让投递链路拖垮自身。
 		slog.Warn("webhook：队列已满，丢弃一条更新",
 			"token", config.MaskToken(token), "update_id", u.UpdateID)
 	}

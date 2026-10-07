@@ -119,9 +119,8 @@ func handleUpstreamCallback(b *core.Bot, q *tg.CallbackQuery) {
 				))
 			return
 		}
-		// 名下有模型时拒绝：模型名里嵌着上游名，删掉上游会留下一批
-		// 「绑定的上游不存在」的死引用 —— 判定每次都失败，而面板上
-		// 看不出原因。
+		// 名下有模型时拒绝：模型名中嵌有上游名，删除上游会留下绑定的
+		// 上游不存在的死引用，导致判定持续失败而面板无异常。
 		if names := core.ModelsOfUpstream(b.Cache.Snap(), id); len(names) > 0 {
 			show := names
 			if len(show) > 10 {
@@ -184,7 +183,7 @@ func showUpstreamList(b *core.Bot, chatID, msgID int64) {
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(rows...))
 }
 
-// upstreamCaps 把渠道类型与端点开关渲染成一行人话。
+// upstreamCaps 把渠道类型与端点开关渲染成一行可读文本。
 func upstreamCaps(u *upstream.Upstream) string {
 	kind := u.EffectiveKind()
 	if kind.ChatOnly() {
@@ -313,14 +312,13 @@ func handleUpstreamNewInput(b *core.Bot, m *tg.Message, p core.PendingInput, tex
 			return
 		}
 		b.UpstreamNewDraft.Store(m.From.ID, parts[0]+"\x00"+parts[1]+"\x00"+text)
-		// 先选渠道类型：类型决定协议与可选端点，选错类型的话端点勾选
-		// 全都没有意义。
+		// 先选渠道类型：类型决定协议与可选端点，类型不对则端点勾选无意义。
 		showUpstreamKindPicker(b, chatID, 0, m.From.ID, 0)
 	}
 }
 
 // showUpstreamKindPicker 展示渠道类型选择面板。
-// id > 0 时是给已有上游「切换类型」；否则是新增流程（uid 对应草稿）。
+// id > 0 时是给已有上游 `切换类型`；否则是新增流程（uid 对应草稿）。
 func showUpstreamKindPicker(b *core.Bot, chatID, msgID, uid, id int64) {
 	text := "🔌 <b>选择渠道类型</b>\n\n" +
 		"• <b>OpenAI Completions</b>：/v1/chat/completions；勾选 systemone 时走 /v1/systemone\n" +
@@ -479,8 +477,8 @@ func handleUpstreamNewType(b *core.Bot, q *tg.CallbackQuery) {
 		return
 	}
 
-	// 切换某一位。上界跟着 mask 的位数走——漏掉扩容会让新按钮点下去
-	// 只报「参数无效」。
+	// 切换某一位。上界随 mask 的位数变化，否则新增位对应的按钮只会报
+	// 参数无效。
 	bit, err := strconv.Atoi(action)
 	if err != nil || bit < 0 || bit > 1 {
 		b.AnswerCallback(q.ID, "参数无效")
@@ -536,9 +534,9 @@ func handleUpstreamEditInput(b *core.Bot, m *tg.Message, p core.PendingInput, te
 	showUpstreamDetail(b, chatID, 0, id)
 }
 
-// toggleUpstreamSupports 翻转一个端点开关。chat-only 渠道的能力是类型
-// 决定的，开关按钮在详情里也不显示；这里再挡一道，防止旧消息里的按钮
-// 回调绕过 UI（UpdateUpstream 会把它静默收敛回只开 chat）。
+// toggleUpstreamSupports 翻转一个端点开关。chat-only 渠道的能力由类型
+// 决定，开关按钮在详情页也不显示；这里再校验一次，防止历史消息中的
+// 按钮回调绕过 UI（UpdateUpstream 会将其静默收敛回仅开 chat）。
 func toggleUpstreamSupports(b *core.Bot, id int64, which string) error {
 	u := upstreamOf(b, id)
 	if u == nil {

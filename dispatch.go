@@ -42,7 +42,7 @@ func dispatch(b *core.Bot, u *tg.Update) {
 			return
 		}
 		// 在群痕迹先行：超时未配置自动退群靠它计时（core/chatpresence.go）。
-		// 反广告的权限告警有自己的开关，这里不能被它挡住。
+		// 反广告的权限告警有独立开关，二者互不影响。
 		b.NoteChatPresence(u.MyChatMember)
 		antiad.HandleMyChatMemberUpdate(b, u.MyChatMember)
 	}
@@ -51,7 +51,7 @@ func dispatch(b *core.Bot, u *tg.Update) {
 // handleMainBotChatMember 让主 bot 静默退出被拉进的群/频道。
 //
 // 主 bot 只做配置管理与接入其他 bot，不入群、不判定广告。Telegram 侧
-// 没有「禁止别人拉我」的开关，自动退出是唯一防线。静默：不通知、不回复。
+// 没有禁止他人拉入的开关，自动退出是唯一防线。静默：不通知、不回复。
 func handleMainBotChatMember(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	if cu == nil || cu.Chat == nil || cu.NewChatMember == nil {
 		return
@@ -72,11 +72,11 @@ func handleMainBotChatMember(b *core.Bot, cu *tg.ChatMemberUpdated) {
 
 func handleMessage(b *core.Bot, m *tg.Message) {
 	// 群聊消息交给反广告链路。它自带全部守门（总开关、群白名单），
-	// 未启用时立即返回，行为与「直接忽略群消息」完全一致。
+	// 未启用时立即返回，行为等同于直接忽略群消息。
 	if m.Chat.Type != "" && m.Chat.Type != "private" {
-		// 主 bot 只做配置管理与接入其他 bot：群里的消息一律不判、
-		// 不留底、不花钱。它不该在群里，被拉进去由 my_chat_member
-		// 自动退出；这里守的是退出完成前的窗口期与退群失败的情况。
+		// 主 bot 只做配置管理与接入其他 bot：群里的消息一律不判定、
+		// 不留底、不产生开销。它不应在群里，被拉进去会由 my_chat_member
+		// 自动退出；这里覆盖的是退出完成前的窗口期与退群失败的情况。
 		if b.IsMainBot() {
 			return
 		}
@@ -86,9 +86,8 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 
 	text := strings.TrimSpace(m.Text)
 
-	// 私聊 /start 的深链参数只在点击按钮的那一下出现，出问题（「参数读不到」）
-	// 时没有别的证据可查：到没到、到的是什么、走哪一支、点在哪个 bot 上，
-	// 全看这一行。
+	// 私聊 /start 的深链参数只在点击按钮时出现，出问题时没有其它证据可查：
+	// 是否到达、内容是什么、走哪一分支、点击的是哪个 bot，都依赖这一行日志。
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
 		slog.Info("私聊 /start", "bot", b.BotID(), "uid", m.From.ID,
 			"payload", strings.TrimSpace(strings.TrimPrefix(text, "/start")),
@@ -96,8 +95,8 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	}
 
 	// 非管理员的私聊全部交给申诉通道：deep link、申诉理由输入、解禁码提示。
-	// 它必须排在权限判断之前：被限制发言的正是普通用户，按「非管理员
-	// 一律忽略」处理会把整条申诉通道堵死。
+	// 它必须先于权限判断：被限制发言的是普通用户，按非管理员一律忽略处理
+	// 会使申诉通道失效。
 	if !b.IsStaff(m.From.ID) {
 		if !antiad.HandleNonStaffPrivate(b, m, text) && strings.HasPrefix(text, "/start") {
 			// 主 bot 不入群、不判定（被拉进群会自动退出）：对它只如实说
@@ -106,10 +105,9 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 				b.Send(m.Chat.ID, "你没有权限使用本 bot。", nil)
 				return
 			}
-			// 工作 bot：普通用户上门多半是来求解封的。有禁言或联合封禁的
-			// 上面已经进了申诉入口，走到这里说明名下没有被限制 —— 如实
-			// 告知即可，不要引导他「把 bot 拉进群」：群要管理员在面板里
-			// 添加，他拉进去也不工作。
+			// 工作 bot：普通用户来访多为求解封。有禁言或联合封禁的已进入
+			// 申诉入口，走到这里说明名下未被限制，直接告知即可，无需引导
+			// 其把 bot 拉进群：群需管理员在面板添加，拉进去也不生效。
 			b.Send(m.Chat.ID, "你目前没有被本 bot 限制。\n\n"+
 				"如果你在某个群里被限制发言，请从群内 bot 消息里的「📝 申诉」按钮进入。", nil)
 		}
@@ -118,7 +116,7 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	// 启动时若因会话不存在而注册失败，这里补上（只成功一次）
 	b.EnsureAdminCommands(m.From.ID)
 
-	// 待输入会话优先于命令：管理员点了「改阈值」后直接发数字即生效。
+	// 待输入会话优先于命令：管理员选择改阈值后直接发数字即生效。
 	if p, ok := b.TakePending(m.From.ID); ok {
 		panel.HandlePendingInput(b, m, p)
 		return
@@ -155,8 +153,8 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 	}
 
 	if text == "/start" || strings.HasPrefix(text, "/start ") {
-		// 两种群内按钮都带记录号：告警的「打开 bot 处理」是 log<记录号>，
-		// 冷判定通知的「📝 申诉」是 ub<记录号>。管理员点进来直接落到那条
+		// 两种群内按钮都带记录号：告警按钮的 payload 是 log<记录号>，
+		// 冷判定通知的申诉按钮是 ub<记录号>。管理员点进来直接落到那条
 		// 记录卡片（权限由 ShowLogCard 再查一次）；不带记录号才是主菜单。
 		payload := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
 		if id, ok := antiad.ParseLogPayload(payload); ok {
@@ -167,8 +165,8 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 			panel.ShowLogCard(b, m.Chat.ID, m.From.ID, id)
 			return
 		}
-		// 联合封禁状态里的「前往对应 bot 解除」：直接落到那个人的资料卡，
-		// 卡片上有「解除联合封禁」按钮（权限在卡片与按钮里各自再查）。
+		// 联合封禁状态里的前往对应 bot 解除：直接落到该用户的资料卡，
+		// 卡片上有解除联合封禁按钮（权限在卡片与按钮里各自再查）。
 		if uid, ok := antiad.ParseUserPayload(payload); ok {
 			panel.ShowUserLogs(b, m.Chat.ID, m.From.ID, uid)
 			return

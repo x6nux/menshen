@@ -16,8 +16,8 @@ func markMainBot(t *testing.T, b *core.Bot) {
 }
 
 // TestMainBotChatCannotBeAdded 确认服务端兜底：即使有人手工拼出
-// 「给主 bot 添加群」的入口，也不落库 —— 它加进去也会被 ensureMainBot
-// 在下次启动时清掉，当场拒绝更诚实。
+// 给主 bot 添加群的入口，也不落库——加进去也会被 ensureMainBot
+// 在下次启动时清掉，当场拒绝更明确。
 func TestMainBotChatCannotBeAdded(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)
@@ -54,8 +54,8 @@ func TestMainBotDetailIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestMainBotCallbackActionsRejected 守的是 callback_data 这条不可信输入：
-// 按钮收起来了，但任何人都能手工拼一个「停用主 bot」的回调。
+// TestMainBotCallbackActionsRejected 验证 callback_data 这条不可信输入：
+// 按钮虽已收起，但任何人都能手工拼一个停用主 bot 的回调。
 func TestMainBotCallbackActionsRejected(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)
@@ -81,7 +81,7 @@ func TestMainBotCallbackActionsRejected(t *testing.T) {
 }
 
 // TestMainBotListBadge 确认列表页把主 bot 与工作 bot 区分开：
-// 标上「主 bot」，且不显示会让人误会的「生效群 0/0」。
+// 标上主 bot，且不显示会让人误会的生效群 0/0。
 func TestMainBotListBadge(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)

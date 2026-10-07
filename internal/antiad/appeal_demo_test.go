@@ -83,7 +83,7 @@ func TestAppealDemoPost(t *testing.T) {
 		t.Fatalf("校验应通过，得到 %s", w.Body.String())
 	}
 
-	// cdata 不符：失败并把原因显示出来 —— 这正是测试台存在的意义。
+	// cdata 不符：失败并把原因显示出来。
 	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"success":true,"hostname":"ad.example.com",` +
 			`"action":"appeal","cdata":"2"}`))

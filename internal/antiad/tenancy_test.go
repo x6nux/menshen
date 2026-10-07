@@ -32,8 +32,8 @@ func TestRoleOf(t *testing.T) {
 
 // TestAddAdminRejectsMain 确认主管理员进不了 admins 表。
 //
-// 主管权限扎在配置文件里，表里再有一条只会让面板显示一行「删了也不生效」
-// 的记录，删过一次的人下次就不敢信这个面板了。
+// 主管权限在配置文件里，表里再有一条只会让面板显示一行删了也不生效的
+// 记录。
 func TestAddAdminRejectsMain(t *testing.T) {
 	_, _, sh := testutil.NewTestBotOwned(t, 1, 1)
 	if err := sh.AddAdmin(1, "", 1); err == nil {
@@ -46,8 +46,8 @@ func TestAddAdminRejectsMain(t *testing.T) {
 
 // TestCanManageBotIsolation 是多租户隔离的核心断言。
 //
-// callback_data 是客户端发上来的，任何次管都能把别人 bot 的 id 拼进去
-// 再点一下。这道门一旦恒真，整个多租户就只是界面上的错觉。
+// callback_data 来自客户端，任何次管都能把别人 bot 的 id 拼进回调。这道
+// 校验一旦恒为真，多租户隔离就形同虚设。
 func TestCanManageBotIsolation(t *testing.T) {
 	_, _, sh := testutil.NewTestBotOwned(t, 1, 100) // 主管 1，bot 归 100
 	if err := sh.AddAdmin(200, "另一个次管", 1); err != nil {
@@ -134,7 +134,7 @@ func TestBotSettingIsolated(t *testing.T) {
 }
 
 // TestChatsAreScopedToBot 确认群列表按 bot 分。
-// 次管在面板上看到别人的群，等于多租户只是界面上的错觉。
+// 次管在面板上看到别人的群，多租户隔离便形同虚设。
 func TestChatsAreScopedToBot(t *testing.T) {
 	b, _, sh := testutil.NewTestBotOwned(t, 1, 100)
 	testutil.EnableAntiad(t, b, -100)
@@ -173,7 +173,7 @@ func TestBotsOwnedBy(t *testing.T) {
 }
 
 // TestGbanGuardBansOnJoin 确认联合封禁拦在门口。
-// 这是整个功能最值钱的部分：等他发完广告再删，广告已经被人看过了。
+// 这是该功能的核心价值：若等他发完广告再删，广告已被群成员看到。
 func TestGbanGuardBansOnJoin(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -183,7 +183,7 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 		t.Fatalf("gbanAdd: %v", err)
 	}
 
-	// 开关没开时不得动手：全平台封禁是要主管理员明确点头的。
+	// 开关没开时不得执行：全平台封禁需主管理员明确开启。
 	if gbanGuard(b, testutil.ChatConfOf(t, b, -100), &tg.TGUser{ID: 777}) {
 		t.Error("开关关闭时不该拦截")
 	}
@@ -194,7 +194,7 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 	if err := b.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatalf("putSetting: %v", err)
 	}
-	// 该群选「封禁出群」：联合封禁按每群自己的配置执行。
+	// 该群选`封禁出群`：联合封禁按每群自己的配置执行。
 	testutil.SetChatPunish(t, b, -100, 1)
 	if !gbanGuard(b, testutil.ChatConfOf(t, b, -100), &tg.TGUser{ID: 777}) {
 		t.Error("名单内的人进群应当被拦下")
@@ -215,8 +215,8 @@ func TestGbanGuardBansOnJoin(t *testing.T) {
 
 // TestLiftGbanPassesOnlyIfBanned 锁住整个联合封禁里最容易写反的一处。
 //
-// unbanChatMember 不带 only_if_banned 时，Telegram 的语义是「先踢出群
-// 再解除封禁」。于是对一个**没被封**的人调用它，这个本意为「解封」的
+// unbanChatMember 不带 only_if_banned 时，Telegram 的语义是先踢出群
+// 再解除封禁。于是对一个**没被封**的人调用它，这个本意为解封的
 // 动作反而把无辜的人踢了出去 —— 而全平台解封天然会扫到一大批没被封的群。
 func TestLiftGbanPassesOnlyIfBanned(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
@@ -243,8 +243,8 @@ func TestLiftGbanPassesOnlyIfBanned(t *testing.T) {
 
 // TestGbanCrossesOwners 确认联合封禁是**全平台**的。
 //
-// 这是它和普通封禁的唯一区别，也是唯一值得开这个开关的理由：
-// 一个广告号在 A 的群里被逮到，B 的群不该等它再来一遍。
+// 这是它与普通封禁的唯一区别，也是开启该开关的意义：一个广告号在某个群
+// 被判定后，其他群不必等它再出现一次。
 func TestGbanCrossesOwners(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	testutil.EnableAntiad(t, b, -100)
@@ -275,7 +275,7 @@ func TestGbanCrossesOwners(t *testing.T) {
 	}
 }
 
-// TestEachActiveChatSkipsDisabled 确认联合封禁只扫「已启用」的群。
+// TestEachActiveChatSkipsDisabled 确认联合封禁只扫`已启用`的群。
 // 停用的群不该因为一次全平台操作被悄悄动手。
 func TestEachActiveChatSkipsDisabled(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)

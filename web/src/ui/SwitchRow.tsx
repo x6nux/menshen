@@ -1,4 +1,4 @@
-// 开关行（计划 3.3）：列表行的 Switch 形态，整行与开关都可点，但一次点击
+// 开关行：列表行的 Switch 形态，整行与开关都可点，但一次点击
 // 只触发一次 onChange —— 开关自己的 click 阻止冒泡，避免行与开关各翻一次。
 import { Box, ListItemButton, ListItemText, Switch } from '@mui/material'
 import type { ReactNode } from 'react'

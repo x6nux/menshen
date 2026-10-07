@@ -38,7 +38,7 @@ func TestGroupSilentSendsNothing(t *testing.T) {
 		t.Error("静默不该影响限制记录落库")
 	}
 
-	// 解禁码群内兑换：动作照做，群里一个字不说。
+	// 解禁码群内兑换：动作照做，但不发群消息。
 	code := "MSU-7K2Q-9XFM"
 	insertCodedAppeal(t, b, 555, code, time.Now().Add(time.Hour).Unix())
 	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`

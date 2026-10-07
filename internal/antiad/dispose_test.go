@@ -33,7 +33,7 @@ func TestTempMuteOutlastsAIBudget(t *testing.T) {
 }
 
 // TestTempMuteIsFiveMinutes：临时禁言给到 5 分钟 —— 复判最坏 45 秒，但上游
-// 抖动时会重试；余量不足的话定案前自动解禁，等于白罚一截。
+// 抖动时会重试；余量不足的话定案前自动解禁，等于未起到限制作用。
 func TestTempMuteIsFiveMinutes(t *testing.T) {
 	if tempMute != 5*time.Minute {
 		t.Errorf("tempMute = %v，应为 5 分钟", tempMute)
@@ -76,8 +76,8 @@ func TestDeleteFirstThenReview(t *testing.T) {
 }
 
 // TestReviewCleanLiftsTempMute：复判判为正常时要主动解掉临时禁言 ——
-// 它只是复判期间的占位，让一个已经被判为正常的人白等 5 分钟发不了言，
-// 比漏判一条同类消息更糟。流水照实记成删过（删掉的回不来）。
+// 它只是复判期间的占位；让一个已被判为正常的人等待 5 分钟无法发言，
+// 比漏判一条同类消息更糟。流水照实记为已删除（删除不可撤销）。
 func TestReviewCleanLiftsTempMute(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -93,7 +93,7 @@ func TestReviewCleanLiftsTempMute(t *testing.T) {
 	if d := untilOf(mutes[0]); d <= 0 {
 		t.Errorf("第一次应是限时禁言，时长 %d 秒", d)
 	}
-	// 第二次必须是「权限全开」：再发一次全 false 等于又禁言一次。
+	// 第二次必须是权限全开：再发一次全 false 等于又禁言一次。
 	perms, _ := mutes[1]["permissions"].(map[string]any)
 	if perms == nil || perms["can_send_messages"] != true {
 		t.Errorf("复判正常后应解除临时禁言，得到 %v", mutes[1])
@@ -154,7 +154,7 @@ func TestAccountScopePurges(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	fakeAIWith(t, b, soReply("clean", 0.9, "none", "message"), llmReply(false, 0.9, "none", "message"))
-	// 连带删除只删 47 小时内的（TG 的删除期限），测试消息得是「刚发的」。
+	// 连带删除只删 47 小时内的（TG 的删除期限），测试消息得是刚发的。
 	now := func(m *tg.Message) *tg.Message { m.Date = time.Now().Unix(); return m }
 	HandleGroupMessage(b, now(testutil.GroupMsg(-100, 42, 1, "你好")))
 	waitIdle(t, b)
@@ -253,7 +253,7 @@ func TestSkippedIsLogged(t *testing.T) {
 	}
 }
 
-// ---- 禁言档改封禁 ----
+// ---- 封禁模式 ----
 
 // TestBanModeBansInsteadOfMute：bot 级设置为封禁时，正式处置用 banChatMember；
 // 复判前的临时禁言仍是禁言（封禁踢出群不可逆，不适合当先行动作）。
@@ -370,7 +370,7 @@ func TestPermanentMuteOmitsUntilDate(t *testing.T) {
 }
 
 // TestEffectivePenaltiesPermanentMute：永久禁言不会自己到期，不能再靠时间窗
-// 判断「是否仍在限制中」——历史禁言要列出来，人工解除后必须消失。
+// 判断是否仍在限制中——历史禁言要列出来，人工解除后必须消失。
 func TestEffectivePenaltiesPermanentMute(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -398,9 +398,9 @@ func TestEffectivePenaltiesPermanentMute(t *testing.T) {
 	}
 }
 
-// TestShortMuteOnDeletedTier：开启 antiad_short_mute 后，「仅删除」档要附一记
-// 5 分钟短禁言——只删不罚的话，发广告的人删完就能接着发。它刻意不触发大模型
-// 复判（Short 不并入 Mute），否则这一档每条都要多花一次复判。
+// TestShortMuteOnDeletedTier：开启 antiad_short_mute 后，仅删除档要附加
+// 一次 5 分钟短禁言——只删不罚的话，发广告的人删除后就能接着发。它刻意不触发
+// 大模型复判（Short 不并入 Mute），否则这一档每条都要多花一次复判。
 func TestShortMuteOnDeletedTier(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -410,9 +410,9 @@ func TestShortMuteOnDeletedTier(t *testing.T) {
 	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.95, "promo", "message", 1),
 		llmReply(true, 0.95, "promo", "message"))
 
-	// 老人（发言 50 条、100 小时前进群）高置信：矩阵给「删除」，不触发复判。
-	// 时间基准用消息自带的 Date（1700000000）：用 time.Now() 会算出「进群
-	// 时间在未来」，AgeHours 归零反而变回新人。
+	// 老人（发言 50 条、100 小时前进群）高置信：矩阵给删除，不触发复判。
+	// 时间基准用消息自带的 Date（1700000000）：用 time.Now() 会算出进群
+	// 时间在未来，AgeHours 归零反而变回新人。
 	const msgDate = int64(1700000000)
 	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)
@@ -461,9 +461,9 @@ func TestShortMuteOnDeletedTier(t *testing.T) {
 	}
 }
 
-// TestBoolVerdictMode：打开「按模型结论定档」后，只看模型的是/否结论，
-// 不看置信度——同一条广告的置信度在 88%/95% 之间抖动，卡 90% 硬线会让
-// 它时而只删、时而禁言。老人仍只删不禁（底线不变）。
+// TestBoolVerdictMode：打开按模型结论定档后，只看模型的是/否结论，
+// 不看置信度——同一条广告的置信度会波动，卡硬阈值会让它时而只删、时而
+// 禁言。老人仍只删不禁。
 func TestBoolVerdictMode(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -476,7 +476,7 @@ func TestBoolVerdictMode(t *testing.T) {
 	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.88, "promo", "message", 1),
 		llmReply(true, 0.82, "promo", "message"))
 
-	// 新人：置信度只有 82%，按旧规则只会「删除 + 短禁言」。
+	// 新人：置信度只有 82%（低于置信度阈值）。
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "探花 9000 一单"))
 	waitIdle(t, b)
 
@@ -495,7 +495,7 @@ func TestBoolVerdictMode(t *testing.T) {
 		t.Error("要禁言时应过复判")
 	}
 
-	// 老人：普通广告（非高危害）仍只删不禁 —— 底线不变；高危害那条
+	// 老人：普通广告（非高危害）仍只删不禁；高危害那条
 	// 由 TestSevereAdBeatsVeteranExemption 覆盖。
 	const msgDate = int64(1700000000)
 	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
@@ -514,11 +514,9 @@ func TestBoolVerdictMode(t *testing.T) {
 	}
 }
 
-// TestLowConfidenceAdNotMuted：线上记录 #16729 —— 复判模型返回
-// is_ad=true、confidence=0、reason 却写着「正常讨论」，bool 模式按结论
-// 定档会直接删消息 + 永久禁言（本 bot antiad_mute_minutes=0）。kind=none
-// 说不出广告类别，按正常走：只删不禁也不行 —— #18020 照删还记了哈希，
-// 别人发同一句话被直接删。
+// TestLowConfidenceAdNotMuted：复判模型返回 is_ad=true、confidence=0、
+// reason 却写着正常时，bool 模式按结论定档会删消息并永久禁言。kind=none
+// 说不出广告类别，按正常走：不删也不禁。
 func TestLowConfidenceAdNotMuted(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -544,9 +542,9 @@ func TestLowConfidenceAdNotMuted(t *testing.T) {
 	}
 }
 
-// TestHashHitPunishesInBoolMode：按模型结论定档时，哈希命中不再「只删不罚」。
-// 那条豁免在复判上游超时（复判失败回退到 hash 结论）时会让「同一条广告
-// 换个号再发」只删不禁——线上真实发生过（记录 #342）。
+// TestHashHitPunishesInBoolMode：按模型结论定档时，哈希命中不再只删不罚。
+// 若保留该豁免，复判上游超时（复判失败回退到 hash 结论）时，同一条广告
+// 换个号再发只会被删除而不禁言。
 func TestHashHitPunishesInBoolMode(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -573,9 +571,8 @@ func TestHashHitPunishesInBoolMode(t *testing.T) {
 }
 
 // TestSevereAdBeatsVeteranExemption：高危害（色情/诈骗/赌博，或危害度达标）
-// 不受老成员免禁言豁免 —— 老人免禁言是为了避免误伤普通聊天，不是给惯犯留
-// 豁免。实测：一个发了 40 条言、反复转发色情相册截图的账号，因为算老成员
-// 只吃「已删除 + 5 分钟短禁言」。
+// 不受老成员免禁言豁免 —— 老人免禁言是为了避免误伤普通聊天，不是给惯犯
+// 留豁免。
 func TestSevereAdBeatsVeteranExemption(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "1"); err != nil {
@@ -611,8 +608,8 @@ func TestSevereAdBeatsVeteranExemption(t *testing.T) {
 }
 
 // TestDeleteAlreadyGoneIsNotFailure：消息被管理员或别的 bot 先删掉时，
-// deleteMessage 报 “message to delete not found”。目标已经达成，不该
-// 上报「删除失败」——汇总里的假 ⚠️ 与点了也没用的补删按钮都来自它。
+// deleteMessage 返回 “message to delete not found”。目标已经达成，不应
+// 上报删除失败——汇总里错误的告警与补删按钮都来自它。
 func TestDeleteAlreadyGoneIsNotFailure(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -644,7 +641,7 @@ func TestDeleteRealFailureStillReported(t *testing.T) {
 }
 
 // TestMuteGoneByErrorText：PARTICIPANT_ID_INVALID 直接说明对方不在群里，
-// 不必再查 getChatMember，也不再报「禁言失败」。
+// 不必再查 getChatMember，也不再报 `禁言失败`。
 func TestMuteGoneByErrorText(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -662,7 +659,7 @@ func TestMuteGoneByErrorText(t *testing.T) {
 }
 
 // TestMuteGoneByMemberLookup：错误文本没说清时再查成员状态；已退群、
-// 已被封禁出群、已在禁言状态都视为「无需禁言」。
+// 已被封禁出群、已在禁言状态都视为无需禁言。
 func TestMuteGoneByMemberLookup(t *testing.T) {
 	cases := []struct {
 		name, resp string
@@ -689,7 +686,7 @@ func TestMuteGoneByMemberLookup(t *testing.T) {
 	}
 }
 
-// TestMuteRealFailureStillReported：查不到「不用禁」的理由时照常上报；
+// TestMuteRealFailureStillReported：查不到不用禁的理由时照常上报；
 // TG 查询失败也按真失败处理，不能因为一次抖动把没禁上显示成已处理。
 func TestMuteRealFailureStillReported(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)

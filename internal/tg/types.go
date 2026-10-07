@@ -7,15 +7,15 @@ import "encoding/json"
 type Update struct {
 	UpdateID int64    `json:"update_id"`
 	Message  *Message `json:"message"`
-	// EditedMessage 是编辑过的消息。「先发正常内容、判过后再编辑成广告」
+	// EditedMessage 是编辑过的消息。先发正常内容、判过后再编辑成广告
 	// 是规避手法，必须重新送检；它同样要列进 allowed_updates 才收得到。
 	EditedMessage *Message       `json:"edited_message"`
 	CallbackQuery *CallbackQuery `json:"callback_query"`
 	// ChatMember 只有在 allowed_updates 里显式声明才会推送。
-	// 它是「用户何时进群」的唯一可靠来源——TG 没有反查接口。
+	// 它是用户何时进群的唯一可靠来源——TG 没有反查接口。
 	ChatMember *ChatMemberUpdated `json:"chat_member"`
 	// MyChatMember 是 bot 自身的成员状态变化，用于发现
-	// 「被加进群但没给管理员权限」这种静默失效的情况。
+	// 被加进群但没给管理员权限这种静默失效的情况。
 	MyChatMember *ChatMemberUpdated `json:"my_chat_member"`
 }
 
@@ -44,7 +44,7 @@ type Message struct {
 	NewChatMembers  []*TGUser       `json:"new_chat_members"`
 	Entities        []MessageEntity `json:"entities"`
 	CaptionEntities []MessageEntity `json:"caption_entities"`
-	// ForwardOrigin 判空标注「这是转发来的」，另取来源名进正文。
+	// ForwardOrigin 判空标注这是转发来的，另取来源名进正文。
 	ForwardOrigin json.RawMessage `json:"forward_origin"`
 	// ReplyMarkup 是消息自带的内联按钮。经由 inline bot 发出的广告
 	// 常把引流链接挂在按钮上，正文只有一句无害的话。
@@ -64,9 +64,8 @@ type Message struct {
 	// GuestBot 是被召唤的那个 bot，入口把 From 换成召唤者时存在这里，不来自 TG。
 	GuestBot *TGUser `json:"-"`
 
-	// 引用/回复的三种形态。广告号会把正文压到一两个字符、把载荷全放进
-	// 引用块（典型：引用一条频道广告，自己只回一个「u」），不接这三个
-	// 字段就等于对这整类规避形态完全失明。
+	// 引用/回复的三种形态。广告号会把正文压到极短、把载荷全放进引用块，
+	// 不接这三个字段会难以识别这整类规避形态。
 	//
 	// ReplyToMessage —— 回复同一个群里的消息，TG 给出整条原消息。
 	// ExternalReply  —— 回复其它聊天里的消息（频道引用属于这类），
@@ -78,14 +77,14 @@ type Message struct {
 }
 
 // MessageEntity 是正文里的格式标注。text_link 的 URL 不在正文里，
-// 是「点这里」背后藏着的链接，只有从这里才拿得到。
+// 是链接文字背后藏着的链接，只有从这里才拿得到。
 type MessageEntity struct {
 	Type string `json:"type"` // url / text_link / mention / ...
 	URL  string `json:"url"`
 }
 
 // FileNamed 是只取文件名的媒体。文件名是攻击者可控的文字，
-// 「日入5000教程@xx.pdf」这类很常见。
+// 常被用于投放广告。
 type FileNamed struct {
 	FileName string `json:"file_name"`
 }
@@ -94,8 +93,8 @@ type FileNamed struct {
 // ExternalReplyInfo 共用：频道引用同样可能是一张联系人卡片或一个投票。
 // 纯媒体（无配文的图片、贴纸、语音、定位、骰子）没有文字，不在此列。
 type MsgPayload struct {
-	// Contact 是「分享联系人」卡片。名字与号码本身就是载荷
-	// （「XX交流群 + 电话」是典型引流形态）。
+	// Contact 是分享联系人卡片。名字与号码本身就是载荷，
+	// 是典型的引流形态。
 	Contact *Contact `json:"contact"`
 	Poll    *struct {
 		Question string `json:"question"`
@@ -169,7 +168,7 @@ type TextQuote struct {
 	Text string `json:"text"`
 }
 
-// ExternalReplyInfo 是「回复其它聊天里的消息」时 TG 给的原消息摘要。
+// ExternalReplyInfo 是回复其它聊天里的消息时 TG 给的原消息摘要。
 // Chat 为消息来源（频道引用时就是那个频道）。
 type ExternalReplyInfo struct {
 	MsgPayload
@@ -215,12 +214,12 @@ type ChatMemberInfo struct {
 	User   *TGUser `json:"user"`
 	Status string  `json:"status"`
 	// IsMember 只在 restricted 状态里出现：被限制但仍在群里。
-	// 判断「bot 还在不在群里」时，restricted 必须看它 —— 只看 status
-	// 会把「已被踢走但留下一条受限记录」当成还在群里。
+	// 判断 bot 是否仍在群里时，restricted 必须看它 —— 只看 status
+	// 会把已被踢走但留下一条受限记录当成还在群里。
 	IsMember bool `json:"is_member"`
-	// CanSendMessages 也只在 restricted 里出现，用指针区分「没有这个
-	// 字段」与「确实为 false」（见 antiad.canSpeak）：把受限状态当成
-	// 被禁言，会让我们对着能发言的人反复禁言。
+	// CanSendMessages 也只在 restricted 里出现，用指针区分没有这个字段
+	// 与确实为 false（见 antiad.canSpeak）：把受限状态当成被禁言，
+	// 会对着能发言的人反复禁言。
 	CanSendMessages *bool `json:"can_send_messages"`
 }
 
@@ -229,11 +228,11 @@ type ChatMemberResp struct {
 	Result struct {
 		Status string `json:"status"`
 		// IsMember 只在 restricted 状态里出现：被限制但仍在群里。
-		// 只看 status 会把「已被踢走但留下一条受限记录」当成还在群里，
+		// 只看 status 会把已被踢走但留下一条受限记录当成还在群里，
 		// 禁言失败后的二次判断会因此漏掉真正该跳过的场景。
 		IsMember *bool `json:"is_member"`
 		// CanSendMessages 只在 restricted 状态里出现，所以用指针区分
-		// 「字段不存在」与「确实为 false」：普通成员的响应里没有它，
+		// 字段不存在与确实为 false：普通成员的响应里没有它，
 		// 当成 false 会把所有正常成员都看成被禁言。
 		CanSendMessages *bool `json:"can_send_messages"`
 		// UntilDate 是限时限制的到期时间（0 = 永久）。

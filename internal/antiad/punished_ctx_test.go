@@ -14,8 +14,8 @@ import (
 )
 
 // TestPunishedMessageLeavesContext：被判广告处置过的消息必须退出后续判定的
-// recent_context。它早已从群里删掉，却会一直被模型当成「此人刚发的广告」，
-// 新消息跟着这条旧账被反复处罚 —— 同一条消息结一次账就够了。
+// recent_context。它已从群里删除，却会一直被模型当成此人刚发的广告，
+// 使新消息被反复处罚 —— 同一条消息只应计入一次。
 // /check 复查不受影响：全量历史里仍能看到判过的消息，那是账号证据。
 func TestPunishedMessageLeavesContext(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -31,7 +31,7 @@ func TestPunishedMessageLeavesContext(t *testing.T) {
 			n := len(soBodies)
 			mu.Unlock()
 			// 第一次判广告（危害度 0：不进联合封禁名单，第二条消息才能
-			// 照常走到判定），第二次判正常。
+			// 正常进入判定），第二次判正常。
 			if n == 1 {
 				w.Write([]byte(soReplySev("ad", 0.93, "scam", "message", 0)))
 			} else {
@@ -104,7 +104,7 @@ func TestMarkPunishedFiltersContext(t *testing.T) {
 		t.Fatalf("未处罚时上下文口径也应有 3 条，实际 %d", n)
 	}
 
-	// 连带删除/相册形状的批量标记；0 是「没有消息可删」的占位，必须跳过
+	// 连带删除/相册形状的批量标记；0 是没有消息可删的占位，必须跳过
 	// 而不是拼出非法 SQL。
 	markPunished(b, -100, 0, 2)
 	if got := len(loadUserMessages(b.Store, -100, 42, 10, true)); got != 2 {
@@ -128,7 +128,7 @@ func TestMarkPunishedFiltersContext(t *testing.T) {
 }
 
 // TestPurgeMarksKeptMessages：连带删除（账号判成广告号）会把此人近期的消息
-// 全部删掉，这些留底同样要标成已处罚 —— 否则他解禁回来，旧账还在上下文里。
+// 全部删掉，这些留底同样要标成已处罚 —— 否则其解禁后，这些消息仍留在上下文里。
 func TestPurgeMarksKeptMessages(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	now := time.Now().Unix()

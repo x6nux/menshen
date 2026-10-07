@@ -259,7 +259,7 @@ func TestRuleDisabledIgnored(t *testing.T) {
 }
 
 // TestMatchedRuleInfos：启用且非强制的规则命中会成为证据条目；
-// enforce 规则命中即处置、不进证据（与旧 RuleHintText 的排除口径一致）。
+// enforce 规则命中即处置、不进证据。
 func TestMatchedRuleInfos(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	insertRule(t, b, "强制规则名", "强制命中词", "", true, true)
@@ -478,7 +478,7 @@ func TestRuleHitPreDeleteReview(t *testing.T) {
 			verdict, decider)
 	}
 
-	// 对照：没有规则命中时高置信初判照旧直接采信（不调大模型）。
+	// 对照：没有规则命中时高置信初判仍然直接采信（不调大模型）。
 	b2, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	soN2, llmN2 := fakeAIWith(t, b2, soReply("clean", 0.99, "none", "message"),
@@ -550,7 +550,7 @@ func TestRuleHitNoLLMFallsBackToMatrix(t *testing.T) {
 	}
 }
 
-// TestMatchedRulesSeeQuoted：规则匹配区分引用来源 —— 外部聊天引用照旧
+// TestMatchedRulesSeeQuoted：规则匹配区分引用来源 —— 外部聊天引用仍
 // 命中（正文为空、载荷全在引用里是典型规避形态，也是 quoted 字段存在的
 // 意义）；群内引用是别人的话（引用一条广告提醒管理员），不算引用者发出的
 // 载荷，不参与匹配。
@@ -566,7 +566,7 @@ func TestMatchedRulesSeeQuoted(t *testing.T) {
 		t.Errorf("群内引用不该触发规则证据：%+v", st.MatchedRules)
 	}
 
-	// 外部聊天引用：照旧命中。
+	// 外部聊天引用：仍命中。
 	ext := testutil.GroupMsg(-100, 42, 3, "看看这个")
 	ext.ExternalReply = &tg.ExternalReplyInfo{Text: "引用命中词",
 		Chat: &tg.Chat{ID: -100999, Title: "某频道"}}

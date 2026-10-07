@@ -7,9 +7,8 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestMainMenuWithOnlyMainBot 守的是主 bot 隔离之后的主菜单文案：
-// 「只有主 bot」是设计如此，不该提示「机器人名下还没有群组」——
-// 那是一条永远消不掉的假告警，反而把真正的下一步藏了起来。
+// TestMainMenuWithOnlyMainBot 验证仅有主 bot 时主菜单的文案：仅有主 bot
+// 属于设计预期，不提示`名下还没有群组`，避免产生永远消不掉的假告警。
 func TestMainMenuWithOnlyMainBot(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)
@@ -29,8 +28,8 @@ func TestMainMenuWithOnlyMainBot(t *testing.T) {
 	}
 }
 
-// TestMainMenuWantsChatForWorkerBot 对照组：有工作 bot 但没挂群时，
-// 才提示「工作 bot 名下还没有群组」。
+// TestMainMenuWantsChatForWorkerBot 验证有工作 bot 但未绑定群组时
+// 提示`工作 bot 名下还没有群组`。
 func TestMainMenuWantsChatForWorkerBot(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	markMainBot(t, b)

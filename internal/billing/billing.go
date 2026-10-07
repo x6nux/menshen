@@ -7,7 +7,7 @@ import (
 	"math"
 )
 
-// ponytail: 与 newapi 的 QuotaPerUnit 一致，写死。
+// QuotaPerUSD 是每美元折算的 quota 数，取值与 newapi 的 QuotaPerUnit 一致。
 // 除本文件的换算函数外，代码任何位置都不得出现这个字面量。
 const QuotaPerUSD = 500000
 
@@ -22,9 +22,8 @@ func FormatUSDFine(q int64) string {
 	return fmt.Sprintf("$%.8f", quotaToUSD(q))
 }
 
-// ComputeCost 四类 token 各乘各的单价，无任何折扣系数——
-// 定价全部来自 models 表，代码中不存在缓存折扣的硬编码。
-// 中间用 float64 计算，最终 ceil 为 int64 quota：向上取整避免零成本请求。
+// ComputeCost 按四类 token 各自单价累加成本，向上取整为 int64 quota。
+// 定价全部来自 models 表；中间以 float64 计算，最终 ceil，避免零成本请求。
 func ComputeCost(u Usage, m *upstream.Model) int64 {
 	usd := (float64(u.PromptTokens)*m.PromptPrice +
 		float64(u.CompletionTokens)*m.CompletionPrice +

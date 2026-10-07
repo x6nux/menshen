@@ -24,7 +24,7 @@ const (
 	actionPrewarmMuted   = "prewarm_muted"
 	actionPrewarmChecked = "prewarm_checked"
 
-	// deciderPrewarmShell 标记「空壳特征组合齐备、本地零 AI」的判定，
+	// deciderPrewarmShell 标记空壳特征组合齐备、本地零 AI 的判定，
 	// 与 systemone/大模型的结论区分开（流水与面板按它展示）。
 	deciderPrewarmShell = "prewarm_shell"
 )
@@ -44,7 +44,7 @@ const prewarmTrimCut = " \t\r\n！!。.，,？?~～…·、:：;；“”\"'‘�
 // prewarmCandidate 报告这条消息是否触发首条消息账号复核。
 //
 // 它只圈候选、不判定：白名单/豁免/联封/必封规则/内容哈希都已在前面的
-// 分支处理过；这里命中只表示「值得花一次 AI 看看这个账号」。
+// 分支处理过；这里命中只表示值得为该账号额外送一次 AI 检查。
 func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 	m *tg.Message, edited bool) bool {
 
@@ -97,7 +97,7 @@ func prewarmCandidate(b *core.Bot, snap *store.Snapshot, gm groupMember,
 //
 // 共用条款（bioLinksClause / serviceListClause / profileOKClause /
 // patternClause）必须带上：前置号同样可能挂正常频道、也可能是被误放行的
-// 资料，少一句就会被模型推向另一头。
+// 资料，少一句就会使模型判断偏向另一侧。
 const prewarmInstructions = "prewarm_check 为 true：这是一个刚进群、" +
 	"只在群里发了一句短招呼的新账号。请判断它是**批量注册、等待日后投放" +
 	"广告的前置号**，还是正常新用户。\n" +
@@ -219,7 +219,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 
 	// 空壳特征组合门（零 AI）：无头像、无简介、随机用户名、场景词或随机
 	// 昵称**全部齐备**即是批量注册前置号，直接处置，不送 AI——提示词把
-	// 「组合」当典型形态，可全齐的形态本地的随机度算法认得比模型准。
+	// 组合当典型形态，而完全齐备的形态由本地随机度算法识别比模型更准。
 	// 只命中一部分的不禁言，标记重点关注后照常送 AI。
 	shell := evalPrewarmShape(state.Sender)
 	if shell.Anchor() {
@@ -230,7 +230,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		setPrewarmWatch(b, m.Chat.ID, m.From.ID, true)
 	}
 	// 随机度评分进载荷：提示词把 username_rand/name_rand 当本地测量值读，
-	// 免得模型自己目测「像不像随机串」（它测得没这个准）。
+	// 免得模型自行目测字符串的随机性（其判断不如本地评分准）。
 	state.Sender.UsernameRand = randScored(state.Sender.Username)
 	state.Sender.NameRand = randScored(state.Sender.FirstName + state.Sender.LastName)
 
@@ -283,7 +283,7 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 
 // prewarmShellDispose 处置空壳特征齐备的账号：删招呼 + 无限期禁言，与
 // AI 命中同一套执行，但判定是本地的特征组合（零 AI）。演练群只落
-// dryrun 流水。Kind 给 promo：空壳号还没开工，按最常见的推广前置档记。
+// dryrun 流水。Kind 给 promo：空壳号尚未开始投放，按最常见的推广前置档记录。
 // 组合里的简介是空的，learnableShape 不会有产出，不传 Shape。
 func prewarmShellDispose(b *core.Bot, conf store.BotChat, m *tg.Message,
 	p senderProfile, shell prewarmShapeVerdict) {
@@ -318,13 +318,13 @@ const (
 	// 复查是后台低优先级工作，实时消息判定优先。
 	prewarmQueueHighWater = 256
 	// prewarmClaimHold 是选人时的原子抢占时长：worker 还没按阶梯写回
-	// next_at 时，挡住并发探测/重复 tick 重复选中同一人。要盖住探测 +
-	// 判定池排队在 AI 压力下的等待时长（60s 实测会被超过）。
+	// next_at 时，挡住并发探测与重复 tick 重复选中同一人。需覆盖探测与
+	// 判定池在 AI 压力下的排队等待时长。
 	prewarmClaimHold = 5 * time.Minute
 	// prewarmAIInterval：同一 (群, 人) 两次账号 AI 的最小间隔。资料反复
 	// 改名时冷却期内只推后 next_at，不判也不落新指纹，冷却到点再判。
 	prewarmAIInterval = 10 * time.Minute
-	// prewarmInflightTTL 是「正在处理」标记的兜底存活时长：正常出口都会
+	// prewarmInflightTTL 是正在处理标记的兜底存活时长：正常出口都会
 	// defer 释放，TTL 只在进程崩溃/卡死时兜底。
 	prewarmInflightTTL = 10 * time.Minute
 	// prewarmUnknownAge 是 joined_at=0（bot 部署前已在群）的年龄占位，
@@ -334,11 +334,11 @@ const (
 	// sendMessage 429 就来自成批通知。
 	prewarmNoticeMinGap = 5 * time.Second
 	// prewarmGoneBackoff 是已离群（left/kicked）成员的复查退避时长：
-	// 资料永远拉不到了，按阶梯空转重试只是白打 TG。
+	// 资料永远拉不到了，按阶梯空转重试只会浪费 TG 调用。
 	prewarmGoneBackoff = 7 * 24 * time.Hour
 	// prewarmWatchInterval 是重点关注成员（prewarm_watch=1，空壳特征
-	// 部分命中但没到处置档）的复查间隔上限：盯得紧一些，化妆一落地
-	// 下一轮就撞上指纹变化，但也不是无间隔空转。
+	// 部分命中但没到处置档）的复查间隔上限：盯得紧一些，资料一经修改
+	// 下一轮即可命中指纹变化，但也非无间隔空转。
 	prewarmWatchInterval = 5 * time.Minute
 )
 
@@ -347,8 +347,8 @@ const (
 var prewarmProbeInterval = 200 * time.Millisecond
 
 // prewarmSweepInterval 按进群时长给出下一次复查间隔：新人（≤72h，与
-// 首条招呼的进群窗口一致）随时间拉长但**封顶 5min**——新人是最该盯的
-// 时候；过了新人窗口再放宽到老成员节奏。
+// 首条招呼的进群窗口一致）随时间拉长但**封顶 5min**——新人是需要重点
+// 关注的阶段；超过新人窗口后放宽到老成员节奏。
 func prewarmSweepInterval(age time.Duration) time.Duration {
 	switch {
 	case age <= time.Hour:
@@ -363,7 +363,7 @@ func prewarmSweepInterval(age time.Duration) time.Duration {
 }
 
 // prewarmSweepIntervalFor 是重点关注感知的阶梯：watched 成员无论多老，
-// 间隔封顶 prewarmWatchInterval。空壳特征部分命中的号最可能事后化妆，
+// 间隔封顶 prewarmWatchInterval。空壳特征部分命中的号最可能事后修改资料，
 // 间隔不能随年龄放宽到 30min/1h。
 func prewarmSweepIntervalFor(age time.Duration, watched bool) time.Duration {
 	d := prewarmSweepInterval(age)
@@ -385,11 +385,11 @@ func prewarmAge(now, joinedAt int64) time.Duration {
 	return 0
 }
 
-// PrewarmSweep 现在只负责幂等启动低优先级探测协程（tickMinute 调用）：
-// 探测与判定池解耦，不再和实时消息判定抢共享队列，也不会整点爆发。
+// PrewarmSweep 负责幂等启动低优先级探测协程（tickMinute 调用）：
+// 探测与判定池解耦，不与实时消息判定抢共享队列，也不会整点爆发。
 //
-// 与冷判定的分工：冷判定管进群那一刻；这里管「进群时干净、事后化妆、
-// 并且再也不说话」的静默号——规则只看消息正文，0 发言的号只有这里能抓。
+// 与冷判定的分工：冷判定管进群那一刻；这里管进群时干净、事后修改资料
+// 并且不再发言的静默号——规则只看消息正文，0 发言的号只有这里能抓到。
 func PrewarmSweep(sh *core.Shared) {
 	snap := sh.Cache.Snap()
 	if sh.Reg == nil || snap.SettingInt("antiad_enabled", 0) != 1 {
@@ -679,8 +679,8 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 	// 空壳特征组合（零 AI）：无简介是锚点，配上随机用户名/场景或随机
 	// 昵称才继续；两个条件都齐了才花一次头像查询，凑齐四条直接按前置号
 	// 处置。只命中一部分的不禁言，标记重点关注并把复查间隔压到 5min，
-	// 静等化妆落地（指纹一变下一轮就进 AI）。这条路径是「从不发言的
-	// 空壳号」唯一能被处置的地方。
+	// 等待资料修改（指纹一变下一轮就进 AI）。这条路径是从不发言的空壳号
+	// 唯一能被处置的地方。
 	shell := evalPrewarmShape(p)
 	if shell.Anchor() {
 		if shell.UnameRand && shell.NameSus {
@@ -707,7 +707,7 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 			slog.Info("前置号：空壳特征部分命中，列入重点关注",
 				"chat", chatID, "uid", uid, "依据", shell.Why)
 		}
-		// 关注档取「普通阶梯与 5min 封顶」的较小值：刚进门的成员仍是
+		// 关注档取普通阶梯与 5min 封顶中的较小值：刚进门的成员仍是
 		// 1min 档，老成员从 30min/1h 压回 5min。
 		markPrewarmChecked(b, chatID, uid,
 			prewarmSweepIntervalFor(prewarmAge(now, gm.JoinedAt), true))
@@ -720,8 +720,8 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 			"chat", chatID, "uid", uid)
 	}
 
-	// 首次见到该成员：本地预筛不中就不花 AI——绝大多数正常人的资料
-	// 平平无奇。指纹这时落库，下次起走「未变即跳过」。
+	// 首次见到该成员：本地预筛不中就不花 AI——大多数正常账号的资料
+	// 没有可疑特征。指纹这时落库，此后未变即跳过。
 	if gm.ProfileHash == "" {
 		if suspicious, _ := coldSuspicious(u, p.Bio); !suspicious {
 			markPrewarmCheckedHash(b, chatID, uid, h, interval)
@@ -730,7 +730,7 @@ func probePrewarmCandidate(b *core.Bot, chatID, uid int64, now int64) {
 	} else {
 		// 资料变过：先过 AI 冷却。冷却期内只把 next_at 推到冷却结束、
 		// 保留旧指纹，不判也不落新指纹；到点再判，既不放大开销，也不
-		// 把未判的化妆吞掉。首查不受冷却限制。
+		// 把尚未判定的资料修改漏掉。首查不受冷却限制。
 		key := fmt.Sprintf("%d:%d", chatID, uid)
 		if last, ok := cachesOf(b.Shared).prewarmAI.Get(key); ok {
 			if until := last.Add(prewarmAIInterval); time.Now().Before(until) {
@@ -789,8 +789,8 @@ func judgePrewarmItem(b *core.Bot, it prewarmItem) {
 
 	v, err := judgeJoin(b, snap, st)
 	if err != nil {
-		// 上游抖动：保留旧指纹、只推下一次，下一档重试；这次没判成的
-		// 「化妆」不算已消费。清掉冷却记录，否则下一档会被 10 分钟
+		// 上游抖动：保留旧指纹、只推下一次，下一档重试；这次尚未判定
+		// 完成的资料修改不算已消费。清掉冷却记录，否则下一档会被 10 分钟
 		// 冷却挡住、白等一轮。
 		cachesOf(b.Shared).prewarmAI.Delete(fmt.Sprintf("%d:%d", chatID, uid))
 		slog.Warn("前置号复查：判定失败，下一档重试",
@@ -831,7 +831,7 @@ func judgePrewarmItem(b *core.Bot, it prewarmItem) {
 		Quiet:    true,
 	})
 	// 禁言失败（TG 抖动）不是定案：保留旧指纹、下一档重试，否则一次
-	// restrictChatMember 失败就把这份「化妆」永久吞掉。
+	// restrictChatMember 失败就会永久漏掉这份资料修改。
 	if _, ok := loadJoinMute(b.Store, chatID, uid); ok {
 		markPrewarmCheckedHash(b, chatID, uid, it.h, it.interval)
 		return
@@ -840,7 +840,7 @@ func judgePrewarmItem(b *core.Bot, it prewarmItem) {
 }
 
 // markPrewarmGone 把已离群（left/kicked）成员的复查推后 7 天：资料永远
-// 拉不到了，按阶梯空转重试只是白打 TG。
+// 拉不到了，按阶梯空转重试只会浪费 TG 调用。
 func markPrewarmGone(b *core.Bot, chatID, uid int64) {
 	now := time.Now().Unix()
 	if _, err := b.Store.Write.Exec(`UPDATE group_members
@@ -852,10 +852,10 @@ func markPrewarmGone(b *core.Bot, chatID, uid int64) {
 
 // chatMemberGone 查一次 getChatMember，报告此人是否已离群（left/kicked）。
 // 人已不在群里时 TG 干脆回 400 拒答（member not found，或 MTProto 透传
-// 的 PARTICIPANT_ID_INVALID）——同样是离群的确定证据，不当成「查询失败」：
-// 否则离群成员会在复查阶梯里永远空转。查询失败（429/网络）仍按「不确定」
-// 返回 false：宁可下一档再试一次，别把在群的人推后 7 天。也用于
-// 「资料拉取全空」时区分离群与拉取失败。
+// 的 PARTICIPANT_ID_INVALID）——同样是离群的确定证据，不当成查询失败：
+// 否则离群成员会在复查阶梯里永远空转。查询失败（429/网络）仍按不确定
+// 返回 false：下一档再试一次，不把在群的人推后 7 天。也用于
+// 在资料拉取全空时区分离群与拉取失败。
 func chatMemberGone(b *core.Bot, chatID, uid int64) bool {
 	raw, err := b.TG.Call("getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid})

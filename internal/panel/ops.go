@@ -43,9 +43,9 @@ func miniFail(w http.ResponseWriter, err error, generic string) {
 	miniErr(w, http.StatusInternalServerError, generic)
 }
 
-// chatTitle 用**负责这个群的那个 bot** 查群标题；实例不在运行或查询失败
-// 返回空串。查不到不算失败 —— bot 还没进群就添加 chat_id 是合法的使用
-// 顺序。不能用面板所在的 bot 查：那通常是不入群的主 bot，永远查不到。
+// chatTitle 用负责该群的 bot 查群标题；实例不在运行或查询失败返回空串。
+// 查不到不算失败——bot 还没进群就添加 chat_id 是合法的使用顺序。
+// 不能用面板所在的 bot 查：那通常是不入群的主 bot，永远查不到。
 func chatTitle(sh *core.Shared, botID, chatID int64) string {
 	if sh.Reg == nil {
 		return ""

@@ -5,7 +5,7 @@ package antiad
 // 会让整轮发现直接失败。这里给 ChatModel 包一层：请求失败后按策略重试。
 //
 // 策略（产品要求）：最多重试 10 次；前 5 次固定间隔，后 5 次指数退避。
-// 只重试「可能自愈」的错误：超时、连接类错误、429 与 5xx；4xx（除 429）
+// 只重试可能自愈的错误：超时、连接类错误、429 与 5xx；4xx（除 429）
 // 与参数/序列化错误是确定性的，重试只会浪费预算。重试等待可被 ctx 取消
 // （手动停止 / 30 分钟总时限），取消后立即把最后一次错误交给 ReAct 图。
 
@@ -24,7 +24,7 @@ import (
 )
 
 // 重试策略参数是 var 而不是 const：测试要替换成不真等的实现，覆盖固定
-// 间隔与指数退避两段以及「不重试」的分支。
+// 间隔与指数退避两段以及不重试的分支。
 var (
 	// ruleAgentRetryCount 是最大重试次数（不含首次请求）。
 	ruleAgentRetryCount = 10
@@ -97,7 +97,7 @@ func retryableModelError(err error) bool {
 }
 
 // retryChatModel 给 ToolCallingChatModel 加网络重试。Generate 整段重试；
-// Stream 只重试「建立阶段」，流一旦返回，消费中的错误无法透明重试。
+// Stream 只重试建立阶段，流一旦返回，消费中的错误无法透明重试。
 type retryChatModel struct {
 	inner model.ToolCallingChatModel
 }

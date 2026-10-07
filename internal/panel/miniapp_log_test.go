@@ -11,7 +11,7 @@ import (
 )
 
 // TestMiniLogsFiltersAndSearch：记录列表的筛选（前端默认带已删除）与
-// 搜索（原文 / 理由 / 纯数字 ID）是记录页可操作化的前提，先守后端。
+// 搜索（原文 / 理由 / 纯数字 ID）是记录页可用的前提，先验证后端。
 func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -47,8 +47,8 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 四条：两条被删除、一条放行（新版写 'clean'）、一条被护栏拦下。
-	// 外加一条旧版遗留的 'none'：筛选要把它一起认下。
+	// 五条：两条被删除、一条放行（写 'clean'）、一条被护栏拦下，
+	// 外加一条 'none' 的正常记录：筛选要把它一起认下。
 	seed(1, 555, "ad", "deleted_muted", "加微信买号", "推广")
 	seed(2, 556, "clean", "none", "今天天气不错", "")
 	seed(3, 557, "skipped", "skipped", "随便聊聊", "超出本群送检频率上限")
@@ -79,8 +79,8 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	}
 }
 
-// TestMiniLogDetailFallback：流水正文为空的老记录（冷判定演练分支曾
-// 不带原文），详情接口要回查全量留底补上原文。
+// TestMiniLogDetailFallback：流水正文为空的记录（冷判定演练分支不带原文），
+// 详情接口要回查全量留底补上原文。
 func TestMiniLogDetailFallback(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -166,7 +166,7 @@ func TestMiniLogactOps(t *testing.T) {
 		t.Error("联合封禁没解除")
 	}
 
-	// 复查：没有留底时直接报错，不惊动群里。
+	// 复查：没有留底时直接报错，不向群里发消息。
 	w := miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "logact",
 		map[string]any{"id": 1, "action": "review"})
 	if w.Code != http.StatusBadRequest {
@@ -249,7 +249,7 @@ func TestMiniAppealAct(t *testing.T) {
 }
 
 // TestMiniSetTimezone：时区是字符串型设置——只认 IANA 名称，只有主
-// 管理员能改，非法值打回。
+// 管理员能改，非法值拒绝。
 func TestMiniSetTimezone(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -307,7 +307,7 @@ func TestMiniGbanScopes(t *testing.T) {
 		return w.Code, out
 	}
 
-	// 次级管理员能管理全局组（原本只有主管理员能写）。
+	// 次级管理员能管理全局组。
 	if code, _ := callAs(testToken2, sub888, 43, "gban",
 		map[string]any{"action": "add", "user_id": 700, "reason": "次管写入"}); code != http.StatusOK {
 		t.Fatalf("次管写全局组应 200")
@@ -368,7 +368,7 @@ func TestMiniGbanScopes(t *testing.T) {
 }
 
 // TestMiniAppealsOpenFilterServerSide：未结筛选必须放在查询里。只筛已取回的
-// 那 20 行的话，更新更早的未结单永远不会出现在「未结」页里，管理员会漏掉
+// 那 20 行的话，更新时间更早的未结单永远不会出现在未结页里，管理员会漏掉
 // 真正要处理的单子。
 func TestMiniAppealsOpenFilterServerSide(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)

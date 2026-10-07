@@ -2,7 +2,7 @@ package store
 
 import "testing"
 
-// TestWhitelistedRanges 守的是白名单的范围规则：
+// TestWhitelistedRanges 验证白名单的范围规则：
 // bot_id=0 全平台、chat_id=0 该 bot 名下所有群、expires_at=0 永久。
 func TestWhitelistedRanges(t *testing.T) {
 	s := &Snapshot{Whitelist: []WhiteRec{

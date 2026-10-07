@@ -12,26 +12,27 @@ import (
 // ---- 子 bot 在群痕迹与超时未配置退群 ----
 //
 // 群配置是注册制的另一面：bot 被拉进一个从未在面板挂到它名下的群时，
-// 它在那里什么也不干，但 Telegram 照样把那个群的每一条更新推到它的
-// webhook 上。任意群都能这么白占 webhook，还会让「bot 在群里为什么
-// 不干活」变成无头案。对策：my_chat_member 实时记下在群痕迹，加群后
-// 超过 subbot_autoleave_minutes（默认 60 分钟）仍未配置就自动退群。
+// 它在那里不做任何处理，但 Telegram 仍会把那个群的每一条更新推到它的
+// webhook 上，任意群都能借此占用 webhook。对策：my_chat_member 实时
+// 记录在群痕迹，加群后超过 subbot_autoleave_minutes（默认 60 分钟）仍未
+// 配置就自动退群。
 //
 // 主 bot 不走这里：它被拉进群当场就退（见 main 的 handleMainBotChatMember），
 // 没有等待期。
 
 const (
-	// SettingAutoLeaveMinutes 是「加群后多久未配置就退群」的全局设置键。
-	// 0 = 关闭。关掉时痕迹照记：配置了或离群了仍会清掉，只是不再自动退群。
+	// SettingAutoLeaveMinutes 是加群后多久未配置就退群的全局设置键。
+	// 0 表示关闭；关闭时仍记录痕迹：配置了或离群了仍会清掉，只是不再
+	// 自动退群。
 	SettingAutoLeaveMinutes = "subbot_autoleave_minutes"
-	// DefaultAutoLeaveMinutes 是默认等待期。给管理员留出「拉 bot 进群 →
-	// 去面板添加群配置」的正常操作窗口，一小时足够，也不至于让无关群
-	// 占着 webhook 过夜。
+	// DefaultAutoLeaveMinutes 是默认等待期。给管理员留出拉 bot 进群再在
+	// 面板添加群配置的操作窗口，一小时足够，也不至于让无关群长期占用
+	// webhook。
 	DefaultAutoLeaveMinutes = 60
 
 	// autoLeaveSweepLimit 是单轮清扫最多处理的痕迹行数。正常情况下一个
-	// bot 名下未配置的群撑不到两位数；上限只为极端情况兜底，别让一轮
-	// leaveChat 打满 TG 限速。
+	// bot 名下未配置的群数量很少；上限只为极端情况设限，避免一轮
+	// leaveChat 触发 TG 限速。
 	autoLeaveSweepLimit = 200
 )
 
@@ -52,10 +53,10 @@ func ChatMemberPresent(cm *tg.ChatMemberInfo) bool {
 // NoteChatPresence 维护本 bot 的在群痕迹，子 bot 的 my_chat_member 更新
 // 每次都过这里（main 的 dispatch）。
 //
-// 改权限、置顶这类变更也会推 my_chat_member，所以进群时刻用
+// 改权限、置顶这类变更也会推 my_chat_member，因此进群时刻用
 // INSERT OR DO NOTHING 只记首次：反复覆盖会把退群时限一次次顺延，
-// 一个一直被动着权限的群就永远等不到那一小时。「退了再进」走离群
-// 分支删行重记，拿到的是新的进群时刻。
+// 一个不断变更权限的群就永远等不到超时。退了再进走离群分支删行重记，
+// 得到新的进群时刻。
 func (b *Bot) NoteChatPresence(cu *tg.ChatMemberUpdated) {
 	if cu == nil || cu.Chat == nil || cu.NewChatMember == nil {
 		return
@@ -65,7 +66,7 @@ func (b *Bot) NoteChatPresence(cu *tg.ChatMemberUpdated) {
 	}
 	if b.IsMainBot() {
 		// 主 bot 不留痕迹：它被拉进群当场就退，走的是另一条分发路径。
-		// 这里防御性清一下，别让 is_main 标记变动留下陈账。
+		// 这里防御性清理，避免 is_main 标记变动后残留痕迹。
 		b.dropChatSeen(cu.Chat.ID)
 		return
 	}
@@ -84,7 +85,7 @@ func (b *Bot) NoteChatPresence(cu *tg.ChatMemberUpdated) {
 		return
 	}
 	// 离群（left/kicked）就删痕迹：留着的话，下次进群会被当成
-	// 「一直在群里」满一小时就退。
+	// 一直在群里而直接超时退群。
 	b.dropChatSeen(cu.Chat.ID)
 }
 
@@ -99,9 +100,9 @@ func (b *Bot) dropChatSeen(chatID int64) {
 }
 
 // SweepUnconfiguredChats 是分钟级清扫（main 的 tickMinute）：到期的未配置
-// 群退掉，已配置的把痕迹清掉。退群失败的下轮重试；对方报「查无此群」说明
-// 本来就不在了（被踢、TG 已自行移除，或上轮退成功但没走到删痕迹），按结案
-// 处理，不再反复重试。
+// 群退掉，已配置的把痕迹清掉。退群失败的下轮重试；对方报查无此群说明本来
+// 就不在了（被踢、TG 已自行移除，或上轮退成功但没走到删痕迹），按结案处理，
+// 不再反复重试。
 func (b *Bot) SweepUnconfiguredChats(now time.Time) {
 	if b.IsMainBot() {
 		return
@@ -127,10 +128,10 @@ func (b *Bot) SweepUnconfiguredChats(now time.Time) {
 	rows.Close()
 
 	for _, it := range items {
-		// 挂到名下（含停用/演练）就是配置过：这是管理员要它待的群，
-		// 退不退由人决定，痕迹完成使命，清掉。快照逐行现取：leaveChat
-		// 一发就是几十毫秒，整轮扫完才看新快照的话，管理员在这一轮里
-		// 刚补上的配置也会被当没配置。
+		// 挂到名下（含停用 / 演练）即视为配置过：这是管理员要它待的群，
+		// 退不退由人决定，痕迹清掉。快照逐行现取：leaveChat 一发就是
+		// 几十毫秒，若整轮扫完才读新快照，管理员在这一轮里刚补上的配置
+		// 会被当成未配置。
 		if _, ok := b.Cache.Snap().ChatConf(b.BotID(), it.chatID); ok {
 			b.dropChatSeen(it.chatID)
 			continue
@@ -155,9 +156,9 @@ func (b *Bot) SweepUnconfiguredChats(now time.Time) {
 	}
 }
 
-// notifyAutoLeave 退群后告诉归属人一声：bot「自己退群」如果没有解释，
-// 看起来就像故障。频次天然受限 —— 同一个群要再触发，得有人再把它拉进去
-// 再等满一个等待期。
+// notifyAutoLeave 退群后通知归属人：bot 自己退群若没有解释，看起来像
+// 故障。频次天然受限，同一个群要再触发需有人再把它拉进去并等满一个
+// 等待期。
 func (b *Bot) notifyAutoLeave(chatID int64, minutes int64) {
 	msg := "ℹ️ 本 bot 已自动退出群组 <code>" +
 		strconv.FormatInt(chatID, 10) + "</code>\n\n" +

@@ -1,4 +1,4 @@
-// 记录页（计划 4.4/4.5）：顶部 Segmented[判定记录|申诉]，申诉标签带未结角标。
+// 记录页：顶部 Segmented[判定记录|申诉]，申诉标签带未结角标。
 // - 判定记录：服务端搜索（300ms 防抖 + 回车立即）、筛选 chips、无限滚动（每页 20）；
 // - 申诉：未结（默认）/全部 chips、无限滚动；
 // - 导航意图 'appeals'（概览待办进入）只消费一次，之后往返不再强制切段。
@@ -58,7 +58,7 @@ export function RecordsPage() {
   const [serverQ, setServerQ] = useState(q)
   const debounceRef = useRef<number | null>(null)
 
-  // 消费导航意图（React「渲染期调整状态」模式）：概览的「未结申诉」进入时默认申诉
+  // 消费导航意图（React 渲染期调整状态模式）：概览的 `未结申诉` 进入时默认申诉
   // 分段，随后清掉意图——往返不再恢复。意图的清除放在 effect 里（改的是 NavProvider
   // 的状态，渲染期改别的组件会触发 React 警告）。
   if (intent !== null && intent !== handledIntent) {

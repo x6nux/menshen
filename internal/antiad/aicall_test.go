@@ -65,8 +65,8 @@ func trackPeak(inflight, peak *atomic.Int32) func() {
 }
 
 // TestSystemOneStuckRetriesImmediately：systemone 平均不到 1 秒出结果，超过
-// 时限还没回就是卡住了 —— 换一个立即重来，不做退避。退避只会让这条消息的
-// 判定再晚几百毫秒，而卡住不是「上游过载需要喘口气」。
+// 时限还没回就是卡住了——换一个立即重来，不做退避。退避只会让这条消息的
+// 判定再晚几百毫秒，而卡住并非上游过载，无需退避让路。
 func TestSystemOneStuckRetriesImmediately(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits atomic.Int32
@@ -95,9 +95,8 @@ func TestSystemOneStuckRetriesImmediately(t *testing.T) {
 	}
 }
 
-// TestZeroTimeoutFallsBackToDefault：时限被配成 0（绕过面板直接改库、或将来
-// 改动了校验）时不能当真 —— 否则每个请求一发出就被当成卡住，整条判定链路
-// 静默失效，只剩日志里一串「没有响应」。
+// TestZeroTimeoutFallsBackToDefault：时限被配成 0 时回落默认值，否则每个
+// 请求一发出就被当成卡住，整条判定链路静默失效，日志里只剩没有响应。
 func TestZeroTimeoutFallsBackToDefault(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, nil)
@@ -108,9 +107,9 @@ func TestZeroTimeoutFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestLLMFirstTokenDefaultIs15s：复判是「等大模型」，不是同步判定 ——
-// 推理模型的首字可以到十几秒。默认卡在 5 秒时，上游稍有抖动就会把正常
-// 请求当成卡住、立即重试，在上游已经吃紧时反而放大它的负载。
+// TestLLMFirstTokenDefaultIs15s：复判是等大模型，不是同步判定，推理模型的
+// 首字可达十几秒。首字上限过小会把正常请求当成卡住并立即重试，在上游吃紧时
+// 放大其负载。
 func TestLLMFirstTokenDefaultIs15s(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if got := b.Cache.Snap().SettingInt("antiad_llm_ttft_ms", 0); got != 15000 {
@@ -119,9 +118,9 @@ func TestLLMFirstTokenDefaultIs15s(t *testing.T) {
 }
 
 // TestAIClientTimeoutCoversAttemptCap：客户端总超时（单次 HTTP 请求的上界）
-// 必须大于单次尝试的上限。复判是流式，出了首字之后还要把话说完；客户端
-// 超时先到的话，一个还在尝试窗口内的正常复判会被当成失败重试，白花一次
-// 上游开销，日志里也只剩一句 context deadline exceeded。
+// 必须大于单次尝试的上限。复判是流式，首字之后仍要读完；客户端超时先到的
+// 话，一个仍在尝试窗口内的正常复判会被当成失败重试，多花一次上游开销，
+// 日志里也只剩一句 context deadline exceeded。
 //
 // 总预算那一层不用它兜：每次尝试自带 context（剩余预算与 aiAttemptCap
 // 取小），单次请求最长就是 aiAttemptCap。
@@ -228,8 +227,8 @@ func TestLLMReasoningCountsAsFirstToken(t *testing.T) {
 	}
 }
 
-// TestHedgeKicksInAfterRepeatedRetries：一分钟内重试超过阈值，说明这个模型
-// 眼下很不稳定 —— 之后每一轮同时发多路，谁先回来用谁。
+// TestHedgeKicksInAfterRepeatedRetries：一分钟内重试超过阈值表示该模型当前
+// 不稳定，此后每一轮并发多路，取先返回者。
 func TestHedgeKicksInAfterRepeatedRetries(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits, inflight, peak atomic.Int32
@@ -281,8 +280,8 @@ func TestHedgeFirstSuccessWins(t *testing.T) {
 	}
 }
 
-// TestHedgeAll4xxFailsFast：各路都是 4xx（模型名错、鉴权错）时，再来一轮
-// 同样会错 —— 立即失败，只花这一轮的钱。
+// TestHedgeAll4xxFailsFast：各路都是 4xx（模型名错、鉴权错）时会持续失败，
+// 因此立即失败，只发起一轮。
 func TestHedgeAll4xxFailsFast(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits atomic.Int32
@@ -320,9 +319,9 @@ func TestHedgeExpires(t *testing.T) {
 	}
 }
 
-// TestLLMStreamIdleTimeout：上游「吐一个字就挂住」时要在空闲超时内失败，
-// 而不是把 45 秒的客户端超时耗光（那会把重试预算一起烧掉，日志里只剩
-// 一句 context deadline exceeded）。空闲计时从首字之后才开始。
+// TestLLMStreamIdleTimeout：上游发出一段内容后停住时要在空闲超时内失败，
+// 而不是耗尽客户端总超时（那会连带耗尽重试预算，日志里只剩一句 context
+// deadline exceeded）。空闲计时从首字之后才开始。
 func TestLLMStreamIdleTimeout(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	setGlobal(t, b, "antiad_llm_idle_ms", "300")
@@ -347,9 +346,9 @@ func TestLLMStreamIdleTimeout(t *testing.T) {
 	}
 }
 
-// TestLLMStreamHeartbeatDoesNotHideStall：心跳注释（": ping"）不算进度 ——
-// 很多网关会一直发它，按字节计空闲的话上游一个字都不吐也能拖到 45 秒
-// 客户端超时（实测形态总结就是这么失败的：日志「最后卡在流中」）。
+// TestLLMStreamHeartbeatDoesNotHideStall：心跳注释（": ping"）不算进度。
+// 许多网关会持续发送心跳，按字节计空闲会让完全没有内容输出的流拖到客户端
+// 超时。
 func TestLLMStreamHeartbeatDoesNotHideStall(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	setGlobal(t, b, "antiad_llm_idle_ms", "300")
@@ -382,9 +381,8 @@ func TestLLMStreamHeartbeatDoesNotHideStall(t *testing.T) {
 	}
 }
 
-// TestSlowModelGetsCutForTheFastRetry：单次尝试必须有上界。实测的失败形态是
-// 「一路慢模型把整个预算吃光」—— 列表里 mimo-v2.5 拖满客户超时，而
-// big-pickle 3 秒就能出结果，却连试都轮不上，复判整条失败。
+// TestSlowModelGetsCutForTheFastRetry：单次尝试必须有上界，否则一路慢模型会
+// 耗尽整个预算，使后续更快的模型得不到尝试机会，复判整体失败。
 func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 	oldCap := aiAttemptCap
 	aiAttemptCap = 300 * time.Millisecond
@@ -407,7 +405,7 @@ func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 		sseChunk(w, `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 		sseChunk(w, `[DONE]`)
 	})
-	// 重试顺序：慢的在前、快的在后（与线上 [mimo-v2.5, big-pickle] 同形）。
+	// 重试顺序：慢的在前、快的在后。
 	setGlobal(t, b, "antiad_llm_models", `["fake/slow","fake/fast"]`)
 
 	start := time.Now()

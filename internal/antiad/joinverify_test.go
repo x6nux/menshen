@@ -21,7 +21,7 @@ func enableJoinVerify(t *testing.T, b *core.Bot) {
 	if err := b.PutSetting("antiad_joinverify", "1"); err != nil {
 		t.Fatalf("打开入群验证失败: %v", err)
 	}
-	// 提供方与密钥存 settings（网页面板配置），不再是 config.yaml。
+	// 提供方与密钥存 settings（网页面板配置）。
 	for k, v := range map[string]string{
 		"captcha_provider": "turnstile", "captcha_site_key": "site",
 		"captcha_secret": "secret"} {
@@ -90,9 +90,8 @@ func TestCaptchaProviders(t *testing.T) {
 	}
 	hc.minScore = 0
 
-	// hostname：hCaptcha 对子域页面返回可注册域（如 free.edu.kg），
-	// 高峰期还可能返回 "not-provided"，所以相等/父域/缺省都算过；
-	// 无关域名与「兄弟子域」仍然拒绝。
+	// hostname：hCaptcha 对子域页面返回可注册域，高峰期还可能返回
+	// `not-provided`，所以相等/父域/缺省都算过；无关域名与兄弟子域仍然拒绝。
 	hostCases := []struct {
 		hostname string
 		ok       bool

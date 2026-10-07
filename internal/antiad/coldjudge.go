@@ -13,11 +13,10 @@ import (
 	"menshen/internal/tg"
 )
 
-// onJoin 是「有人进群」的总入口，两条进群路径（chat_member 事件与
-// service 消息）都汇到这里。
+// onJoin 是入群事件的总入口，汇聚 chat_member 事件与 service 消息两条进群路径。
 //
-// 顺序是按代价排的：落库最便宜，联合封禁名单是纯内存查表，冷判定
-// 最贵且要发 AI 请求，所以放最后且异步。
+// 处理按代价递增排序：先落库，再查联合封禁名单（纯内存查表），
+// 最后异步执行冷判定（需调用 AI）。
 func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	if u == nil {
 		return
@@ -25,7 +24,7 @@ func onJoin(b *core.Bot, conf store.BotChat, u *tg.TGUser, at int64) {
 	gm := recordJoin(b, conf.ChatID, u.ID, at)
 
 	// 同一次入群 TG 会推两份（chat_member 与 new_chat_members 服务消息），
-	// 下面的拦截与冷判定只该跑一次。落库幂等，放在去重之前无妨。
+	// 下面的拦截与冷判定只该跑一次。落库幂等，放在去重之前无副作用。
 	// 窗口 1 分钟：一分钟内退群重进只按一次算。
 	if !b.AdLimits.Allow(fmt.Sprintf("ad:j:%d:%d", conf.ChatID, u.ID), 1) {
 		return
@@ -99,7 +98,7 @@ var coldPrefilterHints = []struct {
 		for _, k := range []string{"日入", "曰入", "月入", "日结", "兼职", "接单",
 			"做单", "刷单", "代理", "招商", "推广", "优惠", "免费领", "赚钱",
 			"赚米", "上岸", "出售", "供应", "承接", "开户", "包网",
-			// 资金盘 / 代收 / 博彩线：线上真实漏过「代收代付 5个点 USDT」。
+			// 资金盘 / 代收 / 博彩类关键词。
 			"代收", "代付", "跑分", "承兑", "通道", "出款", "首存", "彩金",
 			"娱乐城", "博彩", "盘口", "担保", "信誉", "点位", "个点",
 			"usdt", "换汇", "汇率", "洗钱"} {
@@ -112,11 +111,9 @@ var coldPrefilterHints = []struct {
 	{atHandle, "资料里的 @ 联系方式"},
 }
 
-// atHandle 报告资料里有没有 @用户名 形态的联系方式。
+// atHandle 报告资料中是否含 @用户名 形态的联系方式。
 //
-// 「业务联系 @lilai」这种写法在代收、U 商账号里极常见，而关键词表里
-// 未必有对应的词，光靠词表会整条漏掉（线上真实漏过）。这里的代价只是
-// 多送一次 AI 检查，宁可放宽。
+// 关键词表未必覆盖该形态，仅靠词表会漏判；此处检出后额外送一次 AI 复核。
 func atHandle(s string) bool {
 	for i := 0; i+1 < len(s); i++ {
 		if s[i] != '@' {
@@ -142,10 +139,10 @@ func atHandle(s string) bool {
 //
 // 它的作用纯粹是省钱：大群每天几十上百人进群，逐个送 AI 是数量级的
 // 开销差别，而绝大多数正常账号的昵称与简介里一个可疑特征都没有。
-// 宁可放宽（多送检几个）也不要收紧——漏掉的是真正要拦的人。
+// 预筛取宽（多送检几个），避免漏掉真正要拦的人。
 //
-// 判据只看昵称与简介，不看「有没有用户名」：没有用户名的正常人太多了，
-// 拿它当特征会把预筛变成「几乎人人都送检」，省钱的目的直接落空。
+// 判据只看昵称与简介，不看有没有用户名：没有用户名的正常人太多，
+// 拿它当特征会把预筛变成几乎人人都送检，省钱的目的就落空。
 func coldSuspicious(u *tg.TGUser, bio string) (bool, string) {
 	blob := strings.ToLower(strings.Join([]string{
 		u.Username, u.FirstName, u.LastName, bio}, " "))
@@ -173,8 +170,8 @@ const matchedRulesProfileClause = "matched_rules 是主管理员**启用且通�
 
 // coldInstructions 是进群冷判定的 systemone 提示词。
 //
-// 与消息判定分开是必须的：那份提示词里「本人正文为空是规避形态」这条
-// 在这里完全成立不了——冷判定时**所有人**的正文都是空的。
+// 与消息判定分开是必须的：那份提示词认为本人正文为空是规避形态，这条
+// 在这里不成立——冷判定时**所有人**的正文都是空的。
 const coldInstructions = "join_check 为 true：这是一个刚进群、还没发过任何消息的账号，" +
 	"请只根据 sender 的账号资料判断它是不是广告号或引流号。" +
 	"message 整块是空的，这是正常的，不要把它当成任何信号。" +
@@ -240,8 +237,8 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 // coldJudge 对一个刚进群的账号做画像判定，命中即限制发言。
 func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	snap := b.Cache.Snap()
-	// 进群是低频事件，简介必须拿最新的：对方可能刚改过资料（上一次被判、
-	// 改完简介再进来），用 1 小时缓存会把旧简介的结论原样重演一遍。
+	// 进群是低频事件，简介必须取最新的：1 小时缓存会让改过资料的人
+	// 沿用旧简介的结论。
 	ForgetUserInfo(b, u.ID)
 	bio := userBio(b, u.ID)
 
@@ -287,15 +284,15 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		return
 	}
 
-	// 这份资料刚被复判放过、而且没改过：不再冷判定。同一个结论反复判只是
-	// 把同一份误判重演一遍，冷判定的意义就在于不重复吃同一个结论。
+	// 这份资料刚被复判放过、而且没改过：不再冷判定。同一个结论反复判
+	// 只会重复同一份误判；冷判定的意义就在于不重复处理同一结论。
 	if b.Cache.Snap().ProfileAllowed(b.BotID(), u.ID,
 		profileHash(p), time.Now().Unix()) > 0 {
 		slog.Info("冷判定：资料已被复判放行，跳过", "chat", conf.ChatID, "uid", u.ID)
 		return
 	}
 	// 此处不调 markProfileOK：上面刚确认 ProfileAllowed 返回 0，再标一次
-	// 也只会得到 0（死代码）。放行由「已放行」那条分支直接跳过冷判定，
+	// 也只会得到 0（死代码）。放行由已放行那条分支直接跳过冷判定，
 	// 模型不需要在载荷里再看到 profile_ok 信号。
 	st := adState{
 		Chat:      adChatInfo{ID: conf.ChatID, Title: conf.Title},
@@ -315,12 +312,12 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	}
 
 	// 冷判定的采信线单独配、且默认比消息判定的处置线更高：进群画像的
-	// 证据比一条具体消息少得多，而这一步是在人刚进门时就限制他发言。
+	// 证据比一条具体消息少得多，而这一步是在用户刚进群时就限制其发言。
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
 	if !v.IsAd || v.Confidence*100 < line {
 		// 每次检查都落一条流水：只记命中时，用户页对大多数新成员是一片空白，
-		// 管理员看不出「检查过、正常」。action 取 join_checked —— 它不是处置，
-		// 用户页的「被处置过」计数与私聊汇总都要排除它。
+		// 管理员看不出检查过、正常。action 取 join_checked —— 它不是处置，
+		// 用户页的被处置过计数与私聊汇总都要排除它。
 		note := "进群冷判定"
 		if v.IsAd {
 			note = "进群冷判定（低于采信线，未处置）"
@@ -336,7 +333,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	}
 
 	// 演练群里只落流水，不动人；管理员在私聊汇总里看到它（见 summary.go）。
-	// 原文（资料画像）同样要写进流水：演练记录是复核「该不该真罚」的依据，
+	// 原文（资料画像）同样要写进流水：演练记录是复核是否该真罚的依据，
 	// 空着的话配置台与查看页就只剩一句结论。
 	if conf.Dryrun {
 		logAd(b, &tg.Message{Chat: &tg.Chat{ID: conf.ChatID, Title: conf.Title}, From: u,
@@ -348,7 +345,7 @@ func coldJudge(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 	applyJoinMute(b, conf, u, v, bio)
 }
 
-// judgeAccountCheck 是「账号资料类」判定的两级编排：systemone 主判，
+// judgeAccountCheck 是账号资料类判定的两级编排：systemone 主判，
 // 低于采信线转大模型复判；systemone 不可用时大模型顶替。冷判定与前置号
 // 复核共用，label 只进日志。
 func judgeAccountCheck(b *core.Bot, snap *store.Snapshot, st adState,
@@ -399,7 +396,7 @@ type joinMuteSpec struct {
 	Reason   string // v.Reason 为空时的兜底理由
 	Announce bool   // 群内通知
 	// MsgID 是被处置的原消息号（前置号删掉的那条招呼）；0 = 无对应消息。
-	// 挂上它，申诉页的留底才能把这条招呼标成「被拦」。
+	// 挂上它，申诉页的留底才能把这条招呼标成被拦。
 	MsgID int64
 	// Shape 是这条限制对应的资料形状哈希（profileShape）。非空时落库
 	// join_mutes.shape 并学习进 profile_shapes，供同模板账号零 AI 复用；
@@ -435,18 +432,17 @@ func noticeAllowed(b *core.Bot, chatID int64) bool {
 
 // applyJoinMuteNotify 是进群类限制的执行：禁言 + 落库 + 群内通知 + 申诉入口。
 //
-// 禁言是**无限期**的（不给 until_date），因为解除的条件是「本人改正
-// 账号资料」而不是「等够时间」。给时限的话，广告号只要熬过去就能开工，
+// 禁言是**无限期**的（不给 until_date），因为解除的条件是本人改正
+// 账号资料，而不是等够时间。给时限的话，广告号等够时间就能继续发广告，
 // 而改正过的人却还要继续等。
 //
-// 原来的入参是「正文渲染固定 + action 固定」；现在由调用方传 joinMuteSpec，
-// 前置号识别复用同一套执行但 kind/action/正文不同。
+// 入参由调用方传 joinMuteSpec，前置号识别复用同一套执行但
+// kind/action/正文不同。
 func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 	v adVerdict, spec joinMuteSpec) {
 
-	// 已经有进群类限制在身：重复施加只会多一条流水与群通知——线上出现过
-	// 25 分钟内 228 条 join_muted 流水只有 91 个唯一用户（复查与冷判定
-	// 并发各写一遍）。这里 no-op；外部被解除后的修复走 MuteSender
+	// 已经有进群类限制在身：重复施加只会多一条流水与群通知（复查与冷判定
+	// 可能并发各写一遍）。这里直接返回；外部被解除后的修复走 MuteSender
 	// （reassert.go），不经过本函数，所以修复能力不受影响。
 	if _, ok := loadJoinMute(b.Store, conf.ChatID, u.ID); ok {
 		return
@@ -531,8 +527,8 @@ func joinProfileText(u *tg.TGUser, bio string, v adVerdict) string {
 }
 
 // profileRuleText 把账号资料渲染成必封规则语料的同一形态。现有规则
-// （#3/#162 等）本来就是以入群资料文本为语料总结/测试的，资料路径必须
-// 用同一份文本跑 MatchRules，规则门才真正覆盖资料。
+// 本来就是以入群资料文本为语料总结/测试的，资料路径必须用同一份文本
+// 跑 MatchRules，规则门才真正覆盖资料。
 func profileRuleText(u *tg.TGUser, bio string) string {
 	return joinProfileText(u, bio, adVerdict{})
 }
@@ -643,13 +639,13 @@ func deleteJoinNotice(b *core.Bot, chatID, uid int64) {
 	notices.Set(key, joinNoticeEntry{muted: true}, joinNoticeTTL)
 }
 
-// joinMuteNotice 渲染群内那条告知消息：一行「uid + 原因」，尾部跟文本链接
+// joinMuteNotice 渲染群内那条告知消息：一行 uid + 原因，尾部跟文本链接
 // （① 申诉入口，② 全局设置里的附加链接）。
 //
 // 不写昵称也不写资料：两者常常就是广告本身（昵称里的引流话术、理由里
 // 引述的简介链接），bot 把它们发进群等于替广告号再发一遍，还会让 bot
 // 自己被当成广告号封掉。面向本人的具体改正建议放在私聊的申诉流程里给
-// （appeal.go），群内这条只负责让在场的人知道「谁、被限制发言了」。
+// （appeal.go），群内这条只负责让群内成员知道谁被限制发言了。
 func joinMuteNotice(b *core.Bot, u *tg.TGUser, reason string, logID int64) string {
 	r := strings.TrimSpace(reason)
 	if r == "" {

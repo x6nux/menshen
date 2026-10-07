@@ -1,5 +1,5 @@
 // 机器人详情：参数覆盖视图（只显示覆盖项/非 spec 键不渲染/添加与恢复走 set）、
-// 启用开关的乐观更新失败回滚、is_main 例外与「管理其群组」跳转。
+// 启用开关的乐观更新失败回滚、is_main 例外与 `管理其群组` 跳转。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -35,7 +35,7 @@ describe('BotDetailPage', () => {
         bot_settings: {
           '2': {
             antiad_mute_minutes: '0',
-            // 非 spec 键：不在设置页里，绝不能漏出来（走 set 必然 400）
+            // 非 spec 键：不在设置页里，不应渲染（走 set 必然 400）
             antiad_exempt_users: '[1,2]',
             antiad_alert_last_id: '99',
           },
@@ -46,7 +46,7 @@ describe('BotDetailPage', () => {
 
     expect(await screen.findByText('禁言时长（分钟）')).toBeInTheDocument()
     expect(screen.getByText('0 分钟（永久）')).toBeInTheDocument()
-    // 只有一行覆盖项，每行一个「恢复全局」
+    // 只有一行覆盖项，每行一个 `恢复全局`
     expect(screen.getAllByText('恢复全局')).toHaveLength(1)
     // 未覆盖的 spec 不出现
     expect(screen.queryByText('并发模式持续（分钟）')).not.toBeInTheDocument()
@@ -168,7 +168,7 @@ describe('BotDetailPage', () => {
 
     expect(await screen.findByText('判定模型')).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0])
-    // fixtures：bot 1 无模型覆盖（卡片显示「跟随全局」），快选 chip 唯一
+    // fixtures：bot 1 无模型覆盖（卡片显示 `跟随全局`），快选 chip 唯一
     fireEvent.click(await screen.findByText('demo/gpt-5-mini'))
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 

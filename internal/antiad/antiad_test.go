@@ -14,9 +14,9 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestDecideAction 锁住「按置信度分档」的处置矩阵（bool 模式默认开，
-// 这条测试显式关掉它以覆盖矩阵本身）。老人永远不自动禁言——
-// 误伤一个长期成员的社交代价远大于漏一条广告。
+// TestDecideAction 锁住按置信度分档的处置矩阵（bool 模式默认开，
+// 这条测试显式关掉它以覆盖矩阵本身）。长期成员永不自动禁言：
+// 误伤一名长期成员的代价大于漏判一条广告。
 func TestDecideAction(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if err := b.PutBotSetting(b.BotID(), "antiad_bool_verdict", "0"); err != nil {
@@ -57,10 +57,9 @@ func TestDecideAction(t *testing.T) {
 }
 
 // TestMuteConfFloor：禁言/封禁必须有置信度兜底。模型偶尔会输出
-// is_ad=true、confidence=0、reason 却写着「正常讨论」的结论（线上记录
-// #16729 等 8 条）：bool 模式只看结论，会直接删消息 + 禁言（本群禁言
-// 时长还是 0 = 永久）。低于「禁言置信度下限」（默认 75）一律降级为
-// 只删/仅告警，管理员可在告警卡片上人工补刀。
+// is_ad=true、confidence=0、reason 却写着正常讨论的结论：bool 模式只看
+// 结论，会直接删消息 + 禁言（禁言时长为 0 即永久）。低于禁言置信度
+// 下限（默认 75）一律降级为只删或仅告警，管理员可在告警卡片上人工处置。
 func TestMuteConfFloor(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1) // bool 模式默认开
 	snap := b.Cache.Snap()
@@ -99,7 +98,7 @@ func TestMuteConfFloor(t *testing.T) {
 		})
 	}
 
-	// 下限设 0 = 关闭这条，回到只看结论（旧行为）。
+	// 下限设 0 = 关闭这条，只看结论定档。
 	if err := b.PutBotSetting(b.BotID(), "antiad_mute_conf", "0"); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +132,7 @@ func TestShortMuteRespectsFloor(t *testing.T) {
 }
 
 // TestIsNewbie 的关键分支是 AgeKnown=false：此时 AgeHours 退回 first_seen，
-// 采信它会把上线首日的全群元老一起打成新人。
+// 采信它会把首日的全部老成员一并判为新人。
 func TestIsNewbie(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	snap := b.Cache.Snap()
@@ -291,9 +290,9 @@ func TestExtractJSONObject(t *testing.T) {
 	}
 }
 
-// TestAdAlertKBRestoresFailedButtons 锁住最容易写反的一条：
-// act.Delete 为真只说明「打算删」，删失败时若照样隐藏按钮，
-// 唯一需要人工补刀的场景恰好没有入口。
+// TestAdAlertKBRestoresFailedButtons 锁住容易写反的一条：
+// act.Delete 为真只说明打算删，删失败时若照样隐藏按钮，
+// 唯一需要人工处置的场景恰好没有入口。
 func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	hasBtn := func(rows [][][2]string, data string) bool {
 		for _, r := range rows {
@@ -399,7 +398,7 @@ func TestIsChatAdminCaches(t *testing.T) {
 	}
 }
 
-// TestIsChatAdminFailClosed 确认查询失败按「不是管理员」处理：
+// TestIsChatAdminFailClosed 确认查询失败按非管理员处理：
 // API 故障不得放大权限。
 func TestIsChatAdminFailClosed(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -417,7 +416,7 @@ func TestIsChatAdminFailClosed(t *testing.T) {
 // TestIsChatAdminMemberNotFoundFailClosed：人已不在群里时 TG 直接回 400
 // 拒答（member not found，或透传的 PARTICIPANT_ID_INVALID）——同样按
 // 普通成员处理（不得放大权限），但这是 TG 的确定回答而非故障：走静默
-// 分支，不刷「查询群管理员失败」的警告。
+// 分支，不输出查询群管理员失败的警告。
 func TestIsChatAdminMemberNotFoundFailClosed(t *testing.T) {
 	for _, desc := range []string{"Bad Request: member not found",
 		"Bad Request: PARTICIPANT_ID_INVALID"} {
@@ -436,8 +435,8 @@ func TestIsChatAdminMemberNotFoundFailClosed(t *testing.T) {
 
 // TestUserInfoChatNotFoundCachedQuietly：对方从未与 bot 私聊过（或已不在
 // 任何共群）时，getChat 以 400 chat not found 拒答——常态而非故障，按空
-// 资料缓存。此前 400 走错误分支：既不缓存也不停刷「查询账号资料失败」，
-// 从未私聊过的用户每条消息都白打一次 TG。
+// 资料缓存；否则既不会缓存、又会反复输出查询账号资料失败的警告，
+// 未私聊过的用户每条消息都要多打一次 TG 请求。
 func TestUserInfoChatNotFoundCachedQuietly(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	fake.Err["getChat"] = testutil.TGNotFound("getChat",
@@ -454,9 +453,9 @@ func TestUserInfoChatNotFoundCachedQuietly(t *testing.T) {
 
 // TestUserInfoCachePerBot：个人资料缓存按 (bot, uid) 分开。
 //
-// 查不查得到一个人取决于该 bot 与他**有没有共同会话**：主 bot 按设计不入群、
-// 永远查不到，会把「空」写进缓存。共用一个键的话，工作 bot 随后查得到也会被
-// 这条空挡住——线上表现就是「流水里明明有这个人，资料卡却一直查不到」。
+// 能否查到一个人取决于该 bot 与他有没有共同会话：主 bot 按设计不入群、
+// 永远查不到，会把空结果写进缓存。共用一个键的话，工作 bot 随后查得到也会被
+// 这条空结果挡住，表现为流水里有这个人、资料卡却始终查不到。
 func TestUserInfoCachePerBot(t *testing.T) {
 	reg, mainBot := testutil.NewTestRegistry(t, nil)
 	worker, workerTG := testutil.AddRegistryBot(t, reg, mainBot.Shared, 4343, 777)
@@ -489,7 +488,7 @@ func TestAdExemptLinkedChannelForward(t *testing.T) {
 
 // TestGroupMessageSkipsWhenProfileUnreadable：画像读失败时不得继续判定。
 // 零值画像会让 isNewbie 为真，把老成员按最严档删+禁言——失败方向反了；
-// 宁可不判这一条，也不能误伤。
+// 不予判定优于误伤。
 func TestGroupMessageSkipsWhenProfileUnreadable(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -508,8 +507,8 @@ func TestGroupMessageSkipsWhenProfileUnreadable(t *testing.T) {
 }
 
 // TestBuildStateRecentContextIsOwnHistory：recent_context 只取发送者本人的留底。
-// 别人的发言（尤其是带「［引用］」载荷的广告）混进来，模型会把它当成本条
-// 消息引用的内容——线上真实误判过。
+// 别人的发言（尤其是带［引用］载荷的广告）混进来，模型会把它当成本条
+// 消息引用的内容，导致误判。
 func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if err := b.PutBotSetting(b.BotID(), "antiad_ctx_msgs", "2"); err != nil {
@@ -541,7 +540,7 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 		t.Errorf("没有当前消息可排除时给了 %d 条，期望 2 条", n)
 	}
 
-	// 第一条消息没有「此前」可带（msgs_in_group 含本条）：跳过留底查询。
+	// 第一条消息没有此前可带（msgs_in_group 含本条）：跳过留底查询。
 	st = buildState(b, b.Cache.Snap(), testutil.GroupMsg(-100, 42, 6, "第一条"),
 		senderProfile{MsgsInGroup: 1})
 	if len(st.RecentContext) != 0 {
@@ -550,10 +549,8 @@ func TestBuildStateRecentContextIsOwnHistory(t *testing.T) {
 }
 
 // TestGroupQuoteNotJudged：群内引用不进判定 —— 引用群友的消息（尤其是
-// 引用一条广告提醒管理员）是别人的话，送检会让引用者看起来在说那段广告
-// （线上记录 #16913：用户回「我操」引用群里的「你来柬埔寨 我跟你详谈」，
-// 随后一条「鳄鱼」被复判判成诈骗广告）。外部聊天引用照旧保留：那是
-// 「正文为空、载荷全在引用里」的主要规避形态。
+// 引用一条广告提醒管理员）是别人的话，送检会让引用者看起来在说那段广告，
+// 导致误判。外部聊天引用保留：那是正文为空、载荷全在引用里的主要规避形态。
 func TestGroupQuoteNotJudged(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 
@@ -586,9 +583,9 @@ func TestGroupQuoteNotJudged(t *testing.T) {
 	}
 }
 
-// TestHistoryText：喂给模型的历史条目里引用段保留但换带归属的标记 ——
-// 剥掉会丢本人正文的对话语境（打赏玩笑被读成收款索要），原样保留会把
-// 「引用广告提醒管理员」的人看成发广告的人。正文里恰好出现这个词时不动刀。
+// TestHistoryText：喂给模型的历史条目里引用段保留但换成带归属的标记 ——
+// 剥掉会丢本人正文的对话语境，原样保留会把引用广告提醒管理员的人看成
+// 发广告的人。正文里恰好出现该标记时不处理。
 func TestHistoryText(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"我操\n［引用］你来柬埔寨 我跟你详谈",
@@ -606,8 +603,7 @@ func TestHistoryText(t *testing.T) {
 
 // TestRecentContextKeepsQuotesWithAttribution：recent_context 拿留底回填，
 // 留底存的是 displayText（含引用）。引用段是别人的话，剥掉会丢本人正文的
-// 对话语境（线上实测：打赏玩笑「100u吃个米粉+地址」被读成收款索要）；
-// 保留但必须换成带归属的标记，否则「引用广告提醒管理员」的人会被当成
+// 对话语境；保留但必须换成带归属的标记，否则引用广告提醒管理员的人会被当成
 // 发广告的人。纯引用条目（如带图回复）也进历史。
 func TestRecentContextKeepsQuotesWithAttribution(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -632,7 +628,7 @@ func TestRecentContextKeepsQuotesWithAttribution(t *testing.T) {
 	}
 }
 
-// TestAlertTTLBySeverity：明显到不用人盯的群内提醒只弹一小会 —— 置信度
+// TestAlertTTLBySeverity：显著广告的群内提醒只短暂展示 —— 置信度
 // 到删除+禁言线且危害度 ≥ 阈值（默认 2）；其余维持普通 TTL；短撤回秒数
 // 为 0 时关闭。
 func TestAlertTTLBySeverity(t *testing.T) {
@@ -690,8 +686,8 @@ func TestGroupAlertShortTTLForObviousAd(t *testing.T) {
 }
 
 // TestGroupAlertShowsVerdictSummary：群内提醒只给半行短结论（广告 + 置信度 +
-// 危害度）；复判模型的长篇理由留给记录卡片与查看页 —— 群里没人读散文，
-// 而且理由常引述广告原文，贴回群里等于替它再发一遍。
+// 危害度）；复判模型的长篇理由留给记录卡片与查看页 —— 理由常引述广告原文，
+// 发回群里等于二次传播广告。
 func TestGroupAlertShowsVerdictSummary(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -724,8 +720,8 @@ func TestGroupAlertShowsVerdictSummary(t *testing.T) {
 }
 
 // TestGroupAlertCarriesNoNameOrText：bot 发进群的告警不带昵称、原文片段与资历。
-// 广告号的昵称和正文本身就是广告，bot 把它们贴回群里等于替它再发一遍，
-// 还会让 bot 自己被 TG 当成广告号封掉。
+// 广告号的昵称和正文本身就是广告，发回群里等于二次传播，
+// 还可能让 bot 自己被 TG 当成广告号封禁。
 func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -738,7 +734,7 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	}
 	conf := testutil.ChatConfOf(t, b, -100)
 
-	// 真实拦到的一条赌博引流：载荷（@用户名）在中段，掐头去尾都挡不住。
+	// 一条赌博引流样例：载荷（@用户名）在中段，掐头去尾都无法绕过。
 	m := testutil.GroupMsg(-100, 8397171625, 7, "能帮收赌博上分的钱来 @tgrv3a 收宽码就能四位数进口袋")
 	m.From.Username, m.From.FirstName = "bbmaBamnVtsm", "盘口招商"
 	sendAdAlert(b, conf, m,
@@ -763,7 +759,7 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 		t.Errorf("群内告警不该带处置细节:\n%s", text)
 	}
 	// 文本链接带记录号：管理员点进记录卡片，普通用户进申诉入口。
-	// 群内提示已从内联按钮改为文本链接（按钮在部分客户端容易被忽略）。
+	// 群内提示用文本链接而非内联按钮（按钮在部分客户端容易被忽略）。
 	if !strings.Contains(text, `① <a href="https://t.me/testbot?start=log12">点我申诉</a>`) {
 		t.Errorf("告警应把申诉链接嵌在文字上（含记录号）:\n%s", text)
 	}
@@ -772,8 +768,8 @@ func TestGroupAlertCarriesNoNameOrText(t *testing.T) {
 	}
 }
 
-// TestGroupFooterAppended：全局设置里的「群内附加链接」要原样附在群内提示
-// 末尾（转义后），例如「② 电报使用指南 (…)」。
+// TestGroupFooterAppended：全局设置里的群内附加链接要原样附在群内提示
+// 末尾（转义后）。
 func TestGroupFooterAppended(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if err := b.PutSetting("antiad_group_footer",
@@ -799,8 +795,8 @@ func TestGroupFooterAppended(t *testing.T) {
 	}
 }
 
-// TestGroupAlertOmitsModelAndRecord：群内告警一行化后不再带记录编号与
-// 判定模型——找回记录靠流水，校准模型靠私聊汇总，群内都是刷屏。
+// TestGroupAlertOmitsModelAndRecord：群内告警一行化后不带记录编号与
+// 判定模型——找回记录靠流水，校准模型靠私聊汇总。
 func TestGroupAlertOmitsModelAndRecord(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	m := testutil.GroupMsg(-100, 42, 7, "广告")
@@ -814,7 +810,7 @@ func TestGroupAlertOmitsModelAndRecord(t *testing.T) {
 }
 
 // TestBriefAlertNoModelNoEmptyLine：人工标记这类没跑 AI 的路径没有模型名，
-// 印一行空的「判定」只是噪音。
+// 印一行空的判定行只是噪音。
 func TestBriefAlertNoModelNoEmptyLine(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	m := testutil.GroupMsg(-100, 42, 7, "广告")
@@ -827,8 +823,8 @@ func TestBriefAlertNoModelNoEmptyLine(t *testing.T) {
 }
 
 // TestMsgTextAllTypes：每种能携带文字载荷的消息类型都必须渲染进 msgText，
-// 否则它在「无正文」守门处被直接放过——联系人卡片就是这么漏的。
-// 用真实的 Bot API JSON 反序列化，钉死字段名。
+// 否则会在无正文守门处被直接放过，联系人卡片即属此类。
+// 用 Bot API 形式的 JSON 反序列化，钉死字段名。
 func TestMsgTextAllTypes(t *testing.T) {
 	cases := []struct {
 		name, js string
@@ -885,7 +881,7 @@ func TestMsgTextAllTypes(t *testing.T) {
 }
 
 // TestMsgTextPureMediaEmpty：纯媒体（无配文的图片、贴纸、语音、定位、骰子）
-// 没有文字，必须仍为空，否则每张表情包都会烧一次 AI。
+// 没有文字，必须仍为空，否则每张表情包都会触发一次 AI 请求。
 func TestMsgTextPureMediaEmpty(t *testing.T) {
 	for _, js := range []string{
 		`{"photo":[{"file_id":"x"}]}`, `{"sticker":{"file_id":"x"}}`,
@@ -914,8 +910,8 @@ func TestQuotedExternalPayload(t *testing.T) {
 	}
 }
 
-// TestContactCardIsJudged：联系人卡片没有 text/caption，过去在「无正文」守门处
-// 直接放过。卡片的名字与号码就是广告载荷，必须渲染成正文送检。
+// TestContactCardIsJudged：联系人卡片没有 text/caption，会在无正文守门处
+// 被直接放过。卡片的名字与号码就是广告载荷，必须渲染成正文送检。
 func TestContactCardIsJudged(t *testing.T) {
 	var m tg.Message
 	json.Unmarshal([]byte(`{"contact":{"phone_number":"+1 361 789 8440",
@@ -995,8 +991,8 @@ func TestCheckResultDisablesPreview(t *testing.T) {
 }
 
 // TestCheckNoDataUser：/check <user_id> 对数据库里查无此人的目标直接明确
-// 回「未有该用户数据」，不请求模型 —— 随机 ID 查资料既花钱，模型也给不出
-// 可信结论（线上反馈）。
+// 回 `未有该用户数据`，不请求模型 —— 随机 ID 查资料既耗费额度，模型也给不出
+// 可信结论。
 func TestCheckNoDataUser(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -1027,10 +1023,9 @@ func TestCheckNoDataUser(t *testing.T) {
 	}
 }
 
-// TestReviewCleanNoticeHasNoAppealLink：/check 结论是「正常」时，最终
-// 复查结果不能带 🚫、也不能附「点我申诉」——那个人没被处置，申诉入口对他
-// 没有意义，挂在群里像一张罚单（实测管理员看到「🚫 … 正常 92% + 点我申诉」
-// 以为是自己误判了）。判成广告时仍要给出申诉入口。
+// TestReviewCleanNoticeHasNoAppealLink：/check 结论是正常时，最终
+// 复查结果不能带 🚫、也不能附点我申诉——那个人没被处置，申诉入口对他
+// 没有意义，挂在群里容易被误读为处罚。判成广告时仍要给出申诉入口。
 func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 	groupNotice := func(fake *testutil.FakeTG) string {
 		edits := checkEdits(fake)
@@ -1068,7 +1063,7 @@ func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 		t.Errorf("正常结论要写清「正常、未处置」：\n%s", notice)
 	}
 
-	// 判成广告时照旧给出申诉入口。
+	// 判成广告时仍要给出申诉入口。
 	b2, fake2 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	fakeAI(t, b2, nil) // 默认两级都判广告
@@ -1082,9 +1077,9 @@ func TestReviewCleanNoticeHasNoAppealLink(t *testing.T) {
 }
 
 // TestCheckByUsernameAndProfile：/check 支持 @用户名；对方有入群画像、只是
-// 在本群没有发言留底时按进群资料复查（而不是回一句「无法复查」）——管理员查
+// 在本群没有发言留底时按进群资料复查（而非回无法复查）——管理员查
 // 一个刚进群、还没发过言的人时正是这种情形。数据库里三种痕迹都没有的目标
-// 直接回「未有该用户数据」，见 TestCheckNoDataUser。
+// 直接回未有该用户数据，见 TestCheckNoDataUser。
 func TestCheckByUsernameAndProfile(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -1134,9 +1129,9 @@ func TestCheckByUsernameNotFound(t *testing.T) {
 	}
 }
 
-// TestCheckMultiStepEdits：/check 是多步响应 —— 命令一收到先发「当前状态」，
+// TestCheckMultiStepEdits：/check 是多步响应 —— 命令收到后先发当前状态，
 // 之后每完成一级（规则 → 初判 → 复判 → 复查结果）就把小节追加编辑进
-// 同一条消息，而不是干等几十秒后蹦出一条最终结果。
+// 同一条消息，而不是等到全部完成后一次性给出最终结果。
 func TestCheckMultiStepEdits(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -1258,7 +1253,7 @@ func TestCheckBypassesProfileOKAndBioCache(t *testing.T) {
 }
 
 // TestUnknownProfileJudgedFromKeptCount：画像读不到时不能整条放走 —— 那正是
-// 「先发正常、再编辑成广告」的规避路径（编辑过的消息最容易读不到画像：
+// 先发正常、再编辑成广告的规避路径（编辑过的消息最容易读不到画像：
 // 原消息不在留底里，或行被清理过）。用留底条数当发言数照常判定。
 func TestUnknownProfileJudgedFromKeptCount(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

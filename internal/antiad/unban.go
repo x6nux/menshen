@@ -37,15 +37,15 @@ func ParseUnbanPayload(p string) (int64, bool) {
 
 // logPayload 把记录号编码进 deep link 的 start 参数。
 //
-// 「打开 bot 处理」的按钮必须带记录号：不带的话管理员点进去只落到主菜单，
-// 看不出是哪条案件；被罚的人也说不清在申诉哪一次。记录号只在管理员私聊
+// 打开 bot 处理的按钮必须带记录号：不带的话管理员点进去只落到主菜单，
+// 看不出是哪条记录；被处罚的人也说不清在申诉哪一次。记录号只在管理员私聊
 // 与群里出现过，本身不是秘密，不需要加密。
 func logPayload(logID int64) string {
 	return "log" + strconv.FormatInt(logID, 10)
 }
 
 // UserPayload 把 user_id 编码进 deep link 的 start 参数：联合封禁状态里的
-// 「前往对应 bot 解除」用它打开某人的资料卡（卡片上有解除按钮）。
+// 前往对应 bot 解除链接用它打开某人的资料卡（卡片上有解除按钮）。
 func UserPayload(uid int64) string {
 	return "user" + strconv.FormatInt(uid, 10)
 }
@@ -65,7 +65,7 @@ func ParseUserPayload(p string) (int64, bool) {
 
 // ParseLogPayload 还原记录号；第二个返回值为假表示这不是记录卡片的入口。
 //
-// 权限不在这里判：解析出来只表示「想打开哪条记录」，能不能看由面板的
+// 权限不在这里判：解析出来只表示想打开哪条记录，能不能看由面板的
 // CanManageBot 兜底；普通用户一律走申诉入口，看到的只有自己的限制。
 func ParseLogPayload(p string) (int64, bool) {
 	rest, ok := strings.CutPrefix(p, "log")
@@ -95,7 +95,7 @@ type joinMuteRec struct {
 // saveJoinMute 落一条进群类限制。upsert 不把 kind 从 prewarm 降级回
 // profile：Layer 1（前置号复核）与 Layer 2（延迟复查）可能竞态写同一个
 // 人，谁后写不能决定申诉口径 —— prewarm 的解除出口（补齐资料）比 profile
-// （删干净简介）更严，降级会悄悄放宽。反向升级（profile → prewarm）允许。
+// （删干净简介）更严，降级会放宽限制。反向升级（profile → prewarm）允许。
 func saveJoinMute(b *core.Bot, chatID, uid int64, kind, reason string,
 	noticeMsg int64) {
 	if kind == "" {
@@ -137,8 +137,8 @@ func dropJoinMute(b *core.Bot, chatID, uid int64) {
 	if had {
 		removeProfileShape(b.Store, rec.Shape)
 	}
-	// 这是我们主动解除的：外部解除复查别把它当成「被别的 bot 抹掉了」
-	// 又给施加回去（解除要发 TG 调用，chat_member 更新回流有几秒延迟）。
+	// 这是我们主动解除的：外部解除复查不应把它当成被别的 bot 抹掉又
+	// 施加回去（解除要发 TG 调用，chat_member 更新回流有几秒延迟）。
 	NoteLifted(b.Shared, chatID, uid)
 }
 
@@ -151,16 +151,15 @@ type unbanAttempt struct {
 // nextUnbanDelay 按尝试次数给出下一次可重试的间隔：base × 2^(n-1)，
 // 封顶 1 小时。
 //
-// 不限次数是刻意的：改简介改不到位的普通人不该被一次失败挡死。但间隔
-// 必须递增 —— 每次重试都要跑一轮 AI，有耐心的攻击者在固定间隔下能
-// 一直磨开销，而指数退避让第 6 次就要等半小时，磨不动多少。
+// 不限制次数是刻意的：改简介未改到位的普通用户不应被一次失败阻断。但间隔
+// 必须递增 —— 每次重试都要调用一轮 AI，固定间隔下攻击者可持续消耗调用成本，
+// 指数退避下第 6 次需等待半小时，成本大幅受限。
 func nextUnbanDelay(base time.Duration, n int) time.Duration {
 	if n <= 0 {
 		return 0
 	}
-	// 移位前先封顶：n 大到一定程度，base<<(n-1) 会整体移出 int64，
-	// 结果翻成 0 或负数，等待时长归零 —— 闸门恰好在磨得最久的那个人
-	// 面前失效，正是攻击者最想要的那一端。
+	// 移位前先封顶：n 大到一定程度时 base<<(n-1) 会整体移出 int64，
+	// 结果为 0 或负数，等待时长归零 —— 限流会在重试最久的账号上恰好失效。
 	if n > 40 {
 		return time.Hour
 	}
@@ -193,7 +192,7 @@ func unbanGateBump(sh *core.Shared, uid int64) {
 		n = a.n + 1
 	}
 	// 多留一小时：刚到点就忘掉的话，一个人隔几分钟试一次，
-	// 每次都被当成「第一次」，退避就永远不会增长。
+	// 每次都被当成第一次，退避就永远不会增长。
 	delay := nextUnbanDelay(base, n)
 	gate.Set(uid, unbanAttempt{n: n, next: time.Now().Add(delay)}, delay+time.Hour)
 }
@@ -201,8 +200,8 @@ func unbanGateBump(sh *core.Shared, uid int64) {
 // unbanGateClear 在成功解除后清掉计数，下次再被限制时从头开始。
 func unbanGateClear(sh *core.Shared, uid int64) { cachesOf(sh).unbanGate.Delete(uid) }
 
-// HandleStartPayload 与验证码流程已由申诉通道取代（见 appeal.go）：
-// deep link 现在进入「列出有效限制 → 写理由/直接申诉 → AI 复判 → 网页验证」。
+// deep link 的 start 流程由申诉通道处理（见 appeal.go）：
+// 列出有效限制 → 写理由/直接申诉 → AI 复判 → 网页验证。
 // 这里只保留 join_mutes 的读写、退避闸与解除动作，供申诉流程复用。
 
 // liftJoinMute 解除限制并收尾：恢复权限、撤掉群里那条通知、清记录。
@@ -212,7 +211,7 @@ func liftJoinMute(b *core.Bot, dmChat, groupID int64, u *tg.TGUser,
 	NoteLifted(b.Shared, groupID, u.ID)
 	ok, desc := Unmute(b, groupID, u.ID)
 	if !ok {
-		// 如实告诉对方没做成，别让他以为已经能说话了。
+		// 如实告知失败，避免对方以为已可发言。
 		b.Send(dmChat, "⚠️ 复核通过，但解除限制时出错："+
 			html.EscapeString(core.TruncateRunes(desc, 100))+
 			"\n\n请联系群管理员处理。", nil)
@@ -222,7 +221,7 @@ func liftJoinMute(b *core.Bot, dmChat, groupID int64, u *tg.TGUser,
 	dropJoinMute(b, groupID, u.ID)
 	unbanGateClear(b.Shared, u.ID)
 
-	// 群里那条「已被限制」的通知留着会造成误解，撤掉。
+	// 群里那条已被限制的通知留着会造成误解，撤掉。
 	if rec.NoticeMsg != 0 {
 		b.TG.Call("deleteMessage", map[string]any{
 			"chat_id": groupID, "message_id": rec.NoticeMsg,
@@ -237,7 +236,7 @@ func liftJoinMute(b *core.Bot, dmChat, groupID int64, u *tg.TGUser,
 	slog.Info("自助解除：已放行", "chat", groupID, "uid", u.ID, "尝试次数", rec.Attempts+1)
 }
 
-// humanDuration 把等待时长说成人话。
+// humanDuration 把等待时长格式化为可读文本。
 func humanDuration(d time.Duration) string {
 	switch {
 	case d >= time.Hour:

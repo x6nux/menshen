@@ -1,4 +1,4 @@
-// 名单类列表的本地过滤：与旧内联页 filterRows/gbanKey/whiteKey/profileOKKey 等价。
+// 名单类列表的本地过滤与各类行的搜索键。
 import type { GbanRow, ProfileOKRow, WhiteRow } from '../api/types'
 
 /** matchQuery 大小写不敏感的包含匹配；查询为空（或全空白）返回 true。 */

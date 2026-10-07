@@ -17,7 +17,7 @@ import (
 //
 // 页面外壳是 React SPA：_w 下的 GET（无 json=1）由 main 先交给
 // panel.PublicShellHandler 发 static 壳，本文件只提供 ?json=1 的数据与
-// POST 的内容接口。写 HTML 模板的时代已经过去。
+// POST 的内容接口。
 
 const viewGateTTL = 5 * time.Minute
 
@@ -200,7 +200,7 @@ func appealViewDataOf(sh *core.Shared, id int64) (appealViewData, bool) {
 		WebAttempts: ap.WebAttempts, Code: ap.Code,
 		Created: formatTS(sh, ap.CreatedAt),
 		// 数组字段先给空切片：nil 切片会序列化成 null，前端 length/map
-		// 直接抛错把整页卸载（线上真实事故：申诉详情点「查看内容」白屏）。
+		// 直接抛错把整页卸载。
 		Limits:      []appealViewPenalty{},
 		Penalties:   []appealViewPenalty{},
 		History:     []appealViewMsg{},

@@ -173,7 +173,7 @@ func TestVerifyTurnstileChecks(t *testing.T) {
 	}
 }
 
-// TestAppealWebFlowPass 走通「POST 验证 → 签发解禁码 → 通知」。
+// TestAppealWebFlowPass 走通 POST 验证、签发解禁码到通知的完整流程。
 func TestAppealWebFlowPass(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
@@ -364,9 +364,8 @@ func TestAppealPageDataAndExpiry(t *testing.T) {
 	}
 }
 
-// TestAppealPageShowsEvidence：验证页数据要包含「为什么被限制 + 账号信息 +
-// 发言留底 + AI 复核结论」。只写「完成验证拿解禁码」时，用户既不知道
-// 为什么被罚、也不知道该改什么，只能盲点一遍。
+// TestAppealPageShowsEvidence：验证页数据要包含被限原因、账号信息、发言
+// 留底与 AI 复核结论。
 //
 // JSON 层保留原文（不转义），转义由 React 渲染负责。
 func TestAppealPageShowsEvidence(t *testing.T) {

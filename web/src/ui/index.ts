@@ -1,4 +1,4 @@
-// 通用组件统一导出（计划 3.4）。页面只从这里 import，不深入具体文件。
+// 通用组件统一导出。页面只从这里 import，不深入具体文件。
 export { ActionSheetProvider, useConfirm } from './ActionSheet'
 export type { ConfirmFn, ConfirmOptions } from './ActionSheet'
 export { Badge } from './Badge'

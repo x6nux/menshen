@@ -50,7 +50,7 @@ func logAd(b *core.Bot, m *tg.Message, v adVerdict, action, reason string) int64
 	return id
 }
 
-// bumpAdHits 调整历史命中数。delta 为负时不低于 0。
+// BumpAdHits 调整历史命中数。delta 为负时不低于 0。
 func BumpAdHits(b *core.Bot, chatID, uid, delta int64) {
 	if _, err := b.Store.Write.Exec(`UPDATE group_members
 		SET ad_hits = MAX(0, ad_hits + ?) WHERE chat_id=? AND user_id=?`,
@@ -61,8 +61,7 @@ func BumpAdHits(b *core.Bot, chatID, uid, delta int64) {
 
 // ---- 判定账本的读写 ----
 //
-// antiad_log 是本包写的账本（logAd），读回与订正也归本包：面板只是它的
-// 消费者之一，把查询放在面板里会让账本的形状由展示需求决定。
+// antiad_log 是本包写的账本：读回与订正也归本包，面板只是它的消费者之一。
 // AdLogRow 是 antiad_log 的一行。
 type AdLogRow struct {
 	ID         int64
@@ -78,7 +77,7 @@ type AdLogRow struct {
 	Action     string
 	Reason     string
 	// UserName 是判定当时的昵称与用户名：广告号被处置后常改名，
-	// 事后再查就对不上了。
+	// 事后按当前资料查询无法还原。
 	UserName string
 
 	PromptTokens     int64

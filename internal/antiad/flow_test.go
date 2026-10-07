@@ -68,7 +68,7 @@ func TestGroupMessageRecordsBeforeJudging(t *testing.T) {
 }
 
 // TestGroupMessageCountsSeniorityForStickers 锁住一处容易写反的顺序：
-// 资历累计必须先于「无正文就早退」。不计的话纯贴纸用户 msg_count
+// 资历累计必须先于无正文就早退。不计的话纯贴纸用户 msg_count
 // 永不增长，在发言数轴上永远算新人。
 func TestGroupMessageCountsSeniorityForStickers(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
@@ -124,7 +124,7 @@ func TestRecordJoinKeepsMsgCount(t *testing.T) {
 
 // TestTouchMemberKeepsFirstSeen 确认 first_seen 只在插入时写。
 // 它是 joined_at 缺失时唯一的年龄下界，被每条消息刷新的话
-// 所有人都会永远是「刚出现」。
+// 所有人都会永远是刚出现。
 func TestTouchMemberKeepsFirstSeen(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 
@@ -140,9 +140,9 @@ func TestTouchMemberKeepsFirstSeen(t *testing.T) {
 	}
 }
 
-// TestChatMemberUpdateIgnoresRestrictedFlip 锁住关键坑：
+// TestChatMemberUpdateIgnoresRestrictedFlip 锁住关键分支：
 // status 在 member 与 restricted 之间来回跳（群管挂临时限制）不是进群，
-// 按进群处理会把老成员重新变成「新人」，下一条消息就被按最严档处置。
+// 按进群处理会把老成员重新变成新人，下一条消息就被按最严档处置。
 func TestChatMemberUpdateIgnoresRestrictedFlip(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 	testutil.EnableAntiad(t, b, -100)
@@ -221,7 +221,7 @@ func TestCleanupKeepsAdHits(t *testing.T) {
 }
 
 // TestCleanupRejectsBadRetention 确认非法保留天数回落到 30 天，
-// 而不是把 cutoff 算成「现在」——后者会把全部历史一次性删光。
+// 而不是把 cutoff 算成当前时刻——后者会把全部历史一次性删光。
 func TestCleanupRejectsBadRetention(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 	if err := b.PutSetting("log_retention_days", "0"); err != nil {
@@ -265,7 +265,7 @@ func TestLogAdRoundTrip(t *testing.T) {
 	}
 
 	// Decider 为空 = 判定链路整个失败，必须记成 error 而不是 clean，
-	// 否则「一条都没拦到」会被当成群里很干净。
+	// 否则一条都没拦到会被当成群里很干净。
 	id2 := logAd(b, m, adVerdict{Reason: "上游全挂"}, "none", "判定失败")
 	row2, _ := LoadAdLog(b.Store, id2)
 	if row2.Verdict != "error" {
@@ -332,7 +332,7 @@ func TestComputeCost(t *testing.T) {
 }
 
 // TestContactCardOnlyMessageIsRecorded：只发一张联系人卡片的群消息必须过得了
-// 「无正文」守门——留底即证明它走进了判定分支，而不是在门口被当成贴纸放过。
+// 无正文守门——留底即证明它走进了判定分支，而不是在门口被当成贴纸放过。
 func TestContactCardOnlyMessageIsRecorded(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 777)
 	testutil.EnableAntiad(t, b, -100)
@@ -352,8 +352,8 @@ func TestContactCardOnlyMessageIsRecorded(t *testing.T) {
 }
 
 // TestJoinTimeRecordedEvenWhenInactive：bot 亲眼看到入群事件就要把入群时间
-// 写下来 —— 这是 MTProto 回查拿不到时的回退值，不该因为「这个群没开反广告」
-// 或者「这个人分给了别的 bot」而丢。
+// 写下来 —— 这是 MTProto 回查拿不到时的回退值，不该因为这个群没开反广告
+// 或者这个人分给了别的 bot 而丢。
 func TestJoinTimeRecordedEvenWhenInactive(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777) // 总开关默认关、群也没配
 

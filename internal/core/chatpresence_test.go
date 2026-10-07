@@ -9,7 +9,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// memberUpdate 造一条「bot 自身成员状态变化」的更新（my_chat_member）。
+// memberUpdate 造一条 bot 自身成员状态变化的更新（my_chat_member）。
 func memberUpdate(chatID int64, chatType, status string, isMember bool, at int64) *tg.ChatMemberUpdated {
 	return &tg.ChatMemberUpdated{
 		Chat: &tg.Chat{ID: chatID, Type: chatType, Title: "测试群"},
@@ -57,7 +57,7 @@ func TestNoteChatPresenceTracksJoin(t *testing.T) {
 		t.Fatalf("离群应删掉痕迹，还剩 %d 行", n)
 	}
 
-	// restricted 且 is_member=false 是「已被踢走但留了条受限记录」，不算在群。
+	// restricted 且 is_member=false 是被踢走后留下的受限记录，不算在群。
 	b.NoteChatPresence(memberUpdate(-100999, "supergroup", "restricted", false, joined+2))
 	if n, _ := chatSeenRows(t, b, -100999); n != 0 {
 		t.Fatalf("restricted 且已不在群不该留痕迹，还剩 %d 行", n)
@@ -67,7 +67,7 @@ func TestNoteChatPresenceTracksJoin(t *testing.T) {
 		t.Fatalf("restricted 但仍在群应留痕迹，得到 %d 行", n)
 	}
 
-	// 私聊没有「占 webhook」一说，不记。
+	// 私聊不存在占用 webhook 的问题，不记。
 	b.NoteChatPresence(memberUpdate(777, "private", "member", true, joined+4))
 	if n, _ := chatSeenRows(t, b, 777); n != 0 {
 		t.Fatalf("私聊不该留痕迹，得到 %d 行", n)
@@ -102,7 +102,7 @@ func TestSweepUnconfiguredChatsLeaves(t *testing.T) {
 	if n, _ := chatSeenRows(t, b, -100999); n != 0 {
 		t.Fatalf("退群后应删掉痕迹，还剩 %d 行", n)
 	}
-	// 归属人要收到解释：bot「自己退群」没有说明就像故障。
+	// 归属人要收到解释：bot 自己退群没有说明就像故障。
 	if p := fake.LastCall("sendMessage"); p == nil || p["chat_id"] != float64(777) {
 		t.Errorf("退群后应私聊归属人说明，得到 %v", p)
 	}

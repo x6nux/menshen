@@ -415,7 +415,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: 写连接固定为 1。SQLite 本就单写者，放开只会换来 SQLITE_BUSY。
+	// 写连接固定为 1：SQLite 本就单写者，放开只会换来 SQLITE_BUSY。
 	write.SetMaxOpenConns(1)
 
 	if _, err := write.Exec(schemaSQL); err != nil {
@@ -447,23 +447,21 @@ func Open(path string) (*Store, error) {
 
 // migrate 补齐老库缺失的列。
 //
-// schemaSQL 全是 CREATE TABLE IF NOT EXISTS，对已存在的表完全无效——
+// schemaSQL 全是 CREATE TABLE IF NOT EXISTS，对已存在的表完全无效，
 // 新增字段必须靠 ALTER。SQLite 没有 ADD COLUMN IF NOT EXISTS，
 // 所以先查 table_info 再决定加不加：盲目 ALTER 会在每次启动时报错。
-//
-// 只在新库上验证过的迁移，恰好会在唯一有数据的那些部署上炸。
 func migrate(db *sql.DB) error {
 	cols := []struct{ table, col, def string }{
-		// bot_id：判定流水归属哪个 bot。多租户后它是「谁烧的钱」「谁能看
-		// 这条记录」两个判断的共同依据。老库的行默认 0 = 归属未知，
-		// 面板按主管理员可见处理。
+		// bot_id：判定流水归属哪个 bot。多租户后它是成本归属与记录可见性
+		// 两个判断的共同依据。老库的行默认 0 = 归属未知，面板按主管理员
+		// 可见处理。
 		{"antiad_log", "bot_id", "INTEGER NOT NULL DEFAULT 0"},
 		// whitelisted：反广告按群白名单（/white）。全局豁免仍在
 		// settings.antiad_exempt_users。
 		{"group_members", "whitelisted", "INTEGER NOT NULL DEFAULT 0"},
 		// media_group：相册 ID，判成广告时整组删除。不建索引：按相册找兄弟消息
 		// 带着 chat_id、user_id，走 idx_gmsg_user；而 schemaSQL 先于 migrate 执行，
-		// 在这一列上建索引会让老库启动时直接报「no such column」。
+		// 在这一列上建索引会让老库启动时报 no such column。
 		{"group_messages", "media_group", "TEXT NOT NULL DEFAULT ''"},
 		// punished：这条留底已按处罚处置过。recent_context 据此把已处置的
 		// 消息排除掉，避免同一条消息在后续判定里反复把人往封禁推。
@@ -481,14 +479,14 @@ func migrate(db *sql.DB) error {
 		// 事后再查就对不上了，所以判定时就要记下来。
 		{"antiad_log", "user_name", "TEXT NOT NULL DEFAULT ''"},
 		// last_ads_total / last_kinds：最近一轮全库测试的覆盖率分母与按
-		// 类型细分（JSON）。老库默认 0/空串，前端按「未测过覆盖率」展示。
+		// 类型细分（JSON）。老库默认 0/空串，前端按未测过覆盖率展示。
 		{"ad_rules", "last_ads_total", "INTEGER NOT NULL DEFAULT 0"},
 		{"ad_rules", "last_kinds", "TEXT NOT NULL DEFAULT ''"},
 		// lifted_at：这条处罚被人工解除（或申诉撤销）的时刻。
-		// 永久禁言没有到期时间，靠时间窗推断「是否仍在限制中」会把
+		// 永久禁言没有到期时间，靠时间窗推断是否仍在限制中会把
 		// 已解除的也一直列出来，所以解除时要落一个显式标记。
 		{"antiad_log", "lifted_at", "INTEGER NOT NULL DEFAULT 0"},
-		// kind：渠道类型。老库一律按 openai 处理，行为与升级前完全一致。
+		// kind：渠道类型。老库一律按 openai 处理。
 		{"upstreams", "kind", "TEXT NOT NULL DEFAULT 'openai'"},
 		// kind：进群类限制的来源。profile = 冷判定/延迟复查（资料里有广告），
 		// prewarm = 前置号识别（空壳+招呼的综合特征）。申诉提示词与解除
@@ -619,11 +617,11 @@ func hasColumn(db *sql.DB, table, col string) (bool, error) {
 	return false, rows.Err()
 }
 
-// AppealOpenStatuses 是申诉单的「未结」状态集合。
+// AppealOpenStatuses 是申诉单的未结状态集合。
 //
-// 它同时出现在读侧（openAppeal）、人工处理（AdminLift/Reject）、保留期清理
-// 与未结唯一索引里。分散成几份字面量迟早漂移——noweb 就漂过一次：用户能
-// 反复发起、管理员又结不了案。统一放在这里，读侧与 SQL 各取所需。
+// 它同时出现在读侧（openAppeal）、人工处理（AdminLiftAppeal/AdminRejectAppeal）、
+// 保留期清理与未结唯一索引里。分散成几份字面量会漂移，统一放在这里供读侧与
+// SQL 取用。
 var AppealOpenStatuses = []string{"statement", "ai", "web", "code", "noweb"}
 
 // AppealOpenStatusesSQL 是同一个集合的 SQL 字面量（IN 列表用）。
@@ -632,13 +630,13 @@ const AppealOpenStatusesSQL = "'statement','ai','web','code','noweb'"
 // ensureIndexes 建运行期查询依赖的索引。
 //
 // 必须晚于 migrate：schemaSQL 先于它执行，而 bot_id 这类列是老库升级时
-// 才补上的，把索引写进 schemaSQL 会让老库启动直接报「no such column」
-// ——group_messages.media_group 已经踩过一次同样的坑（见 migrate 注释）。
+// 才补上的，把索引写进 schemaSQL 会让老库启动时报 no such column
+// （见 migrate 注释）。
 //
 // 索引对应的高频查询：
 //   - antiad_log(bot_id,id)：汇总游标的 MAX(id)（每分钟每 bot 一次）、
-//     面板「拦截记录」按 bot 分页。缺它时两者都是全表扫。
-//   - antiad_log(bot_id,created_at)：面板与 Mini App 的「近 24 小时」统计。
+//     面板拦截记录按 bot 分页。缺它时两者都是全表扫。
+//   - antiad_log(bot_id,created_at)：面板与 Mini App 的近 24 小时统计。
 //   - antiad_log(user_id,id)：/user、Mini App 按人筛、申诉的有效处罚查询。
 //   - group_members(user_id,ad_hits,chat_id)：申诉卡片的关联账号（覆盖索引）。
 //   - group_members(last_msg_at)：保留期清理（谓词已按单列改写）。

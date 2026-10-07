@@ -25,8 +25,8 @@ func newMainBotEnv(t *testing.T) (*core.Shared, *core.Registry) {
 	return sh, core.NewRegistry(sh, stop, nil)
 }
 
-// TestBindLegacyModelsOnlyWithSingleUpstream：只有一个上游时自动补前缀
-// （升级无痛）；多于一个时无从推断，必须原样不动。
+// TestBindLegacyModelsOnlyWithSingleUpstream：只有一个上游时自动补前缀；
+// 多于一个时无法推断，必须原样不动。
 func TestBindLegacyModelsOnlyWithSingleUpstream(t *testing.T) {
 	sh, _ := newMainBotEnv(t)
 	w := sh.Store.Write
@@ -108,11 +108,12 @@ func TestEnsureMainBotRegistersAndMarks(t *testing.T) {
 	}
 }
 
-// TestEnsureMainBotUpgradesAndClearsChats 覆盖老库升级：bot 已登记为工作
-// bot，且名下有生效群。启动后要补上主 bot 标记，并清掉它不再需要的群配置。
+// TestEnsureMainBotUpgradesAndClearsChats 覆盖已有库的情形：bot 已登记为
+// 工作 bot，且名下有生效群。启动后要补上主 bot 标记，并清掉它不再需要的
+// 群配置。
 func TestEnsureMainBotUpgradesAndClearsChats(t *testing.T) {
 	sh, reg := newMainBotEnv(t)
-	// 给这个 bot 挂一个群（升级前主 bot 可能在群里判过）。
+	// 给这个 bot 挂一个群。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
 		(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
 		VALUES (?,?, '旧群',1,0,0,0)`, testutil.TestBotID, -100123); err != nil {
@@ -231,7 +232,7 @@ func TestWebhookServerTimeouts(t *testing.T) {
 }
 
 // TestInstallLoggingWritesFileNextToDB：slog 接上 installLogging 后，
-// 一条 INFO 要同时进缓冲与数据库同目录的日志文件（data.db → data.log）。
+// 一条 INFO 要同时进缓冲与数据库同目录的日志文件。
 // slog 默认 logger 是进程级的，测完恢复，避免污染同包其他测试。
 func TestInstallLoggingWritesFileNextToDB(t *testing.T) {
 	prev := slog.Default()

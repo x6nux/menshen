@@ -31,14 +31,13 @@ func appealDM(uid int64) *tg.Message {
 		Chat: &tg.Chat{ID: uid, Type: "private"}}
 }
 
-// appealGo 模拟「发起申诉」：理由现在必填，所以走的是写理由入口
-// （a:ap:st）再提交一条理由，而不是老的 a:ap:go（那个动作已不再放行）。
+// appealGo 构造发起申诉的 `a:ap:st` 回调（理由必填入口）。
 func appealGo(uid int64) *tg.CallbackQuery {
 	return &tg.CallbackQuery{ID: "cb", Data: "a:ap:st", From: &tg.TGUser{ID: uid},
 		Message: &tg.Message{MessageID: 5, Chat: &tg.Chat{ID: uid, Type: "private"}}}
 }
 
-// submitAppeal 走完整入口：点「写申诉理由」→ 发一条理由。
+// submitAppeal 走完整入口：先点写理由按钮，再发一条理由。
 func submitAppeal(b *core.Bot, uid int64, reason string) {
 	HandleAppealCallback(b, appealGo(uid))
 	m := appealDM(uid)
@@ -260,15 +259,15 @@ func TestAppealSingleOpen(t *testing.T) {
 	}
 }
 
-// TestAppealStatementDirectGo：申诉理由现在必填。「直接申诉」这个按钮已从
-// 入口去掉，但老消息里还留着 —— 点它不该再把单子推进 AI，而是把话说明白、
-// 留在 statement 等理由；写了理由才照常推进。
+// TestAppealStatementDirectGo：申诉理由必填。直接申诉按钮（a:ap:go）仍可能
+// 被点到，点它不推进 AI，而是说明理由必填、留在 statement 等理由；
+// 写了理由才照常推进。
 func TestAppealStatementDirectGo(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	appealAI(t, b, false, "资料已改正")
 	saveJoinMute(b, -100, 555, kindProfile, "简介里有联系方式", 88)
 
-	// 点「写申诉理由」进入 statement。
+	// 点写理由按钮进入 statement。
 	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:st",
 		From: &tg.TGUser{ID: 555},
 		Message: &tg.Message{MessageID: 5,
@@ -277,7 +276,7 @@ func TestAppealStatementDirectGo(t *testing.T) {
 		t.Fatalf("应先进入 statement，得到 %q", st)
 	}
 
-	// 老消息里的「直接申诉」（a:ap:go）：理由必填，不该推进 AI。
+	// 直接申诉（a:ap:go）：理由必填，不该推进 AI。
 	HandleAppealCallback(b, &tg.CallbackQuery{ID: "cb", Data: "a:ap:go",
 		From: &tg.TGUser{ID: 555},
 		Message: &tg.Message{MessageID: 5,
@@ -321,7 +320,7 @@ func TestAppealStatementCancel(t *testing.T) {
 	if st := appealStatus(t, b, 555); st != "expired" {
 		t.Fatalf("取消后应为 expired，得到 %q", st)
 	}
-	// 作废的单不再占位：再点「直接申诉」可以建新单。
+	// 作废的单不再占位：再发起可以建新单。
 	appealAI(t, b, false, "资料已改正")
 	submitAppeal(b, 555, "这是误判：我只是在聊技术，没有推广意图")
 	waitIdle(t, b)
@@ -383,7 +382,7 @@ func TestAppealNoWebBlocksNewAppeal(t *testing.T) {
 	if n != 1 {
 		t.Errorf("noweb 未结时不该重复建单，实际 %d 张", n)
 	}
-	// 管理员的「人工通过」要能处理 noweb（此前会被判「已结案」）。
+	// 管理员的人工通过要能处理 noweb。
 	if err := AdminLiftAppeal(b, 1, 1); err != nil {
 		t.Fatalf("人工通过 noweb 单应成功: %v", err)
 	}
@@ -393,7 +392,7 @@ func TestAppealNoWebBlocksNewAppeal(t *testing.T) {
 }
 
 // TestStartAppealAISingleFlight：同一张单的重复触发不得跑两遍 AI。
-// 用户重复点「直接申诉」、管理员连点「重跑复核」都会走到这里。
+// 用户重复点申诉、管理员连点重跑复核都会走到这里。
 func TestStartAppealAISingleFlight(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var calls atomic.Int32
@@ -434,7 +433,7 @@ func TestStartAppealAISingleFlight(t *testing.T) {
 // 绝不按深链里的 uid 展示别人的限制状态。
 func TestUserPayloadNonStaffGoesToOwnAppeal(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
-	// 点击者自己（6002）有一条限制；深链指向的是别人（6001）。
+	// 点击者自己有一条限制；深链指向的是别人。
 	if _, err := b.Store.Write.Exec(`INSERT INTO join_mutes
 		(chat_id,user_id,bot_id,reason,notice_msg,attempts,created_at)
 		VALUES (-100,6002,?, '自己的资料写着加微信',0,0,?)`,
@@ -474,7 +473,7 @@ func TestAppealPromptCoversPrewarm(t *testing.T) {
 	}
 }
 
-// prewarm 的解除出口是「资料已补齐」：载荷必须带当前 username 与
+// prewarm 的解除出口是资料已补齐：载荷必须带当前 username 与
 // photo_count，否则模型看不见任何可撤销的依据，怎么改资料都通不过。
 func TestJudgeAppealPrewarmPayload(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

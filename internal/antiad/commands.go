@@ -16,7 +16,7 @@ import (
 
 // adReviewLimit 是一次复查送检的留底条数上限。
 // 全部历史一次性给模型是这条命令的意义所在，但仍要有个天花板：
-// 一个刷了几千条的号会把单次请求撑成天价。
+// 一个刷了几千条的号会让单次请求成本过高。
 const adReviewLimit = 60
 
 const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
@@ -30,7 +30,7 @@ const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
 //
 // 群里 TG 客户端会自动补成 /check@botname，必须一并认。
 // 几条命令合并识别，因为 /ban、/white 以 /check 为前缀 —— 分开写的话，
-// 先匹配 /check 的那一方会把它们也吃掉。
+// 先匹配 /check 的那一方会把它们一并匹配走。
 func parseAdCommand(text string) (cmd, arg string, ok bool) {
 	f := strings.Fields(text)
 	if len(f) == 0 {
@@ -50,8 +50,8 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 // handleAdCommand 处理群内 /check 复查。
 //
 // 命令对所有人开放（它不直接封禁，走的是与自动判定同一套处置矩阵），
-// 因此它本身就是一个花钱入口：一次复查跑两个模型、带上目标全部历史。
-// 必须按发起人限频，否则任何成员都能靠刷命令烧钱。
+// 因此它本身就是一个高开销入口：一次复查跑两个模型、带上目标全部历史。
+// 必须按发起人限频，否则任何成员都能靠刷命令放大开销。
 func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	snap := b.Cache.Snap()
 	ttl := time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
@@ -64,7 +64,7 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	}
 	// 命令本身立即删除，usage/报错与复查卡片按 antiad_alert_ttl 延迟撤回
 	// （与 /jtime、/uad 一致）：/check 对全群开放，命令和卡片留在群里
-	// 只会引人去刷，结论看过就该退场。
+	// 会诱使他人反复触发，结论看过即应撤回。
 	b.TG.Call("deleteMessage", map[string]any{
 		"chat_id": conf.ChatID, "message_id": m.MessageID})
 
@@ -102,8 +102,8 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit, false)
 	if len(hist) == 0 {
 		// 数据库里连这个人的任何痕迹都没有（发言留底、判定流水、入群画像
-		// 三样皆无）时直接给结论，不请求模型：随机 user_id 查资料既花钱，
-		// 模型也给不出可信结论（线上真实反馈）。
+		// 三样皆无）时直接给结论，不请求模型：随机 user_id 查资料既产生开销，
+		// 模型也给不出可信结论。
 		if !hasUserData(b.Store, m.Chat.ID, target.ID) {
 			notice := fmt.Sprintf("🔎 <b>复查结果</b>\n未有该用户数据：<code>%d</code> "+
 				"在本群没有发言留底、判定流水或入群记录，未做判定。", target.ID)
@@ -121,11 +121,11 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 		return
 	}
 
-	// 构造一条「代表消息」：处置要作用在具体消息上（删除），
+	// 构造一条代表消息：处置要作用在具体消息上（删除），
 	// 而 /check <user_id> 这一路没有具体消息，此时 MessageID 为 0，
 	// 下面会把删除动作摘掉。
 	// 代表消息的正文：回复形态下用被回复的那一条，否则用最新一条留底。
-	// 两者不一致会让告警展示的原文与「删除」按钮实际作用的消息对不上。
+	// 两者不一致会让告警展示的原文与删除按钮实际作用的消息对不上。
 	repText := hist[len(hist)-1].Text
 	if m.ReplyToMessage != nil {
 		if t := displayText(m.ReplyToMessage); t != "" {
@@ -147,9 +147,8 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	state := buildState(b, snap, tgt, profile)
 	state.ReviewHistory = make([]core.CtxMsg, 0, len(hist))
 	for _, h := range hist {
-		// 引用段是别人的话，但单纯剥掉会丢本人正文的对话语境（实测：
-		// 打赏玩笑「100u吃个米粉就行+地址」被读成收款索要）。换成带
-		// 归属的标记，模型不会把别人的话记在发言者头上（见 historyText）。
+		// 引用段是别人的话，单纯剥掉会丢本人正文的对话语境；须换成带
+		// 归属的标记，模型才不会把别人的话记在发言者头上（见 historyText）。
 		t := historyText(h.Text)
 		if strings.TrimSpace(t) == "" {
 			continue
@@ -158,7 +157,7 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 			core.CtxMsg{Name: senderName(target), Text: t, At: h.At})
 	}
 
-	// 多步响应先发「当前状态」，之后每完成一级编辑一次（见 check_progress.go）。
+	// 多步响应先发当前状态，之后每完成一级编辑一次（见 check_progress.go）。
 	p := newCheckProgress(b, m.Chat.ID, target.ID)
 	if !b.AdSubmit(func() {
 		// 复查同样按需补入群时间：worker 上查，不拖更新处理；负缓存清掉，
@@ -172,8 +171,8 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 
 // canMarkAd 报告此人能否用 /ban 直接标记广告。
 //
-// 比 /check 严格得多：/check 只是花钱跑一次判定，处置仍由矩阵决定；
-// /ban 绕过判定直接删人禁言，对所有人开放等于把删消息的权力给了全群。
+// 比 /check 严格得多：/check 只是跑一次判定（有模型开销），处置仍由矩阵
+// 决定；/ban 绕过判定直接删人禁言，对所有人开放等于把删消息的权力给了全群。
 func canMarkAd(b *core.Bot, chatID, uid int64) bool {
 	if b.IsMain(uid) || uid == b.Owner() {
 		return true
@@ -188,7 +187,7 @@ const banadCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <cod
 	"结果进正例池并参与联合封禁。"
 
 // resolveCmdTarget 解析 /ban、/banad 这类命令的目标：回复形态取被回复的
-// 实际发言者；参数形态支持 user_id / @用户名，并按「此人最新一条留底」
+// 实际发言者；参数形态支持 user_id / @用户名，并按此人最新一条留底
 // 做一张可处置的合成消息（删除与流水都指向真实消息；没有留底时只罚人，
 // MessageID 为 0 时调用方会摘掉删除动作）。
 func resolveCmdTarget(b *core.Bot, chatID int64, m *tg.Message, arg string) (*tg.Message, bool) {
@@ -219,8 +218,8 @@ const banCmdUsage = "用法：<b>回复</b>某人的消息发 <code>/ban</code>�
 
 // HandleBanCommand 群管理员直接封禁一个人（纯封禁，不判广告）。
 //
-// 与 /banad（人工标记广告）分开：管理员有时只是要清一个捣乱的人，不该
-// 顺带删掉他的发言、让形态摘要学错样本、更不该把他全平台联封。
+// 与 /banad（人工标记广告）分开：管理员有时只是要移除一个扰乱秩序的人，
+// 不该顺带删掉他的发言、让形态摘要学错样本、更不该把他全平台联封。
 func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	if !canMarkAd(b, conf.ChatID, m.From.ID) {
 		return
@@ -235,7 +234,7 @@ func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 		return
 	}
 	if target.From.ID == b.BotID() {
-		// 同 /banad：回复 bot 自己的消息是常见手滑，静默会让人以为命令坏了。
+		// 同 /banad：回复 bot 自己的消息是常见误操作，静默会让人以为命令失效。
 		groupNotice(b, conf.ChatID, "这条是 bot 自己的消息，不能封 bot。"+
 			"请<b>回复目标的消息</b>发送 /ban，或直接发 "+
 			"<code>/ban &lt;user_id&gt;</code>。", nil, 30*time.Second)
@@ -249,8 +248,8 @@ func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 		return
 	}
 
-	// 只封禁：不删消息、不计 ad_hits、不进正例池、不联封 —— 这是治安动作，
-	// 不是广告判定。真广告用 /banad。
+	// 只封禁：不删消息、不计 ad_hits、不进正例池、不联封 —— 这是纯粹的
+	// 封禁动作，不是广告判定。真广告用 /banad。
 	act := adAction{Ban: true, Name: "banned"}
 	note := ApplyAction(b, target, act, conf.Dryrun)
 	v := adVerdict{Decider: "manual-ban",
@@ -272,16 +271,16 @@ func HandleBanCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 
 // HandleBanAdCommand 人工把一条消息标记为广告并立即处置。
 //
-// 不发任何 AI 请求：人已经看明白了，再花一次钱去问模型没有意义。
+// 不发任何 AI 请求：判定已由人做出，再调用一次模型没有意义。
 // 代价是这条判定没有置信度可言，所以它只对群管理员及以上开放。
 //
 // 标记结果会进**正例池**（verdict='ad' 且 action != 'undone'），
 // 形态总结下一轮就能学到它 —— 人工标记是质量最高的训练样本。
 //
-// 两种用法：回复某条消息（处置那条），或 /ban <user_id>（处置此人最新一条
+// 两种用法：回复某条消息（处置那条），或 /banad <user_id>（处置此人最新一条
 // 留底；没有留底时只罚人、不删消息，仍落一条人工标记流水）。
 func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
-	// 非授权者静默忽略：回一句「你没有权限」等于告诉刷屏的人这条命令
+	// 非授权者静默忽略：回一句你没有权限等于告诉刷屏的人这条命令
 	// 存在、值得去试。
 	if !canMarkAd(b, conf.ChatID, m.From.ID) {
 		return
@@ -299,7 +298,7 @@ func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	if target.From.ID == b.BotID() {
 		// 管理员很自然地会去回复告警/复查结果卡片（里面带着原文），但那是
 		// bot 自己的消息，标记它等于让 bot 自罚。这里不能静默 return：
-		// 线上真实反馈是「命令没反应」，管理员只能改用别处入口。
+		// 否则管理员会以为命令没有反应，只能改用别处入口。
 		groupNotice(b, conf.ChatID, "这条是 bot 自己的消息，不能作为标记对象。"+
 			"请<b>回复发广告的那条原消息</b>发送 /banad，或直接发 "+
 			"<code>/banad &lt;user_id&gt;</code>。", nil, 30*time.Second)
@@ -323,7 +322,7 @@ func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	// 禁言与否仍服从本群的处罚方式（可改为封禁）。
 	act := withPunish(adAction{Delete: true, Mute: true, Alert: true, Name: "deleted_muted"},
 		snap.BanMode(conf))
-	// /ban <user_id> 而这个人没有留底时没有消息可删：摘掉删除动作，
+	// /banad <user_id> 而这个人没有留底时没有消息可删：摘掉删除动作，
 	// 否则 deleteMessage 必然失败，告警里还会多一条假的失败说明。
 	if target.MessageID == 0 {
 		act.Delete = false
@@ -384,8 +383,8 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 
 	chatID := conf.ChatID
 	// 复查绕过全部缓存：简介与资料挂链取最新，资料放行不套用
-	// （见 enrichSenderFresh）—— 复查审的就是资料本身，不能被之前
-	// 「缓存个人简介通过」挡成维持原判。
+	// （见 enrichSenderFresh）—— 复查审的就是资料本身，不能被之前的
+	// 缓存放行挡成维持原判。
 	enrichSenderFresh(b, &state.Sender)
 	// 同上：定案与资料放行都用补全过的画像。
 	profile = state.Sender
@@ -425,7 +424,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	}
 	note := ApplyAction(b, tgt, act, dryrun)
 	// 复查结论正常时，顺手把复判期那条还没来得及解的临时禁言解掉：
-	// 管理员多半就是看到「判定正常却还禁着言」才来复查的。只有确实是
+	// 管理员多半就是看到判定正常却还禁着言，才来复查的。只有确实是
 	// 我们刚上的临时禁言才会动（见 LiftTempMuteIfFresh），别人的正式
 	// 处罚不会被踩掉。
 	lifted := false
@@ -434,9 +433,8 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		note = joinNotes(note, "已解除临时禁言")
 	}
 	// 复查判为正常时，原判留下的正式禁言（含永久）也一并解除：管理员发起
-	// 复查多半就是因为「人被罚了却看着不像广告」，判了正常还留着他禁言，
-	// 只能再靠人工全解（实测：正式禁言被管理员手动解除后还会被外部解除
-	// 复查弹回去）。LiftMute 会先落「主动解除」标记，不会被判言复查弹回。
+	// 复查多半就是因为被罚的人看着不像广告，判了正常还留着他禁言，只能
+	// 再靠人工解除。LiftMute 会先落主动解除标记，不会被判言复查弹回。
 	if !v.IsAd && !dryrun && formalMessageMuteActive(b, chatID, tgt.From.ID) {
 		if ok, _ := LiftMute(b, chatID, tgt.From.ID); ok {
 			lifted = true
@@ -461,10 +459,9 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		}
 	}
 
-	// 结论正常时不能用告警那套渲染：🚫 与「点我申诉」是给被判成广告的人
-	// 准备的，配在正常结论上只会让被复查的人以为自己又被罚了（实测群里
-	// 看到「🚫 … 正常 92% + 点我申诉」都在问是不是误判）。广告结论照旧
-	// 走告警渲染，同一个渠道不该有两种长度。
+	// 结论正常时不能用告警那套渲染：🚫 与点我申诉是给被判成广告的人
+	// 准备的，配在正常结论上只会让被复查的人以为自己又被罚了。广告结论
+	// 仍走告警渲染，同一个渠道不该有两种长度。
 	var text string
 	var kb map[string]any
 	if v.IsAd {
@@ -517,7 +514,7 @@ func resolveUsernameID(b *core.Bot, name string) (int64, bool) {
 // reviewProfileOnly 只看资料复查一个人（/check 没有留底时的分支）。
 //
 // 用的是进群冷判定那一套提示词与采信线：他还没在本群发过言，能看的只有
-// 资料，而冷判定本来就是干这个的。命中且过了采信线就按进群限制处理，
+// 资料，而冷判定本来就是为此设计的。命中且过了采信线就按进群限制处理，
 // 与自动链路完全一致（含群内通知与申诉入口）。
 //
 // 判定编排与消息复查同一路（judgeBoth）：初判与复判都跑、互相印证，
@@ -534,7 +531,7 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	// 资料本身。
 	enrichSenderFresh(b, &prof)
 	// 年龄轴要用的入群时间缺了时按需补一次（查到即入库，之后不再查）；
-	// 「查不到」的负缓存同样清掉，给一次全新的实时查询。
+	// 查不到的负缓存同样清掉，给一次全新的实时查询。
 	ensureJoinAgeFresh(b, chatID, u.ID, &prof)
 	ttl := alertTTLOf(b, snap)
 
@@ -571,9 +568,8 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	if !conf.Dryrun {
 		DropProfileOK(b, u.ID, "资料复查判为广告号")
 	}
-	// 已经在进群类限制里：applyJoinMuteNotify 会 no-op，但管理员显式发起
-	// 的复查不能一声不吭（线上反馈「命令像没生效」）。给一条说明收尾即可，
-	// 不重复禁言、不重复流水。
+	// 已经在进群类限制里：applyJoinMuteNotify 会直接返回，但管理员显式发起
+	// 的复查不能没有回执。给一条说明收尾即可，不重复禁言、不重复流水。
 	if _, ok := loadJoinMute(b.Store, chatID, u.ID); ok {
 		p.finish("🔎 <b>资料复查结果</b>\n🔒 "+userLink(u.ID)+
 			" 已在进群类限制中，未重复处置。", nil, ttl)
@@ -581,7 +577,7 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	}
 	// 处置与进群冷判定同档，但回执必须发：这是管理员显式发的命令，而群内
 	// 展示默认关，靠 applyJoinMute 的自动通知会一条回执都没有，命令看起来
-	// 像没生效（线上真实反馈）。
+	// 像没生效。
 	applyJoinMuteNotify(b, conf, u, v, joinMuteSpec{
 		Kind: kindProfile, Action: actionJoinMuted, Note: "资料复查",
 		Body:     joinProfileText(u, prof.Bio, v),

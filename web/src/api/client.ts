@@ -6,7 +6,7 @@
 import type { TelegramBridge } from '../telegram'
 
 export class ApiError extends Error {
-  /** HTTP 状态码；0 表示网络层失败（断网/被墙），不是服务端返回的。 */
+  /** HTTP 状态码；0 表示网络层失败（连接失败等），不是服务端返回的。 */
   readonly status: number
 
   constructor(status: number, message: string) {

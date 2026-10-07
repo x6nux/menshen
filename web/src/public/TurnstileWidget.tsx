@@ -2,14 +2,13 @@
 //
 // 与服务端 verifyTurnstile 的约定必须逐字对齐：
 //   - action 固定 'appeal'；
-//   - cData 是官方显式渲染的参数名（驼峰）。此前调用写成 cdata，被组件
-//     静默忽略，令牌里不带 cdata，服务端「cdata 不符」校验必然失败，
-//     表现为所有用户都验证不通过。
+//   - cData 是官方显式渲染的参数名（驼峰）；写成 cdata 会被组件静默忽略、
+//     令牌里不带 cdata，服务端 cdata 校验失败。
 //
-// refresh-expired 用 manual：默认 auto 会在 5 分钟后自动重发令牌、再次
-// 触发提交，用户什么都不做也会烧掉失败次数（满 5 次申诉自动结案）。
-// 失败后的重试由页面驱动：resetKey 变化时 reset 重新挑战，把重试节奏
-// 放在用户主动点击上，而不是组件自动循环。
+// refresh-expired 用 manual：默认 auto 会在 5 分钟后自动重发令牌并再次
+// 触发提交，用户无操作也会消耗失败次数（满 5 次申诉自动结案）。
+// 失败后的重试由页面驱动：resetKey 变化时 reset 重新挑战，重试节奏由
+// 用户主动点击控制，而非组件自动循环。
 import { Box } from '@mui/material'
 import { useEffect, useRef } from 'react'
 import { loadTurnstile } from './turnstile'

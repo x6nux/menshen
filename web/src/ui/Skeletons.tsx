@@ -1,4 +1,4 @@
-// 列表骨架（计划 3.3）：首屏加载时的 3 行占位，行数可调。
+// 列表骨架：首屏加载时的 3 行占位，行数可调。
 import { Box, Skeleton } from '@mui/material'
 import type { SxProps, Theme } from '@mui/material/styles'
 

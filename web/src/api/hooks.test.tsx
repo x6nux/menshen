@@ -63,7 +63,7 @@ describe('查询 hooks', () => {
 
   it("useLogs 的 '' 与 'all' 归一化成同一个 queryKey，只请求一次", async () => {
     // staleTime 设成无限：第二次挂载若命中同一 key 就不会再发请求，
-    // 因此「只请求一次」能直接证明两个筛选归一化成了同一个 queryKey。
+    // 因此只请求一次即可证明两个筛选归一化成了同一个 queryKey。
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     })

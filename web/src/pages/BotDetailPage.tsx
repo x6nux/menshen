@@ -1,9 +1,9 @@
-// 机器人详情（计划 4.2 / 3.5）：
+// 机器人详情：
 // - 启用 Switch 用乐观更新（失败回滚 + toast）；
 // - 归属改派（仅主管理员、非主 bot）走底部抽屉选 owner_opts；
 // - 模型卡仅主管理员可编辑（已登记且启用的模型快选），次管只读；
 // - 参数覆盖卡只渲染 specs∩覆盖表（antiad/both 分组），行内智能控件 + 恢复全局；
-// - 「管理其群组」带 bot 过滤切到群组页；危险区移除该 bot（ActionSheet）。
+// - `管理其群组` 带 bot 过滤切到群组页；危险区移除该 bot（ActionSheet）。
 import { Box, Button, Chip, IconButton, MenuItem, Switch, TextField, Typography } from '@mui/material'
 import AddCircleOutline from '@mui/icons-material/AddCircleOutline'
 import RemoveCircleOutline from '@mui/icons-material/RemoveCircleOutline'
@@ -46,7 +46,7 @@ function parseModelList(raw: string | undefined): string {
       return parsed.filter((v): v is string => typeof v === 'string').join(', ')
     }
   } catch {
-    // 旧格式（逗号串）直接原样展示。
+    // 非 JSON（逗号串）原样展示。
     return raw
   }
   return ''
@@ -280,7 +280,7 @@ export function BotDetailPage({ botId }: { botId: number }) {
   const editingIsToggle = editing !== null && controlKind(editing) === 'toggle'
   const editingIsMinutes = editing !== null && editing.key.endsWith('_minutes')
   const stepSize = editing !== null && editing.key.endsWith('_ms') ? 100 : 1
-  // 空输入表示「恢复全局」，不能把 0（永久）误高亮成已选档位。
+  // 空输入表示 `恢复全局`，不能把 0（永久）误高亮成已选档位。
   const presetSelected = (value: number) => {
     if (draft.trim() === '') return false
     const n = Number(draft)

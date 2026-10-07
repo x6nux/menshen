@@ -8,7 +8,7 @@ import (
 
 var base = time.Unix(1_700_000_000, 0)
 
-// TestAllowAtSlidingWindow：窗口是滑动的，不是固定分钟桶——固定桶会在
+// TestAllowAtSlidingWindow 验证窗口是滑动的而非固定分钟桶：固定桶会在
 // 桶边界放过两倍的请求量。
 func TestAllowAtSlidingWindow(t *testing.T) {
 	l := New()
@@ -31,8 +31,8 @@ func TestAllowAtSlidingWindow(t *testing.T) {
 	}
 }
 
-// TestAllowAtLimitZeroMeansUnlimited：0 表示不限，且不留下窗口记录——
-// 否则限流从关到开的那一刻会带着历史包袱立刻触顶。
+// TestAllowAtLimitZeroMeansUnlimited 验证 0 表示不限且不留下窗口记录，
+// 否则限流从关到开时会带着已有计数立刻触顶。
 func TestAllowAtLimitZeroMeansUnlimited(t *testing.T) {
 	l := New()
 	for i := range 100 {
@@ -45,8 +45,8 @@ func TestAllowAtLimitZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
-// TestGCAtReclaimsIdleBuckets：闲置超过 5 个窗口的 key 被回收，
-// 否则刷屏号每换一个马甲就多留一个永久桶。
+// TestGCAtReclaimsIdleBuckets 验证闲置超过 5 个窗口的 key 被回收，
+// 避免不断变化的 key 留下永不释放的桶。
 func TestGCAtReclaimsIdleBuckets(t *testing.T) {
 	l := New()
 	l.AllowAt("old", 1, base)

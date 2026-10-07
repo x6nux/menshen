@@ -54,7 +54,7 @@ func TestCapPRNGGolden(t *testing.T) {
 	}
 }
 
-// capSolve 用与服务端相同的派生逻辑解一道挑战（测试里的「客户端」）。
+// capSolve 用与服务端相同的派生逻辑解一道挑战（模拟测试里的客户端）。
 func capSolve(t *testing.T, token string, c, s, d int) []json.Number {
 	t.Helper()
 	base := capFNV1a(token)

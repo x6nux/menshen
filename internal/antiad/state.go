@@ -28,9 +28,9 @@ type senderProfile struct {
 	MsgsInGroup int64 `json:"msgs_in_group"`
 	PriorAdHits int64 `json:"prior_ad_hits"`
 	// Photos / PhotoKnown 只有前置号复核路径填充（见 prewarm.go）：
-	// 头像张数与「查没查到」。指针是为了让 0 张也能进载荷（omitempty
+	// 头像张数与是否查到。指针是为了让 0 张也能进载荷（omitempty
 	// 对非空指针不生效），同时未填充时字段整体缺席 —— PhotoKnown=false
-	// 时照片数未知，任何一方都不得把它当成「无头像」。
+	// 时照片数未知，任何一方都不得把它当成无头像。
 	Photos     *int `json:"photos,omitempty"`
 	PhotoKnown bool `json:"photo_known,omitempty"`
 	// UsernameRand / NameRand 是本地算法对 username / 昵称（拉丁部分）
@@ -66,7 +66,7 @@ type adChatInfo struct {
 // adQuotedInfo 是本人引用/回复的那段内容。
 //
 // 单列而不并进 message.text：归属必须分清。那段话是被引用者写的，
-// 混进本人正文会让「转述并批评广告」的人也被判成广告。
+// 混进本人正文会让转述并批评广告的人也被判成广告。
 //
 // 只有外部聊天引用会进送检载荷（见 buildState）：群内引用是别人的话，
 // 引用一条广告提醒管理员 / 批评 / 询问是举报行为，不算引用者的载荷。
@@ -81,7 +81,7 @@ type adQuotedInfo struct {
 }
 
 // quotedInfo 取出被引用内容。没有引用则返回 nil ——
-// 空的 quoted 块会给模型一个「有引用但内容为空」的假信号。
+// 空的 quoted 块会给模型一个有引用但内容为空的假信号。
 //
 // 取值优先级：手动选中的引文 > 跨聊天引用摘要 > 同群原消息。
 // 手动引文优先，是因为它才是群里实际显示、其他成员看得到的那一段。
@@ -131,15 +131,15 @@ type adState struct {
 	// Quoted 是本人引用/回复的内容，无引用时为 nil。
 	Quoted *adQuotedInfo `json:"quoted,omitempty"`
 	// ReviewHistory 只在 /check 复查时非空：该用户在本群的全部留底，
-	// 一次性交给模型。非空即代表「这是对账号的整体复查」而非对单条
+	// 一次性交给模型。非空即代表这是对账号的整体复查而非对单条
 	// 消息的判定，两级提示词都据此切换判断口径。
 	ReviewHistory []core.CtxMsg `json:"review_history,omitempty"`
 	// JoinCheck 为真表示这是**进群冷判定**：此人一条消息都还没发过，
 	// message 整块是空的，全部证据在 sender 里。提示词据此切换口径，
-	// 不加这个标记的话模型会把「正文为空」当成规避形态而误判。
+	// 不加这个标记的话模型会把正文为空当成规避形态而误判。
 	JoinCheck bool `json:"join_check,omitempty"`
 	// PrewarmCheck 为真表示这是**前置号复核**：新成员的首条短消息，
-	// 问的是账号层面「是不是批量注册的广告前置号」。提示词据此切换口径。
+	// 问的是账号层面是不是批量注册的广告前置号。提示词据此切换口径。
 	PrewarmCheck        bool   `json:"prewarm_check,omitempty"`
 	KnownAdPatterns     string `json:"known_ad_patterns"`
 	KnownFalsePositives string `json:"known_false_positives"`
@@ -157,8 +157,8 @@ func (p senderProfile) ProfileEmpty() bool {
 }
 
 // hasMediaCarrier 报告这条消息是否真的携带媒体（图、贴纸、视频、文件、
-// 语音、联系人卡片、投票等）。原实现写成「有配文却没有正文」，把纯图、
-// 纯贴纸反向报成 has_media=false —— 模型拿到的这个信号与实际相反。
+// 语音、联系人卡片、投票等）。依据是媒体字段本身，不能以有无正文判断，
+// 否则纯图、纯贴纸会被报成 has_media=false，与实际相反。
 func hasMediaCarrier(m *tg.Message) bool {
 	return len(m.Photo) > 0 || m.Sticker != nil || m.Video != nil ||
 		m.Document != nil || m.Audio != nil || m.Animation != nil ||
@@ -177,8 +177,8 @@ func buildProfile(b *core.Bot, m *tg.Message, gm groupMember, now int64) senderP
 		p.IsChannel = m.From.ID < 0 // 见 senderOf
 	}
 
-	// joined_at 缺失（bot 部署前此人已在群）时退回 first_seen，
-	// 并如实告知模型年龄未知——否则它会把一个老群员当成刚进来的。
+	// joined_at 缺失时退回 first_seen，并如实告知模型年龄未知——
+	// 否则它会把一个老成员当成刚进来的。
 	base := gm.JoinedAt
 	p.AgeKnown = base > 0
 	if !p.AgeKnown {
@@ -207,17 +207,16 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 		},
 		Sender: p,
 	}
-	// 群内引用不送检：引用群友的消息是别人的话，「引用一条广告提醒管理员」
-	// 可能恰恰是举报行为，送检会让引用者看起来在说那段广告（线上记录
-	// #16913：用户引用「你来柬埔寨 我跟你详谈」后，下一条「鳄鱼」被判成
-	// 诈骗广告）。外部聊天引用照旧保留 —— 那是「正文为空、载荷全在引用
-	// 里」的主要规避形态（把频道广告搬进群），也是 quoted 字段存在的意义。
+	// 群内引用不送检：引用群友的消息是别人的话，引用一条广告提醒管理员
+	// 可能是举报行为，送检会让引用者看起来在说那段广告。外部聊天引用保留 ——
+	// 那是正文为空、载荷全在引用里的主要规避形态（把频道广告搬进群），
+	// 也是 quoted 字段存在的意义。
 	if q := quotedInfo(m); q != nil && q.IsExternal {
 		st.Quoted = q
 	}
 	if m.Chat != nil {
 		st.Chat = adChatInfo{ID: m.Chat.ID, Title: m.Chat.Title}
-		// 第一条消息没有「此前」可带：msgs_in_group 是含本条的计数，
+		// 第一条消息没有此前可带：msgs_in_group 是含本条的计数，
 		// 为 1 时直接跳过，省一次留底查询。
 		if p.MsgsInGroup > 1 {
 			st.RecentContext = recentOwn(b.Store, m,
@@ -241,7 +240,7 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 	}
 
 	st.KnownAdPatterns, st.KnownFalsePositives = splitDigest(snap.Setting("antiad_digest"))
-	// 启用的必封规则命中单独成字段：它比形态摘要强，提示词按「强证据」
+	// 启用的必封规则命中单独成字段：它比形态摘要强，提示词按强证据
 	// 对待（见 matchedRulesClause），但仍由模型结合上下文复核后处置。
 	//
 	// 匹配用 judgingText（正文 + 外部引用）：正文为空、载荷全在外部引用
@@ -253,19 +252,18 @@ func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfil
 
 // ctxTextLimit 是单条上下文的字符上限。上下文用来让模型看到此人近来
 // 说过什么，不需要全文；不截断的话一条长消息就能把每次判定的 input
-// token 撑爆。
+// token 占满。
 const ctxTextLimit = 200
 
 // recentOwn 取发送者本人在本群最近 n 条留底（不含当前这条），由旧到新。
 //
-// 只取本人的：别人的发言（尤其是带「［引用］」载荷的广告）混进来，模型
-// 会把它当成本条消息引用的内容——线上真实误判过。从留底取而不是另开
-// 一个内存环：环按群共享、容量有限，活跃群里本人的上一条早被挤出去了；
+// 只取本人的：别人的发言（尤其是带［引用］载荷的广告）混进来，模型
+// 会把它当成本条消息引用的内容，导致误判。从留底取而不是另开
+// 一个内存环：环按群共享、容量有限，活跃群里本人的上一条容易被挤出；
 // 留底按人建了索引，重启也不丢。
 //
-// 已处罚过的消息不进来（markPunished）：它们早已从群里删掉，却会在
-// 每一次后续判定里被当成「此人刚发的广告」，压着新消息反复把人往
-// 封禁推 —— 这条消息的账已经结清了，不该再记在上下文里。
+// 已处罚过的消息不进来（markPunished）：它们已从群里删掉，若留在
+// 上下文会被当成此人刚发的广告，在后续判定中反复把人推向封禁。
 func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
 	if n <= 0 || m.From == nil {
 		return nil
@@ -277,8 +275,8 @@ func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
 			continue
 		}
 		// 留底存的是 displayText（含引用）。引用段是别人的话，但不能
-		// 直接剥掉：剥掉会丢本人正文的对话语境（打赏玩笑被读成收款
-		// 索要），换成带归属的标记两边的实测误判都防住（见 historyText）。
+		// 直接剥掉：剥掉会丢本人正文的对话语境；换成带归属的标记可同时
+		// 避免两类误判（见 historyText）。
 		t := historyText(h.Text)
 		if strings.TrimSpace(t) == "" {
 			continue
@@ -297,7 +295,7 @@ const (
 	DigestFPHeader = "【易误杀的正常形态】"
 
 	// 摘要样本的围栏。样本是攻击者完全控制的群消息原文，必须明确
-	// 标成「数据区」，且 system 提示词里要声明围栏内不得当指令执行。
+	// 标成数据区，且 system 提示词里要声明围栏内不得当指令执行。
 	digestFenceOpen  = "<<<"
 	digestFenceClose = ">>>"
 )
@@ -327,15 +325,15 @@ func splitDigest(d string) (patterns, falsePositives string) {
 // isNewbie 判定是否按新人档处置。两个条件任一命中即为新人：
 // 刚进群，或进群久了但几乎没发过言（潜伏号）。
 //
-// 两条界限都可以按 bot 覆盖：技术群和闲聊群对「新人」的合理定义不一样，
+// 两条界限都可以按 bot 覆盖：技术群和闲聊群对新人的合理定义不一样，
 // 而这两个群往往归不同的人管。
 func isNewbie(b *core.Bot, snap *store.Snapshot, p senderProfile) bool {
 	id := b.BotID()
 	// 年龄轴只在进群时间确实已知时参与判定。AgeKnown 为假时 AgeHours 退回
-	// first_seen，而 first_seen 是「bot 第一次见到这个人发言」——上线首日
-	// 全群元老的 first_seen 都约等于此刻，采信它会把待了五年的人一起打成新人，
-	// 正好是「老成员低风险」的反面。这也与提示词里
-	// 「age_known 为 false 时按普通成员对待，不要因此加重怀疑」保持同向。
+	// first_seen，而 first_seen 是 bot 第一次见到这个人发言——首次启用时
+	// 全部老成员的 first_seen 都约等于此刻，采信它会把老成员一并判为新人，
+	// 与老成员低风险的口径相反。这也与提示词里
+	// age_known 为 false 时按普通成员对待、不要因此加重怀疑保持同向。
 	if p.AgeKnown && p.AgeHours < snap.BotSettingInt(id, "antiad_new_hours", 72) {
 		return true
 	}

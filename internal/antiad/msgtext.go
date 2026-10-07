@@ -11,9 +11,9 @@ import (
 // msgText 返回参与判定的正文：本人正文（为空时取图片/视频配文），再加上
 // 消息附带的非文字载荷，每种一行、带方括号前缀。
 //
-// 只看 Text 会把「图片 + 配文」这一整类漏光；只看 Text/Caption 又会把
-// 联系人卡片、投票、文件名、藏在「点这里」背后的链接、内联按钮漏光——
-// 它们在「无正文」守门处被直接放过，而卡片的名字与号码本身就是广告。
+// 只看 Text 会漏掉图片 + 配文这一整类；只看 Text/Caption 又会漏掉联系人
+// 卡片、投票、文件名、文字背后的链接、内联按钮 —— 它们在无正文守门处被
+// 直接放过，而卡片的名字与号码本身就是广告。
 func msgText(m *tg.Message) string {
 	var parts []string
 	if m.Text != "" {
@@ -25,7 +25,7 @@ func msgText(m *tg.Message) string {
 		parts = append(parts, m.Vision)
 	}
 	// 分两次遍历而不是 append 拼接两个切片：后者可能写进 Entities 的
-	// 备用容量，与并发读同一条消息的人互相踩。
+	// 备用容量，与并发读同一条消息的调用方产生数据竞争。
 	for _, es := range [][]tg.MessageEntity{m.Entities, m.CaptionEntities} {
 		for _, e := range es {
 			if e.Type == "text_link" && e.URL != "" {
@@ -124,7 +124,7 @@ func chatLabel(title, username string) string {
 }
 
 // forwardSource 取转发来源的名字。从引流频道整条转发进群是常见形态，
-// 来源名本身就是信号（「日赚频道」），只标 is_forwarded 模型看不到它。
+// 来源名本身就是信号，只标 is_forwarded 模型看不到它。
 func forwardSource(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -153,18 +153,17 @@ func forwardSource(raw json.RawMessage) string {
 }
 
 // quoteMark 是拼接被引用内容的标记，displayText / judgingText / 留底回填
-// （stripQuotedTail）共用同一个字面量 —— 分开写的话，改一处忘一处就会
-// 在历史里留下剥不掉的引用段。
+// （stripQuotedTail）共用同一个字面量。
 const quoteMark = "［引用］"
 
-// displayText 是「这条消息在群里实际可见的全部文字」：本人正文加上
-// 被引用的内容。
+// displayText 是这条消息在群里实际可见的全部文字：本人正文加上被引用的
+// 内容。
 //
 // 判空、去重、上下文、落库、告警五处共用它，因为引用规避会把本人正文
 // 压到空或一两个字符：
 //   - 只看本人正文判空 → 整条漏判
-//   - 只拿本人正文做去重 → 所有空正文消息哈希成同一个 key，
-//     第一条之后全被当成重复吞掉
+//   - 只拿本人正文做去重 → 所有空正文消息哈希成同一个 key，第一条之后
+//     全被当成重复跳过
 //   - 只拿本人正文落库/告警 → 管理员和形态总结看到的都是空白
 //
 // 送检载荷不用它：那里 message.text 与 quoted 必须分开，保住归属；
@@ -173,12 +172,12 @@ func displayText(m *tg.Message) string {
 	return joinQuote(msgText(m), quotedInfo(m))
 }
 
-// judgingText 是真正参与判定与规则匹配的文本：本人正文 + **外部聊天**引用。
+// judgingText 是真正参与判定与规则匹配的文本：本人正文 + 外部聊天引用。
 //
-// 群内引用是别人的话：有人引用一条广告来提醒管理员 / 批评 / 询问，那是
-// 举报与讨论，把那段广告算到引用者头上会把他判成发广告的人。外部引用
-// （频道、其它聊天）照旧保留 —— 那是「正文为空、载荷全在引用里」的主要
-// 规避形态。留底、去重、告警仍走 displayText（审计口径，引用照实保留）。
+// 群内引用是别人的话：引用一条广告来提醒管理员 / 批评 / 询问属于举报与
+// 讨论，把那段广告算到引用者头上会把他判成发广告的人。外部引用（频道、
+// 其它聊天）保留 —— 那是正文为空、载荷全在引用里的主要规避形态。留底、
+// 去重、告警仍走 displayText（审计口径，引用照实保留）。
 func judgingText(m *tg.Message) string {
 	q := quotedInfo(m)
 	if q == nil || !q.IsExternal {
@@ -205,19 +204,15 @@ const historyQuoteMark = "［引用·别人的话］"
 // historyText 把留底文本转成喂给模型的历史条目（recent_context 与 /check
 // 的 review_history 都从这里走）。
 //
-// 引用段不能直接剥掉，也不能原样保留，两边都有实测误判：
-//   - 剥掉（stripQuotedTail 的旧做法）：本人正文失去对话语境 —— 老成员
-//     回应群友「准备上天台了」的打赏玩笑「100u吃个米粉就行+钱包地址」，
-//     引用被剥掉后在整体复查里被读成「收款索要」，整个账号定性为广告、
-//     连带删了正常发言。
-//   - 原样保留：「引用广告提醒管理员」的人，历史里那段广告看起来像他
-//     自己在发广告（同样线上实测过）。
+// 引用段不能直接剥掉，也不能原样保留：
+//   - 剥掉：本人正文失去对话语境，整体复查时可能被误读。
+//   - 原样保留：引用广告提醒管理员的人，历史里那段广告看起来像他在发。
 //
-// 换成带归属的标记后，模型既能用引用段理解本人在回应什么，又不会把
-// 别人的话记在发言者头上。
+// 带归属的标记让模型既能用引用段理解本人在回应什么，又不会把别人的话
+// 记在发言者头上。
 func historyText(text string) string {
 	// 引用段由 displayText 接在正文后面（换行 + 标记），或整条都是引用；
-	// 只改第一处标记 —— 引用内容里再出现「［引用］」字样是原文，不动。
+	// 只改第一处标记 —— 引用内容里再出现“［引用］”字样是原文，不动。
 	if strings.HasPrefix(text, quoteMark) {
 		return historyQuoteMark + text[len(quoteMark):]
 	}
@@ -258,7 +253,7 @@ func senderName(u *tg.TGUser) string {
 	return fmt.Sprint(u.ID)
 }
 
-// displayUserName 把 TG 资料拼成「名 姓 (@username)」。
+// displayUserName 把 TG 资料拼成“名 姓 (@username)”的形式。
 func displayUserName(u *tg.TGUser) string {
 	if u == nil {
 		return ""

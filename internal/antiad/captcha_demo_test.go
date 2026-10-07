@@ -173,7 +173,7 @@ func TestParseCaptchaDemoKeys(t *testing.T) {
 		t.Error("cap 是内置实现，不该进演示密钥表")
 	}
 	for _, bad := range []string{
-		"recaptcha=a,b",  // 已移除
+		"recaptcha=a,b",  // 不支持的提供方
 		"turnstile=sk1",  // 缺 secret
 		"turnstile=,sec", // 缺 site key
 		"turnstile=a,b,c",

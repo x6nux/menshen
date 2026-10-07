@@ -1,4 +1,4 @@
-// 用户页行为测试（5.1 迁移不变量）：默认只看被处置过的、记录行可进详情、
+// 用户页行为测试：默认只看被处置过的、记录行可进详情、
 // hasMore 用 shown 判断；资料卡字段完整渲染。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
@@ -48,7 +48,7 @@ describe('UserPage', () => {
     expect(screen.getByText(/1 个/)).toBeInTheDocument()
     expect(screen.getByText(/共 2 条，其中被处置过 1 条/)).toBeInTheDocument()
 
-    // 默认分段选中「只看被处置过的」
+    // 默认分段选中 `只看被处置过的`
     expect(screen.getByRole('button', { name: '只看被处置过的' })).toHaveAttribute(
       'aria-pressed',
       'true',

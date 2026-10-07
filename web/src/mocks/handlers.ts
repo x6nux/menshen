@@ -54,7 +54,7 @@ const APPEAL_OPEN_STATUSES = ['statement', 'ai', 'web', 'noweb', 'code']
 
 const SYSLOG_PAGE_SIZE = 50
 
-/** 级别名 -> 序数，用于「不低于」下限筛选（与后端 logbuf.ParseLevel 同口径）。 */
+/** 级别名 -> 序数，用于级别下限筛选（与后端 logbuf.ParseLevel 同口径）。 */
 const SYSLOG_LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 }
 
 function sysLogMatches(row: SysLogRow, q: string): boolean {
@@ -65,7 +65,7 @@ function sysLogMatches(row: SysLogRow, q: string): boolean {
     .includes(needle)
 }
 
-/** 与后端一致：级别是「不低于」下限；counts 只受搜索影响、不受下限影响。 */
+/** 与后端一致：级别按不低于下限筛选；counts 只受搜索影响、不受下限影响。 */
 function filterSysLogs(level: string, q: string): { rows: SysLogRow[]; counts: SysLogCounts } {
   const searched = mockSysLogs.filter((row) => sysLogMatches(row, q))
   const counts: SysLogCounts = { debug: 0, info: 0, warn: 0, error: 0 }
@@ -110,7 +110,7 @@ export const handlers = [
   http.post('*/miniapp/api/user', async ({ request }) => {
     const body = await bodyOf(request)
     const all = body.filter === 'all'
-    // 「被处置过」= 有处置动作（与后端 ProcessedCond 的口径一致，mock 用 action!='none' 近似）。
+    // `被处置过` = 有处置动作（与后端 ProcessedCond 的口径一致，mock 用 action!='none' 近似）。
     const filtered = all ? mockUser.logs : mockUser.logs.filter((l) => l.action !== 'none')
     const page = Math.max(1, Number(body.page ?? 1) || 1)
     const start = (page - 1) * LOG_PAGE_SIZE

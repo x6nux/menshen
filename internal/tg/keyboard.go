@@ -4,8 +4,7 @@ import "strings"
 
 // URLBtn 把一个链接包装成 InlineKB 能识别的按钮值。
 //
-// 用前缀约定而不是给 InlineKB 换一套参数类型：url 按钮只有自助解除
-// 那一处在用，为它把几十个调用点的类型全改一遍不划算。
+// 用前缀约定而非给 InlineKB 增加参数类型：url 按钮仅自助解除一处使用。
 const urlBtnPrefix = "\x00url\x00"
 
 func URLBtn(u string) string { return urlBtnPrefix + u }

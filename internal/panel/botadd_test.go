@@ -9,13 +9,13 @@ import (
 	"menshen/internal/tg"
 )
 
-// 另一个格式合法但完全虚构的 token，用于「接入第二个 bot」的场景。
+// 格式合法但虚构的 token，用于接入第二个 bot 的测试场景。
 const testToken2 = "555555555:CCotherfaketoken_ForUnitTests5555555"
 
-// TestPrecheckRejectsLocally 确认能在本地挡掉的都别去打 TG。
+// TestPrecheckRejectsLocally 验证本地可判定的失败不发起 TG 请求。
 //
-// precheck 的全部价值就是「不出网」：格式错、重复接入、超配额这三类
-// 占了失败的绝大多数，先跑一次 getMe 再告诉他「你已经加过了」既慢又蠢。
+// precheck 的作用是不出网：格式错误、重复接入、超配额三类失败占多数，
+// 先请求 getMe 再返回错误既慢又无必要。
 func TestPrecheckRejectsLocally(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -31,11 +31,11 @@ func TestPrecheckRejectsLocally(t *testing.T) {
 	}
 }
 
-// TestPrecheckRequiresWebhook 确认子 bot 只能走 webhook。
+// TestPrecheckRequiresWebhook 验证子 bot 只能走 webhook。
 //
 // 长轮询要为每个 bot 各开一条 getUpdates 长连接，而 Telegram 的限速
-// 同时按 bot 和出口 IP 算，几个 bot 一起轮询会互相挤掉配额 —— 表现是
-// 所有 bot 一起变慢、一起丢更新，且没有任何一条日志指向真正的原因。
+// 同时按 bot 和出口 IP 计算，多个 bot 同时轮询会相互挤占配额，表现为
+// 所有 bot 一起变慢、一起丢失更新，且没有日志指向真实原因。
 func TestPrecheckRequiresWebhook(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	b.Cfg.PublicURL = "" // 长轮询模式
@@ -48,8 +48,8 @@ func TestPrecheckRequiresWebhook(t *testing.T) {
 		t.Errorf("错误里应当说清怎么解决，得到 %q", err)
 	}
 
-	// 配置里那个主 bot 例外：它就是长轮询模式下唯一的那条通道，
-	// 挡住它等于连主 bot 都起不来。
+	// 配置中的主 bot 是例外：它是长轮询模式下唯一可用的通道，
+	// 拦截它会导致主 bot 无法启动。
 	b.Cfg.BotToken = testToken2
 	if err := reg.Precheck(testToken2, 777); err != nil {
 		t.Errorf("配置里的主 bot 不该被挡: %v", err)
@@ -63,10 +63,10 @@ func TestPrecheckRequiresWebhook(t *testing.T) {
 	}
 }
 
-// TestLoadAllSkipsSubBotsInPolling 确认长轮询模式下不给子 bot 建实例。
+// TestLoadAllSkipsSubBotsInPolling 验证长轮询模式下不为子 bot 创建实例。
 //
-// 建了也不会去轮询它 —— 只是让面板显示它在运行，而它一条更新都收不到。
-// 记录留在表里不动：切回 webhook 模式后它们应当自动恢复。
+// 即使创建也不会轮询它，只会让面板显示其在运行，而它收不到任何更新。
+// 记录仍保留在表中：切回 webhook 模式后应自动恢复。
 func TestLoadAllSkipsSubBotsInPolling(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	b.Cfg.PublicURL = "" // 长轮询模式
@@ -88,7 +88,7 @@ func TestLoadAllSkipsSubBotsInPolling(t *testing.T) {
 	}
 }
 
-// TestPrecheckQuota 确认配额对次管生效、对主管不生效。
+// TestPrecheckQuota 验证配额对次管生效、对主管不生效。
 func TestPrecheckQuota(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch) // 主管是 777
 	if err := b.AddAdmin(200, "次管", 777); err != nil {
@@ -108,10 +108,9 @@ func TestPrecheckQuota(t *testing.T) {
 	}
 }
 
-// TestRegisterProbeFailureLeavesNothing 确认验真失败不留半个 bot。
+// TestRegisterProbeFailureLeavesNothing 验证验真失败时不留下任何记录。
 //
-// 落了库却没有实例，表现是面板上躺着一个「已接入」、名下的群却永远
-// 收不到任何更新 —— 排查时最难想到的方向。
+// 若落库却没有实例，面板会显示已接入，但其名下的群永远收不到更新。
 func TestRegisterProbeFailureLeavesNothing(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -139,7 +138,7 @@ func TestRegisterProbeFailureLeavesNothing(t *testing.T) {
 	}
 }
 
-// TestFinishSetupRegistersWebhook 确认接入后自动挂上回调地址。
+// TestFinishSetupRegistersWebhook 验证接入后自动注册回调地址。
 func TestFinishSetupRegistersWebhook(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -161,8 +160,8 @@ func TestFinishSetupRegistersWebhook(t *testing.T) {
 	}
 }
 
-// TestFinishSetupSkipsWebhookInPolling 确认轮询模式下不设 webhook。
-// 设了的话 getUpdates 会一直拿 409，表现为「一条消息都收不到」。
+// TestFinishSetupSkipsWebhookInPolling 验证轮询模式下不设置 webhook。
+// 设置后 getUpdates 会持续返回 409，表现为收不到任何消息。
 func TestFinishSetupSkipsWebhookInPolling(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -209,10 +208,9 @@ func TestAddBotAndReportSucceeds(t *testing.T) {
 	}
 }
 
-// TestAddBotAndReportProbeFailure 确认失败时会续上会话让他重发。
+// TestAddBotAndReportProbeFailure 验证失败时续上输入会话以便重发。
 //
-// 接入失败最常见的原因是 token 复制少了几个字符。让他重新点一遍按钮
-// 才能再试，是在惩罚一个手滑。
+// 失败时续上输入会话，用户可直接重发 token，无需回到面板重新点击按钮。
 func TestAddBotAndReportProbeFailure(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
@@ -232,17 +230,15 @@ func TestAddBotAndReportProbeFailure(t *testing.T) {
 	}
 }
 
-// TestBotAddDeletesTokenMessage 确认含 token 的那条消息被自动删掉。
+// TestBotAddDeletesTokenMessage 验证含 token 的消息被自动删除。
 //
-// token 等同于该 bot 的完整控制权。指望用户自己记得删是不现实的，
-// 而它会一直躺在聊天记录里 —— 换设备登录、被人借手机看一眼都够了。
+// token 等同于该 bot 的完整控制权，留存在聊天记录中即构成泄露风险。
 func TestBotAddDeletesTokenMessage(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)
 
-	// 刻意用一个**接不进来**的 token（已注册过）：那条消息照样得删。
-	// 删除必须排在一切校验之前 —— 按「成功了才删」写的话，恰好是失败
-	// 那几次把 token 留在了聊天记录里。
+	// 使用一个无法接入的 token（已注册过）：该消息同样必须删除。
+	// 删除排在所有校验之前，否则失败路径会把 token 留在聊天记录中。
 	m := &tg.Message{MessageID: 33, From: &tg.TGUser{ID: 777},
 		Chat: &tg.Chat{ID: 777, Type: "private"}, Text: testutil.TestToken}
 	handleSettingsInput(b, m, core.PendingInput{Op: "bot_add"}, testutil.TestToken)
@@ -256,7 +252,7 @@ func TestBotAddDeletesTokenMessage(t *testing.T) {
 	}
 }
 
-// TestBotAddRejectsEarly 确认本地就能判的失败不会走到「正在验证」那一步。
+// TestBotAddRejectsEarly 验证本地可判定的失败不会进入验证流程。
 func TestBotAddRejectsEarly(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	fake := b.TG.(*testutil.FakeTG)

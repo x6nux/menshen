@@ -20,14 +20,14 @@ import (
 
 // ---- 历史成员入群时间补全 ----
 //
-// Bot API 没有「入群时间」字段：getChatMember 只给 status/权限/until_date。
+// Bot API 没有入群时间字段：getChatMember 只给 status/权限/until_date。
 // 只有 MTProto 的 channels.getParticipants 带 ChannelParticipant.date（官方
-// 定义就是 Date joined）。好在这一步不需要用户账号 —— 用 bot 自己的 token
+// 定义就是 Date joined）。这一步不需要用户账号 —— 用 bot 自己的 token
 // 登录 MTProto（auth.importBotAuthorization）就行，所以仍是纯 bot。
 //
 // 触发点：bot 在某个群里**刚拿到管理员权限**时补一次。此后新入群由
-// chat_member 更新实时记录（那是 Bot API 有的），补全只负责「入群之前就在
-// 群里、入群时间未知」的那批历史成员 —— 年龄轴（新人/老人分档）靠它。
+// chat_member 更新实时记录（那是 Bot API 有的），补全只负责入群之前就在
+// 群里、入群时间未知的那批历史成员 —— 年龄轴（新人/老人分档）靠它。
 //
 // 需要宿主上有 python3 + telethon，以及配置里的 tg_api_id / tg_api_hash
 // （my.telegram.org 申请）。缺任何一样都只记一条日志、不影响判定。
@@ -59,7 +59,7 @@ type backfillRow struct {
 	Joined int64
 }
 
-// backfillRunner 是「跑一次补全脚本」的实现，测试里替换掉。
+// backfillRunner 是跑一次补全脚本的实现，测试里替换掉。
 var backfillRunner = runJoinBackfillScript
 
 // BackfillRow 是补全结果的一行（导出版，供测试与其他包使用）。
@@ -76,7 +76,7 @@ func SwapBackfillRunner(fn func(*core.Bot, int64, string) ([]BackfillRow, error)
 
 // StartJoinBackfill 起一个补全任务，返回是否真的起了与不能起的原因。
 //
-// force 为真时绕过 24 小时冷却 —— 配置台上的「补全历史入群时间」是管理员
+// force 为真时绕过 24 小时冷却 —— 配置台上的`补全历史入群时间`是管理员
 // 的明确动作，不该被自动触发的冷却挡住。任务跑在后台：万人大群要翻很多页，
 // 结果由私聊通知给出。
 func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (bool, string) {
@@ -94,8 +94,7 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 		}
 	}
 	// 先同步拿锁再答应：全局同时只允许一个补全任务（同一个 bot 的 MTProto
-	// 会话文件不能并发使用）。拿不到锁就如实回「有任务在跑」——以前是先进
-	// 协程再 TryLock，抢不到就悄悄丢掉，而接口已经回了「已开始」。
+	// 会话文件不能并发使用）。拿不到锁就如实回`有任务在跑`。
 	if !joinBackfillRunning.TryLock() {
 		if !force {
 			slog.Info("入群时间补全：已有任务在跑，跳过这一轮", "chat", chatID)
@@ -182,17 +181,17 @@ func chatUsername(b *core.Bot, chatID int64) string {
 
 // ---- 按需实时查询（单个人） ----
 //
-// 批量列表会漏人（大群服务端截断在一万条左右，小群也会漏受限账号），而
-// 绝大部分成员一辈子也不会被用到。所以不再预先全查：/jtime、判定与复查
-// 真正需要年龄轴时，实时查这一个人，查到就写进 group_members.joined_at
-// —— 库就是缓存，查过一次之后都是秒回。
+// 批量列表会遗漏成员（大群服务端截断在一万条左右，小群也会遗漏受限账号），
+// 而绝大部分成员永远用不到。因此不做预先全查：/jtime、判定与复查真正需要
+// 年龄轴时，实时查这一个人，查到就写进 group_members.joined_at —— 库即
+// 缓存，查过一次之后都直接命中。
 
 // joinLookupTimeout 是单人查询的等待上限。脚本要起 python、连 MTProto、
 // 发一两次请求，正常几秒；超时按查不到处理，别把调用方拖太久。
 const joinLookupTimeout = 20 * time.Second
 
 const (
-	// joinLookupMissTTL 是「确实查不到」（已退群/被踢）的负缓存时长。
+	// joinLookupMissTTL 是确实查不到（已退群/被踢）的负缓存时长。
 	joinLookupMissTTL = 6 * time.Hour
 	// joinLookupErrTTL 是查询本身失败（网络、FLOOD_WAIT、超时）的负缓存，
 	// 短一些：过一会儿值得再试。
@@ -278,7 +277,7 @@ func ensureJoinAge(b *core.Bot, chatID int64, p *senderProfile) {
 	}
 }
 
-// ensureJoinAgeFresh 是 /check 复查用的入群时间补全：先清掉「查不到」的
+// ensureJoinAgeFresh 是 /check 复查用的入群时间补全：先清掉查不到的
 // 负缓存再查，给一次全新的实时查询机会。复查绕过所有缓存 —— 负缓存也
 // 是缓存。库里的 joined_at 是事实不是缓存，已有值不受影响。
 func ensureJoinAgeFresh(b *core.Bot, chatID, uid int64, p *senderProfile) {

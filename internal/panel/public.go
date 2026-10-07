@@ -4,7 +4,7 @@ package panel
 // （v）、申诉详情页（apv）共用一份 public.html 产物。壳本身不含任何数据，
 // 数据接口在 antiad.WebHandler（_w 下的 ?json=1 与 POST），签名校验在那里。
 //
-// main.go 的路由层用 antiad.IsWebPagePath 判断「GET/HEAD + 无 json=1」的
+// main.go 的路由层用 antiad.IsWebPagePath 判断 GET/HEAD 且无 json=1 的
 // 页面请求，先交给本 Handler 发壳。
 
 import (
@@ -46,7 +46,7 @@ func PublicShellHandler(sh *core.Shared) http.Handler {
 //   - 脚本只有同源产物与验证码组件，没有内联脚本，所以不需要 nonce；
 //   - MUI/Emotion 在运行时注入 style 标签，style-src 必须放行 inline；
 //   - Turnstile 的来源始终放行（申诉页固定用它）；
-//   - 再按 config 里出现的提供方追加来源：生产的 captcha_provider 与演示页
+//   - 再按 config 里出现的提供方追加来源：captcha_provider 与演示页
 //     captcha_demo_keys 里列出的每一家。演示页可能一次展示多家，少放行一个
 //     来源时那个组件会静默不显示、验证永远不通过；
 //   - Cap 是内置的 Go 服务（组件从 jsdelivr 拉、挑战走同源），只放行 CDN；

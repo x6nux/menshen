@@ -229,7 +229,7 @@ func TestDirectRedeemScopes(t *testing.T) {
 
 // TestIssueUnlockCodeRequiresOpenWebStatus：签发必须带状态条件。
 // 并发提交（同一张单的两个 POST）各签一个码的话，先返回的那个会被后一次
-// UPDATE 覆盖成无效码，用户拿去兑换只会得到「已失效」。
+// UPDATE 覆盖成无效码，用户拿去兑换只会得到 `已失效`。
 func TestIssueUnlockCodeRequiresOpenWebStatus(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	now := time.Now().Unix()

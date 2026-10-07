@@ -19,8 +19,8 @@ func memberInfo(uid int64, status string, canSend *bool) *tg.ChatMemberInfo {
 
 func boolPtr(v bool) *bool { return &v }
 
-// TestReassertMuteAfterExternalUnmute：入群验证机器人（nmbot 那类）验证通过
-// 后会把权限全量开回来，那一下会盖掉我们给的进群限制 —— 库里记录还在，
+// TestReassertMuteAfterExternalUnmute：入群验证机器人验证通过后会把权限
+// 全量开回来，从而盖掉我们给的进群限制 —— 库里记录还在，
 // 人却已经能发言。这里盯 chat_member 更新，按剩余时长重新施加。
 func TestReassertMuteAfterExternalUnmute(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -125,7 +125,7 @@ func TestReassertMuteSkipsOtherCases(t *testing.T) {
 	}
 }
 
-// TestReassertMuteThrottled：与别的 bot 打起来时（它解除、我们施加、它再
+// TestReassertMuteThrottled：与别的 bot 相互拉锯时（它解除、我们施加、它再
 // 解除）不能无限循环：同一个人每小时最多重新施加几次。
 func TestReassertMuteThrottled(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
@@ -153,9 +153,9 @@ func TestReassertMuteThrottled(t *testing.T) {
 	}
 }
 
-// TestReassertActiveMutesPeriodic：周期复查只对「人在群里、且现在能发言」的
+// TestReassertActiveMutesPeriodic：周期复查只对人在群里、且现在能发言的
 // 进群限制重新施加 —— 那才是被外部（验证机器人等）解除的样子；仍在限制里
-// 或已离群的人不动。这条路径此前没有测试，条件一度写反导致兜底完全失效。
+// 或已离群的人不动。
 func TestReassertActiveMutesPeriodic(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, func(*core.Bot, *tg.Update) {})
 	testutil.EnableAntiad(t, b, -100)

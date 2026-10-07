@@ -15,7 +15,7 @@ const jtimeUsage = "用法：直接发 <code>/jtime</code> 查你自己，" +
 	"回复某人的消息查对方，或发 <code>/jtime &lt;user_id&gt;</code> / " +
 	"<code>/jtime @用户名</code>。\n显示该用户在本群的入群时间。"
 
-// joinAgeLabel 把「入群多久了」渲染成人话。
+// joinAgeLabel 把入群时长渲染成可读文案。
 func joinAgeLabel(sec int64) string {
 	switch {
 	case sec < 60:
@@ -38,15 +38,15 @@ func joinAgeLabel(sec int64) string {
 // 查询对象：回复某人的消息 = 对方；带 user_id/@用户名 = 那人；什么都不带 =
 // 发送者自己。
 //
-// 只读命令：不花钱、不动手，对所有人开放（与 /check 同），但仍按发起人
-// 限频 —— 结果是一条发到群里的卡片，刷起来会刷屏。
+// 只读命令：不调用模型、不做处置，对所有人开放（与 /check 同），但仍按
+// 发起人限频 —— 结果是一条发到群里的卡片，刷屏会占用群消息。
 // 命令消息立即删除（与 /ban、/uad 一致），结果卡片按 antiad_alert_ttl
 // 延迟撤回。
 //
 // 数据来源就是 group_members.joined_at：新入群靠 chat_member 事件实时记，
 // bot 拿到管理员权限之前就在群里的人靠 MTProto 补全（Mini App 的
-// 「补全历史入群时间」或拿到权限时的自动补全）。两样都没有时如实说未知，
-// 顺带给出首见时间当「至少待到这时」的下界。
+// “补全历史入群时间”或拿到权限时的自动补全）。两样都没有时如实说未知，
+// 顺带给出首见时间作为至少待到此刻的下界。
 func HandleJtimeCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	chatID := conf.ChatID
 	snap := b.Cache.Snap()

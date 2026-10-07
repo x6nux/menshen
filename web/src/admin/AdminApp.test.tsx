@@ -1,5 +1,5 @@
 // 桌面端管理面板的外壳测试：会话有效时渲染侧栏与内容，401 时给登录指引。
-// api 换成 spy，其余（ApiError）保真。
+// api 替换为 spy，其余（ApiError）保真。
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../api/client'

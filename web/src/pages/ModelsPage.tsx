@@ -1,6 +1,6 @@
-// 模型定价（计划 4.9，仅主管理员）：
+// 模型定价（仅主管理员）：
 // - 列表：搜索（名称，本地）；行 = 等宽模型名 + 启用徽标 + 单价摘要；
-// - 「＋」抽屉：上游（仅启用中）+ 模型 ID + 四个价格（数字键盘）→ model add；
+// - ＋ 抽屉：上游（仅启用中）+ 模型 ID + 四个价格（数字键盘）→ model add；
 // - 详情：四价格编辑、启停 Switch（乐观）、删除（ActionSheet 写明对象）。
 import { Box, Button, MenuItem, TextField, Typography } from '@mui/material'
 import { useState } from 'react'

@@ -14,7 +14,7 @@ import (
 
 // TestAdminPanelLoginAndCookieAuth：签名链接登录 → HttpOnly 会话 cookie →
 // 带 X-Web 头的 /admin/api 请求通过；缺头/坏 cookie/坏链接都不放行。
-// 同时守「面板与 Mini App 已拆开」：会话 cookie 打不到 /miniapp/api。
+// 同时验证面板与 Mini App 的鉴权边界：会话 cookie 打不到 /miniapp/api。
 func TestAdminPanelLoginAndCookieAuth(t *testing.T) {
 	env := newMiniEnv(t)
 	env.sh.Cfg.PublicURL = "https://ad.example.com"
@@ -84,7 +84,7 @@ func TestAdminPanelLoginAndCookieAuth(t *testing.T) {
 		t.Errorf("401 文案应指路重新获取链接：%s", w.Body.String())
 	}
 
-	// 会话 cookie 打不到 Mini App API：面板与 Mini App 的鉴权已分开。
+	// 会话 cookie 打不到 Mini App API：面板与 Mini App 鉴权相互独立。
 	req := httptest.NewRequest(http.MethodPost, "/miniapp/api/state", strings.NewReader("{}"))
 	req.Header.Set(miniBotIDHeader, strconv.FormatInt(testutil.TestBotID, 10))
 	req.Header.Set(webAuthHeader, "1")

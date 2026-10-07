@@ -62,7 +62,7 @@ func (u *Upstream) BuildBody(ep Endpoint, model string, payload map[string]any) 
 	b["model"] = id
 	// 统一默认流式：chat 载荷没写 stream 时按流式发（上游忽略、回整包
 	// JSON 时读侧也能回落）。systemone 是 TypeSafe 原生形态，多带字段
-	// 会 400，绝不动。
+	// 会 400，不能改。
 	if ep == EPChat {
 		if _, ok := b["stream"]; !ok {
 			b["stream"] = true

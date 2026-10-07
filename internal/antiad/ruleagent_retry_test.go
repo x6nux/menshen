@@ -64,7 +64,7 @@ func (f *fakeRetryModel) WithTools([]*schema.ToolInfo) (model.ToolCallingChatMod
 	return f, nil
 }
 
-// timeoutErr 造一个与线上一致的客户端超时错误（url.Error 包装 DeadlineExceeded）。
+// timeoutErr 造一个客户端超时错误（url.Error 包装 DeadlineExceeded）。
 func timeoutErr() error {
 	return &url.Error{Op: "Post", URL: "https://up.example/v1/chat/completions",
 		Err: context.DeadlineExceeded}
@@ -218,7 +218,7 @@ func TestRetryChatModelStreamRetriesCreation(t *testing.T) {
 }
 
 // TestRetryChatModelRetriesAPIError429：网关回整包 429 时 SDK 产生的是
-// APIError 而不是 RequestError，同样必须重试（线上踩过：整轮 7 秒收场）。
+// APIError 而不是 RequestError，同样必须重试，否则整轮发现会提前结束。
 func TestRetryChatModelRetriesAPIError429(t *testing.T) {
 	sleeps := setupRetryTest(t)
 	inner := &fakeRetryModel{errs: []error{

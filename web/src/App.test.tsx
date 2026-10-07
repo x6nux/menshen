@@ -159,7 +159,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '群组' }))
     expect(await screen.findByText('测试群')).toBeInTheDocument()
 
-    // 搜索词在进入详情再返回后不丢（计划 2.2：页面内存状态导航往返保留）
+    // 搜索词在进入详情再返回后不丢（页面内存状态导航往返保留）
     fireEvent.change(screen.getByLabelText('搜索群组'), { target: { value: '第二个' } })
     expect(screen.queryByText('测试群')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('第二个群'))
@@ -179,7 +179,7 @@ describe('App', () => {
     await screen.findByText('门神')
 
     fireEvent.click(screen.getByRole('button', { name: '记录' }))
-    // 记录分段默认「已删除」
+    // 记录分段默认 `已删除`
     expect(await screen.findByText('已删除')).toBeInTheDocument()
 
     fireEvent.click(await screen.findByRole('button', { name: /#9812/ }))

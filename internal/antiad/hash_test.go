@@ -47,7 +47,7 @@ func TestMessageAdHashDeletesDirectly(t *testing.T) {
 }
 
 // TestHashHitWithoutLLMOnlyDeletes：按置信度分档（bool 模式关）时，没配复判
-// 模型则命中哈希只删不禁——禁言只由复判模型决定，不沿用当初那条的禁言。
+// 模型则命中哈希只删不禁——禁言只由复判模型决定，不沿用产生该哈希那条的禁言。
 // 按模型结论定档时不这样（哈希命中的内容本身就是模型判过的广告，见
 // TestHashHitPunishesInBoolMode）。
 func TestHashHitWithoutLLMOnlyDeletes(t *testing.T) {
@@ -74,7 +74,7 @@ func TestHashHitWithoutLLMOnlyDeletes(t *testing.T) {
 	}
 }
 
-// TestAccountAdNotHashed：账号级广告的正文可能只是「你好」，记下来会误删所有人的你好。
+// TestAccountAdNotHashed：账号级广告的正文可能只是普通问候，记下来会误删所有人的正常消息。
 func TestAccountAdNotHashed(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -103,7 +103,7 @@ func TestHashForgottenWhenReviewClean(t *testing.T) {
 	}
 }
 
-// TestForgetAdHashByLogText：管理员点「误判」时按流水原文撤掉哈希。
+// TestForgetAdHashByLogText：管理员点击误判时按流水原文撤掉哈希。
 func TestForgetAdHashByLogText(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)

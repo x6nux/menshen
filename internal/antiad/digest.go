@@ -27,8 +27,8 @@ const (
 
 // collectDigestSamples 取总结所需的正例与反例。
 //
-// 返回的 maxID 是「本次扫描到的全表最大 id」而非最大广告样本 id：
-// 用后者做游标的话，一段时间没有新广告时每小时都会重新扫出
+// 返回的 maxID 是本次扫描到的全表最大 id，而非最大广告样本 id：
+// 用后者做游标的话，一段时间没有新广告时每次都会重新扫出
 // 同一批样本并重复调用大模型。
 func collectDigestSamples(s *store.Store, sinceID int64) (
 	ads, fps []string, maxID int64, newAds int) {
@@ -68,7 +68,7 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 		out = append(out, core.TruncateRunes(t, digestSampleLimit))
 	}
 	// rows.Next() 因中途出错（如 WAL 写锁竞争）提前返回 false 时不会自己
-	// 报错，不查 rows.Err() 就会把「只扫到一半」悄悄当成「扫完了」，
+	// 报错，不查 rows.Err() 就会把只扫到一半悄悄当成扫完了，
 	// 总结样本被静默截断而没有任何可见信号。
 	if err := rows.Err(); err != nil {
 		slog.Error("反广告：取样读取失败", "err", err)
@@ -76,19 +76,19 @@ func queryTexts(s *store.Store, q string, limit int) []string {
 	return out
 }
 
-// digestRunning 保证形态总结不重入。面板的「立即重新总结」每次点击都会
+// digestRunning 保证形态总结不重入。面板的`立即重新总结`每次点击都会
 // 起一轮（go RunAdDigest(force=true)），重复点击会并发调大模型、竞态写
 // 摘要与游标，还会把同一批样本总结出两个版本。
 var digestRunning atomic.Bool
 
-// DigestFixLimit 是「修正文本」的长度上限。主管理员写给总结模型的口径
+// DigestFixLimit 是修正文本的长度上限。主管理员写给总结模型的口径
 // 说明（设置 antiad_digest_fix），每轮总结注入一次系统提示词。
 const DigestFixLimit = 800
 
-// runAdDigest 把已确认的广告样本与误判样本总结成一段形态摘要，
-// 回注入后续判定。force 为真时无视样本数阈值（面板上的「立即重新总结」）。
+// RunAdDigest 把已确认的广告样本与误判样本总结成一段形态摘要，
+// 回注入后续判定。force 为真时无视样本数阈值（面板上的`立即重新总结`）。
 //
-// 按「新增样本数」而非固定周期触发：群里没人发广告时不该白烧钱。
+// 按新增样本数而非固定周期触发：群里没有新广告时不应产生调用成本。
 //
 // 挂在 shared 上：摘要是全局的一份，多 bot 接入时也只该总结一次。
 func RunAdDigest(sh *core.Shared, force bool) {
@@ -121,15 +121,15 @@ func RunAdDigest(sh *core.Shared, force bool) {
 	prompt := buildDigestPrompt(ads, fps, maxChars)
 	system := digestSystemPrompt
 	if fix := strings.TrimSpace(snap.Setting("antiad_digest_fix")); fix != "" {
-		// 管理员的修正文本：与样本不同，这是**指令**而不是待分析的
-		// 数据，所以放在系统提示词里、不进围栏 —— 它就是用来压过
-		// 样本里的噪声与模型自己的偏好的。长度与摘要同源（都是每次
-		// 总结注入一次），不必按每条消息的成本算。
+		// 管理员的修正文本：与样本不同，它是指令而非待分析的数据，
+		// 所以放在系统提示词里、不进围栏 —— 用于压过样本里的噪声与
+		// 模型自身的偏好。长度与摘要同源（都是每次总结注入一次），
+		// 不必按每条消息的成本算。
 		system += "\n\n管理员对本次总结的修正要求（必须遵守，但不得改变上面的" +
 			"输出格式与小标题）：\n" + core.TruncateRunes(fix, DigestFixLimit)
 	}
 
-	// 定时任务没有「属于哪个 bot」的概念，没有可私聊的对象：上游告警
+	// 定时任务没有属于哪个 bot 的概念，没有可私聊的对象：上游告警
 	// 交给有 bot 上下文的判定路径发（那边才是常态入口）。
 	reply, err := aiCall(sh, upstream.EPChat, llmModels, map[string]any{
 		"temperature": 0,
@@ -173,9 +173,9 @@ func RunAdDigest(sh *core.Shared, force bool) {
 	}
 	if err := sh.PutSetting("antiad_digest_last_id",
 		strconv.FormatInt(maxID, 10)); err != nil {
-		// 游标没持久化：下一轮会用旧游标重扫，摘要其实只成功了一半。
-		// 这里直接返回、不再打「已更新」——那条日志的语义是「整轮成功」，
-		// 摘要写入但游标没跟上时打出来会让运维误以为闭环完全生效。
+		// 游标没持久化：下一轮仍用上一次的游标重扫，摘要只成功了一半。
+		// 这里直接返回、不记录`已更新`——该日志的语义是整轮成功，
+		// 摘要写入但游标没跟上时记录它会让运维误以为闭环完全生效。
 		slog.Error("反广告：摘要游标落库失败", "err", err)
 		return
 	}
@@ -235,7 +235,7 @@ func fenceSample(s string) string {
 	s = strings.ReplaceAll(s, DigestAdHeader, "〈标题〉")
 	s = strings.ReplaceAll(s, DigestFPHeader, "〈标题〉")
 	// 剥掉围栏标记本身：否则样本可以提前闭合自己的围栏，
-	// 让后面的内容落到「指令区」。
+	// 让后面的内容落到指令区。
 	s = strings.ReplaceAll(s, digestFenceOpen, "〈")
 	s = strings.ReplaceAll(s, digestFenceClose, "〉")
 	return s

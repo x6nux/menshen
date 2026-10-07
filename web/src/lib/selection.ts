@@ -12,7 +12,7 @@ export interface SelectionOutcome<T> {
 }
 
 /**
- * toggleChatSelection 在「同 bot、最多 limit 个」的约束下切换一项：
+ * toggleChatSelection 在约束（同一 bot、最多 limit 个）下切换一项：
  * - 已选中 → 取消（永远允许，腾出名额）；
  * - 选满 limit → 拒绝（limit）；
  * - 与首个选中项不同 bot → 拒绝（bot）。

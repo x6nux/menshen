@@ -109,7 +109,7 @@ func TestCloudflareDecisionChannel(t *testing.T) {
 }
 
 // TestCloudflareEnvelopeFailure：HTTP 200 但 success=false 时必须报错，
-// 不能把空 result 当成「判定为正常」静默放行。
+// 不能把空 result 当成判定为正常而静默放行。
 func TestCloudflareEnvelopeFailure(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -42,8 +42,8 @@ func NewFakeTG() *FakeTG {
 	return &FakeTG{Resp: map[string]string{}, Err: map[string]error{}}
 }
 
-// TGNotFound 造一个 Bot API「查无此人/此群」的 400 错误，desc 用 TG 的
-// 原文（如 "Bad Request: chat not found"），与生产传输层解析出的错误同构。
+// TGNotFound 造一个 Bot API 查无此人/此群的 400 错误，desc 用 TG 原文，
+// 与生产传输层解析出的错误同构。
 func TGNotFound(method, desc string) error {
 	body := `{"ok":false,"error_code":400,"description":"` + desc + `"}`
 	return &tg.APIError{Method: method, Code: http.StatusBadRequest,
@@ -54,7 +54,7 @@ func (f *FakeTG) Call(method string, payload any) (json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// 把 payload 归一化成 map，断言时不必关心它原本是什么类型。
+	// 把 payload 归一化成 map，断言时不必关心它传入时的类型。
 	var m map[string]any
 	if payload != nil {
 		if raw, err := json.Marshal(payload); err == nil {
@@ -296,8 +296,8 @@ func NewTestRegistry(t *testing.T, d core.Dispatcher) (*core.Registry, *core.Bot
 
 // SetChatEnabled 直接改某个群对该 bot 的启用状态。
 //
-// 这是造状态的手段，不是被测行为：面板上那条路径（panel.setChatFlag）
-// 有自己的测试，内部包的测试只是需要一个「已停用的群」。
+// 这是造状态的手段，不是被测行为：面板上那条路径（panel.handleBotChatCallback）
+// 有自己的测试，内部包的测试只是需要一个已停用的群。
 func SetChatEnabled(t *testing.T, b *core.Bot, chatID int64, on bool) {
 	t.Helper()
 	v := 0
@@ -315,7 +315,7 @@ func SetChatEnabled(t *testing.T, b *core.Bot, chatID int64, on bool) {
 }
 
 // AddRegistryBot 往 registry 里再挂一个 bot，并给它一个独立的假传输层，
-// 用于「同群多 bot」的测试：各自发了哪些请求要能分开数。
+// 用于同群多 bot 的测试：各自发了哪些请求要能分开数。
 func AddRegistryBot(t *testing.T, reg *core.Registry, sh *core.Shared,
 	botID, ownerID int64) (*core.Bot, *FakeTG) {
 
@@ -338,7 +338,7 @@ func AddRegistryBot(t *testing.T, reg *core.Registry, sh *core.Shared,
 	return b, fake
 }
 
-// SetChatPunish 把某个群的处罚方式改成 punish（1 = 封禁出群，0 = 禁言，
+// SetChatPunish 把某个群的处罚方式设为 punish（1 = 封禁出群，0 = 禁言，
 // -1 = 跟随 bot）。联合封禁按每群自己的配置执行，测试要覆盖封禁路径时
 // 得先把它设上。
 func SetChatPunish(t *testing.T, b *core.Bot, chatID, punish int64) {

@@ -22,7 +22,7 @@ export function chatStatus(c: Pick<Chat, 'enabled' | 'dryrun'>): StatusInfo {
   return c.enabled ? { label: '判定中', tone: 'ok' } : { label: '停用', tone: 'no' }
 }
 
-/** verdictInfo：判定徽标。命中（ad）红，其余（正常/未送检/失败）绿（沿用旧页口径）。 */
+/** verdictInfo：判定徽标。命中（ad）红，其余（正常/未送检/失败）绿。 */
 export function verdictInfo(verdict: string): StatusInfo {
   return { label: verdictLabel(verdict), tone: verdict === 'ad' ? 'no' : 'ok' }
 }
@@ -34,15 +34,14 @@ export function appealStatusInfo(status: string): StatusInfo {
   return { label: apStatus(status), tone: 'neutral' }
 }
 
-/** appealSummary：列表行的 AI 结论摘要（结论 + 截断的理由），与旧页 40 字口径一致。 */
+/** appealSummary：列表行的 AI 结论摘要，由结论与截断到 40 字的理由拼接。 */
 export function appealSummary(aiResult: string, aiReason: string): string {
   const head = apAI(aiResult)
   return aiReason ? `${head} · ${aiReason.slice(0, 40)}` : head
 }
 
 /**
- * logLevelInfo：运行日志级别徽标。错误红、警告黄、信息绿、调试中性 ——
- * 一眼扫过去先看到红黄，正是分级想达到的效果。
+ * logLevelInfo：运行日志级别徽标。错误红、警告黄、信息绿、调试中性。
  */
 export function logLevelInfo(level: string): StatusInfo {
   const label = logLevelLabel(level)

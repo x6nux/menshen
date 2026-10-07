@@ -60,7 +60,7 @@ func TestMiniSysLogMainOnly(t *testing.T) {
 	}
 }
 
-// TestMiniSysLogFilterAndSearch：级别是「不低于」下限、搜索覆盖消息与字段，
+// TestMiniSysLogFilterAndSearch：级别为不低于下限、搜索覆盖消息与字段，
 // counts 只受搜索影响（界面据此显示各级命中数）。
 func TestMiniSysLogFilterAndSearch(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
@@ -133,7 +133,7 @@ func TestMiniSysLogPagination(t *testing.T) {
 	if got := page2["logs"].([]any); len(got) != 5 {
 		t.Fatalf("第二页应有 5 条，得到 %d", len(got))
 	}
-	// 新→旧：第一页首条是最后写入的「行55」。
+	// 新→旧：第一页首条是最后写入的`行55`。
 	if first := page1["logs"].([]any)[0].(map[string]any)["message"]; first != "行55" {
 		t.Errorf("第一页首条应是最新写入的行55，得到 %v", first)
 	}

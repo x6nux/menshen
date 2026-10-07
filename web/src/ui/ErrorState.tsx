@@ -1,4 +1,4 @@
-// 错误态（计划 3.3/1.5）：按 ApiError.status 分流文案。
+// 错误态：按 ApiError.status 分流文案。
 // 401 → Telegram 引导；403 → 无权限；其余（0 网络/5xx）→ 网络异常 + 重试。
 import BlockOutlined from '@mui/icons-material/BlockOutlined'
 import CloudOffOutlined from '@mui/icons-material/CloudOffOutlined'

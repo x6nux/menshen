@@ -15,15 +15,15 @@ import (
 
 // ---- 内容哈希：消息级广告的内容再出现时直接删 ----
 //
-// 多号轮番刷同一段模板是最常见的刷屏形态，每条都送检既花钱又慢。
-// 判成「消息本身就是广告」（scope=message）且要删的，记下内容哈希；
+// 多号轮番刷同一段模板是最常见的刷屏形态，每条都送检既消耗额度又慢。
+// 判成消息本身就是广告（scope=message）且要删的，记下内容哈希；
 // 同样的内容再出现时不送检、不占送检额度，直接删，禁言交给复判模型——
-// 后来者的资料与资历没判过，沿用当初那条的禁言会误伤。
+// 后来者的资料与资历未判过，沿用当初那条的禁言会误判。
 //
-// 只记消息级：账号级广告的正文可能只是一句「你好」。按 bot 隔离：一个租户
-// 的误判不该删到别人的群里。撤销有两条路：命中后复判判为正常，管理员点「误判」。
+// 只记消息级：账号级广告的正文可能极短。按 bot 隔离：一个租户
+// 的误判不该删到别人的群里。撤销有两条路：命中后复判判为正常，管理员点`误判`。
 
-// deciderHash 标记「只凭内容哈希、没有复判模型结论」的判定。
+// deciderHash 标记只凭内容哈希、没有复判模型结论的判定。
 const deciderHash = "hash"
 
 // adHashRec 是 ad_hashes 的一行。
@@ -70,11 +70,11 @@ func forgetAdHash(b *core.Bot, text string) {
 	}
 }
 
-// ForgetAdHash 供面板的「误判」使用，text 是流水里的原文。
+// ForgetAdHash 供面板的`误判`使用，text 是流水里的原文。
 func ForgetAdHash(b *core.Bot, text string) { forgetAdHash(b, text) }
 
 // hashHit 处理命中哈希的消息，跑在判定 worker 上：先删，再交给复判模型
-// 决定罚不罚。没配复判模型、复判失败或复判队列满时只删不罚。
+// 决定是否禁言。未配复判模型、复判失败或复判队列满时只删不禁言。
 func hashHit(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Message,
 	profile senderProfile, state adState, h adHashRec, text string) {
 
@@ -102,15 +102,15 @@ func hashHit(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Messag
 		finish(v)
 		return
 	}
-	// 「资料放行」的指纹含 Bio，必须在提交复判前 enrichSender：放进复判
-	// 闭包里补的话，finish 用的还是没补 Bio 的 profile，存下的指纹与下次
-	// 判定算出来的对不上，放行永远命中不了。与 judgeAndAct 同一顺序。
+	// 资料放行的指纹含 Bio，必须在提交复判前 enrichSender：放进复判
+	// 闭包里补的话，finish 用的还是未补 Bio 的 profile，存下的指纹与下次
+	// 判定算出的不一致，放行无法命中。与 judgeAndAct 同一顺序。
 	enrichSender(b, &state.Sender)
 	profile = state.Sender
 	if !b.AdReview(func() {
 		rv := review(b, snap, state, v, llmSystemPrompt)
 		if rv.Decider != deciderHash {
-			// 复判成功时理由换成了大模型的，命中哈希这件事也得留在流水里。
+			// 复判成功时理由采用大模型输出，命中哈希这一事实仍需保留在流水中。
 			rv.Reason = note + rv.Reason
 		}
 		finish(rv)

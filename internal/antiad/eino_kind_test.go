@@ -507,7 +507,7 @@ func TestEinoTargetURL(t *testing.T) {
 }
 
 // TestPickConfiguredRuleAgentModelAcceptsTranslatedKinds：Responses /
-// Anthropic / Gemini 渠道现在都应被接受（不再只认 OpenAI 兼容）。
+// Anthropic / Gemini 渠道都应被接受。
 func TestPickConfiguredRuleAgentModelAcceptsTranslatedKinds(t *testing.T) {
 	for _, kind := range []string{"openai-responses", "anthropic", "gemini"} {
 		t.Run(kind, func(t *testing.T) {

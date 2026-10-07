@@ -128,8 +128,8 @@ function MainColumn({ view }: { view: AppealDossierView }) {
 
 /** SideProfile 是资料栏：账号信息 + 当前生效限制 + 历史处罚。 */
 function SideProfile({ view }: { view: AppealDossierView }) {
-  // 数组字段兜底：服务端旧版本/异常时可能给 null，直接 .length/.map 会让
-  // 整页白屏（线上真实事故）。契约已固定为数组，这里再兜一层。
+  // 数组字段兜底：字段可能为 null，直接 .length/.map 会导致整页白屏，
+  // 故统一回退为空数组。
   const limits = view.limits ?? []
   const penalties = view.penalties ?? []
   return (

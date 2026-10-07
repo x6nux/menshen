@@ -1,17 +1,14 @@
 package panel
 
-// 网页版管理员面板（/admin）：与 Telegram Mini App 完全分开的一界面入口。
+// 网页版管理员面板（/admin）：与 Telegram Mini App 分开的独立界面入口。
 //
-// 以前 /admin 直接托管 Mini App 的 index.html、API 也走 /miniapp/api，
-// 只在宽屏时换成桌面外壳——前端因此要加载 Telegram SDK，后端也要在
-// miniAuth 里分流浏览器的会话。现在拆成两条独立链路：
+// /admin 与 Mini App 是两条独立链路：
 //
 //   - 页面壳是独立的 admin.html 产物（Vite base 固定 /admin/，见
 //     web/vite.admin.config.ts），浏览器不加载 Telegram SDK；
 //   - API 走 /admin/api/*，只认 bot 私聊里签发的 HttpOnly 会话 cookie
 //     （见 antiad/adminweb.go），不接受 initData；
-//   - 写操作与校验仍与 Mini App 共用（miniDispatch），只是界面不同——
-//     「管理操作只写一份」的约束不变。
+//   - 写操作与校验与 Mini App 共用（miniDispatch），管理操作只实现一份。
 
 import (
 	"fmt"
@@ -34,7 +31,7 @@ import (
 const webSessionCookie = "menshen_web"
 
 // webAuthHeader 是网页版 API 请求必须带的头，也是与 Mini App API 的边界：
-// 少了它 /admin/api 直接拒绝，避免把「带 cookie 的普通表单提交」当成合法请求。
+// 少了它 /admin/api 直接拒绝，避免把带 cookie 的普通表单提交当成合法请求。
 const webAuthHeader = "X-Web"
 
 // AdminPanelHandler 处理 /admin 下的网页版管理员面板。
@@ -80,8 +77,8 @@ func AdminPanelHandler(sh *core.Shared) http.Handler {
 			if !allowPageMethod(w, r) {
 				return
 			}
-			// 产物根下的普通文件优先于 SPA 回退（如 favicon）；其余路径回退
-			// 入口页，刷新/深链不白屏。产物缺失时 adminIndex 自己渲染构建提示页。
+			// 产物根下的普通文件优先于 SPA 回退；其余路径回退入口页，
+			// 刷新/深链不白屏。产物缺失时 adminIndex 自己渲染构建提示页。
 			if adminDistFile(w, r, p, "public, max-age=3600") {
 				return
 			}

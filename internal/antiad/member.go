@@ -49,7 +49,7 @@ func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 			&gm.Watched)
 	if err != nil {
 		// 没有行是常态（编辑过的消息、行被清理过），读失败要看得见：
-		// 两者都返回 false，混在一起排查时会以为是「没这条画像」。
+		// 两者都返回 false，混在一起排查时会以为是没有这条画像。
 		if !errors.Is(err, sql.ErrNoRows) {
 			slog.Error("反广告：读取成员画像失败", "chat", chatID, "uid", uid, "err", err)
 		}
@@ -61,10 +61,10 @@ func loadMember(s *store.Store, chatID, uid int64) (groupMember, bool) {
 
 // profileFromKept 在画像读不到时用留底条数凑一份最小画像。
 //
-// 不能直接不判：**编辑过的消息**很容易走到这里（原消息不在留底里，或行被
-// 清理过），而「先发正常、再编辑成广告」正是要拦的规避形态。用留底条数当
-// 发言数、年龄按未知处理（AgeKnown 不上），与 /check 复查同一套口径 ——
-// 拿零值画像当新人反而会把老成员按最严档处置。
+// 不能直接不判：编辑过的消息很容易走到这里（原消息不在留底里，或行被清理
+// 过），而先发正常、再编辑成广告正是要拦的规避形态。用留底条数当发言数、
+// 年龄按未知处理（AgeKnown 不上），与 /check 复查同一套口径 —— 拿零值画像
+// 当新人反而会把老成员按最严档处置。
 func profileFromKept(b *core.Bot, chatID, uid int64) groupMember {
 	gm := groupMember{ChatID: chatID, UserID: uid, Known: true}
 	var kept int64
@@ -78,21 +78,21 @@ func profileFromKept(b *core.Bot, chatID, uid int64) groupMember {
 	return gm
 }
 
-// handleChatMemberUpdate 把「进群」落成 joined_at。
+// HandleChatMemberUpdate 把进群落成 joined_at。
 //
-// 只认「从非成员状态变为成员状态」这一次跃迁：status 在 member 与
-// restricted 之间来回跳（群管给人挂临时限制）不是进群，按进群处理会
-// 把一个老成员重新变成「新人」，下一条消息就被按最严档处置。
+// 只认从非成员状态变为成员状态这一次跃迁：status 在 member 与 restricted
+// 之间来回跳（群管给人挂临时限制）不是进群，按进群处理会把一个老成员重新
+// 变成新人，下一条消息就被按最严档处置。
 func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	if cu == nil || cu.Chat == nil || cu.NewChatMember == nil ||
 		cu.NewChatMember.User == nil {
 		return
 	}
 
-	// 「进群」这一跃迁先把入群时间落库再谈别的 —— 这是 bot 亲眼看到入群
-	// 的原始证据，不该受「这个群开没开反广告」「这个人是不是分给了别的
-	// bot」影响。MTProto 回查拿不到（权限不够、已退群）时它就是 /jtime
-	// 与年龄轴的回退值。recordJoin 幂等，下面 onJoin 再走一次也无妨。
+	// 进群这一跃迁先把入群时间落库再谈别的 —— 这是 bot 亲眼看到入群的
+	// 原始证据，不该受这个群开没开反广告、这个人是不是分给了别的 bot 影响。
+	// MTProto 回查拿不到（权限不够、已退群）时它就是 /jtime 与年龄轴的回退
+	// 值。recordJoin 幂等，下面 onJoin 会再走一次。
 	old := ""
 	if cu.OldChatMember != nil {
 		old = cu.OldChatMember.Status
@@ -126,8 +126,8 @@ func HandleChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	onJoin(b, conf, cu.NewChatMember.User, at)
 }
 
-// isMemberStatus 报告该状态是否代表「人在群里」。
-// restricted 也算：它是 TG 表达「权限非默认满值」的方式，
+// isMemberStatus 报告该状态是否代表人在群里。
+// restricted 也算：它是 TG 表达权限非默认满值的方式，
 // 普通成员在设了默认限制的群里就是这个状态。
 func isMemberStatus(s string) bool {
 	switch s {
@@ -142,7 +142,7 @@ func isMemberStatus(s string) bool {
 // msg_count —— 退群重进的人，历史发言量仍是有效画像。
 //
 // 返回更新后的画像（含 whitelisted）：进群路径接着就要判白名单与豁免，
-// RETURNING 顺手带回来，省掉一次单查。
+// RETURNING 一并带回来，省掉一次单查。
 func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
 	gm := groupMember{ChatID: chatID, UserID: uid}
 	err := b.Store.Write.QueryRow(`INSERT INTO group_members
@@ -159,7 +159,7 @@ func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
 		if got, ok := loadMember(b.Store, chatID, uid); ok {
 			return got
 		}
-		return gm // Known=false：调用方按「画像未知」处理
+		return gm // Known=false：调用方按画像未知处理
 	}
 	gm.Known = true
 	return gm
@@ -168,10 +168,10 @@ func recordJoin(b *core.Bot, chatID, uid, at int64) groupMember {
 // touchMember 记一条发言并返回更新后的画像。
 //
 // first_seen 只在插入时写，后续发言不得覆盖：它是 joined_at 缺失时
-// 唯一的年龄下界，被每条消息刷新的话所有人都会永远是「刚出现」。
+// 唯一的年龄下界，被每条消息刷新的话所有人都会永远是刚出现。
 //
 // 用 RETURNING 一条语句拿回更新后的整行：这是每条群消息的必经之路，
-// 而写连接只有一条，INSERT+SELECT 两次往返就是两次排队。顺带把
+// 而写连接只有一条，INSERT+SELECT 两次往返就是两次排队。同时把
 // whitelisted 带回来，判定链路不必再单查一次白名单。
 func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
 	gm := groupMember{ChatID: chatID, UserID: uid}
@@ -191,7 +191,7 @@ func touchMember(b *core.Bot, chatID, uid, at int64) groupMember {
 		if got, ok := loadMember(b.Store, chatID, uid); ok {
 			return got
 		}
-		return gm // Known=false：调用方按「画像未知」处理
+		return gm // Known=false：调用方按画像未知处理
 	}
 	gm.Known = true
 	return gm
@@ -223,11 +223,11 @@ func recordedText(b *core.Bot, chatID, msgID int64) string {
 	return t
 }
 
-// markPunished 把留底行标成「已处罚」。
+// markPunished 把留底行标成已处罚。
 //
 // 已按广告处置过的消息（删除、连带删除、前置号删掉的招呼）必须退出
 // 后续判定的 recent_context：它早已从群里消失，模型却仍把它当成
-// 「此人刚说过的话」，新消息会跟着这条旧账被反复处罚 —— 而同一条
+// 此人刚说过的话，新消息会跟着这条旧账被反复处罚 —— 而同一条
 // 消息的处置早就做完了。留底行不存在（gban 护栏路径不留底）时静默跳过。
 func markPunished(b *core.Bot, chatID int64, ids ...int64) {
 	var ph []string
@@ -258,7 +258,7 @@ type gmsgRow struct {
 
 // loadUserMessages 取某人在某群的留底，按时间正序返回最近 limit 条。
 //
-// 正序是给模型看的：复查要判断「这个账号一路以来在干什么」，
+// 正序是给模型看的：复查要判断这个账号一路以来在干什么，
 // 倒序会让它把最新的当成开头。
 //
 // excludePunished 为真时跳过已处罚的消息（见 markPunished），只让还没
@@ -291,7 +291,7 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int, excludePunis
 	if err := rows.Err(); err != nil {
 		slog.Error("反广告：留底游标出错，结果可能不完整", "err", err)
 	}
-	// 查询按倒序取「最近 N 条」，返回前翻正序。
+	// 查询按倒序取最近 N 条，返回前翻正序。
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
@@ -299,11 +299,11 @@ func loadUserMessages(s *store.Store, chatID, uid int64, limit int, excludePunis
 }
 
 // hasUserData 报告本群数据库里有没有这个人的痕迹：发言留底（含纯图）、
-// 判定流水或成员画像。三者皆无才算「查无此人」—— /check 对这种目标不再
-// 请求模型（见 HandleAdCommand）。
+// 判定流水或成员画像。三者皆无才算查无此人—— /check 对这类目标不请求
+// 模型（见 HandleAdCommand）。
 //
-// 查询出错时按「有数据」处理：宁可多花一次模型调用，也不能把真实用户
-// 误报成查无此人。
+// 查询出错时按有数据处理：至多多花一次模型调用，避免把真实用户误报成
+// 查无此人。
 func hasUserData(s *store.Store, chatID, uid int64) bool {
 	var n int
 	err := s.Read.QueryRow(`SELECT
@@ -335,28 +335,26 @@ func HandleMyChatMemberUpdate(b *core.Bot, cu *tg.ChatMemberUpdated) {
 		return
 	}
 	if status == "administrator" || status == "creator" {
-		// 刚拿到管理员权限：顺手补全这个群的历史成员入群时间（Bot API 没有
-		// 这个字段，只能起一个 bot 会话走 MTProto，见 joinbackfill.go）。
-		// 只在「从非管理员变成管理员」时触发：改权限、置顶也会推这条更新，
-		// 每次都跑一遍没有意义（另有 24 小时冷却兜底）。
+		// 只在从非管理员变为管理员时触发：改权限、置顶也会推这条更新，
+		// 每次都处理没有意义。入群时间按需实时查询（见 ResolveJoinTime，
+		// Bot API 没有该字段，需起 bot 会话走 MTProto，见 joinbackfill.go）。
 		old := ""
 		if cu.OldChatMember != nil {
 			old = cu.OldChatMember.Status
 		}
 		if old != "administrator" && old != "creator" {
-			// 以前这里会自动跑一遍全群补全，现在改成按需：判定、复查、
+			// 记录获得管理员权限，不自动全量补全入群时间：判定、复查、
 			// /jtime 用到谁就实时查谁（见 ResolveJoinTime）。要预热整群
-			// 时走 Mini App 的「补全历史入群时间」按钮。
+			// 时走 Mini App 的补全历史入群时间按钮。
 			slog.Info("反广告：bot 获得管理员权限（入群时间按需实时查询）",
 				"chat", cu.Chat.ID, "from", old)
 		}
 		return
 	}
-	// 只看总开关，不要求该群已在白名单里。部署顺序是「先把 bot 加进群
-	// → 再在面板添加 chat_id」，用 antiadActive 把关的话，进群那一刻
-	// 白名单里还没有它，这条告警就永远发不出去 —— 只剩「已配置的群里
-	// bot 被降级」一种情况会响，而那恰恰不是最常见的事故。
-	// 总开关仍要判：关着时 bot 可能还在一堆无关群里，每进一个群都私聊是纯噪音。
+	// 只看总开关，不要求该群已在白名单里：若用 antiadActive 把关，进群
+	// 时白名单里还没有它，这条告警就永远发不出去，只剩已配置的群里 bot
+	// 被降级一种情况会响。
+	// 总开关仍要判：关闭时 bot 可能还在无关群里，每进一个群都私聊是纯噪音。
 	if b.Cache.Snap().SettingInt("antiad_enabled", 0) != 1 {
 		return
 	}

@@ -37,7 +37,7 @@ func TestJtimeShowsJoinTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 回复形态：72 小时前入群 → 「3 天前」。
+	// 回复形态：72 小时前入群 → `3 天前`。
 	m := testutil.GroupMsg(-100, 1, 20, "/jtime")
 	m.ReplyToMessage = &tg.Message{MessageID: 7,
 		From: &tg.TGUser{ID: 5001, FirstName: "张小三", Username: "zhang3"}}
@@ -107,12 +107,12 @@ func TestJtimeShowsJoinTime(t *testing.T) {
 func TestJtimeUnknownSaysWhy(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	// 实时查询固定返回「查不到」，用例只关心渲染。
+	// 实时查询固定返回查不到，用例只关心渲染。
 	old := joinLookupRunner
 	joinLookupRunner = func(_ *core.Bot, _, _ int64) (int64, error) { return 0, nil }
 	defer func() { joinLookupRunner = old }()
 
-	// 有画像（发过言）但入群时间未知：给首见时间当「至少待到这时」。
+	// 有画像（发过言）但入群时间未知：给首见时间当至少待到这时。
 	first := time.Now().Add(-48 * time.Hour).Unix()
 	if _, err := b.Store.Write.Exec(`INSERT INTO group_members
 		(chat_id,user_id,joined_at,first_seen,msg_count,last_msg_at,ad_hits)

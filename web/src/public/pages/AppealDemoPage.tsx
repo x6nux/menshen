@@ -4,7 +4,7 @@
 // 页面只含 site key（公开信息），校验走服务端与申诉页同一条
 // verifyTurnstile——config 的 Turnstile 密钥、action / cdata / hostname
 // 全部照查，所以这里通过即代表申诉那条路也通。申诉页只回一句
-// 「验证未通过」，密钥、域名白名单或 cdata 绑定出了问题，具体原因
+// `验证未通过`，密钥、域名白名单或 cdata 绑定出了问题，具体原因
 // 全靠这页显示。
 import { Box, Button, CircularProgress, Typography } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'

@@ -1,9 +1,9 @@
-// 名单管理（计划 2.1 可见性矩阵 / 4.7）：
+// 名单管理：
 // - 主管理员：白名单 / 资料放行 / 联合封禁 / 次级管理员 四个分段；
-//   次级管理员只显示「联合封禁」一个分段（旧版即如此，服务端仍是唯一裁决）。
-// - 四处本地搜索（白名单/资料放行/全局组/专属组）全部受控：输入即时过滤，
-//   不整页重建、焦点不丢（对应旧 TestMiniAppListSearch 的迁移不变量）。
-// - 顶部「＋」按当前分段切换抽屉：白名单 / 全局组 / 专属组 / 管理员。
+//   次级管理员只显示联合封禁一个分段，服务端仍是唯一裁决方。
+// - 四处本地搜索（白名单 / 资料放行 / 全局组 / 专属组）全部受控：输入即时过滤，
+//   不整页重建、焦点不丢。
+// - 顶部新增按钮按当前分段打开抽屉：白名单 / 全局组 / 专属组 / 管理员。
 import Add from '@mui/icons-material/Add'
 import { Box, Button, Fab, MenuItem, TextField, Typography } from '@mui/material'
 import { useState } from 'react'
@@ -52,7 +52,7 @@ function scopeText(w: Pick<WhiteRow, 'bot_id' | 'chat_id'>): string {
   return w.chat_id === 0 ? 'bot 所有群' : `群 ${w.chat_id}`
 }
 
-/** countText 搜索计数：无过滤时「共 N 人」，过滤时「匹配 M / 共 N 人」。 */
+/** countText 搜索计数：无过滤时输出 `共 N 人`，过滤时输出 `匹配 M / 共 N 人`。 */
 function countText(shown: number, total: number): string {
   return shown === total ? `共 ${total} 人` : `匹配 ${shown} / 共 ${total} 人`
 }

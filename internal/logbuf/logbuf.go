@@ -1,9 +1,8 @@
 // Package logbuf 是进程内运行日志的定长环形缓冲。
 //
-// 它捕获 slog 输出供网页版面板的「运行日志」页读取 —— 服务跑在容器里时
-// 标准输出往往没人看，出问题却要第一时间看到最近的错误与上下文。缓冲是
-// 内存里的，容量固定、写满覆盖最旧；进程重启即清空（要看更早的仍以标准
-// 输出为准）。
+// 它捕获 slog 输出供网页版面板的运行日志页读取：标准输出在容器化部署中
+// 不易查看，而排障需要尽快看到最近的错误与上下文。缓冲位于内存，容量固定、
+// 写满覆盖最旧；进程重启即清空（更早的日志仍以标准输出为准）。
 //
 // 依赖只有标准库：main 装 Handler，panel 读 Buffer，两边都只认这一个包。
 package logbuf
@@ -115,8 +114,8 @@ type Query struct {
 
 // Query 返回过滤后的一页（新→旧）与过滤总数。
 //
-// counts 只受 Search 影响、不受 MinLevel 影响：界面用它显示「这次搜索里
-// 各级各多少条」，据此再决定要不要收窄级别。
+// counts 只受 Search 影响、不受 MinLevel 影响：界面用它显示本次搜索中各档
+// 的条数，据此决定是否收窄级别。
 func (b *Buffer) Query(q Query) (items []Record, total int, counts LevelCounts) {
 	snap := b.Snapshot()
 	needle := strings.ToLower(strings.TrimSpace(q.Search))
@@ -171,8 +170,8 @@ func LevelName(l slog.Level) string {
 }
 
 // ParseLevel 解析界面传来的级别名，作为级别下限。空、all 与未知值一律
-// 落到 DEBUG（即不过滤）—— 界面已经有「全部」这一档，不认识的值按最宽
-// 处理比报错更不容易让人看到空列表。
+// 落到 DEBUG（即不过滤）：界面已有全部这一档，无法识别的值按最宽处理，
+// 避免出现空列表。
 func ParseLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "info":
@@ -194,8 +193,7 @@ type Handler struct {
 	next    slog.Handler
 	capture slog.Level
 	// attrs 是 WithAttrs 累积的字段，建时就按当时的组前缀渲染好 ——
-	// 组只作用于它之后新增的字段，`With("a",1).WithGroup("g").With("b",2)`
-	// 里 a 不带 g. 前缀、b 带。
+	// 组只作用于其之后新增的字段，不回溯施加于先前累积的字段。
 	attrs  []Attr
 	prefix string // 当前组前缀，作用于此后新增的记录字段
 }

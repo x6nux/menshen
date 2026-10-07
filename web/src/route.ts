@@ -69,7 +69,7 @@ function pageSlug(page: Page): string {
   }
 }
 
-/** routeSlug 返回「tab + 栈」对应的路径片段；栈非空时以栈顶为准。 */
+/** routeSlug 返回 tab 与页栈对应的路径片段；栈非空时以栈顶为准。 */
 export function routeSlug(tab: TabKey, stack: Page[]): string {
   const top = stack.length > 0 ? stack[stack.length - 1] : null
   return top ? pageSlug(top) : TAB_SLUG[tab]
@@ -89,7 +89,7 @@ export interface Route {
 
 /**
  * parseRoute 解析路径。未知路径回退到概览；二级页同时给出它下层的 tab
- * （如 /logs/9 的 tab 是「记录」），这样刷新后返回上一级落在合理的列表页。
+ * （如 /logs/9 落在记录 tab），这样刷新后返回上一级落在合理的列表页。
  */
 export function parseRoute(pathname: string): Route {
   const base = appBase()

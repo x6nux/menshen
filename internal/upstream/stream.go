@@ -69,7 +69,7 @@ func translateStream(kind Kind, r io.Reader, w io.Writer) error {
 	if err := sc.Err(); err != nil {
 		return err
 	}
-	// 上游没在流里报用量时（个别网关如此），不硬凑：计费归零，判定照常。
+	// 上游没在流里报用量时（个别网关如此）即计费归零，判定照常。
 	if err := st.flushUsage(w); err != nil {
 		return err
 	}

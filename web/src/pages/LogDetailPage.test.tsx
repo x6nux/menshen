@@ -1,5 +1,5 @@
 // 记录详情行为测试：信息卡/原文/查看页链接、四个动作的参数与危险确认、
-// 主管理员专属的两个联封动作、成功 note toast。
+// 主管理员专属的两个联合封禁动作、成功 note toast。
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -29,7 +29,7 @@ describe('LogDetailPage', () => {
     expect(screen.getByText('时间')).toBeInTheDocument()
     expect(screen.getByText('处置')).toBeInTheDocument()
     expect(screen.getByText('删除+禁言')).toBeInTheDocument()
-    // 判定来源翻译：mockLogDetail.decider='llm' → 复判模型（不再显示原始代码）。
+    // 判定来源翻译：mockLogDetail.decider='llm' → 复判模型。
     expect(screen.getByText(/复判模型/)).toBeInTheDocument()
     // 群标题来自 state.chats（fixtures：测试群）
     expect(screen.getByText(/测试群/)).toBeInTheDocument()
@@ -59,8 +59,8 @@ describe('LogDetailPage', () => {
     renderPage(<LogDetailPage id={9812} />)
     await screen.findByText('AI 复查')
 
-    // 操作栏按钮必须是紧凑尺寸：全局 Button 覆盖把 minHeight 提到 44，
-    // 记录详情六个动作会撑满屏幕（用户反馈过）。
+    // 操作栏按钮必须是紧凑尺寸：全局 Button 覆盖会抬高 minHeight，
+    // 记录详情六个动作会撑满屏幕。
     expect(screen.getByRole('button', { name: 'AI 复查' })).toHaveStyle({ minHeight: '32px' })
 
     fireEvent.click(screen.getByRole('button', { name: 'AI 复查' }))
@@ -78,7 +78,7 @@ describe('LogDetailPage', () => {
     await waitFor(() => expect(bodies).toHaveLength(3))
     expect(bodies[2]).toEqual({ id: 9812, action: 'white' })
 
-    // 人工标记广告：旧页确认文案；取消不发请求
+    // 人工标记广告：需二次确认；取消不发请求
     fireEvent.click(screen.getByRole('button', { name: '人工标记广告' }))
     expect(await screen.findByText('不经 AI 直接按最高档处置？')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '取消' }))

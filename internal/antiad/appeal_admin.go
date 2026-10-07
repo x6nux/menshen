@@ -20,7 +20,7 @@ func appealOpen(status string) bool {
 }
 
 // AdminLiftAppeal 人工通过申诉：撤销全部有效限制并结案。全局组对所有
-// 管理员开放（共同维护的名单），因此联合封禁不再要求主管理员身份。
+// 管理员开放（共同维护的名单），联合封禁不要求主管理员身份。
 func AdminLiftAppeal(b *core.Bot, appealID, byUID int64) error {
 	ap, ok := loadAppealByID(b.Store, appealID)
 	if !ok {
@@ -31,8 +31,8 @@ func AdminLiftAppeal(b *core.Bot, appealID, byUID int64) error {
 	}
 	penalties := effectivePenalties(b.Shared, b.BotID(), ap.UserID)
 	if len(penalties) == 0 {
-		// 与自动结案同一条路：库里查不到限制时，顺手核对他在各群的
-		// 真实权限，把残留的封禁/禁言解掉（见 residualSweep）。
+		// 与自动结案同一条路：库里查不到限制时，一并核对其在各群的
+		// 真实权限，解除残留的封禁/禁言（见 residualSweep）。
 		res := residualSweep(b, ap.UserID)
 		reason := "限制已不存在"
 		if len(res.Fixed) > 0 {
@@ -89,8 +89,8 @@ func AdminIssueCode(b *core.Bot, appealID int64) (string, error) {
 	return code, nil
 }
 
-// AdminRerunAppealAI 重跑 AI 复判：复核出错、或想用最新资料重新评估时用。
-// 只对还没结案的单子开放；同一张单的重复触发由 startAppealAI 的单飞挡住。
+// AdminRerunAppealAI 重跑 AI 复判：复核出错或用最新资料重新评估时使用。
+// 只对未结案的单子开放；同一张单的重复触发由 startAppealAI 的单飞机制拦截。
 func AdminRerunAppealAI(b *core.Bot, appealID int64) error {
 	ap, ok := loadAppealByID(b.Store, appealID)
 	if !ok {

@@ -32,9 +32,9 @@ func addModel(t *testing.T, b *core.Bot, name string) {
 	}
 }
 
-// TestBoundModelStripsUpstreamPrefix：模型名 <上游名>/<模型ID> 是给门神
-// 自己看的，发给上游的 model 字段必须是剥掉前缀的模型 ID —— 上游不认
-// 我们的命名前缀。判定结果里则要记全名（换模型校准阈值时要知道是谁答的）。
+// TestBoundModelStripsUpstreamPrefix：模型名 <上游名>/<模型ID> 用于门神内部
+// 标识，发给上游的 model 字段必须是剥掉前缀的模型 ID —— 上游不认我们的
+// 命名前缀。判定结果里则记全名（换模型校准阈值时要知道是谁答的）。
 func TestBoundModelStripsUpstreamPrefix(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var body atomic.Value
@@ -62,7 +62,7 @@ func TestBoundModelStripsUpstreamPrefix(t *testing.T) {
 }
 
 // TestModelListTriesNextOn4xx：4xx 对同一个模型是配置问题，但列表里还有
-// 没试过的模型时，换一个也许就认 —— 不该一条 4xx 就把整次判定钉死。
+// 未试过的模型时，换一个可能成功 —— 不应因一条 4xx 让整次判定失败。
 func TestModelListTriesNextOn4xx(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits1, hits2 atomic.Int32
@@ -118,8 +118,8 @@ func TestMissingBoundUpstreamSkipsToNext(t *testing.T) {
 }
 
 // TestUpstreamTroubleAlertThrottled：连续失败达到阈值告警一次，冷却期内
-// 不重复；任何一次成功清零计数 —— 否则偶发抖动会一直攒着，攒到某天
-// 集中炸出一条谁也看不懂的告警。
+// 不重复；任何一次成功清零计数 —— 否则偶发抖动会持续累积，最终集中
+// 触发一条难以解读的告警。
 func TestUpstreamTroubleAlertThrottled(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	var fail atomic.Bool

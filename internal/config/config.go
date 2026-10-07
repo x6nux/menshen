@@ -16,9 +16,8 @@ import (
 
 // defaultTGAPIBase 是 Telegram Bot API 的默认基址。
 //
-// 默认走反代而不是官方地址：直连 api.telegram.org 在不少网络环境下
-// 连 TCP 都握不上手（dial tcp 149.154.x.x:443: i/o timeout），
-// 而那是整个 bot 唯一的输入通道，不通就等于服务没启动。
+// 默认走反代而不是官方地址：直连 api.telegram.org 在部分网络环境下连
+// TCP 握手都会超时，而它是整个 bot 唯一的输入通道，不通等于服务没启动。
 // 想直连或换自建反代，在 config.yaml 里配 tg_api_base 覆盖即可。
 const defaultTGAPIBase = "https://833337.xyz/_tg/api"
 
@@ -41,18 +40,17 @@ type Config struct {
 	// 通常是反代对外的地址；本进程自己只在 ListenAddr 上收明文 HTTP。
 	PublicURL string
 	// ListenAddr 仅 webhook 模式使用。默认只听回环——
-	// 这个端口上的请求等同于「以 bot 身份收发消息」，直接暴露到公网
+	// 这个端口上的请求等同于以 bot 身份收发消息，直接暴露到公网
 	// 等于把 bot 的控制面摆在门口。
 	ListenAddr string
 
 	// TGProxy / AIProxy 是两类出网请求各自的代理，nil 表示不指定 ——
 	// 此时沿用 HTTP_PROXY / HTTPS_PROXY 环境变量（Go 的默认行为）。
-	// 留空而不是直连，是为了不让现在靠环境变量跑着的部署升级后突然断网。
 	//
-	// 分开配而不是共用一个：最常见的部署形态是「TG 被墙、AI 走国内中转」，
-	// 把 AI 流量也绕一圈只是白多一跳。两者都留空则两者都读环境变量。
+	// 分开配而不是共用一个：两类请求的出网路径常不同，共用会让无需绕行的
+	// 流量多一跳。两者都留空则两者都读环境变量。
 	//
-	// 代理**不是**换 API 地址的替代品：tg_api_base 换的是目标地址，
+	// 代理不是换 API 地址的替代品：tg_api_base 换的是目标地址，
 	// 代理换的是到达路径。反代通常比代理更省事，见 defaultTGAPIBase。
 	TGProxy *url.URL
 	AIProxy *url.URL
@@ -63,11 +61,11 @@ type Config struct {
 	TurnstileSiteKey string
 	TurnstileSecret  string
 
-	// TGAPIID / TGAPIHash 是「客户端应用」标识（my.telegram.org 申请），
+	// TGAPIID / TGAPIHash 是客户端应用标识（my.telegram.org 申请），
 	// 只用于一项可选能力：用 bot 自己的 token 登录 MTProto，回查历史成员的
 	// 入群时间（Bot API 没有这个字段）。不配时走内置的公开 Telegram Desktop
-	// 值（defaultTGAPIID/defaultTGAPIHash），开箱可用；想彻底关掉这一项时把
-	// tg_api_id 显式配成空串。与 bot token 不同，它不代表任何账号的控制权。
+	// 值（defaultTGAPIID/defaultTGAPIHash），无需配置即可用；想彻底关掉这一项
+	// 时把 tg_api_id 显式配成空串。与 bot token 不同，它不代表任何账号的控制权。
 	TGAPIID   int
 	TGAPIHash string
 
@@ -81,10 +79,10 @@ type Config struct {
 const defaultListenAddr = "127.0.0.1:8081"
 
 // defaultTGAPIID / defaultTGAPIHash 是内置的 MTProto 客户端标识：公开的
-// Telegram Desktop 值，只用于「入群时间」回查（用 bot 的 token 登录 MTProto
-// 读成员记录的 date）。没配就用它们，保证开箱可用 —— 想换成自己的（推荐，
-// my.telegram.org 免费申请），在配置文件或环境变量里覆盖即可；想彻底关掉
-// 这一项（不发起任何 MTProto 连接），把 tg_api_id 显式配成空串。
+// Telegram Desktop 值，只用于入群时间回查（用 bot 的 token 登录 MTProto
+// 读成员记录的 date）。没配就用它们，无需配置即可用 —— 想换成自己的
+// （my.telegram.org 免费申请），在配置文件或环境变量里覆盖即可；想彻底
+// 关掉这一项（不发起任何 MTProto 连接），把 tg_api_id 显式配成空串。
 const (
 	defaultTGAPIID   = 2040
 	defaultTGAPIHash = "b18441a1ff607e10a989891a5462e627"
@@ -107,8 +105,10 @@ func (c *Config) IsAdmin(id int64) bool {
 	return false
 }
 
-// ponytail: 手写解析这个只有四个字段的格式，不引入 YAML 依赖。
-// 支持 "key: value" 和 admin_ids 的 "- N" / "[1, 2]" 两种写法。
+// Load 读取并校验配置：先解析配置文件，再由环境变量覆盖。
+//
+// 手写解析该格式而不引入 YAML 依赖，支持 "key: value" 与 admin_ids 的
+// "- N" / "[1, 2]" 写法。
 func Load(path string) (*Config, error) {
 	c := &Config{DBPath: "data.db", TGAPIBase: defaultTGAPIBase,
 		ListenAddr: defaultListenAddr,
@@ -117,9 +117,7 @@ func Load(path string) (*Config, error) {
 	if err := loadFile(path, c); err != nil {
 		return nil, err
 	}
-	// 环境变量后跑，因此压过文件。容器里最常见的形态是「镜像里烤了一份
-	// config.yaml，用环境变量覆盖个别项」；反过来的话环境变量看着配了
-	// 却不生效，而这个问题只在容器里出现，本地怎么跑都复现不了。
+	// 环境变量在文件之后应用，因此压过文件。
 	if err := applyEnv(c); err != nil {
 		return nil, err
 	}
@@ -141,11 +139,9 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
-// loadFile 解析配置文件。文件不存在**不算错误**：容器里常见的做法是完全
-// 不挂载配置、全靠环境变量，为此强迫塞一个空文件很蠢。但会记一行日志 ——
-// 否则把路径写错会表现成「所有配置都没生效」，而那很难往这里想。
-//
-// 其余的打开失败（权限、是目录）照常返回错误：那些是真出了问题。
+// loadFile 解析配置文件。文件不存在不算错误：容器部署常见做法是不挂载
+// 配置、全靠环境变量，此时记一行日志并继续。其余打开失败（权限、是目录）
+// 照常返回错误。
 func loadFile(path string, c *Config) error {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -195,12 +191,10 @@ func loadFile(path string, c *Config) error {
 
 // envKeys 是环境变量到配置键的映射。
 //
-// 一律带 MENSHEN_ 前缀：不占用 BOT_TOKEN 这种通用名字，免得跟同一个容器
-// 里别的进程撞车；更要紧的是 HTTP_PROXY 已经被 Go 的 ProxyFromEnvironment
-// 用着了，不加前缀的 TG_PROXY 会让人以为是同一套东西。
+// 一律带 MENSHEN_ 前缀：避免占用 BOT_TOKEN 这类通用名字而与其他进程冲突，
+// 也避免与 Go 的 ProxyFromEnvironment 读取的 HTTP_PROXY 混淆。
 //
-// 用切片而不是 map：map 的遍历顺序随机，配错两项时每次报的是哪一项都不
-// 一样，排障时会以为自己改错了地方。
+// 用切片而不是 map：map 遍历顺序随机，多项配错时报错项不稳定。
 var envKeys = []struct{ env, key string }{
 	{"MENSHEN_BOT_TOKEN", "bot_token"},
 	{"MENSHEN_ADMIN_IDS", "admin_ids"},
@@ -219,8 +213,7 @@ var envKeys = []struct{ env, key string }{
 
 // applyEnv 把环境变量盖到已有配置上。
 //
-// 用 LookupEnv 而不是 Getenv：要区分「没设」与「设成了空」。后者是显式
-// 清空（例如镜像里的 config.yaml 配了代理，某个部署要关掉它）。
+// 用 LookupEnv 而不是 Getenv：要区分未设置与设为空串，后者表示显式清空。
 func applyEnv(c *Config) error {
 	for _, e := range envKeys {
 		v, ok := os.LookupEnv(e.env)
@@ -234,11 +227,10 @@ func applyEnv(c *Config) error {
 	return nil
 }
 
-// assign 把一个「键 = 值」写进 Config。
+// assign 把一个键值对写进 Config。
 //
-// 文件解析与环境变量共用它，两条路径因此不会在校验上漂移 —— 容器里配错
-// 代理与在文件里配错，得到的是同一条错误。新增配置项只需要在这里加一个
-// 分支，再往 envKeys 里补一行。
+// 文件解析与环境变量共用它，两条路径的校验因此保持一致。新增配置项只需
+// 在这里加一个分支，再往 envKeys 里补一行。
 func assign(c *Config, key, val string) error {
 	switch key {
 	case "bot_token":
@@ -276,7 +268,7 @@ func assign(c *Config, key, val string) error {
 		c.TurnstileSecret = strings.TrimSpace(val)
 	case "tg_api_id":
 		// 客户端应用标识（见 Config.TGAPIID）。不配走内置默认值；
-		// 显式配 0 或空串 = 关闭「入群时间」回查。非法值不挡住启动，
+		// 显式配 0 或空串 = 关闭入群时间回查。非法值不挡住启动，
 		// 按关闭处理。
 		if val == "" {
 			c.TGAPIID = 0
@@ -290,9 +282,8 @@ func assign(c *Config, key, val string) error {
 	case "tg_api_hash":
 		c.TGAPIHash = strings.TrimSpace(val)
 	case "admin_ids":
-		// 吃三种形态：环境变量的 "1,2,3"、行内数组 "[1, 2]"、空格分隔。
-		// 整体替换而不是追加：环境变量的语义是覆盖，追加会让镜像里烤的
-		// 那份名单永远去不掉。
+		// 接受三种形态：环境变量的 "1,2,3"、行内数组 "[1, 2]"、空格分隔。
+		// 整体替换而不是追加：环境变量的语义是覆盖。
 		c.AdminIDs = nil
 		for _, part := range strings.FieldsFunc(strings.Trim(val, "[]"),
 			func(r rune) bool { return r == ',' || r == ' ' }) {
@@ -303,9 +294,8 @@ func assign(c *Config, key, val string) error {
 			c.AdminIDs = append(c.AdminIDs, n)
 		}
 	default:
-		// 未知键静默忽略是容器里最难查的一类事故：拼错一个字母
-		// （public_urll / dbpath），配置永远停在默认值，而启动日志与
-		// 面板上一切正常。留一行警告，至少排障时有迹可循。
+		// 未知键静默忽略难以排查：键名拼错时配置停留在默认值，而启动日志
+		// 与面板上一切正常。此处记一行警告。
 		slog.Warn("配置项未知，已忽略", "key", key)
 	}
 	return nil
@@ -313,16 +303,14 @@ func assign(c *Config, key, val string) error {
 
 // parseProxy 解析代理地址，空串返回 nil（交给环境变量）。
 //
-// 漏写协议前缀是这个配置项最容易踩的坑，而且要两道才挡得住：
+// 漏写协议前缀需要两道校验才能挡住：
 //
-//   - IP 形式的 url.Parse 会自己报错（"127.0.0.1:7890" → first path
-//     segment in URL cannot contain colon），因为 scheme 不能以数字开头
-//   - **主机名形式的会静默通过**："localhost:1080" 解析出来 Scheme 是
-//     "localhost"、Host 为空、Opaque 是 "1080"。http.ProxyURL 拿着这么个
-//     东西既连不上也不吭声
+//   - 地址以 IP 开头时 url.Parse 会自己报错，因为 scheme 不能以数字开头
+//   - 主机名形式会静默通过：解析结果的 Scheme 是主机名、Host 为空、
+//     Opaque 是端口，http.ProxyURL 既不报错也无法连接
 //
-// 所以 err 之外还要一道 scheme 白名单。少了它，表现是所有出网请求超时，
-// 而配置文件看着完全正常。两道都放在启动时，不等运行时。
+// 所以在 url.Parse 的错误之外再加一道 scheme 白名单。两道校验都放在
+// 启动时，不等运行时。
 func parseProxy(v string) (*url.URL, error) {
 	if v == "" {
 		return nil, nil
@@ -346,14 +334,14 @@ func parseProxy(v string) (*url.URL, error) {
 
 // ProxyTransport 按代理地址建一个 RoundTripper，供 http.Client 使用。
 //
-// p 为 nil 时返回 nil，而不是「Proxy 为 nil 的 Transport」：两者差别很大。
-// http.Client 的 Transport 字段为 nil 才会落到 http.DefaultTransport，
-// 而后者的 Proxy 正是 ProxyFromEnvironment —— 这才是「留空 = 读环境变量」。
-// 返回一个 Proxy 为 nil 的 Transport 等于强制直连，会把环境变量废掉。
+// p 为 nil 时返回 nil，而不是一个 Proxy 为 nil 的 Transport：只有
+// http.Client 的 Transport 字段为 nil 时才会落到 http.DefaultTransport，
+// 而它的 Proxy 是 ProxyFromEnvironment，即留空时读环境变量。返回一个
+// Proxy 为 nil 的 Transport 等于强制直连，会使环境变量失效。
 //
 // 用 Clone 而不是 &http.Transport{Proxy: …}：后者会丢掉 DefaultTransport
 // 的连接池与各段超时（MaxIdleConns / IdleConnTimeout / TLS 握手超时），
-// 表现是高频判定下连接不复用、句柄数一路涨，而功能看起来一切正常。
+// 表现为高频判定下连接不复用、句柄数持续增长。
 func ProxyTransport(p *url.URL) http.RoundTripper {
 	if p == nil {
 		return nil
@@ -368,7 +356,7 @@ func ProxyTransport(p *url.URL) http.RoundTripper {
 // 校验它不是为了挑剔格式，而是为了守住 webhook 的入口：路径里的 token
 // 会被用来建立 Bot 实例，不设门槛的话，任何人往 /bot<随便什么> 发一次
 // POST 就能让本进程凭空多一个实例，刷够量即是内存耗尽。
-// 格式过关之后还有一道 getMe 验真，见 botRegistry.botFor。
+// 格式过关之后还有一道 getMe 验真，见 core.ProbeBot。
 var tokenRe = regexp.MustCompile(`^\d{5,}:[A-Za-z0-9_-]{30,}$`)
 
 func ValidToken(t string) bool { return tokenRe.MatchString(t) }

@@ -11,12 +11,12 @@ import (
 // 一条几千字的广告不该把库撑大，管理员也读不完。
 const adTextLimit = 1000
 
-// severeAd 报告这条判定够不够「高危害」：色情、诈骗、赌博这类内容不因为
-// 「他是老成员」就只删不禁 —— 老人免禁言是为了避免误伤普通聊天，不是给
-// 惯犯留豁免。阈值可按 bot 调（antiad_severe_mute，默认 2.0），设 0 关闭。
+// severeAd 报告这条判定是否属于高危害：色情、诈骗、赌博这类内容不因发送者
+// 是老成员就只删不禁 —— 老人免禁言是为了避免误伤普通聊天，不是豁免惯犯。
+// 阈值可按 bot 调（antiad_severe_mute，默认 2.0），设 0 关闭。
 //
 // 复判结论里没有危害度（复判 JSON 不含 severity），所以再按分类兜底一次，
-// 但要置信度够 —— 只有「分类是色情/诈骗/赌博 且 有把握」才算高危害。
+// 但要置信度足够 —— 只有分类是色情/诈骗/赌博且有把握时才算高危害。
 func severeAd(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_severe_mute", 2))
 	if line <= 0 {
@@ -35,33 +35,33 @@ func severeAd(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	return false
 }
 
-// muteConfLine 返回本 bot 的「禁言置信度下限」（百分数）。终判要禁言/封禁
+// muteConfLine 返回本 bot 的禁言置信度下限（百分数）。终判要禁言/封禁
 // 时置信度必须达到它，否则降级为只删/仅告警。
 func muteConfLine(b *core.Bot, snap *store.Snapshot) float64 {
 	return float64(snap.BotSettingInt(b.BotID(), "antiad_mute_conf", store.DefaultMuteConf))
 }
 
-// belowMuteConf 报告这个终判的置信度够不够得着禁言线。
+// belowMuteConf 报告这个终判的置信度是否低于禁言线。
 func belowMuteConf(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	return v.Confidence*100 < muteConfLine(b, snap)
 }
 
-// decideAction 按「用户风险档 × 置信度」决定处置强度。
+// decideAction 按用户风险档与置信度决定处置强度。
 //
 //	置信度 ≥ hard(90%)      新人: 删 + 禁言 + 告警    老人: 删 + 告警
 //	soft(75%) ≤ 置信 < hard 新人: 删 + 告警           老人: 仅告警
 //	置信度 < soft           都不处置
 //
-// 老人不自动禁言：误伤一个长期成员的社交代价远大于漏一条广告，告警里给
-// 管理员一键补刀的按钮就够了。**例外是高危害内容**（见 severeAd）：色情、
-// 诈骗、赌博这类不因为「他是老成员」就放过。
+// 老人不自动禁言：误伤一个长期成员的社交代价远大于漏一条广告，告警里带
+// 一键处置按钮即可。例外是高危害内容（见 severeAd）：色情、诈骗、赌博这类
+// 内容不因发送者是老成员就放过。
 //
-// 两条线都可以按 bot 覆盖，归 owner 调 —— 他最清楚自己的群该多严。
+// 两条线都可以按 bot 覆盖，归 owner 调，他清楚自己的群该多严。
 //
-// 无论按哪套定档，禁言/封禁还要过**禁言置信度下限**（antiad_mute_conf，
+// 无论按哪套定档，禁言/封禁还要过禁言置信度下限（antiad_mute_conf，
 // 默认 75%）：模型偶尔会输出 is_ad=true、confidence=0、reason 却写着正常
 // 讨论的结论，按结论定档（antiad_bool_verdict）会直接删消息 + 禁言一个
-// 普通人。低于下限一律降级为只删/仅告警，管理员在告警卡片上人工补刀。
+// 普通人。低于下限一律降级为只删/仅告警，管理员在告警卡片上人工处置。
 func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) adAction {
 	if !v.IsAd {
 		return adAction{Name: "none"}
@@ -81,13 +81,13 @@ func decideAction(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) a
 	return act
 }
 
-// decideTier 是定档本体，不含禁言置信度下限这道安全阀（见 decideAction）：
-// 下限要作用在两套定档方式之上，而不是只改其中一套。
+// decideTier 是定档本体，不含禁言置信度下限（见 decideAction）：下限作用
+// 在两套定档方式之上。
 func decideTier(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) adAction {
-	// 「按模型结论定档」：只看模型的是/否结论，不看置信度。大模型在同一类
-	// 内容上的置信度抖动很大（同一条广告可能 88% 也可能 95%），卡 90% 硬线
-	// 会让「明显是广告」的内容时而只删、时而禁言。老人仍只删不禁——那是
-	// 误伤成本和社会代价的底线，与本开关无关；高危害内容除外（severeAd）。
+	// 按模型结论定档：只看模型的是/否结论，不看置信度。大模型在同一类内容
+	// 上的置信度抖动很大，卡死硬线会让明显是广告的内容时而只删、时而禁言。
+	// 老人仍只删不禁——那是误伤成本和社会代价的底线，与本开关无关；高危害
+	// 内容除外（severeAd）。
 	if snap.BotSettingInt(b.BotID(), "antiad_bool_verdict", 0) == 1 {
 		if newbie || severeAd(b, snap, v) {
 			return adAction{Delete: true, Mute: true, Alert: true,
@@ -103,7 +103,7 @@ func decideTier(b *core.Bot, snap *store.Snapshot, newbie bool, v adVerdict) adA
 	switch {
 	case conf >= hard && (newbie || severeAd(b, snap, v)):
 		// 账号本身就是广告号时连带删掉此人近期的全部消息。只在这一档：
-		// 老成员误判的代价与自动禁言同理，删光了更是没法挽回。
+		// 老成员误判的代价与自动禁言同理，且删除无法挽回。
 		return adAction{Delete: true, Mute: true, Alert: true,
 			Purge: v.Scope == "account", Name: "deleted_muted"}
 	case conf >= hard:

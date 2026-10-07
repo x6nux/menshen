@@ -11,7 +11,7 @@ import (
 	"menshen/internal/tg"
 )
 
-// mainBotInvite 造一条「bot 自身成员状态变化」的更新。
+// mainBotInvite 造一条 bot 自身成员状态变化的更新。
 func mainBotInvite(chatID int64, chatType, status string, isMember bool) *tg.Update {
 	return &tg.Update{MyChatMember: &tg.ChatMemberUpdated{
 		Chat: &tg.Chat{ID: chatID, Type: chatType, Title: "测试群"},
@@ -22,7 +22,7 @@ func mainBotInvite(chatID int64, chatType, status string, isMember bool) *tg.Upd
 	}}
 }
 
-// TestMainBotLeavesGroupOnInvite 守的是「主 bot 不加群」：
+// TestMainBotLeavesGroupOnInvite 验证主 bot 不加群：
 // 被拉进群/频道时自动退出，且静默 —— 不通知、不回复。
 func TestMainBotLeavesGroupOnInvite(t *testing.T) {
 	cases := []struct {
@@ -55,7 +55,7 @@ func TestMainBotLeavesGroupOnInvite(t *testing.T) {
 }
 
 // TestMainBotDoesNotLeaveWhenNotInChat 确认 left/kicked 以及
-// 「受限但已不在群」不会被误判成需要退出。
+// 受限但已不在群的情况不会被误判成需要退出。
 func TestMainBotDoesNotLeaveWhenNotInChat(t *testing.T) {
 	for _, status := range []string{"left", "kicked"} {
 		b, fake, _ := testutil.NewTestMainBotDispatch(t, 777, 777, nil)
@@ -72,9 +72,9 @@ func TestMainBotDoesNotLeaveWhenNotInChat(t *testing.T) {
 	}
 }
 
-// TestWorkerBotInviteDoesNotLeave 对照组：工作 bot 被拉进群照旧走反广告
-// 的权限告警，不会立刻退出 —— 但要在在群痕迹里记一笔：超过
-// subbot_autoleave_minutes 还没在面板配置的群，由分钟清扫负责退掉。
+// TestWorkerBotInviteDoesNotLeave 对照组：工作 bot 被拉进群走反广告
+// 的权限告警，不会立即退出，但要在在群痕迹里记录一条：超过
+// subbot_autoleave_minutes 仍未在面板配置的群，由分钟清扫负责退出。
 func TestWorkerBotInviteDoesNotLeave(t *testing.T) {
 	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
 	if err := b.PutSetting("antiad_enabled", "1"); err != nil {
@@ -97,9 +97,9 @@ func TestWorkerBotInviteDoesNotLeave(t *testing.T) {
 	}
 }
 
-// TestMainBotIgnoresGroupMessage 守的是「主 bot 不判定」：即使它名下还
-// 挂着群配置（升级残留）或者退群失败留在群里，群消息也不得留底、不得
-// 产生判定任务、不得产生任何 TG 调用。
+// TestMainBotIgnoresGroupMessage 验证主 bot 不判定：即使名下仍挂着群配置，
+// 或者退群失败留在群里，群消息也不得留底、不得产生判定任务、不得产生任何
+// TG 调用。
 func TestMainBotIgnoresGroupMessage(t *testing.T) {
 	b, fake, _ := testutil.NewTestMainBotDispatch(t, 777, 777, nil)
 	testutil.EnableAntiad(t, b, -100123)
@@ -122,7 +122,7 @@ func TestMainBotIgnoresGroupMessage(t *testing.T) {
 }
 
 // TestWorkerBotStillHandlesGroupMessage 对照组：同样的群配置与消息，
-// 工作 bot 照常留底。
+// 工作 bot 正常留底。
 func TestWorkerBotStillHandlesGroupMessage(t *testing.T) {
 	b, _, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
 	testutil.EnableAntiad(t, b, -100123)
@@ -138,7 +138,7 @@ func TestWorkerBotStillHandlesGroupMessage(t *testing.T) {
 	}
 }
 
-// TestStaffStartWithLogDeepLink：管理员从群内告警点「打开 bot 处理」
+// TestStaffStartWithLogDeepLink：管理员从群内告警点击打开 bot 处理
 // （start=log<记录号>）时直接落到那条记录卡片；普通 /start 仍是主菜单。
 func TestStaffStartWithLogDeepLink(t *testing.T) {
 	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
@@ -169,7 +169,7 @@ func TestStaffStartWithLogDeepLink(t *testing.T) {
 	}
 }
 
-// TestStaffStartWithUnbanDeepLink：管理员点群内冷判定通知的「📝 申诉」
+// TestStaffStartWithUnbanDeepLink：管理员点击群内冷判定通知的申诉按钮
 // （ub<记录号>）时，直接落到那条冷判定记录卡片。
 func TestStaffStartWithUnbanDeepLink(t *testing.T) {
 	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
@@ -198,9 +198,9 @@ func TestStaffStartWithUnbanDeepLink(t *testing.T) {
 	}
 }
 
-// TestMainBotNonStaffStartSaysNoPermission：主 bot 对外只有一句「没有权限」。
-// 它只做配置管理与接入其它 bot，被拉进群会自动退出 —— 「拉进群并设为管理员」
-// 这种引导对它就是错的。工作 bot 的同类提示保持不变（它确实要在群里干活）。
+// TestMainBotNonStaffStartSaysNoPermission：主 bot 对外只回复一句没有权限。
+// 它只做配置管理与接入其它 bot，被拉进群会自动退出，因此拉进群并设为管理员
+// 这类引导对它无效。工作 bot 的同类提示不同（它需要在群里判定）。
 func TestMainBotNonStaffStartSaysNoPermission(t *testing.T) {
 	msg := func() *tg.Update {
 		return &tg.Update{Message: &tg.Message{
@@ -271,8 +271,8 @@ func TestMainBotGlobalGbanAppeal(t *testing.T) {
 	}
 }
 
-// TestMainBotStillServesPanel 确认限制只针对「群」，私聊面板不受影响：
-// 配置管理与接入其他 bot 正是主 bot 的本职。
+// TestMainBotStillServesPanel 确认限制只针对群，私聊面板不受影响：
+// 配置管理与接入其他 bot 正是主 bot 的职责。
 func TestMainBotStillServesPanel(t *testing.T) {
 	b, fake, _ := testutil.NewTestMainBotDispatch(t, 777, 777, nil)
 	dispatch(b, &tg.Update{Message: &tg.Message{

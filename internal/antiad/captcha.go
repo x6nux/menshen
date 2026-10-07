@@ -15,7 +15,7 @@ import (
 
 // ---- 入群人机验证：验证码提供方的统一入口 ----
 //
-// 三个提供方共用同一套「网页拿 token → 后端核对」的流程，差别只在端点与
+// 三个提供方共用同一套“网页拿 token → 后端核对”的流程，差别只在端点与
 // 字段名。集中在这里，入群验证页、演示页与申诉页不各写一份。
 //
 //   - turnstile → Cloudflare siteverify
@@ -80,15 +80,15 @@ var hcaptchaVerifyURL = "https://api.hcaptcha.com/siteverify"
 
 // captchaHostOK 报告 siteverify 返回的 hostname 是否可接受。
 //
-// hCaptcha 文档明确：hostname 由用户浏览器派生，「不得用于任何鉴权」，
+// hCaptcha 文档明确：hostname 由用户浏览器派生，“不得用于任何鉴权”，
 // 高峰期还可能直接返回 "not-provided"；真正绑定域名的是 sitekey 的
 // Domain allowlist（不匹配时 siteverify 自己 success=false）。
-// 实测它对子域页面返回的是可注册域（menshen.free.edu.kg → free.edu.kg，
-// .edu.kg 在公共后缀列表里），严格相等会把正常用户拦下。
+// 它对子域页面返回的是可注册域（本站主机名的父域），严格相等会把
+// 正常用户拦下。
 //
-// 规则：相等、是本站主机名的父域（本站以「.它」结尾）、或对端没给有效
-// 值，都算过。反向不收：令牌在别人域上解出时，返回值不可能是本站主机名
-// 的父域。
+// 规则：相等、是本站主机名的父域（本站主机名以 .它 结尾）、或对端没给
+// 有效值，都算通过。反向不成立：令牌在别人域上解出时，返回值不可能是
+// 本站主机名的父域。
 func captchaHostOK(returned, host string) bool {
 	if host == "" || returned == "" || strings.EqualFold(returned, "not-provided") {
 		return true
@@ -170,8 +170,7 @@ type CaptchaCred struct{ SiteKey, Secret string }
 //
 //	provider=site_key,secret;provider=...
 //
-// 用逗号 / 分号的紧凑写法而不是一堆独立设置键：测试台是测试设施，不值得
-// 为它撑起一整套键。cap 是内置实现（无需密钥），写了也忽略。
+// cap 是内置实现（无需密钥），写了也忽略。
 func parseCaptchaDemoKeys(v string) (map[string]CaptchaCred, error) {
 	out := map[string]CaptchaCred{}
 	v = strings.TrimSpace(v)

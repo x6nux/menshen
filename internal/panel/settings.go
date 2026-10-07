@@ -22,7 +22,7 @@ import (
 //   - "antiad" 每个 bot 的参数页，owner 可以为自己的 bot 覆盖，
 //     不覆盖就沿用全局默认
 //
-// 分组不能靠 key 前缀猜，必须显式声明。
+// 分组必须显式声明，不能由 key 前缀推断。
 type settingSpec struct {
 	key   string
 	label string
@@ -43,7 +43,7 @@ var groupFooterSpec = settingSpec{key: "antiad_group_footer", label: "群内提�
 	hint: "原样附在群内告警与进群限制通知末尾，例如：② 使用指南 (https://t.me/your_link)；填 - 清空"}
 
 // captchaProviderSpec / captchaSiteKeySpec / captchaSecretSpec /
-// captchaDemoKeySpec 是入群人机验证的字符串型设置（settings 表，网页面板
+// captchaDemoKeySpecs 是入群人机验证的字符串型设置（settings 表，网页面板
 // 配置）。与 tzSpec 一样不走整数校验；secret 的**当前值不能回显**——TG
 // 会把它打进聊天记录、Mini App 会把它发给浏览器，显示一律脱敏。
 var captchaProviderSpec = settingSpec{key: "captcha_provider", label: "入群验证提供方",
@@ -81,7 +81,7 @@ func stringSpecByKey(k string) *settingSpec {
 // 豁免名单是列表项，走专门的增删入口。
 var settingSpecs = []settingSpec{
 	{"log_retention_days", "记录保留天数", "正整数，至少 1；同时作用于判定流水与群消息留底", 1, 0, ""},
-	// 日志文件在数据库同目录（data.db → data.log），单文件写满滚成 .1 备份。
+	// 日志文件与数据库同目录，单文件写满滚成 .1 备份。
 	{"log_file_max_mb", "日志单文件上限（MB）", "非负整数；单个日志文件写到这么大就滚成备份。0 = 关闭文件日志", 0, 0, ""},
 	{"log_file_total_mb", "日志总大小上限（MB）", "非负整数；当前文件加全部备份超过它就从最旧的备份删起。0 = 关闭文件日志", 0, 0, ""},
 	{"max_bots_per_admin", "每人 bot 数上限", "非负整数，0 = 不限；主管理员不受限", 0, 0, ""},
@@ -150,9 +150,9 @@ func settingSpecByKey(k string) *settingSpec {
 //
 // 分组只按**主题**分，与作用域无关——作用域是另一件事（settingSpec.group：
 // 全局项 / 每个 bot 可覆盖），同一个参数常常既能设全局默认、又能被单个 bot
-// 覆盖，两个面板共用这份顺序，界面才不会一边一个样。
+// 覆盖，两个面板共用这份顺序，界面保持一致。
 //
-// 没列进来的设置项归入「其他」排在最后：新增设置项最多是暂时没有归属，
+// 没列进来的设置项归入其他并排在最后：新增设置项最多是暂时没有归属，
 // 不会从界面上消失。
 var settingSections = []struct {
 	name string
@@ -199,7 +199,7 @@ type specGroup struct {
 }
 
 // specsInSections 按主题顺序给出设置项。keep 为 nil 表示全要；否则只保留
-// keep 为真的项（顺序不变）。未列入 settingSections 的项归入「其他」。
+// keep 为真的项（顺序不变）。未列入 settingSections 的项归入 `其他`。
 func specsInSections(keep func(settingSpec) bool) []specGroup {
 	take := func(sp settingSpec) bool { return keep == nil || keep(sp) }
 	seen := map[string]bool{}
@@ -250,7 +250,7 @@ func specsInGroup(g string) []settingSpec {
 	return out
 }
 
-// settingTarget 把「改哪个 bot 的哪一项」编码进待输入会话的 target。
+// settingTarget 把目标 bot 与设置项编码进待输入会话的 target。
 // botID 为 0 表示改全局值。
 func settingTarget(botID int64, key string) string {
 	return strconv.FormatInt(botID, 10) + "|" + key
@@ -314,7 +314,7 @@ func handleSettingsCallback(b *core.Bot, q *tg.CallbackQuery) {
 		}
 		key := parts[3]
 		// 白名单：不能让任意 key 被这条路径写成 0/1，
-		// 否则伪造一个 callback 就能把 tz_offset 改成 1。
+		// 否则伪造 callback 即可篡改任意项。
 		if !slices.Contains(globalToggles, key) {
 			b.AnswerCallback(q.ID, "未知开关")
 			return
@@ -421,8 +421,8 @@ func askSettingInput(b *core.Bot, chatID, uid, botID int64, sp *settingSpec) {
 			extra+"\n\n当前值：<code>"+html.EscapeString(cur)+"</code>")
 }
 
-// settingSetLabel 报告一个「不该回显」的设置是否已设置：查 settings 表
-// 是否有行，而不是读兜底默认值（有默认值的键 Setting() 永远非空）。
+// settingSetLabel 报告一个不该回显的设置是否已设置：查 settings 表是否
+// 有行，而不是读兜底默认值（有默认值的键 Setting() 永远非空）。
 func settingSetLabel(sh *core.Shared, key string) string {
 	var one int
 	if err := sh.Store.Read.QueryRow(
@@ -497,8 +497,7 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 		{{"👁 识图模型", "a:st:m:vision"}},
 		{{"📝 形态摘要", "a:ad:dg"}},
 	}
-	// 一行一个：按钮上带了当前值，两列会在手机端被截断，
-	// 而截断掉的恰好是值——那按钮就白带了。
+	// 一行一个：按钮上带当前值，两列在手机端会被截断，而截断的恰好是值。
 	for _, sp := range specsInGroup("") {
 		rows = append(rows, [][2]string{{
 			"📝 " + sp.label + " · " + btnValue(snap.Setting(sp.key)),
@@ -510,7 +509,7 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 	rows = append(rows, [][2]string{{
 		"📎 群内附加链接 · " + btnValue(snap.Setting(groupFooterSpec.key)),
 		"a:st:e:" + groupFooterSpec.key}})
-	// 入群验证：secret 绝不能回显进聊天记录，只显示「已设置/未设置」。
+	// 入群验证：secret 绝不能回显进聊天记录，只显示已设置/未设置状态。
 	rows = append(rows, [][2]string{{
 		"🛡 入群验证提供方 · " + btnValue(snap.Setting(captchaProviderSpec.key)),
 		"a:st:e:" + captchaProviderSpec.key}})
@@ -537,9 +536,9 @@ func showSettings(b *core.Bot, chatID, msgID int64) {
 
 // handleSettingsInput 处理管理员补发的那条文本。
 //
-// 校验失败一律**保留会话**并提示重填：一次手误不该让人从头点一遍菜单。
-// 成功或彻底放弃时才 Delete —— 不删的话，5 分钟 TTL 内下一条无关消息
-// 会被当成又一次输入。
+// 校验失败一律**保留会话**并提示重填：一次手误不应让用户重新走一遍菜单。
+// 成功或彻底放弃时才 Delete，否则 5 分钟 TTL 内下一条无关消息会被当成
+// 又一次输入。
 func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text string) {
 	chatID := m.Chat.ID
 	uid := m.From.ID
@@ -645,15 +644,14 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 		}
 		token := strings.TrimSpace(text)
 
-		// 先删掉他发的那条。token 等同于该 bot 的完整控制权，指望用户
-		// 自己记得删是不现实的，而它会一直躺在聊天记录里 —— 换台设备
-		// 登录、把手机递给别人看一眼，都够了。
+		// 先删除用户发送的那条消息。token 等同于该 bot 的完整控制权，
+		// 留存在聊天记录中即构成泄露风险。
 		b.TG.Call("deleteMessage", map[string]any{
 			"chat_id": chatID, "message_id": m.MessageID,
 		})
 
-		// 本地就能判的失败不出网：格式敲错、重复接入、超配额占了失败的
-		// 大头，先花一次 getMe 的往返再告诉他「你已经加过了」既慢又蠢。
+		// 本地可判定的失败不发起网络请求：格式错误、重复接入、超配额占
+		// 失败的多数，先做一次 getMe 往返再返回错误既慢又无必要。
 		if err := b.Reg.Precheck(token, uid); err != nil {
 			b.KeepInput(uid, "bot_add", "")
 			b.Send(chatID, "❌ "+err.Error()+"\n\n请重新发送 token：", nil)
@@ -793,8 +791,8 @@ func legacyModelKey(listKey string) string {
 }
 
 // settingInputFailed 处理一次设置输入的失败，返回 true 表示已经处理：
-// 参数问题**保留会话**让人直接重填（一次手误不该让人从头点一遍菜单），
-// 没有权限静默放弃，内部故障放弃并报「保存失败」。
+// 参数问题**保留会话**使调用方可直接重填（一次手误不应让用户重新走一遍
+// 菜单），没有权限静默放弃，内部故障放弃并返回保存失败。
 func settingInputFailed(b *core.Bot, chatID, uid int64, err error) bool {
 	if err == nil {
 		return false

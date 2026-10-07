@@ -168,9 +168,9 @@ func TestAdminLiftGban(t *testing.T) {
 	}
 }
 
-// TestGbanNeedsHardEvidence：联合封禁会把人从所有接入群请出去，必须有一条
-// 独立于档位的证据线。按模型结论定档时置信度不参与档位，62% 的误报曾经
-// 因此被写进名单（线上真实事件，管理员随即标了误判）。
+// TestGbanNeedsHardEvidence：联合封禁会把用户从所有接入群移出，必须有一条
+// 独立于档位的证据线。按模型结论定档时置信度不参与档位，低置信度的误报
+// 不得据此写入名单。
 func TestGbanNeedsHardEvidence(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	fake := b.TG.(*testutil.FakeTG)
@@ -197,7 +197,7 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 		t.Error("危害度达阈值时应够格")
 	}
 
-	// 端到端：bool 模式下 62% 的新人广告只删不禁、不进名单 —— 禁言置信度
+	// 端到端：bool 模式下 62% 的命中只删不禁、不进名单 —— 禁言置信度
 	// 下限（默认 75）把低置信结论挡在禁言之外，删与告警照常。
 	fakeAIWith(t, b, soReply("ad", 0.62, "promo", "message"),
 		llmReply(true, 0.62, "promo", "message"))
@@ -214,10 +214,10 @@ func TestGbanNeedsHardEvidence(t *testing.T) {
 	}
 }
 
-// TestGbanFollowsGroupConfig：联合封禁执行服从各群自己的配置——演练群不动手、
-// 禁言档只禁言、封禁档才请出群（用户要求「不要直接就封禁」）。
+// TestGbanFollowsGroupConfig：联合封禁执行服从各群自己的配置——演练群不执行、
+// 禁言档只禁言、封禁档移出群。
 func TestGbanFollowsGroupConfig(t *testing.T) {
-	// 用 registry 版环境：扇出执行（EnforceGban）要走「所有 bot 的所有群」。
+	// 用 registry 版环境：扇出执行（EnforceGban）要走所有 bot 的所有群。
 	a, b, fa, fb := sameOwnerPair(t, -100)
 	if err := a.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestGbanFollowsGroupConfig(t *testing.T) {
 		return fa.CountCalls("restrictChatMember") + fb.CountCalls("restrictChatMember")
 	}
 
-	// 1) 禁言档（默认跟随 bot，antiad_ban=0）：只禁言，不踢人。
+	// 1) 禁言档（默认跟随 bot，antiad_ban=0）：只禁言，不移出群。
 	if !gbanGuard(a, testutil.ChatConfOf(t, a, -100), user) {
 		t.Fatal("名单内的人进群应被拦下")
 	}
@@ -252,7 +252,7 @@ func TestGbanFollowsGroupConfig(t *testing.T) {
 		t.Error("扇出在禁言档应禁言")
 	}
 
-	// 3) 演练群：判定照跑，但不处置。同群两个 bot 都切到演练。
+	// 3) 演练群：判定照常执行，但不处置。同群两个 bot 都切到演练。
 	testutil.SetChatDryrun(t, a, -100, true)
 	testutil.SetChatDryrun(t, b, -100, true)
 	ban1, mute1 := bans(), mutes()
@@ -278,9 +278,8 @@ func TestGbanFollowsGroupConfig(t *testing.T) {
 }
 
 // TestGbanFanoutLogsMuteAndLiftUnmutes：名单扇出在禁言档的群要留一条
-// gban_muted 流水，撤名单时才知道该去哪解禁言 —— unbanChatMember 只解
-// 封禁，禁言档当初走的是 restrictChatMember。少了这一步就是「名单撤了，
-// 人在群里还是发不了言」。
+// gban_muted 流水，撤名单时才能确定需要解禁言的群 —— unbanChatMember 只解
+// 封禁，禁言档走的是 restrictChatMember。
 func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
 	a, _, fa, fb := sameOwnerPair(t, -100)
 	if err := a.PutSetting("gban_enabled", "1"); err != nil {
@@ -306,7 +305,7 @@ func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
 	if n == 0 {
 		t.Fatal("扇出应落 gban_muted 流水，否则解除时找不到该解的群")
 	}
-	// 再扇出一次（全局组与专属组各执行一遍，面板「重新执行」也会再来）
+	// 再扇出一次（全局组与专属组各执行一遍，面板的重新执行也会再来）
 	// 不该堆重复记录。
 	EnforceGban(a.Shared, 888, "测试用广告号")
 	gbanLogAction(a, -100, 888, "mute")
@@ -318,7 +317,7 @@ func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
 		t.Errorf("同一动作只该留一条未解除记录，得到 %d 条", n)
 	}
 
-	// 撤名单：除了 unban，还要补一次「权限全开」把禁言解掉。
+	// 撤名单：除了 unban，还要补一次 `权限全开` 把禁言解掉。
 	before := mutes()
 	LiftGban(a.Shared, 888)
 	if mutes() == before {
@@ -342,8 +341,8 @@ func TestGbanFanoutLogsMuteAndLiftUnmutes(t *testing.T) {
 	}
 }
 
-// TestGbanLiftKeepsOtherPenalty：群里还有别的生效处罚（比如这个人自己也
-// 发过广告被禁言）时，撤联合封禁不该顺手把那条禁言也解掉。
+// TestGbanLiftKeepsOtherPenalty：群里还有其他生效处罚（例如该用户自己也
+// 因广告被禁言）时，撤联合封禁不应一并解除那条禁言。
 func TestGbanLiftKeepsOtherPenalty(t *testing.T) {
 	a, _, fa, fb := sameOwnerPair(t, -100)
 	if err := a.PutSetting("gban_enabled", "1"); err != nil {
@@ -389,16 +388,15 @@ func TestGbanLiftKeepsOtherPenalty(t *testing.T) {
 }
 
 // TestGbanWorthyAccountScopeNeedsBoth：账号级结论（资料本身就是广告位）
-// 要进全平台名单必须**同时**过处置线与危害度阈值 —— 它的证据全在关键词与
-// 形态归纳上，最容易误杀（实测：简介写「双向机器人」被判色情推广，
-// 82% + 危害度 2.x 就把人送进了全平台名单）。
+// 要进全平台名单必须同时过处置线与危害度阈值 —— 其证据全在关键词与
+// 形态归纳上，最易误判。
 func TestGbanWorthyAccountScopeNeedsBoth(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	testtest := func(scope string, conf, sev float64) bool {
 		return gbanWorthy(b, b.Cache.Snap(), adVerdict{IsAd: true, Scope: scope,
 			Confidence: conf, Severity: sev})
 	}
-	// 消息级：过一条即可（与原先一致）。
+	// 消息级：过一条即可。
 	if !testtest("message", 0.95, 0) {
 		t.Error("消息级高置信应够格")
 	}
@@ -418,7 +416,7 @@ func TestGbanWorthyAccountScopeNeedsBoth(t *testing.T) {
 }
 
 // TestAdminLiftGbanScope：解除联合封禁的范围语义 ——
-// 主管理员能撤任何账本的专属组条目，并把「个人简介限制」一并解开；
+// 主管理员能撤任何账本的专属组条目，并把 `个人简介限制` 一并解开；
 // 次级管理员只动自己的账本，别人的条目撤不掉。
 func TestAdminLiftGbanScope(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
@@ -434,7 +432,7 @@ func TestAdminLiftGbanScope(t *testing.T) {
 		b.BotID(), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
-	// 反向先试：次管 777 之外的账本，200 撤不动。
+	// 反向先试：200 不在该账本的归属范围内，无法撤销。
 	if s := AdminLiftGban(sh, 200, 555); s != "" {
 		t.Fatalf("次管不该动别人的账本，得到 %q", s)
 	}
@@ -456,7 +454,7 @@ func TestAdminLiftGbanScope(t *testing.T) {
 }
 
 // TestGbanOwnRemoveUnmutes：专属组撤销与全局组同理 —— unbanChatMember 只解
-// 封禁，禁言档的群当初是 restrictChatMember，要再发一次「权限全开」。
+// 封禁，禁言档的群走的是 restrictChatMember，要再发一次 `权限全开`。
 func TestGbanOwnRemoveUnmutes(t *testing.T) {
 	a, _, fa, fb := sameOwnerPair(t, -100)
 	sh, owner := a.Shared, a.Owner()
@@ -488,9 +486,9 @@ func TestGbanOwnRemoveUnmutes(t *testing.T) {
 	}
 }
 
-// dropJoinMutesFor 在群里没有在跑的 bot 时也要清形状：那条限制已经没有人
-// 执行，直接 DELETE join_mutes 不会走 dropJoinMute 的反查删除，被推翻的
-// 模板会继续零 AI 误伤同模板的后来者。
+// TestDropJoinMutesForNoBotCleansShape：dropJoinMutesFor 在群里没有运行中的
+// bot 时也要清形状：该限制已无执行者，直接 DELETE join_mutes 不会走
+// dropJoinMute 的反查删除，被推翻的模板会继续以零 AI 误判同模板的后续用户。
 func TestDropJoinMutesForNoBotCleansShape(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared

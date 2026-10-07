@@ -1,5 +1,4 @@
-// 展示格式化函数：从旧内联页（internal/panel/miniapp_html.go）的 JS 等价迁移。
-// 行为保持一致，仅 fmtTS 增加了可选的展示时区（对应全局设置 tz_name）。
+// 展示格式化函数：把后端返回的时间戳、判定/申诉状态与设置值渲染成界面文案。
 import type { State } from '../api/types'
 
 /** 设置值从 JSON 来，可能是字符串或数字；统一用宽松类型接住。 */
@@ -9,8 +8,7 @@ export type BotSettingsMap = Record<string, Record<string, SettingValue>>
 export type SettingsMap = Record<string, SettingValue>
 
 /**
- * displayTz 取全站展示时区：优先顶层 tz_name（主/次管都有）；回退 global
- * 是为了兼容旧响应（顶层字段上线前只给主管理员下发过 global）。
+ * displayTz 取全站展示时区：优先顶层 tz_name，缺失时回退 global.tz_name。
  */
 export function displayTz(state: Pick<State, 'tz_name' | 'global'>): string | undefined {
   return state.tz_name ?? state.global?.tz_name
@@ -22,8 +20,8 @@ const FORMAT_LOCALE = 'en-CA'
 // Intl.formatToParts 直接抛 RangeError（脏数据、字段错位都可能触发）。
 const MAX_UNIX_SECONDS = 8.64e12
 
-// 同一时区反复格式化很多行，Intl 实例建一次就够；非法时区缓存的是本地
-// 时区的实例，与「非法回退本地」的行为一致。
+// 同一时区反复格式化很多行，Intl 实例建一次即可；非法时区缓存的是本地时区
+// 实例，与非法时区回退本地时区的行为一致。
 const formatterCache = new Map<string, Intl.DateTimeFormat>()
 
 function formatterFor(tzName?: string, withSeconds = false): Intl.DateTimeFormat {
@@ -54,7 +52,7 @@ function formatterFor(tzName?: string, withSeconds = false): Intl.DateTimeFormat
   return fmt
 }
 
-/** fmtTS 把 Unix 秒格式化成「MM-DD HH:mm」；非正数、非法值或超范围值显示 —。 */
+/** fmtTS 把 Unix 秒格式化成 `MM-DD HH:mm`；非正数、非法值或超范围值显示 —。 */
 export function fmtTS(at: number, tzName?: string): string {
   if (!Number.isFinite(at) || at <= 0 || at > MAX_UNIX_SECONDS) return '—'
   const parts = formatterFor(tzName).formatToParts(new Date(at * 1000))
@@ -64,7 +62,7 @@ export function fmtTS(at: number, tzName?: string): string {
 }
 
 /**
- * fmtTSFull 在 fmtTS 的「MM-DD HH:mm」上补秒，给运行日志用 —— 同一分钟内
+ * fmtTSFull 在 fmtTS 的 `MM-DD HH:mm` 上补秒，给运行日志用 —— 同一分钟内
  * 往往连着好几条，只有秒能看出先后。非法值同样显示 —。
  */
 export function fmtTSFull(at: number, tzName?: string): string {
@@ -117,7 +115,7 @@ const ACTION_LABELS: Record<string, string> = {
   undone: '已撤销',
 }
 
-/** actionLabel 处置动作文案；dryrun: 前缀渲染成「演练:xxx」且内层同样翻译。 */
+/** actionLabel 处置动作文案；dryrun: 前缀渲染成 `演练:xxx` 且内层同样翻译。 */
 export function actionLabel(a: string): string {
   const known = ACTION_LABELS[a]
   if (known) return known
@@ -136,7 +134,7 @@ const DECIDER_LABELS: Record<string, string> = {
   skipped: '未送检',
 }
 
-/** deciderLabel 判定来源文案；rule:<id> 显示为「必封规则 #id」，未知值原样返回。 */
+/** deciderLabel 判定来源文案；rule:<id> 显示为 `必封规则 #id`，未知值原样返回。 */
 export function deciderLabel(d: string): string {
   if (d.startsWith('rule:')) {
     const id = d.slice('rule:'.length)
@@ -199,19 +197,19 @@ const APPEAL_AI_LABELS: Record<string, string> = {
   skipped: '跳过复核',
 }
 
-/** apAI AI 复核结论文案；未知值显示「未复核」。 */
+/** apAI AI 复核结论文案；未知值显示 `未复核`。 */
 export function apAI(r: string): string {
   return APPEAL_AI_LABELS[r] || '未复核'
 }
 
-/** durationText 把分钟数渲染成「N 天 / N 小时 / N 分钟」（不做正负判断）。 */
+/** durationText 把分钟数渲染成 `N 天 / N 小时 / N 分钟`（不做正负判断）。 */
 export function durationText(n: number): string {
   if (n % 1440 === 0) return n / 1440 + ' 天'
   if (n % 60 === 0) return n / 60 + ' 小时'
   return n + ' 分钟'
 }
 
-/** muteText 禁言时长人话：0/非正数/非数字 = 永久禁言；能整除的按天、小时。 */
+/** muteText 把禁言分钟数渲染成时长文案：0/非正数/非数字 = 永久禁言；能整除时按天、小时。 */
 export function muteText(v: number | string): string {
   const n = parseInt(String(v), 10)
   if (!Number.isFinite(n) || n <= 0) return '永久禁言'
@@ -240,12 +238,12 @@ function muteOf(
   globalDefaults: SettingsMap | null | undefined,
   botId: number | string,
 ): string {
-  // 未配置时与旧版一致按 1 天兜底展示。
+  // 未配置时按 1 天（1440 分钟）兜底展示。
   return muteText(settingOf(botSettings, globalDefaults, botId, 'antiad_mute_minutes') || '1440')
 }
 
 /**
- * punishLabel 把「跟随/禁言/封禁」渲染成实际会执行的动作。
+ * punishLabel 把 `跟随/禁言/封禁` 渲染成实际会执行的动作。
  * punish: -1 跟随 bot（看 antiad_ban）、0 禁言、1 封禁出群。
  */
 export function punishLabel(
@@ -261,7 +259,7 @@ export function punishLabel(
     : muteOf(botSettings, globalDefaults, botId)
 }
 
-/** muteOptLabel 当前禁言档位文案（处罚方式选择器里的「禁言 N 天」）。 */
+/** muteOptLabel 当前禁言档位文案（处罚方式选择器里的 `禁言 N 天`）。 */
 export function muteOptLabel(
   botSettings: BotSettingsMap | null | undefined,
   globalDefaults: SettingsMap | null | undefined,

@@ -11,40 +11,39 @@ import (
 
 // ---- 用户名随机度与前置号空壳特征组合 ----
 //
-// 批量注册的广告前置号有一套稳定的「空壳」形态：没头像、没简介、
-// 用户名是注册机吐出来的无词形随机串，昵称要么同样是随机串、要么
-// 写着业务场景词。这些条件**同时齐备**才判前置号；只命中一部分的
-// 不禁言，标记成重点关注（复查间隔封顶 5min），资料补齐后自动解除。
+// 批量注册的广告前置号有一套稳定的空壳形态：无头像、无简介、
+// 用户名为注册机生成的无词形随机串，昵称或为随机串、或为业务场景词。
+// 这些条件同时齐备才判前置号；只命中一部分的不禁言，标记为重点关注
+// （复查间隔封顶 5min），资料补齐后自动解除。
 //
-// 「有正常个人简介」的用户永远不进这套判定：简介是真人最贵的信号，
-// 批量号开局一律不写，写了的按资料广告口径另行判断。
+// 有正常个人简介的用户不进入这套判定：简介是真人最强的信号，
+// 批量号通常不写简介；写了简介的按资料广告口径另行判断。
 
 const (
-	// unameRandomScore 是「无词形随机串」的评分线（0~100）。线下的是
-	// john1990、sarah_smith 这类人取用户名；线上的是注册机吐出的
-	// tpiw33abik、vwzbc32xc7、dmfh9r1dgm 这类。
+	// unameRandomScore 是无词形随机串的评分线（0~100）。低于该线的是
+	// 人取用户名，高于该线的是注册机生成的无词形随机串。
 	unameRandomScore = 65
 	// unameMinLen / unameMaxLen 是批量注册用户名的典型长度区间（8~16）。
 	// 区间内加分，区间外不直接否决：随机度本身与长度无关，长度只是
 	// 加重项。
 	unameMinLen = 8
 	unameMaxLen = 16
-	// latinMinScore 是拉丁字母串可评分的最短长度：更短的串（leo、ab）
-	// 信息量太少，评分没有意义，字段直接缺席。
+	// latinMinScore 是拉丁字母串可评分的最短长度：更短的串信息量太少，
+	// 评分没有意义，字段直接缺席。
 	latinMinScore = 5
 )
 
 // randEval 是一次随机度评估的结果。
 type randEval struct {
 	Score int
-	// Human 是命中的「人取」特征（词典词、年份、吉利数字等），供
+	// Human 是命中的人取特征（词典词、年份、吉利数字等），供
 	// reason 引用；为空表示没有发现任何人工痕迹。
 	Human []string
 }
 
 // unameWords 是内置的常用词表：英文人名、常见名词与汉语拼音姓氏/
 // 名字音节（≥4 字母，3 字母的子串误命中率过高，一律不收）。扫描的
-// 目的只是把「像词」从「随机」里区分出来，不追求覆盖。
+// 目的只是把像词从随机里区分出来，不追求覆盖。
 var unameWords = map[string]bool{}
 
 func init() {
@@ -109,7 +108,7 @@ func latinOf(s string) string {
 }
 
 // randScored 给一段文本打随机度分；拉丁部分太短（<latinMinScore）返回
-// nil——字段缺席表示「没有可评分的串」，与「评了 0 分」区分开。
+// nil——字段缺席表示没有可评分的串，与评了 0 分区分开。
 func randScored(s string) *int {
 	latin := latinOf(s)
 	if len(latin) < latinMinScore {
@@ -120,16 +119,16 @@ func randScored(s string) *int {
 }
 
 // identifierRand 评估一段拉丁字母数字串的随机程度（0~100，越高越像
-// 注册机吐出的无词形随机串）。
+// 注册机生成的无词形随机串）。
 //
-// 评分维度（正值推向「随机」，负值是「人取」的痕迹）：
+// 评分维度（正值推向随机，负值是人为选取的痕迹）：
 //   - 长度落在 8~16（批量注册的典型区间）+25，太短只能给低保；
 //   - 字母数字混合 +20、数字占比 8%~60% 再 +10（注册机的均衡混合）；
 //   - 字符分布的均匀度（归一化香农熵）最多 +20：随机串的字符几乎不重复；
-//   - 全辅音（无元音）+10：t p i w 这类连缀拼不出来、多半是生成器；
-//   - 含词典词（≥4 字母）每个 -35：john、smith、sarah 一票否决级；
+//   - 全辅音（无元音）+10：辅音连缀难以拼读，多为生成器产物；
+//   - 含词典词（≥4 字母）每个 -35：命中词典词即强烈倾向人为选取；
 //   - 年份（1990~2099 段）-20、同数字连排（888）-10、连号（123/321）
-//     -10、吉利数（520/1314）-10：人挑数字的习惯性证据。
+//     -10、吉利数（520/1314）-10：人为选取数字的习惯性证据。
 func identifierRand(s string) randEval {
 	e := randEval{}
 	n := len(s)
@@ -232,7 +231,7 @@ func identifierRand(s string) randEval {
 	return e
 }
 
-// isRandomIdentifier 报告该串是否达到「无词形随机串」评分线。
+// isRandomIdentifier 报告该串是否达到`无词形随机串`评分线。
 func isRandomIdentifier(s string) bool {
 	return identifierRand(s).Score >= unameRandomScore
 }
@@ -265,7 +264,7 @@ func charRuns(s string, keep func(byte) bool) []string {
 }
 
 // isYear 报告四位数字串是否落在人常用的出生年份段（1920~2099，
-// 刻意盖住 20xx：2001、2015 这类远多于随机碰撞）。
+// 覆盖 20xx 段：该段实际年份远多于随机碰撞）。
 func isYear(run string) bool {
 	if run[0] != '1' && run[0] != '2' {
 		return false
@@ -308,9 +307,8 @@ func hasLuckyDigits(run string) bool {
 }
 
 // prewarmSceneWords 是昵称里的业务/营销场景词：批量号的昵称常直接
-// 写着「XX科技」「专业服务」这类摊位招牌。命中任一即视为「场景词昵称」。
-// 只在空壳组合里作为一条必要特征参与，误伤面由其余条件兜住；发现新
-// 招牌词直接往表里加。
+// 写着业务招牌式文本。命中任一即视为场景词昵称。
+// 只在空壳组合里作为一条必要特征参与，误判范围由其余条件约束。
 var prewarmSceneWords = []string{
 	"科技", "网络", "传媒", "影视", "文化", "商贸", "电商", "跨境",
 	"代购", "直营", "资源", "接单", "招商", "推广", "批发", "厂家",
@@ -353,9 +351,9 @@ type prewarmShapeVerdict struct {
 	Risk []string
 }
 
-// anchor 报告是否进入组合判定：无简介是锚点，配不上随机用户名/场景
-// 昵称就不往下走——「有正常个人简介的用户」在这里被整条挡住，永远不会
-// 因为用户名随机被关注或处置。
+// Anchor 报告是否进入组合判定：无简介是锚点，若不同时命中随机用户名或
+// 场景昵称则不继续——有正常个人简介的用户在此被整体排除，不会
+// 因用户名随机被关注或处置。
 func (v prewarmShapeVerdict) Anchor() bool {
 	return v.BioEmpty && (v.UnameRand || v.NameSus)
 }
@@ -411,7 +409,7 @@ func evalPrewarmShape(p senderProfile) prewarmShapeVerdict {
 
 // prewarmShapeReason 渲染零 AI 处置与流水用的理由：已满足的必要条件
 // 全部列出，加重项单独交代——申诉与管理员复核要看的是证据清单，
-// 不是一句「疑似广告」。
+// 不是一句疑似广告。
 func prewarmShapeReason(v prewarmShapeVerdict) string {
 	r := "前置号空壳特征齐备：" + strings.Join(v.Why, "、")
 	if len(v.Risk) > 0 {

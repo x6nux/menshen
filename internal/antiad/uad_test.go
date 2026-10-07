@@ -46,7 +46,7 @@ func TestUadReleasesUser(t *testing.T) {
 	if un == nil || un["only_if_banned"] != true {
 		t.Fatalf("应发 only_if_banned 的解封，得到 %v", un)
 	}
-	// 解禁言是「十项权限全开」。
+	// 解禁言是十项权限全开。
 	sawUnmute := false
 	for _, p := range fake.Calls("restrictChatMember")[before:] {
 		if perms, ok := p["permissions"].(map[string]any); ok &&

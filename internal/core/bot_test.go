@@ -23,8 +23,8 @@ func waitAdIdle(t *testing.T, b *Bot) {
 }
 
 // TestAdSubmitQueuesWhenWorkersBusy：worker 全忙时新任务排队而不是丢弃。
-// 单次判定最坏要几十秒，几条慢请求占满通道后「满了就放行」等于后面的
-// 消息全部漏判。
+// 单次判定最坏要几十秒，几条慢请求占满通道后满了就放行等于后面的消息
+// 全部漏判。
 func TestAdSubmitQueuesWhenWorkersBusy(t *testing.T) {
 	b := NewBot(nil, nil, "", nil)
 	defer b.Shutdown()

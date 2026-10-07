@@ -2,7 +2,7 @@
 // - Agent 卡：启动/停止 AI 从历史封禁里发现候选规则；运行中每 2 秒轮询步骤，
 //   运行结束自动刷新规则列表（Agent 可能刚写入了新候选）；
 // - 列表：名称 + 分类/正则副行、启用/候选与强制徽标、最近测试 TP/FP 摘要；
-//   右上「＋ 手动新增」抽屉（保存由服务端强制跑全库测试）；
+//   右上 `＋ 手动新增` 抽屉（保存由服务端强制跑全库测试）；
 // - 详情：全库误封测试（FP/已撤销样本红色高亮，TP 样本可折叠）、启用/强制
 //   开关（乐观更新；强制受服务端防误封门约束：未测试或 fp/undone>0 时禁用）、
 //   删除确认（写明规则名与后果）。
@@ -70,13 +70,13 @@ function ruleCoverageValue(rule: Rule): number {
   return rule.last_tp / rule.last_ads_total
 }
 
-/** pct 覆盖率显示：一位小数；分母缺失或为 0 时 null（调用方决定「—」或省略）。 */
+/** pct 覆盖率显示：一位小数；分母缺失或为 0 时 null（调用方决定 `—` 或省略）。 */
 function pct(matched: number, total: number): string | null {
   if (!Number.isFinite(total) || total <= 0) return null
   return `${((matched / total) * 100).toFixed(1)}%`
 }
 
-/** KindCoverageList 是「按类型覆盖」小节：实时测试与落库数据共用。 */
+/** KindCoverageList 是 `按类型覆盖` 小节：实时测试与落库数据共用。 */
 function KindCoverageList({ kinds }: { kinds: RuleKindStat[] }) {
   if (!kinds || kinds.length === 0) return null
   return (
@@ -131,7 +131,7 @@ function sourceLabel(source: string): string {
   return source || '未知'
 }
 
-/** sourceText 详情页需要的「来源 + 创建时间」。 */
+/** sourceText 返回详情页需要的来源与创建时间。 */
 function sourceText(rule: Rule, tz?: string): string {
   return `来源 ${sourceLabel(rule.source)} · 创建于 ${fmtTS(rule.created_at, tz)}`
 }
@@ -184,7 +184,7 @@ function RuleSecondary({ rule }: { rule: Rule }) {
   )
 }
 
-/** TpFpValue 列表右侧的最近测试摘要：从未测试时明确写「未测试」。 */
+/** TpFpValue 列表右侧的最近测试摘要：从未测试时明确写 `未测试`。 */
 function TpFpValue({ rule }: { rule: Rule }) {
   if (rule.last_tested_at === 0) {
     return (
@@ -358,7 +358,7 @@ export function RulesPage() {
   const [testOpen, setTestOpen] = useState(false)
   const [testPattern, setTestPattern] = useState('')
   // testResult 绑定提交时的 pattern：请求在途时改了输入，迟到的响应不能当
-  // 当前输入的结果展示（否则会用旧统计误导「用此正则新建规则」）。
+  // 当前输入的结果展示（否则会用旧统计误导 `用此正则新建规则`）。
   const [testResult, setTestResult] = useState<{ test: RuleTest; pattern: string } | null>(null)
   const [filter, setFilter] = usePageParam<RuleFilter>(
     'filter',

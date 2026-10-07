@@ -13,9 +13,9 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestLLMDoesNotReceiveSystemonePrior：复判的输入里不带 systemone 的结论 ——
-// 初判结论会锚定复判（实测复判顺着 prior 编造证据，#26266），也让两级
-// 「独立互证」变成复述。内容哈希那一档是本服务账本，仍照传。
+// TestLLMDoesNotReceiveSystemonePrior：复判的输入里不带 systemone 的结论——
+// 初判结论会锚定复判，使其顺着 prior 编造证据，两级独立互证也会变成复述。
+// 内容哈希那一档是本服务账本，仍照传。
 func TestLLMDoesNotReceiveSystemonePrior(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var body atomic.Value
@@ -63,10 +63,10 @@ func TestLLMDoesNotReceiveSystemonePrior(t *testing.T) {
 	}
 }
 
-// TestBuildSystemOneReqScoreCriteriaIsList 锁住 jev 的请求契约。
+// TestBuildSystemOneReqScoreCriteriaIsList 锁住 systemone 的请求契约。
 //
 // score 题的 criteria 必须是有序档位列表（下标即分值），缺了或写成 map
-// 上游直接 422。4xx 不重试，于是每一次主判都失败、静默回落成「只有大模型」，
+// 上游直接 422。4xx 不重试，于是每一次主判都失败、静默回落成只有大模型，
 // 判定照常出结论、面板毫无异样。
 func TestBuildSystemOneReqScoreCriteriaIsList(t *testing.T) {
 	q := buildSystemOneReq(adState{}, soInstructions)["questions"].(map[string]any)
@@ -77,8 +77,8 @@ func TestBuildSystemOneReqScoreCriteriaIsList(t *testing.T) {
 	}
 }
 
-// TestPromptsSeparateQuotedFromBio：模型曾把「整条转发」「个人简介」说成
-// 「引用外部聊天的载荷」，凭空判广告。两级消息判定的提示词都必须写明。
+// TestPromptsSeparateQuotedFromBio：两级消息判定的提示词都必须写明区分
+// 转发、个人简介与引用外部聊天的载荷，否则模型会凭空判广告。
 func TestPromptsSeparateQuotedFromBio(t *testing.T) {
 	for name, p := range map[string]string{"so": soInstructions, "llm": llmSystemPrompt} {
 		if !strings.Contains(p, "没有 quoted 字段") {
@@ -87,10 +87,8 @@ func TestPromptsSeparateQuotedFromBio(t *testing.T) {
 	}
 }
 
-// TestPromptsCoverServiceListAd：资料里列着售卖中的服务并附联系方式，就是在
-// 招揽 —— 线上真实漏过「抗投诉服务器、VPS、CDN、域名证书申请 + 唯一大号」的
-// 简介被冷判定当成「业务介绍、无价格无招揽」放行，管理员 /check 反被续期。
-// 四份提示词都要有这个口径，否则冷判定与消息判定会各漏各的。
+// TestPromptsCoverServiceListAd：资料里列着售卖中的服务并附联系方式即属招揽。
+// 四份提示词都要有这个口径，否则冷判定与消息判定会各自漏判。
 func TestPromptsCoverServiceListAd(t *testing.T) {
 	for name, p := range map[string]string{
 		"so": soInstructions, "llm": llmSystemPrompt,
@@ -117,7 +115,7 @@ func TestPromptsExplainKnownAdPatterns(t *testing.T) {
 	}
 }
 
-// TestPromptsExplainMatchedRules：「启用但未强制」的规则靠 matched_rules
+// TestPromptsExplainMatchedRules：启用但未强制的规则靠 `matched_rules`
 // 进判定：两级提示词都必须给出采信口径（强证据，可结合语境推翻但要写理由），
 // 否则它只能混在摘要里、被模型当弱提示忽略。
 func TestPromptsExplainMatchedRules(t *testing.T) {
@@ -134,9 +132,8 @@ func TestPromptsExplainMatchedRules(t *testing.T) {
 		if !strings.Contains(p, "可以判正常") {
 			t.Errorf("%s 提示词未给出结合语境推翻的出口", name)
 		}
-		// 实测误判（节点列表命中规则、模型照「强证据」跟判）：推翻出口必须
-		// 写明「note 是样本的完整形态，缺引流载荷不算呈现」与「群主题内同形
-		// 内容按正常处理」，否则模型只会照抄规则结论。
+		// 推翻出口必须写明：note 是样本的完整形态，缺引流载荷不算呈现该形态；
+		// 群主题内的同形内容按正常处理。否则模型只会照抄规则结论。
 		if !strings.Contains(p, "不算呈现该形态") {
 			t.Errorf("%s 提示词未说明形态只命中一部分时不算呈现", name)
 		}
@@ -146,7 +143,7 @@ func TestPromptsExplainMatchedRules(t *testing.T) {
 	}
 }
 
-// TestAICallRetriesTransientFailure：5xx 是瞬时故障，重试便宜，漏判不便宜。
+// TestAICallRetriesTransientFailure：5xx 是瞬时故障，重试代价低，漏判代价高。
 func TestAICallRetriesTransientFailure(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits atomic.Int32
@@ -166,8 +163,8 @@ func TestAICallRetriesTransientFailure(t *testing.T) {
 	}
 }
 
-// TestAICallDoesNotRetry4xx：模型名错、鉴权错，重来一次同样会错，
-// 重试只是把同一个错误再花四遍钱。
+// TestAICallDoesNotRetry4xx：模型名错、鉴权错会持续失败，
+// 重试只会重复同一错误、多花开销。
 func TestAICallDoesNotRetry4xx(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	var hits atomic.Int32
@@ -185,7 +182,7 @@ func TestAICallDoesNotRetry4xx(t *testing.T) {
 }
 
 // TestSystemOneReasonFormat：初判理由的格式是给人看的：不带 "systemone"
-// 前缀（来源在记录卡片上另有字段），is_ad 选项翻成人话，置信度/危害度
+// 前缀（来源在记录卡片上另有字段），is_ad 选项转成中文描述，置信度/危害度
 // 带冒号。
 func TestSystemOneReasonFormat(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -232,9 +229,8 @@ func TestLLMVerdictCarriesSeverity(t *testing.T) {
 	}
 }
 
-// TestLLMAdWithoutKindIsClean：复判吐出 is_ad=true 却 kind=none 是自相矛盾 ——
-// 线上 #18020：理由写着「按正常交流处理」，按模型结论定档照样删了，正文还
-// 记成哈希，另一个人发同一句话被直接删。没说出广告类别就不算广告。
+// TestLLMAdWithoutKindIsClean：复判给出 is_ad=true 却 kind=none 是自相矛盾；
+// 按模型结论定档会照样删除并把正文记成哈希。没说出广告类别就不算广告。
 func TestLLMAdWithoutKindIsClean(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +250,7 @@ func TestLLMAdWithoutKindIsClean(t *testing.T) {
 
 // TestSystemOneAdWithoutKindIsClean：初判（systemone）同样不能采信
 // is_ad=ad 却 ad_kind=none 的自相矛盾结论。按模型结论定档只看 is_ad，
-// 缺口在的话这条会对新人删消息 + 禁言 + 连带删除；与复判路径同一口径。
+// 否则这条会对新人删消息、禁言并连带删除；与复判路径同一口径。
 func TestSystemOneAdWithoutKindIsClean(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAIWith(t, b, soReply("ad", 0.99, "none", "account"), ``)
@@ -267,8 +263,8 @@ func TestSystemOneAdWithoutKindIsClean(t *testing.T) {
 	}
 }
 
-// TestVerdictCarriesModel 确认模型名一路带到 verdict 上：换模型后校准阈值，
-// 第一件事就是知道眼前这条结论出自哪个模型。Decider 只说走了几级，说不出是谁。
+// TestVerdictCarriesModel 确认模型名一路带到 verdict 上：Decider 只标明走了
+// 几级判定，不指示具体模型；换模型后校准阈值需要知道结论出自哪个模型。
 func TestVerdictCarriesModel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, nil)
@@ -286,7 +282,7 @@ func TestVerdictCarriesModel(t *testing.T) {
 
 // TestJudgeEscalatesWithPerBotLLMModel：复判模型可以只按 bot 配、全局留空。
 // 判断要不要升级复判时若只看全局设置，这个 bot 的低置信结论会被原样采信，
-// 复判模型配了等于没配，而面板上一切正常。
+// 按 bot 配置的复判模型不会生效。
 func TestJudgeEscalatesWithPerBotLLMModel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +320,7 @@ func TestJudgeEscalatesWithPerBotLLMModel(t *testing.T) {
 }
 
 // TestJudgeUsesPerBotTrustLine：采信线归 owner 按 bot 调。读成全局值的话，
-// owner 在面板上改了自己 bot 的采信线却毫无效果。
+// owner 对自己的 bot 调整采信线不会生效。
 func TestJudgeUsesPerBotTrustLine(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, nil) // systemone 判 93%
@@ -352,12 +348,11 @@ func TestPromptsExplainPayloadLines(t *testing.T) {
 	}
 }
 
-// TestReviewFailureDemotesWeakVerdict：复判失败时，低于采信线的初判不再
-// 照着处置 —— 「13% 的广告」删消息、临时禁言、连带删除就是这么来的。
-// 有把握的初判照旧采信（扔掉等于白判一次）。
+// TestReviewFailureDemotesWeakVerdict：复判失败时，低于采信线的初判不按
+// 模型结论处置，避免低置信结论触发删消息、临时禁言与连带删除；达到采信线
+// 的初判仍然采信。
 //
-// 用 50% 这个区间：低于下限线（30%）的那一档现在连复判都不跑，由
-// TestSoFloorSkipsReview 覆盖。
+// 用 50% 区间：低于下限线（30%）的一档不复判，由 TestSoFloorSkipsReview 覆盖。
 func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	// 弱初判（50%）：复判失败 → 按未定放行，不追加处置。
 	b, fake := testutil.NewTestBot(t, 1)
@@ -378,8 +373,8 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	if !strings.Contains(reason, "低于采信线") {
 		t.Errorf("流水里要写明原因：%q", reason)
 	}
-	// 50% 低于初判线（75%）：连先行动作都不该有 —— 消息没删、也没临时禁言，
-	// 自然没有「解开」这一说（复判失败后按未定放行）。
+	// 50% 低于初判线（75%）：连先行动作都不该有——消息没删、也没临时禁言，
+	// 因此不需要后续解禁（复判失败后按未定放行）。
 	if n := fake.CountCalls("deleteMessage"); n != 0 {
 		t.Errorf("低于初判线不该先删消息，得到 %d 次", n)
 	}
@@ -387,7 +382,7 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 		t.Errorf("低于初判线不该先禁言，得到 %d 次", n)
 	}
 
-	// 有把握的初判（95%）+ 复判失败：照旧采信初判（不能白判一次）。
+	// 有把握的初判（95%）+ 复判失败：仍采信初判。
 	b2, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	fakeAIWith(t, b2, soReply("ad", 0.95, "scam", "message"), ``)
@@ -404,9 +399,8 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 }
 
 // TestPatternClauseGuardsKeywordMisjudgment：摘要里的关键词形态必须按上下文
-// 复核 —— 实测误杀：摘要从真实色情招揽样本里归纳出「简介出现双向机器人＝
-// 色情推广」，而中文群里大量正常账号写「为了双方账号安全，请通过双向 bot
-// 私聊我」（隐私保护），判定模型照摘要执行，把人判成色情广告号。
+// 复核。摘要可能从广告样本里归纳出某种表面特征，而该特征在正常账号的隐私
+// 提示中同样常见，模型照摘要执行会误判为广告。
 func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
 	for _, want := range []string{"归纳提示", "不是判决", "双向机器人", "隐私保护", "按上下文复核"} {
 		if !strings.Contains(patternClause, want) {
@@ -431,9 +425,8 @@ func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
 }
 
 // TestPreActLineSkipsLowConfidence：初判线（默认 75%）以下的初判不先动手，
-// 只送复判 —— 低置信初判本来就拿不准，而按模型结论定档不看置信度，先行动作
-// 会把「拿不准」直接变成删消息 + 临时禁言（实测 jev 对「资料挂频道/bot」
-// 这类会给 3%~32% 的广告）。高于线的照旧先删先禁。
+// 只送复判。按模型结论定档不看置信度，先行动作会把低置信结论直接变成删消息
+// 与临时禁言。高于线的先删先禁。
 func TestPreActLineSkipsLowConfidence(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -457,7 +450,7 @@ func TestPreActLineSkipsLowConfidence(t *testing.T) {
 		t.Errorf("低于初判线不该记「初判先行」：%q", reason)
 	}
 
-	// 高于初判线：照旧先删先禁（先删后判不变）。
+	// 高于初判线：仍先删先禁（先删后判不变）。
 	b2, fake2 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	fakeAIWith(t, b2, soReply("ad", 0.95, "scam", "message"),
@@ -469,9 +462,9 @@ func TestPreActLineSkipsLowConfidence(t *testing.T) {
 	}
 }
 
-// TestPreActLineConfigurable：初判线可配，设成 0 等于退回「初判一出结论就动手」。
+// TestPreActLineConfigurable：初判线可配，设成 0 表示初判一出结论就动手。
 // 禁言置信度下限同样在这条路上生效（临时禁言也是禁言），所以这里把两道线
-// 一起放到底，单独验证「初判线 0 = 低置信也先动手」这一行为。
+// 一起放到底，单独验证初判线 0 时低置信也先动手这一行为。
 func TestPreActLineConfigurable(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -489,8 +482,8 @@ func TestPreActLineConfigurable(t *testing.T) {
 	}
 }
 
-// TestSoFloorSkipsReview：初判下限（默认 30%）以下的「广告」直接放行，
-// 连复判都不跑 —— 那种结论是噪声，跑复判只是花钱买一个必然被推翻的结果。
+// TestSoFloorSkipsReview：初判下限（默认 30%）以下的广告结论直接放行，
+// 连复判都不跑：这种结论是噪声，复判必然被推翻。
 func TestSoFloorSkipsReview(t *testing.T) {
 	// 初判 20%（低于下限）：不复判、不处置、不删消息。
 	b, fake := testutil.NewTestBot(t, 1)
@@ -540,8 +533,8 @@ func TestSoFloorSkipsReview(t *testing.T) {
 	}
 }
 
-// TestTrustLineDefault95：采信线默认 95 —— 只有很有把握的初判才免复判。
-// 老成员只删不禁（不会强制复判），所以这一档能干净地看出采信线。
+// TestTrustLineDefault95：采信线默认 95——只有很有把握的初判才免复判。
+// 老成员只删不禁（不会强制复判），因此这一档可以单独观察采信线。
 func TestTrustLineDefault95(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	if got := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_so_trust",
@@ -564,7 +557,7 @@ func TestTrustLineDefault95(t *testing.T) {
 		t.Errorf("90%% 的初判应转复判（采信线 95），复判跑了 %d 次", llmN.Load())
 	}
 
-	// 96% 的广告：达到采信线 → 直接采信初判，不花复判的钱。
+	// 96% 的广告：达到采信线 → 直接采信初判，不再调用复判。
 	b3, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b3, -100)
 	if _, err := b3.Store.Write.Exec(`INSERT INTO group_members

@@ -122,7 +122,7 @@ export interface Model {
   completion_price: number
   cache_read_price: number
   cache_write_price: number
-  /** 由模型名解析出的上游展示名；旧格式模型可能为空串。 */
+  /** 由模型名解析出的上游展示名；解析不出时为空串。 */
   upstream: string
   model_id: string
 }
@@ -169,7 +169,7 @@ export interface State {
   tz_name?: string
   /**
    * settings_set 是显式写过的设置键（仅主管理员下发）。快照的 global 里铺了
-   * 代码默认值，判断「已设置」只能看这个集合。
+   * 代码默认值，判断是否已设置只能看这个集合。
    */
   settings_set?: string[]
   digest?: string
@@ -296,7 +296,7 @@ export interface AppealsResp {
  * Rule 是一条必封规则。enforce=true 命中即最高档处置；false 只把命中作为
  * 证据注入判定 prompt。last_tp/last_fp/last_undone/last_scanned 是最近一轮
  * 全库测试写回的结果；last_tested_at=0 表示从未测试过（与 last_fp=0
- *「测过且干净」不是一回事，所以强制开关的门要先看 last_tested_at）。
+ *测过且干净不是一回事，所以强制开关的门要先看 last_tested_at）。
  */
 export interface Rule {
   id: number
@@ -377,11 +377,11 @@ export interface RuleAgent {
   finished_at: number
   result: string
   error: string
-  /** 本轮第一条创建的规则（旧字段，兼容保留）。 */
+  /** 本轮第一条创建的规则。 */
   created_rule_id: number
   /** 本轮创建的全部规则 id；无创建时是空数组。 */
   created_rule_ids: number[]
-  /** 已执行的步骤数；步骤内容不再下发（前端只显示运行状态）。 */
+  /** 已执行的步骤数；步骤内容不下发（前端只显示运行状态）。 */
   steps_count: number
   /** 本轮重点针对的判定记录 id（指定记录模式）；0 = 全库模式。 */
   target_log_id: number

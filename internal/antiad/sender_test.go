@@ -49,7 +49,7 @@ func TestSenderOf(t *testing.T) {
 	}
 }
 
-// TestGuestBotJudgedAsCaller：「bot 一律豁免」对访客 bot 不成立，否则随便 @ 几个
+// TestGuestBotJudgedAsCaller：bot 一律豁免对访客 bot 不成立，否则随意 @ 几个
 // 广告 bot 就能绕过检测。留底、画像记在召唤者名下，正文标出是哪个 bot 代发的。
 func TestGuestBotJudgedAsCaller(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -98,7 +98,7 @@ func TestChannelIdentityJudgedAndBannedAsChannel(t *testing.T) {
 
 // TestAdExemptSpecialSenders：匿名管理员与自动转发是群主一方，任何开关下
 // 都不判；普通成员 bot 默认照判（有管理员权限的 bot 由末尾的群管理员判断
-// 豁免），关掉「判定普通成员 bot」才全豁免。
+// 豁免），关掉 `判定普通成员 bot` 才全豁免。
 func TestAdExemptSpecialSenders(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	snap := b.Cache.Snap()
@@ -142,8 +142,8 @@ func TestUserLinkChannel(t *testing.T) {
 	}
 }
 
-// TestEditedMessageRejudged：编辑成广告要重新送检；正文没变的「编辑」不花钱；
-// 编辑不计发言数；编辑一条旧命令不再执行。
+// TestEditedMessageRejudged：编辑成广告要重新送检；正文没变的编辑不触发
+// 调用；编辑不计发言数；编辑一条已发命令不再执行。
 func TestEditedMessageRejudged(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -200,8 +200,7 @@ func TestAdCommandAcceptsChannelID(t *testing.T) {
 // bot 只返回名字与用户名），没设置简介时预览页给的默认文案不能当成简介；
 // 本服务判过它广告、或它还在联合封禁名单里时 ad_known=true。
 //
-// 这是「资料里写『有问题请联系我的管家 @xxx_bot』被判成广告」那个误判的
-// 直接修复：光看名字（「Child killer」）分不出正常 bot 与广告 bot。
+// 名字本身分不出正常 bot 与广告 bot，需结合简介判断。
 func TestResolveLinkBotAbout(t *testing.T) {
 	pages := map[string]string{
 		"/CleanBot": `<html><head><meta property="og:title" content="管家 Bot">` +
@@ -281,8 +280,8 @@ func TestResolveLinkBotAbout(t *testing.T) {
 	}
 }
 
-// TestBioLinksClauseKeepsContactNormal：提示词里那几条口径不能被改回去：
-// 名字不算证据、引导到自己 bot 的联系方式算正常、案底看 ad_known。
+// TestBioLinksClauseKeepsContactNormal：提示词里那几条口径：名字不算证据、
+// 引导到自己 bot 的联系方式算正常、案底看 ad_known。
 func TestBioLinksClauseKeepsContactNormal(t *testing.T) {
 	for _, want := range []string{
 		"名字本身不构成证据", "有问题联系我的管家", "ad_known", "Chat killer",

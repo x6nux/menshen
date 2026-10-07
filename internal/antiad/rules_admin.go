@@ -123,9 +123,9 @@ func SaveRule(sh *core.Shared, uid, id int64, in RuleInput) (int64, RuleTestResu
 		}
 		id, _ = res.LastInsertId()
 	} else {
-		// 改了 pattern 就同时把 enforce 置 0：enforce 的前提是「这一版
-		// pattern 的全库测试 fp=0」，新 pattern 的测试还没跑，旧结论不能
-		// 沿用（否则改规则绕过防误封不变量）。只改 name/note 时保留 enforce。
+		// 改了 pattern 就同时把 enforce 置 0：enforce 的前提是该版 pattern
+		// 的全库测试 fp=0，新 pattern 的测试还没跑，旧结论不能沿用（否则改
+		// 规则会绕过防误封不变量）。只改 name/note 时保留 enforce。
 		// SQLite 的 SET 表达式取旧行值，`pattern<>?` 比较的是库里的旧 pattern。
 		res, err := sh.Store.Write.Exec(`UPDATE ad_rules
 			SET name=?,pattern=?,category=?,note=?,
@@ -142,7 +142,7 @@ func SaveRule(sh *core.Shared, uid, id int64, in RuleInput) (int64, RuleTestResu
 	}
 
 	// 保存即测：enforce 的前提数据必须是这一版 pattern 的真实结果，
-	// 不能沿用改规则之前的那一轮。
+	// 不能沿用上一轮的测试结论。
 	res, err := TestRulePattern(sh, in.Pattern)
 	if err != nil {
 		return 0, RuleTestResult{}, core.Bad("测试失败：%s", err.Error())
@@ -208,12 +208,12 @@ func SetRuleEnforce(sh *core.Shared, id int64, on bool) error {
 			return core.Bad("规则未启用，不能开启强制")
 		}
 		// 从未跑过全库测试（含 AI 直接写库的候选）不允许打开强制：
-		// last_fp 的默认 0 只代表「没测出误封」，不代表「测过且干净」。
+		// last_fp 的默认 0 只代表没测出误封，不代表测过且干净。
 		if tested == 0 {
 			return core.Bad("规则还没跑过全库测试，请先跑一次测试再开启强制")
 		}
 		if fp != 0 || undone != 0 {
-			// undone 已计入 fp；db 被手改时单独兜一下，避免文案报「0 条」。
+			// undone 已计入 fp；db 被手改时单独兜一下，避免文案报 0 条。
 			return core.Bad("规则尚未通过全库测试（疑似误封 %d 条），不能开启强制",
 				max(fp, undone))
 		}
@@ -231,7 +231,7 @@ func DeleteRule(sh *core.Shared, id int64) error {
 }
 
 // execRule 执行一条针对单条规则的写操作；一行都没碰到且规则确实不存在时
-// 报「规则不存在」。成功后重建快照，判定路径立即生效。
+// 报规则不存在。成功后重建快照，判定路径立即生效。
 func execRule(sh *core.Shared, id int64, q string, args ...any) error {
 	if id == 0 {
 		return core.Bad("缺少规则 id")

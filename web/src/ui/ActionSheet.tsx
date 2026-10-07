@@ -1,4 +1,4 @@
-// 底部操作面板（计划 3.3）：不可逆操作用底部 Drawer 确认。
+// ActionSheet 是底部操作面板：不可逆操作用底部 Drawer 确认。
 // confirm() 返回 Promise<boolean>：点确认 → true；点取消/遮罩/Esc → false。
 // danger 时确认行用错误色，否则用主色；取消行始终灰色。
 import { Box, Button, Drawer, Typography } from '@mui/material'
@@ -6,9 +6,9 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import type { ReactNode } from 'react'
 
 export interface ConfirmOptions {
-  /** 动作标题，如「移除该群？」。 */
+  /** 动作标题，如 `移除该群？`。 */
   title: ReactNode
-  /** 对象与后果说明，沿用旧版文案。 */
+  /** 对象与后果说明。 */
   description?: ReactNode
   confirmText?: string
   cancelText?: string

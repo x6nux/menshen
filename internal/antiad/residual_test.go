@@ -76,7 +76,7 @@ func TestResidualSweepFixesStuckRestrictions(t *testing.T) {
 		int64(un["chat_id"].(float64)) != -100 {
 		t.Errorf("被踢的群应发 only_if_banned 的解封，得到 %v", un)
 	}
-	// 永久禁言的：发全开权限；限时那个群一个字都不该动。
+	// 永久禁言的：发全开权限；限时那个群不做任何操作。
 	sawUnmute, touchedPending := false, false
 	for _, p := range fake.Calls("restrictChatMember") {
 		if int64(p["chat_id"].(float64)) == -300 {
@@ -94,7 +94,7 @@ func TestResidualSweepFixesStuckRestrictions(t *testing.T) {
 		t.Error("限时禁言还在窗口里，不该动手")
 	}
 
-	// 摘要要念得清楚：修好了哪些、哪些在等到期。
+	// 摘要要说清修好了哪些、哪些在等到期。
 	sum := residualSummary(res)
 	for _, want := range []string{"一号群", "二号群", "三号群", "已经解除"} {
 		if !strings.Contains(sum, want) {
@@ -130,7 +130,7 @@ func TestResidualSweepSkipsActivePenalty(t *testing.T) {
 }
 
 // TestAppealEntrySweepsWhenNoPenalty：解封之后再来申诉（库里没有限制）
-// 不该只回一句「没有限制」——顺手把各群核对一遍，有残留就解掉。
+// 不该只回一句没有限制 —— 应把各群核对一遍，有残留就解掉。
 func TestAppealEntrySweepsWhenNoPenalty(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	fake := b.TG.(*testutil.FakeTG)

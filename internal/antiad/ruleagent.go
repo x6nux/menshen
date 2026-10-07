@@ -1,6 +1,6 @@
 package antiad
 
-// 本文件实现「AI 必封规则发现 Agent」：用 CloudWeGo Eino 的 ReAct Agent
+// 本文件实现 AI 必封规则发现 Agent：用 CloudWeGo Eino 的 ReAct Agent
 // 驱动一轮工具循环，从 antiad_log 判定流水里总结一条高精度必封正则，
 // 以 enabled=0、enforce=0 的候选写入 ad_rules，等主管理员在 Mini App
 // 里复核、测试、启用。
@@ -13,8 +13,8 @@ package antiad
 //     启用、上游已启用且支持 chat、渠道带原生工具调用（OpenAI
 //     Completions / Responses / Anthropic / Gemini）：Eino 的 ReAct 图只
 //     认 chat/completions，其余渠道由传输层双向翻译（eino_kind.go），
-//     Cloudflare Workers AI 没有工具调用，宁可在 start 时用中文错误
-//     说清楚，也不要在半路拿 404；
+//     Cloudflare Workers AI 没有工具调用，故在 start 阶段以中文错误明确
+//     拒绝，而不是在半路返回 404；
 //   - 工具全部只读 DB 或复用 T-A 的 TestRulePattern / CompileRulePattern，
 //     create_rule 的写库防线与面板 miniRuleSave 完全同源（严格编译 +
 //     全库测试 fp=0/undone=0），AI 不能绕过防误封闸门；
@@ -56,8 +56,8 @@ import (
 // 这两个是 var 而不是 const：测试要在不真等 30 分钟、不真跑满 1000 步的
 // 前提下覆盖超时与步数耗尽路径。
 var (
-	// ruleAgentTimeout 是单轮规则发现的总时限。放宽到 30 分钟：模型要
-	// 反复试跑正则，步数上限给了 1000，时间不够会先被这里掐断。
+	// ruleAgentTimeout 是单轮规则发现的总时限（30 分钟）：模型要反复
+	// 试跑正则，步数上限给了 1000，时间不够会先被这里掐断。
 	ruleAgentTimeout = 1800 * time.Second
 	// ruleAgentMaxStep 是 ReAct 图的最大执行步数（模型一次 + 工具一次
 	// 各算一步，1000 步约等于 500 轮工具循环）。给足试错空间，真正的
@@ -131,7 +131,7 @@ type RuleAgentStep struct {
 // ruleAgentRuntime 是一轮规则发现的进程级运行态。
 //
 // 只允许存在一轮：规则是全局一份，两轮并发会重复调模型、竞态写 ad_rules，
-// 面板上的「运行中/已完成」也会互相覆盖。
+// 面板上的运行中/已完成状态也会互相覆盖。
 type ruleAgentRuntime struct {
 	mu             sync.Mutex
 	running        bool
@@ -169,7 +169,7 @@ func StartRuleDiscovery(sh *core.Shared, uid int64) error {
 	return startRuleDiscovery(sh, uid, ruleStartOpts{})
 }
 
-// StartRuleDiscoveryForRecord 启动一轮「指定记录」的规则发现：以一条已确认
+// StartRuleDiscoveryForRecord 启动一轮指定记录的规则发现：以一条已确认
 // 广告流水为目标总结正则，但全部工具照常可用（find/list_uncovered 找同类
 // 形态，避免只针对孤例写出过窄的规则）。
 //
@@ -203,7 +203,7 @@ func startRuleDiscovery(sh *core.Shared, uid int64, opts ruleStartOpts) error {
 	}
 
 	// 全程持锁：模型选择只读内存快照，构建 Eino 客户端也不发网络请求，
-	// 放在锁内才能保证「检查空闲 → 占住运行态」之间没有竞态缝隙。
+	// 放在锁内才能保证检查空闲到占住运行态之间没有竞态缝隙。
 	ruleAgentRT.mu.Lock()
 	defer ruleAgentRT.mu.Unlock()
 	if ruleAgentRT.running {
@@ -343,8 +343,8 @@ func ruleAgentAutoWork(sh *core.Shared, cursor int64) (newAds, uncovered, waterm
 //	 "error":string,"created_rule_id":int,"created_rule_ids":[int],
 //	 "steps_count":int}
 //
-// created_rule_id 是本轮第一条（旧前端兼容），created_rule_ids 是全部；
-// 无创建时返回空切片而不是 null。步骤内容不再下发（前端只显示运行状态），
+// created_rule_id 是本轮第一条（兼容字段），created_rule_ids 是全部；
+// 无创建时返回空切片而不是 null。步骤内容不下发（前端只显示运行状态），
 // 只给条数；需要明细时用 RuleAgentSteps。
 func RuleAgentStatus(sh *core.Shared) map[string]any {
 	ruleAgentRT.mu.Lock()
@@ -373,7 +373,7 @@ func RuleAgentStatus(sh *core.Shared) map[string]any {
 }
 
 // RuleAgentSteps 返回当前步骤日志的副本：仅用于测试与日志排查。
-// Mini App 的 agent_status 只暴露 steps_count，不再下发步骤内容。
+// Mini App 的 agent_status 只暴露 steps_count，不下发步骤内容。
 func RuleAgentSteps() []RuleAgentStep {
 	ruleAgentRT.mu.Lock()
 	defer ruleAgentRT.mu.Unlock()
@@ -403,7 +403,7 @@ const ruleAgentModelHint = "请在「全局设置 → 默认模型 → 规则发
 // pickRuleAgentModel 选择本轮规则发现的模型。
 //
 // 优先读全局设置 antiad_rule_model（形如 <上游名>/<模型ID>）：非空时必须
-// 指向一个「已登记且启用、绑定上游已启用、支持 chat、渠道带工具调用」
+// 指向一个已登记且启用、绑定上游已启用、支持 chat、渠道带工具调用的
 // 的模型，任何一条不满足都在 start 阶段返回明确的中文错误；留空则回退到
 // 复判模型列表（snap.ModelsFor(0)）里第一个满足同样条件的模型。
 func pickRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
@@ -471,7 +471,7 @@ func ruleAgentKindSupported(k upstream.Kind) bool {
 }
 
 // pickFallbackRuleAgentModel 从全局复判模型列表（snap.ModelsFor(0)）里挑
-// 第一个满足「模型已启用 + 有支持 chat 的上游 + 渠道支持工具调用」的模型。
+// 第一个满足模型已启用、有支持 chat 的上游、渠道支持工具调用的模型。
 // 返回模型全名（含上游前缀）与命中的上游。
 func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstream, error) {
 	_, llmModels := snap.ModelsFor(0)
@@ -562,7 +562,7 @@ type ruleAgentRun struct {
 	sh    *core.Shared
 	uid   int64
 	model string // 模型全名，仅用于日志/结果说明
-	// ctx 只用于 finish 判定「超时/手动停止」：上游错误经过 Eino 的层层
+	// ctx 只用于 finish 判定超时/手动停止：上游错误经过 Eino 的层层
 	// 包装后，单看 error 链未必能分辨是哪种结束，ctx 状态最可靠。
 	ctx context.Context
 	// targetLogID / autoWatermark 来自 ruleStartOpts，见两个 Start 入口。
@@ -788,7 +788,7 @@ func (r *ruleAgentRun) toolFailStep(name, msg string) {
 
 // wrapRuleTool 给工具套一层错误兜底：InferTool 在参数 JSON 解析失败时
 // 返回 Go error，ToolsNode 若不拦截会直接让整张图报错退出 —— 模型连
-// 「参数写错了」都看不到。包装后错误变成一条中文工具结果回给模型，同时
+// 参数写错了都看不到。包装后错误变成一条中文工具结果回给模型，同时
 // 记进步骤日志，让模型自己纠正参数继续跑。
 func wrapRuleTool(run *ruleAgentRun, name string, t tool.BaseTool) tool.BaseTool {
 	return toolutils.WrapToolWithErrorHandler(t, func(ctx context.Context, err error) string {
@@ -1478,7 +1478,7 @@ func (r *ruleAgentRun) listUncovered(in listUncoveredArgs) string {
 }
 
 // testRule 调 T-A 的全库测试（可取消版本）做正式口径验证，并给出
-// 明确的「能不能创建」结论。
+// 明确的能不能创建结论。
 func (r *ruleAgentRun) testRule(ctx context.Context, pattern string) string {
 	res, err := testRulePatternCtx(ctx, r.sh, pattern)
 	if err != nil {
@@ -1549,7 +1549,7 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 
 	res, err := testRulePatternCtx(ctx, r.sh, in.Pattern)
 	if err != nil {
-		// 扫描被取消不算一次「创建失败」：这不是模型的正则写得不好，
+		// 扫描被取消不算一次创建失败：这不是模型的正则写得不好，
 		// 计数与连续失败保护别被取消动作污染。
 		if errors.Is(err, errRuleScanStopped) {
 			return "创建失败：已停止（本轮扫描被取消）。"
@@ -1635,8 +1635,8 @@ func (r *ruleAgentRun) createRule(ctx context.Context, in createRuleArgs) string
 // verdict='ad' 的行，去重并限量 ruleAgentEvidenceMax；同时返回被忽略的
 // 数量（不存在、非广告、重复、超出上限都算）。
 //
-// action='undone' 的行 verdict 仍是 'ad'，按「只保留 verdict='ad'」的
-// 口径保留 —— 它作为「当时被判为广告」的记录本身是成立的。
+// action='undone' 的行 verdict 仍是 'ad'，按只保留 verdict='ad' 的口径
+// 保留 —— 它作为当时被判为广告的记录本身是成立的。
 func (r *ruleAgentRun) filterEvidence(ids []int64) (valid []int64, ignored int) {
 	seen := make(map[int64]bool, len(ids))
 	for i, id := range ids {

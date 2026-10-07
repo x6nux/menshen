@@ -8,19 +8,19 @@ import (
 
 // 同群多 bot 的分担。
 //
-// 同一个群里挂着几个 bot 时，每条更新每个 bot 都会收到一份。广告号成批涌进来
-// 的时候，单个 bot 的 TG 限速与判定池都会被打满，所以按**发言人**把活摊开：
-// 一个人只归一个 bot，删消息、禁言、告警、画像计数都只由它做。
+// 同一个群里挂着几个 bot 时，每条更新每个 bot 都会收到一份。广告号成批
+// 涌入时，单个 bot 的 TG 限速与判定池都会到上限，所以按**发言人**把处理
+// 摊开：一个人只归一个 bot，删消息、禁言、告警、画像计数都只由它做。
 //
 // 按人而不是按消息分：同一个人的几条消息落到不同 bot 上，就会有两个 bot
-// 同时对他删、禁言、发告警；而且 recent_context 取的是「这条之前」的留底，
+// 同时对他删、禁言、发告警；而且 recent_context 取的是这条之前的留底，
 // 只有同一条串行队列才保证得了这个顺序。
 //
 // 只在同一 owner 名下的 bot 之间分担：不同租户的演练状态、阈值、处罚方式
 // 各不相同，混着用会让 A 的用户按 B 的配置处罚。
 //
-// ponytail: 认领表在内存里。子 bot 只能走 webhook，全都在同一个进程；
-// 真要多进程部署时得挪进库里。
+// 认领表在内存里。子 bot 只能走 webhook，全都在同一个进程；真要多进程
+// 部署时得挪进库里。
 
 const (
 	// shardSeenTTL 内收到过本群更新的 bot 才参与分担。没收到过的多半不是
@@ -97,7 +97,7 @@ func (b *Bot) shardLive(botID, chatID, owner int64, now time.Time) bool {
 	return now.Sub(b.shard.seen[[2]int64{chatID, botID}]) < shardSeenTTL
 }
 
-// GCShard 回收闲置的认领与过期的「收到过」记录，返回回收的认领数。
+// GCShard 回收闲置的认领与过期的收到过记录，返回回收的认领数。
 func (sh *Shared) GCShard(now time.Time) int {
 	t := &sh.shard
 	t.mu.Lock()

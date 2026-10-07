@@ -6,9 +6,8 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestHasMediaCarrier：has_media 是给模型的信号，必须反映「这条消息是否
-// 真的带着媒体」。原实现写成「有配文但没正文」，把纯图/纯贴纸报成无媒体，
-// 信号与实际相反。
+// TestHasMediaCarrier：has_media 是给模型的信号，必须反映这条消息是否真的
+// 带媒体。判据若是“有配文但没正文”，会把纯图/纯贴纸报成无媒体，与实际相反。
 func TestHasMediaCarrier(t *testing.T) {
 	cases := []struct {
 		name string

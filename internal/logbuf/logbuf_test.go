@@ -9,7 +9,7 @@ import (
 )
 
 // TestBufferEvictsOldest：缓冲写满后覆盖最旧的一条，序号继续递增。
-// 网页版日志页读的就是它，溢出策略直接决定「能看到多久以前」。
+// 网页版日志页读的就是它，溢出策略直接决定能查看多久以前的日志。
 func TestBufferEvictsOldest(t *testing.T) {
 	b := New(3)
 	for i := 1; i <= 5; i++ {
@@ -31,7 +31,7 @@ func TestBufferEvictsOldest(t *testing.T) {
 	}
 }
 
-// TestQueryLevelIsFloor：级别筛选是「不低于」语义 —— 选 WARN 要同时看到
+// TestQueryLevelIsFloor：级别筛选是不低于语义 —— 选 WARN 要同时看到
 // WARN 与 ERROR，这是运维看日志的默认预期。
 func TestQueryLevelIsFloor(t *testing.T) {
 	b := New(10)

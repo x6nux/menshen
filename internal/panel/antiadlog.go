@@ -22,8 +22,8 @@ func appendReason(old, add string) string {
 	return old + " | " + add
 }
 
-// adTodayStats 汇总当日战绩：送检数、命中数、误判数、开销。
-// 开销必须可见 —— 全量送检的成本是这个功能最大的风险点。
+// adTodayStats 汇总当日送检数、命中数、误判数与开销。
+// 开销必须可见：全量送检的成本是该功能的主要风险。
 func adTodayStats(b *core.Bot) (checked, hits, fps, cost int64) {
 	since := time.Now().Unix() - 86400
 	err := b.Store.Read.QueryRow(`SELECT
@@ -42,8 +42,8 @@ func adTodayStats(b *core.Bot) (checked, hits, fps, cost int64) {
 // chatHealthTTL 是群权限自检结果的缓存时长。
 //
 // 这一步要发 getChatMember，而它跑在 bot 的串行更新路径上（面板回调与群
-// 消息共用同一个 worker）：TG 慢时最坏 40 秒收不到新消息。两分钟对「bot
-// 是不是管理员」这种低频变化足够实时——权限刚变完重开一次面板就是最新值。
+// 消息共用同一个 worker）：TG 慢时最坏 40 秒收不到新消息。两分钟对 bot
+// 是否为管理员这类低频变化足够实时——权限刚变完重开一次面板即最新值。
 const chatHealthTTL = 2 * time.Minute
 
 // panelCaches 是面板挂在 Shared 上的内存缓存（见 core.Ext）。
@@ -59,7 +59,7 @@ func panelCachesOf(sh *core.Shared) *panelCaches {
 	return core.Ext(sh, panelCachesKey{}, func() *panelCaches { return &panelCaches{} })
 }
 
-// adChatHealth 检查 bot 在该群的权限，返回一句人话（结果缓存两分钟）。
+// adChatHealth 检查 bot 在该群的权限，返回可读结论（结果缓存两分钟）。
 func adChatHealth(b *core.Bot, chatID int64) string {
 	key := fmt.Sprintf("%d:%d", b.BotID(), chatID)
 	cache := &panelCachesOf(b.Shared).chatHealth
@@ -128,9 +128,9 @@ func showAntiAdDigest(b *core.Bot, chatID, msgID int64) {
 		sb.WriteString("\n这段文字会随每一条群消息发给判定模型，" +
 			"越长越准也越贵。管理员可直接编辑修正。\n")
 	}
-	// 修正文本是写给总结模型的口径说明：摘要每次重新生成都会附上它，
-	// 用来纠正「总结总把某类正常消息写成广告」「该抓的形态没抓到」这类
-	// 反复出现的问题，不必每轮手工改摘要。
+	// 修正文本是写给总结模型的口径说明：每次重新生成摘要都会附上它，
+	// 用来纠正总结把某类正常消息写成广告、该抓的形态没抓到等问题，
+	// 不必每轮手工改摘要。
 	if fix != "" {
 		fmt.Fprintf(&sb, "\n<b>修正文本</b>（每轮总结都附给总结模型）：\n<code>%s</code>\n",
 			html.EscapeString(fix))
@@ -147,8 +147,8 @@ func showAntiAdDigest(b *core.Bot, chatID, msgID int64) {
 
 const adLogPageSize = 10
 
-// showAntiAdLog 渲染某个 bot 的拦截记录。all=true 时连 clean 一起列 ——
-// 演练期管理员真正要看的是「有没有把正常消息判成广告」。
+// showAntiAdLog 渲染某个 bot 的拦截记录。all=true 时连 clean 一起列——
+// 演练期管理员真正要看的是有没有把正常消息误判成广告。
 //
 // 按 bot_id 过滤是权限边界的一部分：次级管理员只能看自己 bot 判的东西，
 // 而流水里有群消息原文。
@@ -198,8 +198,7 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 		} else if verdict == "skipped" {
 			mark = "⏭" // 护栏拦下、没有送检
 		}
-		// 时刻按 settings.tz_name 呈现：管理员看到的时间必须是本地时间，
-		// UTC 会让人对不上号。
+		// 时刻按 settings.tz_name 呈现：管理员需看到本地时间，UTC 不便于对照。
 		when := time.Unix(at, 0).In(loc).Format("01-02 15:04")
 		// chat_id/ad_kind 都要渲染出来——这个页面是跨所有生效群的全局列表，
 		// 不带群号就看不出命中来自哪个群；ad_kind 是复盘形态时最直接的分类线索。
@@ -211,9 +210,9 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 			mark, when, id, cid, uid, conf*100, html.EscapeString(actionLabel(action)),
 			kindSuffix, html.EscapeString(core.TruncateRunes(text, 60)))
 	}
-	// 不查 rows.Err() 就会把「只扫到一半」悄悄当成「扫完了」——拦截记录是
-	// 合规/复盘的审计面，静默截断还会让 n < adLogPageSize 连「下一页」按钮
-	// 一起消失，管理员会误判「记录就这些」。
+	// 不查 rows.Err() 会把只扫到一半当成扫完了：拦截记录是合规/复盘的审计面，
+	// 静默截断会让 n < adLogPageSize，连下一页按钮也一起消失，
+	// 管理员会误判记录已全部列出。
 	if err := rows.Err(); err != nil {
 		slog.Error("反广告：记录读取中断", "err", err)
 		sb.WriteString("\n⚠️ 读取中断，本页可能不完整\n")
@@ -278,9 +277,8 @@ func actionLabel(a string) string { return antiad.ActionLabel(a) }
 
 // handleAntiAdCallback 处理 a:ad:* 回调。
 //
-// 多租户改造后这里只剩两类：形态摘要（全局一份，仅主管理员可动）与
-// 告警消息上的人工处置。面板导航、阈值、生效群都迁到了 a:mb 那棵树上，
-// 因为它们全都属于某一个 bot。
+// 这里只有两类：形态摘要（全局一份，仅主管理员可动）与告警消息上的人工
+// 处置。面板导航、阈值、生效群属于某一个 bot，归 a:mb 那棵树处理。
 func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 	chatID, msgID := q.Message.Chat.ID, q.Message.MessageID
 	parts := strings.Split(q.Data, ":")
@@ -410,8 +408,8 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "参数无效")
 			return
 		}
-		// 优先用在这个群里工作的 bot；群已不在任何 bot 名下时（遗留的限制
-		// 记录）退回面板所在的 bot —— TG 侧多半解不了，但记录照样要清掉。
+		// 优先用在该群里工作的 bot；群已不属任何 bot 时（仍有生效的限制记录）
+		// 退回面板所在的 bot——TG 侧多半解不了，但记录仍要清掉。
 		inst, managed := chatBot(b, q.From.ID, chat)
 		if !managed {
 			if !b.CanManageBot(q.From.ID, b.BotID()) {
@@ -450,7 +448,7 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 			return
 		}
 		applyAdManualAction(b, inst, q, parts[2], row)
-		// 处置后原地重绘：从 /user 列表进来的卡片要保留「返回列表」。
+		// 处置后原地重绘：从 /user 列表进来的卡片要保留返回列表按钮。
 		redrawAdCard(b, q, id)
 
 	default:
@@ -458,12 +456,11 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 	}
 }
 
-// recordBot 返回处置一条记录该用的 bot：**记录所属的工作 bot**。
+// recordBot 返回处置一条记录该用的 bot：记录所属的工作 bot。
 //
 // 面板所在的 bot 常是不入群的主 bot（/log、/user、深链都可能落在它那里），
 // 用它发 restrictChatMember 必然失败，按它的 bot_id 标记流水、撤内容哈希
-// 也一条都对不上 —— 线上表现就是「点了误判 / 解封，人还是发不了言」。
-// 回调应答仍由收到回调的 b 发。实例不在运行时退回 b（多半同样失败，但会如实报错）。
+// 也都对不上。回调应答仍由收到回调的 b 发；实例不在运行时退回 b。
 func recordBot(b *core.Bot, botID int64) *core.Bot {
 	if b.Reg != nil {
 		if inst, ok := b.Reg.LookupID(botID); ok {
@@ -474,7 +471,7 @@ func recordBot(b *core.Bot, botID int64) *core.Bot {
 }
 
 // chatBot 找在 chatID 里工作、且 uid 有权管理的那个 bot 实例（用户记录页的
-// 「解除」只带群号，没有记录可依托）。找不到返回 false。
+// 解除操作只带群号，没有记录可依托）。找不到返回 false。
 func chatBot(b *core.Bot, uid, chatID int64) (*core.Bot, bool) {
 	snap := b.Cache.Snap()
 	for botID := range snap.Bots {
@@ -490,15 +487,14 @@ func chatBot(b *core.Bot, uid, chatID int64) (*core.Bot, bool) {
 
 // adDispositionAllowed 报告此人能否对这条判定记录做人工处置。
 //
-// 处置按钮会贴在群里，所以放宽到该群的 TG 管理员 —— 只让服务管理员
-// 点得动的话，「群内展示」就只是让所有人围观，真正该判断的人动不了手。
+// 处置按钮会贴在群里，故放宽到该群的 TG 管理员：若只让服务管理员可点，
+// 群内展示就只是让所有人围观，真正该判断的人动不了手。
 //
-// 两条边界必须守住：
-//  1. 只放宽**处置**（确认/误判/删除/禁言/封禁），面板导航与配置仍然
-//     只有服务管理员能进，否则任何群管都能改阈值、看全量流水、关功能。
-//  2. 判据取流水里的 ChatID，**不是**回调消息所在的聊天。后者由发起人
-//     所处的位置决定，拿它当判据等于「在自己能当管理员的群里点一下，
-//     就能处置别的群的记录」。
+// 两条边界：
+//  1. 只放宽处置动作（确认/误判/删除/禁言/封禁），面板导航与配置仍只
+//     服务管理员可进，否则任何群管都能改阈值、看全量流水、关功能。
+//  2. 判据取流水里的 ChatID，而非回调消息所在的聊天。后者由发起人所在
+//     位置决定，拿它当判据等于在自己能管理的群里点一下就能处置别群的记录。
 func adDispositionAllowed(b *core.Bot, uid int64, row antiad.AdLogRow) bool {
 	// 服务管理员：主管理员全通，次管限自己名下的 bot。记录卡片本来就是
 	// 私聊发给 bot 归属人的，只有主管理员点得动的话，次管会看到卡片上
@@ -509,8 +505,8 @@ func adDispositionAllowed(b *core.Bot, uid int64, row antiad.AdLogRow) bool {
 	return antiad.IsChatAdmin(b, row.ChatID, uid)
 }
 
-// isAdDispositionCallback 报告该回调是否为反广告的人工处置。
-// 形如 a:ad:<op>:<log_id>，op 限定在五个处置动作内。
+// IsAdDispositionCallback 报告该回调是否为反广告的人工处置。
+// 形如 a:ad:<op>:<log_id>，op 限定在处置动作集合内。
 func IsAdDispositionCallback(data string) bool {
 	parts := strings.Split(data, ":")
 	if len(parts) < 4 || parts[0] != "a" || parts[1] != "ad" {
@@ -525,9 +521,9 @@ func IsAdDispositionCallback(data string) bool {
 
 // applyAdManualAction 执行管理员的人工处置。
 func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row antiad.AdLogRow) {
-	// 已判误判的记录不能再被「确认正确 / 禁言 / 封禁」重新处置：这几条都会
-	// 重新动手罚人，而误判是负样本、是最值钱的训练信号，一个残留按钮的
-	// 误点就把放行的人重新罚一遍。del/rel 只删消息或解除限制，不在此列。
+	// 已判误判的记录不能再被确认正确/禁言/封禁重新处置：这几条会再次处罚，
+	// 而误判是负样本、是最有价值的训练信号，残留按钮的一次误点会把放行的
+	// 人重新罚一遍。del/rel 只删消息或解除限制，不在此列。
 	if row.Action == "undone" {
 		switch op {
 		case "ok", "mute", "ban":
@@ -537,10 +533,10 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 	}
 	switch op {
 	case "ok":
-		// 管理员确认判定正确：**绕过老成员免禁言** —— 人已经看过原文并背书，
-		// 不该再按资历只删不罚。按本群处罚方式补一次正式处置（记录里没删过
-		// 的消息连带补删），动作标签与理由同步更新；样本留在正例池里供形态
-		// 总结取用，之后按「误判」仍可走原有的解禁路径。
+		// 管理员确认判定正确：绕过老成员免禁言——人已看过原文并背书，不应
+		// 再按资历只删不罚。按本群处罚方式补一次正式处置（记录里没删过的
+		// 消息连带补删），动作标签与理由同步更新；样本留在正例池供形态总结
+		// 取用，之后按误判仍可走既有的解禁路径。
 		snap := inst.Cache.Snap()
 		conf, _ := snap.ChatConf(row.BotID, row.ChatID)
 		ban := snap.BanMode(conf)
@@ -610,9 +606,9 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		b.AnswerCallback(q.ID, "已确认并"+done)
 
 	case "fp":
-		// 误判是整个闭环最值钱的一环：改判、解禁、撤派生的联合封禁（见
+		// 误判是整个闭环最关键的环节：改判、解禁、撤派生的联合封禁（见
 		// antiad.UndoVerdict）。数据侧改判与 TG 侧解禁是否成功无关，但解禁
-		// 失败必须如实告诉管理员，不能让他们以为用户已经能正常发言了。
+		// 失败必须如实告知管理员，不能让他们以为用户已能正常发言。
 		lifted, ok, desc := antiad.UndoVerdict(inst, row, q.From.ID)
 		if !ok {
 			b.AnswerCallback(q.ID, "已标记误判，但解除限制失败: "+core.TruncateRunes(desc, 40))
@@ -631,7 +627,7 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		}
 		reason := appendReason(row.Reason, "管理员手工删除")
 		// 告警按钮是静态的，点过 ban 之后同一条消息上的删除按钮仍可点。
-		// undone/banned 是比「删除」更强的终态判断，不能被这次删除覆盖：
+		// undone/banned 是比删除更强的终态判定，不能被这次删除覆盖：
 		// undone 是负采样的判据，banned 已经把人请出群了。
 		// TG 侧照常删，只是不改 action 标签，实际动作记进 reason 留痕。
 		if row.Action == "undone" || row.Action == "banned" {
@@ -639,10 +635,9 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			b.AnswerCallback(q.ID, "已删除（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return
 		}
-		// 这条记录如果已经真实禁言过（muted / deleted_muted），删除
-		// 不能把禁言信息抹掉——action 只应升级，不应回退成单纯的
-		// "deleted"。dryrun: 前缀的历史值不算「已禁言」，演练期
-		// 什么都没真的执行。
+		// 这条记录若已真实禁言过（muted / deleted_muted），删除不能抹掉
+		// 禁言信息：action 只应升级，不应回退成单纯的 "deleted"。
+		// dryrun: 前缀的值不算已禁言，演练期没有真正执行。
 		action := "deleted"
 		if row.Action == "muted" || row.Action == "deleted_muted" {
 			action = "deleted_muted"
@@ -654,7 +649,7 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		minutes := inst.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
 		if ok, desc := antiad.MuteSender(inst, row.ChatID, row.UserID,
 			time.Duration(minutes)*time.Minute); !ok {
-			// 同「确认」分支：人已出群/已被禁言时不再报假失败。
+			// 同确认分支：人已出群或已被禁言时不再报假失败。
 			if why := antiad.MuteMoot(inst, row.ChatID, row.UserID, desc); why != "" {
 				b.AnswerCallback(q.ID, why+"，无需禁言")
 				return
@@ -669,9 +664,9 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			b.AnswerCallback(q.ID, "已禁言（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return
 		}
-		// 消息是否已经真实删除过：用 HasPrefix 而不是 Contains——
-		// "dryrun:deleted_muted" 表示演练期本应删除但实际没执行，
-		// 消息其实还在，HasPrefix 能正确把它排除在外，Contains 会
+		// 消息是否已真实删除过：用 HasPrefix 而不是 Contains——
+		// "dryrun:deleted_muted" 表示演练期本应删除但实际未执行，
+		// 消息实际仍在，HasPrefix 能正确把它排除在外，Contains 会
 		// 把它误判成已删。
 		action := "muted"
 		if strings.HasPrefix(row.Action, "deleted") {
@@ -681,8 +676,8 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		b.AnswerCallback(q.ID, "已禁言")
 
 	case "rel":
-		// 解封（判定维持）：撤掉还在生效的限制、清掉记录，但不动判定本身
-		// —— 与「↩️ 误判」的区别就在这里（样本池、命中数、内容哈希都不动）。
+		// 解封（判定维持）：撤掉仍生效的限制、清掉记录，但不动判定本身——
+		// 与误判操作的区别就在这里（样本池、命中数、内容哈希都不动）。
 		did := antiad.ReleaseUser(inst, row, q.From.ID)
 		b.AnswerCallback(q.ID, "已"+did+"（判定维持不变）")
 
@@ -697,16 +692,14 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 	}
 }
 
-// keepActionLabel 把「本次操作保持不变」的终态 action 翻成人话，
-// 用于回执提示，让管理员知道 action 标签本身没被这次操作动过。
+// keepActionLabel 把本次操作保持不变的终态 action 翻译成回执文案，
+// 让管理员知道 action 标签本身未被这次操作改动。
 //
-// 调用点只会传 "undone" 或 "banned"（见 applyAdManualAction 里
-// del/mute 分支的守卫），但函数本身不应该假设这一点——对非 "banned"
-// 的任何输入都静默兜底成「已标记误判」的话，一旦有新的终态值传进来，
-// 会被悄悄冒充成误判，无声无息。
-// 只保留 "banned" 这一个确有必要的专属措辞（比 actionLabel 的通用
-// 「已封禁」更贴合"该记录保持 XX 状态"的回执语境），
-// 其余一律委托给 actionLabel 这张唯一的词汇表。
+// 调用点只会传 "undone" 或 "banned"（见 applyAdManualAction 里 del/mute
+// 分支的守卫），但函数本身不应假设这一点：对非 "banned" 的输入都兜底成
+// 误判文案的话，一旦有新的终态值传入会被冒充成误判。
+// 只保留 "banned" 这一个专属措辞（比 actionLabel 的通用文案更贴合
+// "该记录保持 XX 状态" 的回执语境），其余委托给 actionLabel。
 func keepActionLabel(action string) string {
 	if action == "banned" {
 		return "已封禁出群"
@@ -720,7 +713,7 @@ func keepActionLabel(action string) string {
 func ShowLogCard(b *core.Bot, chatID, uid, id int64) {
 	row, ok := antiad.LoadAdLog(b.Store, id)
 	if !ok || !b.CanManageBot(uid, row.BotID) {
-		// 不区分「不存在」与「无权」：后者等于确认这个编号存在。
+		// 不区分不存在与无权：后者等于确认这个编号存在。
 		b.Send(chatID, "记录不存在或已过保留期。", nil)
 		return
 	}
@@ -733,7 +726,7 @@ func ShowUserLogs(b *core.Bot, chatID, uid, target int64) {
 	showUserLogs(b, chatID, 0, uid, target, 1, false)
 }
 
-// userLogsCB 拼「某人的资料卡」回调：filter 为真时连未处置的一起列。
+// userLogsCB 拼某人的资料卡回调：filter 为真时连未处置的一起列。
 func userLogsCB(uid, page int64, all bool) string {
 	s := fmt.Sprintf("a:ad:ul:%d:%d", uid, page)
 	if all {
@@ -746,8 +739,8 @@ const userLogsPerPage = 10
 
 // showUserLogs 渲染资料卡与判定记录列表并原地编辑（msgID 为 0 时新发一条）。
 //
-// 默认只列**被处置过**的记录（见 antiad.processedCond）：管理员查一个人时
-// 先要看他被罚过什么，而不是他所有被判过正常的话。点切换可以看全部。
+// 默认只列被处置过的记录（见 antiad.ProcessedCond）：管理员查一个人时先看
+// 他被罚过什么，而不是所有被判正常的话。点切换可看全部。
 func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all bool) {
 	page = clampPageInt(page)
 	where, args := managedBotsClause(b, uid)
@@ -806,8 +799,8 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 	sb.WriteString(antiad.UserDossierText(b, d, loc))
 	sb.WriteString("\n")
 
-	// 生效中的限制与联合封禁：管理员查人时最该一眼看到的「他现在还被什么
-	// 拦着」，并且要能当场解除 —— 只展示不给按钮，还得去别处找入口。
+	// 生效中的限制与联合封禁：管理员查人时最需要一眼看到此人还被什么拦着，
+	// 并且要能当场解除——只展示不给按钮，还得去别处找入口。
 	var actionRows [][][2]string
 	if pens := antiad.ActivePenalties(b.Shared, b.BotID(), target); len(pens) > 0 {
 		suffix := ""
@@ -921,15 +914,14 @@ func chatTag(b *core.Bot, chatID int64) string {
 	return fmt.Sprintf("<code>%d</code>", chatID)
 }
 
-// managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数。
-// 主管理员看全部；次级管理员只看自己名下 bot 的记录。
-// managedBotsClause 返回「只看此人名下的 bot」的 SQL 片段与参数。
+// managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数：
+// 主管理员不设限，次级管理员只看自己名下 bot 的记录。
 func managedBotsClause(b *core.Bot, uid int64) (string, []any) {
 	return botsClause(b.Shared, uid, b.IsMain(uid))
 }
 
-// botsClause 是上面两个入口的共同实现：主管理员不设限；名下没有 bot 时
-// 用 AND 0 让查询必然为空（而不是不过滤、把别人的记录漏出去）。
+// botsClause 是权限过滤的共同实现：主管理员不设限；名下没有 bot 时
+// 用 AND 0 让查询必然为空（而非不过滤、把别人的记录漏出去）。
 func botsClause(sh *core.Shared, uid int64, main bool) (string, []any) {
 	if main {
 		return "", nil
@@ -959,7 +951,7 @@ func navFromCallback(data string) (uid, page int64) {
 }
 
 // kbWithNav 给卡片上的回调按钮追加 ":<uid>:<page>"，让处置后的重绘
-// 仍能拼出「返回列表」。URL 按钮不带 callback_data，原样保留。
+// 仍能拼出返回列表。URL 按钮不带 callback_data，原样保留。
 func kbWithNav(kb map[string]any, nav string) map[string]any {
 	rows, _ := kb["inline_keyboard"].([][]map[string]string)
 	for i := range rows {
@@ -987,7 +979,7 @@ func redrawAdCard(b *core.Bot, q *tg.CallbackQuery, id int64) {
 	b.Edit(q.Message.Chat.ID, q.Message.MessageID, text, kb)
 }
 
-// cmdArg 从「/cmd 参数」里取第一个参数，容忍 /cmd@botname 形态。
+// cmdArg 从 /cmd 参数里取第一个参数，容忍 /cmd@botname 形态。
 func cmdArg(text, cmd string) string {
 	rest := strings.TrimSpace(strings.TrimPrefix(text, cmd))
 	fields := strings.Fields(rest)

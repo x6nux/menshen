@@ -25,13 +25,12 @@ describe('Badge', () => {
   })
 })
 
-// ---- 对比度回归（旧实现用 success/error/warning.main 当 11px 文字，
-// 在 16% 同色淡底上只有 1.8-2.7:1）。这里按 WCAG 相对亮度实算，不只看 class。
+// ---- 对比度回归：按 WCAG 相对亮度实算，不只看 class。 ----
 
 type RGBA = [number, number, number, number]
 
 function parseColor(value: string): RGBA {
-  // theme 里的颜色是 hex（如 #232E3C），computed style 是 rgb()/rgba()。
+  // theme 里的颜色是 hex，computed style 是 rgb()/rgba()。
   const hex = value.match(/^#([0-9a-f]{6})$/i)
   if (hex) {
     const n = Number.parseInt(hex[1], 16)

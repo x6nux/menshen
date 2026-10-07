@@ -1,4 +1,4 @@
-// 搜索框（计划 3.2）：圆角灰底、Search 图标、受控 value/onChange、可清空。
+// 搜索框：圆角灰底、Search 图标、受控 value/onChange、可清空。
 import Close from '@mui/icons-material/Close'
 import Search from '@mui/icons-material/Search'
 import { IconButton, InputAdornment, TextField } from '@mui/material'

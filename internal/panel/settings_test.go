@@ -29,7 +29,7 @@ func containsSpec(specs []settingSpec, key string) bool {
 
 // TestColdJudgeIsGlobalWithPerBotOverride：进群冷判定的默认值在全局设置里
 // 配一次，所有 bot 跟随；单个 bot 可覆盖，填 "-" 撤销覆盖、真正回到全局
-// （以后全局再改，它也继续跟着变）。
+// （全局再改时它继续跟随）。
 func TestColdJudgeIsGlobalWithPerBotOverride(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, dispatch)
 	botID := b.BotID()
@@ -109,7 +109,7 @@ func TestSpecsInSectionsOrder(t *testing.T) {
 		t.Errorf("分组顺序 = %v，期望 %v", names, want)
 	}
 
-	// 处置相关的选项必须排在一起（用户要求「同类、关联的在一起」）。
+	// 处置相关的选项必须排在一起（同类、关联的放在一起）。
 	idx := func(k string) int {
 		for i, sp := range groups[0].Specs {
 			if sp.key == k {

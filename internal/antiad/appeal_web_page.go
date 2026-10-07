@@ -227,8 +227,8 @@ type turnstileResult struct {
 // turnstileSiteverify 向 Cloudflare 校验令牌，返回解析结果。
 //
 // 令牌 5 分钟有效、只能校验一次，重放由 Cloudflare 拒绝。idem 是幂等键：
-// 同一次校验重发时 Cloudflare 会返回同一结果，避免网络重试造成「第二次
-// 校验同一个令牌」。错误只表示请求/解析失败，success=false 不是 error。
+// 同一次校验重发时 Cloudflare 返回同一结果，避免网络重试造成第二次校验
+// 同一个令牌。错误只表示请求/解析失败，success=false 不是 error。
 func turnstileSiteverify(secret, token, ip, idem string) (turnstileResult, error) {
 	var out turnstileResult
 	if token == "" {
@@ -306,9 +306,9 @@ func verifyTurnstileToken(sh *core.Shared, secret, token, ip string) (bool, stri
 
 // appealPageDataOf 组装验证页 SPA 所需的结构化数据。
 //
-// 这个页面是用户唯一能看到自己处罚依据的地方：只写「完成验证拿解禁码」
-// 的话，他既不知道为什么被罚、也不知道该改什么，只能盲点一遍。内容全部
-// 来自本单与本人流水（签名 URL，只给本人看）。
+// 验证页是用户唯一能看到自己处罚依据的地方：只写完成验证拿解禁码不够，
+// 还需给出被限原因与可修改内容。内容全部来自本单与本人流水（签名 URL，
+// 只给本人看）。
 func appealPageDataOf(sh *core.Shared, ap appealRec) map[string]any {
 	loc := sh.Cache.Snap().Location()
 
@@ -350,8 +350,8 @@ func pageTS(loc *time.Location, unix int64) string {
 	return time.Unix(unix, 0).In(loc).Format("2006-01-02 15:04")
 }
 
-// appealPageAI 把 AI 复核结论整理成「结论标签 + 置信度 + 模型 + 理由 +
-// 申诉人自己的理由」。
+// appealPageAI 把 AI 复核结论整理成结论标签、置信度、模型、理由与申诉人
+// 自己的理由。
 func appealPageAI(ap appealRec) map[string]any {
 	label := "还没有 AI 复核结论"
 	switch ap.AIResult {
@@ -373,7 +373,7 @@ func appealPageAI(ap appealRec) map[string]any {
 }
 
 // appealPageMsgLimit 是验证页上展示的发言条数与单条字数上限。
-// 「所有发言」按留底展示，但页面不能被一个刷了几千条的号撑爆。
+// 所有发言按留底展示，但页面不能被刷了几千条的号撑爆。
 const (
 	appealPageMsgLimit  = 100
 	appealPageMsgLength = 300

@@ -1,9 +1,9 @@
 // 运行日志页（Mini App，仅主管理员）：进程内 slog 环形缓冲的只读视图。
 //
-//   - 级别 chips 是「不低于」语义：选「警告」同时看到 WARN 与 ERROR，这是
-//     运维看日志的默认预期；「各级」一行给出当前搜索下各档的条数；
+//   - 级别 chips 按不低于语义：选 `警告` 同时看到 WARN 与 ERROR，这是
+//     运维看日志的默认预期；`各级` 一行给出当前搜索下各档的条数；
 //   - 搜索是服务端子串匹配（消息 + 字段的键和值），300ms 防抖、回车立即；
-//   - 无限滚动（每页 50，新→旧）；日志只在内存、不落库，看最新的点「刷新」。
+//   - 无限滚动（每页 50，新→旧）；日志只在内存、不落库，看最新的点 `刷新`。
 import { Box, Button, Chip, Typography } from '@mui/material'
 import { useEffect, useRef, useState } from 'react'
 import { errorStatus } from '../api/client'

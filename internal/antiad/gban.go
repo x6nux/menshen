@@ -15,16 +15,16 @@ import (
 
 // gbanFanout 限制联合封禁并发执行的路数。
 //
-// 一次联合封禁要对「所有 bot × 所有生效群」各发一次 banChatMember，
-// 规模上去之后是几百个请求。不限并发会在几百毫秒内全部打出去，
-// 直接撞上 Telegram 对 bot 的全局速率限制，连正常的业务消息一起发不出。
+// 一次联合封禁需对所有 bot × 所有生效群各发一次 banChatMember，
+// 规模上去后是几百个请求。不限并发会在几百毫秒内全部发出，
+// 触发 Telegram 对 bot 的全局速率限制，连带正常业务消息也无法发送。
 const gbanFanout = 4
 
-// gbanSem 是进程级的执行闸。每个调用各拿一份信号量的话，并发的命中叠加
-// 起来对 TG 的实际并发就是无上限的（刷屏高峰里命中会接连发生）。
+// gbanSem 是进程级的执行闸。若每个调用各持一份信号量，并发命中叠加时
+// 对 TG 的实际并发将无上限（刷屏高峰中命中会接连发生）。
 var gbanSem = make(chan struct{}, gbanFanout)
 
-// gbanEnabled 报告联合封禁总开关。它是全局的，只有主管理员能动 ——
+// GbanEnabled 报告联合封禁总开关。它是全局的，只有主管理员能操作 ——
 // 一次操作会波及所有接入方的所有群。
 func GbanEnabled(sh *core.Shared) bool {
 	return sh.Cache.Snap().SettingInt("gban_enabled", 0) == 1
@@ -72,14 +72,14 @@ func maybeGban(b *core.Bot, srcChat, uid int64, reason string) {
 	}
 	snap := b.Cache.Snap()
 	shared := botInGlobal(snap, b.BotID())
-	// 已在适用名单里的人不再重复全平台扇出：刷屏号连着几条消息都判到最高档
-	// 时，每一条都扇出几百个 banChatMember 只是撞 TG 的限流。
+	// 已在适用名单里的人不再重复全平台扇出：刷屏号连续多条消息都判到最高档
+	// 时，每条都扇出几百个 banChatMember 只会触发 TG 限流。
 	_, ownListed := snap.GbanOwnBans[b.Owner()][uid]
 	_, globalListed := snap.Gban[uid]
 	alreadyEnforced := ownListed && (!shared || globalListed)
 
 	// 两条记录一次写完、只刷新一次快照：逐条写会各重建一次全量配置
-	// （十几条查询），而刷屏高峰里这是每条最高档处置都要付的。
+	// （十几条查询），而刷屏高峰中每条最高档处置都要付出这一开销。
 	if err := gbanRecordBoth(b.Shared, b.Owner(), uid, reason, srcChat, b.BotID(), shared); err != nil {
 		slog.Error("联合封禁：入账失败", "uid", uid, "err", err)
 		return
@@ -138,11 +138,11 @@ func gbanRemove(sh *core.Shared, uid int64) error {
 	return sh.Cache.Reload()
 }
 
-// eachActiveChat 遍历全平台所有「已启用」的群，带上该群里全部可用的 bot。
+// eachActiveChat 遍历全平台所有`已启用`的群，带上该群里全部可用的 bot。
 // include 决定哪些 bot 参与：全局组的封禁/解除只覆盖加入全局组的 bot，
 // 专属组只覆盖圈进组里的群。传 nil 表示不过滤。
 //
-// 按群而不是按 (bot, 群) 遍历：同群挂着几个 bot 时，对同一个人只该动手一次。
+// 按群而不是按 (bot, 群) 遍历：同群挂着几个 bot 时，对同一个人只应操作一次。
 func eachActiveChat(sh *core.Shared, include func(botID int64) bool,
 	fn func(bots []*core.Bot, chatID int64)) {
 	if sh.Reg == nil {
@@ -165,8 +165,8 @@ func eachActiveChat(sh *core.Shared, include func(botID int64) bool,
 	}
 }
 
-// botsOfChat 收集当前活着的、覆盖某个群的全部 bot。专属组按群圈定，
-// 执行时谁在群里谁动手（callFirstOK 会挑到第一个有权限的）。
+// botsOfChat 收集当前运行中、覆盖某个群的全部 bot。专属组按群圈定，
+// 执行时由群内的 bot 承担（callFirstOK 会挑到第一个有权限的）。
 func botsOfChat(sh *core.Shared, chatID int64) []*core.Bot {
 	if sh.Reg == nil {
 		return nil
@@ -180,8 +180,8 @@ func botsOfChat(sh *core.Shared, chatID int64) []*core.Bot {
 	return out
 }
 
-// callFirstOK 让群里的 bot 依次尝试，直到有一个成功：只挂一个 bot 去执行的话，
-// 恰好挑中一个没有封禁权限的，这个群就被放掉了。
+// callFirstOK 让群里的 bot 依次尝试，直到有一个成功：若只指定单个 bot 执行，
+// 恰好挑中没有封禁权限的 bot 时，这个群便无法处置。
 func callFirstOK(bots []*core.Bot, method string, payload map[string]any) (bool, string) {
 	desc := ""
 	for _, b := range bots {
@@ -194,10 +194,10 @@ func callFirstOK(bots []*core.Bot, method string, payload map[string]any) (bool,
 }
 
 // EnforceGban 在全局组覆盖范围内执行一次封禁：只动加入全局组的 bot 名下
-// 的群——退出的 bot 不再共享，也就不该被全组执行波及。
+// 的群——退出的 bot 不共享名单，也不受全组执行波及。
 //
 // 失败只记日志：bot 在某个群没有封禁权限、或对方本就不在那个群，
-// 都是常态而非故障，不该让一个群的失败挡住其余的。
+// 都是常态而非故障，不应让一个群的失败影响其余群。
 func EnforceGban(sh *core.Shared, uid int64, reason string) {
 	n := gbanFanover(sh, uid, "banChatMember", nil, false)
 	slog.Info("联合封禁已执行", "uid", uid, "群数", n, "理由", reason)
@@ -205,8 +205,8 @@ func EnforceGban(sh *core.Shared, uid int64, reason string) {
 
 // gbanApply 在一个群里执行联合封禁，方式服从该群自己的处置配置：
 //
-//	dryrun   → 什么都不做（演练群不该因为全平台名单真动手）
-//	封禁档   → banChatMember（请出群）
+//	dryrun   → 什么都不做（演练群不因全平台名单而实际执行）
+//	封禁档   → banChatMember（移出群）
 //	禁言档   → restrictChatMember（按本 bot 的禁言时长，0 = 永久）
 //
 // 返回实际动作（ban / mute / dryrun）与是否成功。频道身份由 BanSender /
@@ -226,8 +226,8 @@ func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string
 }
 
 // gbanActInChat 在某个群里执行联合封禁。一个群可能挂着同归属人的多个 bot，
-// 配置各算各的（演练、处罚方式都是 per-bot 的）：取第一个**不是演练**的配置
-// 执行；它没权限（或不在群里）时再换下一个；全是演练群就什么都不做。
+// 配置各自独立（演练、处罚方式都是 per-bot 的）：取第一个非演练的配置
+// 执行；它没权限（或不在群里）时换下一个；全为演练群则什么都不做。
 func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 	var lastDesc string
 	for _, b := range bots {
@@ -241,9 +241,9 @@ func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 			gbanLogAction(b, chatID, uid, act)
 			return
 		}
-		// 禁言档失败先看人是不是已经不在群里/已经说不了话：这是联合封禁
-		// 扇出的常态（名单里的人多半不在每一个群里），不该刷「执行失败」，
-		// 也不该落一条日后需要解的 gban_muted 流水。
+		// 禁言档失败先看人是否已不在群里或已无法发言：这是联合封禁
+		// 扇出的常态（名单里的人多半不在每一个群里），不应记录为`执行失败`，
+		// 也不应落一条日后需要解除的 gban_muted 流水。
 		if act == "mute" {
 			if why := MuteMoot(b, chatID, uid, desc); why != "" {
 				slog.Info("联合封禁：跳过", "chat", chatID, "uid", uid, "原因", why)
@@ -259,18 +259,17 @@ func gbanActInChat(_ *core.Shared, bots []*core.Bot, chatID, uid int64) {
 
 // gbanLogAction 把名单在某群里的实际动作落一条流水。
 //
-// 没有这条记录，日后撤销联合封禁时就不知道该在哪些群解禁：unbanChatMember
-// 只解封禁、解不了禁言，而禁言档的群当初走的是 restrictChatMember ——
-// 「名单已经撤了，人在群里还是发不了言」就是这么来的。发言路径上的
-// 联封（GbanMessageGuard）从一开始就有记录，名单扇出这一支漏了。
+// 该记录是日后撤销联合封禁时确定解禁范围的依据：unbanChatMember
+// 只解封禁、解不了禁言，而禁言档的群走的是 restrictChatMember，
+// 需要据此补发解除。发言路径上的联封（GbanMessageGuard）同样落此流水。
 func gbanLogAction(b *core.Bot, chatID, uid int64, act string) {
 	action := "gban_muted"
 	if act == "ban" {
 		action = "gban_banned"
 	}
 	// 同群里同一种动作只留一条未解除的记录：一次入名单会扇出两遍
-	// （全局组与归属人的专属组各一遍），面板上的「重新执行」也会再来
-	// 一遍，逐次落库只是噪声。动作换了（禁言档改成封禁档）照旧记新的。
+	// （全局组与归属人的专属组各一遍），面板上的重新执行也会再次
+	// 触发，逐次落库只产生噪声。动作变化时（禁言档与封禁档不同）另记一条。
 	var n int
 	if err := b.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
 		WHERE chat_id=? AND user_id=? AND action=? AND lifted_at=0`,
@@ -285,8 +284,8 @@ func gbanLogAction(b *core.Bot, chatID, uid int64, act string) {
 		adVerdict{Decider: adDeciderSkipped, Reason: reason}, action, "联合封禁（名单）")
 }
 
-// penaltyRowsActive 报告某人在某群里还有没有本 bot 生效中的处罚（不含
-// 联合封禁行）。撤联合封禁时用它避免顺手解掉别的判定留下的禁言。
+// penaltyRowsActive 报告某人在某群里是否还有本 bot 生效中的处罚（不含
+// 联合封禁行）。撤联合封禁时用它避免一并解除别的判定留下的禁言。
 func penaltyRowsActive(sh *core.Shared, botID, chatID, uid int64) bool {
 	var n int
 	if err := sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
@@ -302,14 +301,14 @@ func penaltyRowsActive(sh *core.Shared, botID, chatID, uid int64) bool {
 	return false
 }
 
-// gbanLiftRecorded 撤销联合封禁时，把当初在各群真禁过言的也解掉。
+// gbanLiftRecorded 撤销联合封禁时，把当初在各群禁言的也解除。
 //
 // unbanChatMember 只解封禁、不碰禁言；禁言档的群（punish=0，或跟随 bot
-// 的 antiad_ban=0）当初走的是 restrictChatMember，只能再发一次「权限全开」
-// 去解。少了这一步，误判撤了名单、人在那些群里却永远发不了言。
+// 的 antiad_ban=0）走的是 restrictChatMember，只能再发一次权限全开
+// 来解除。缺少这一步时，误判撤销名单后，人在那些群里仍无法发言。
 //
-// 只动有 gban_muted 流水、且群里没有别的生效处罚的那些群：没记录就不敢
-// 动（可能是人类管理员施加的禁言，解禁还会把人提到群默认权限之上）。
+// 只处理有 gban_muted 流水、且群里没有其他生效处罚的群：无记录时不处理
+// （可能是人类管理员施加的禁言，解除会把用户提到群默认权限之上）。
 func gbanLiftRecorded(sh *core.Shared, uid int64) {
 	rows, err := sh.Store.Read.Query(`SELECT DISTINCT chat_id FROM antiad_log
 		WHERE user_id=? AND action='gban_muted' AND lifted_at=0 LIMIT 100`, uid)
@@ -363,7 +362,7 @@ func gbanLiftRecorded(sh *core.Shared, uid int64) {
 // 所有群，否则只动给定清单（专属组用）。返回实际派发的群数。
 //
 // 封禁按各群自己的处置方式执行（见 gbanApply）；解除是无条件修复动作
-// （dryrun 群也会执行——那边可能曾经真封过），只带 only_if_banned。
+// （dryrun 群也会执行，因其过去可能已实际封禁），只带 only_if_banned。
 func gbanFanover(sh *core.Shared, uid int64, method string, chats []int64,
 	onlyIfBanned bool) int {
 	sem := gbanSem
@@ -406,9 +405,9 @@ func gbanFanover(sh *core.Shared, uid int64, method string, chats []int64,
 
 // LiftGban 解除全局组封禁：移出名单并在全局组覆盖范围内解封。
 //
-// unbanChatMember 必须带 only_if_banned —— 不带的话，对一个**没被封**
-// 的人调用它，Telegram 的语义是「把他踢出群再解除封禁」，于是解封动作
-// 反而把无辜的人踢了出去。这是整个联合封禁里最容易写反的一处。
+// unbanChatMember 必须带 only_if_banned —— 不带时，对一个未封禁
+// 的用户调用，Telegram 的语义是先移出群再解除封禁，解封动作
+// 反而会将该用户移出群聊。
 func LiftGban(sh *core.Shared, uid int64) {
 	if err := gbanRemove(sh, uid); err != nil {
 		slog.Error("联合封禁：移出名单失败", "uid", uid, "err", err)
@@ -500,13 +499,13 @@ func ownChats(snap *store.Snapshot, ownerID int64) []int64 {
 	return out
 }
 
-// LiftGbanForChat 解除「在本群生效」的联合封禁：覆盖本群的专属组条目总是
+// LiftGbanForChat 解除在本群生效的联合封禁：覆盖本群的专属组条目总是
 // 解除；全局组条目只在 includeGlobal（服务管理员：主/次）时解除 —— 群管理
 // 员不该动全平台的名单。返回解除了哪些（给操作者的提示），空串表示本群
 // 没有生效中的联合封禁。
 //
-// 解封（ReleaseUser / uad / ungban）都用它：只解当前禁言/封禁、不动名单
-// 的话，人一发言又会被名单自动禁回去，管理员还得再来点一次。
+// 解封（ReleaseUser / uad / ungban）都用它：只解除当前禁言/封禁而不动名单
+// 时，用户再次发言又会被名单自动禁言，管理员需重复操作。
 func LiftGbanForChat(sh *core.Shared, botID, chatID, uid int64, includeGlobal bool) string {
 	var lifted []string
 	snap := sh.Cache.Snap()
@@ -532,13 +531,11 @@ func LiftGbanForChat(sh *core.Shared, botID, chatID, uid int64, includeGlobal bo
 
 // AdminLiftGban 管理员解除某人的联合封禁：全局组对所有管理员开放
 // （共同维护的名单），专属组按账本归属处理 —— 次管只动自己的；主管理员
-// 是平台级角色，各次管的专属组条目也能撤（条目在别人的账本里时，主管
-// 点「解除联合封禁」在旧实现里只撤了全局组，群里当场解了、名单还在，
-// 人一发言又按名单禁回去）。
+// 是平台级角色，各次管的专属组条目也能撤。
 //
-// 同时把「个人简介类限制」（进群限制 join_mutes）一并解开：这类限制是
-// 按资料判出来的，只撤名单不解它的话人还是说不出话，而且复查任务
-// （ReassertActiveMutes）会把禁言按 join_mutes 记录再施加回去。
+// 同时把个人简介类限制（进群限制 join_mutes）一并解除：这类限制按资料
+// 判定，只撤名单而不解除它时用户仍无法发言，且复查任务
+// （ReassertActiveMutes）会按 join_mutes 记录再次施加禁言。
 //
 // 返回解除到的范围说明，空串表示此人不在任何名单/限制里。
 func AdminLiftGban(sh *core.Shared, adminUID, target int64) string {
@@ -578,12 +575,12 @@ func AdminLiftGban(sh *core.Shared, adminUID, target int64) string {
 	return strings.Join(lifted, "、")
 }
 
-// dropJoinMutesFor 把某人的「进群限制」（按个人简介判出的限制发言）解除：
-// 删记录 + 解禁言 + 撤群内通知 + 落「主动解除」标记（避免复查任务再施加，
-// 也避免外部解除复查把它当成被别的 bot 抹掉）。
+// dropJoinMutesFor 把某人的进群限制（按个人简介判出的限制发言）解除：
+// 删记录 + 解禁言 + 撤群内通知 + 落主动解除标记（避免复查任务再次施加，
+// 也避免外部解除复查将其视为被别的 bot 抹掉）。
 //
-// 主管理员清全部群；次级管理员只清自己名下 bot 覆盖的群。群里没有在跑的
-// bot 时至少清掉记录与标记 —— 那条限制已经没有执行者了。返回清掉的群数。
+// 主管理员清全部群；次级管理员只清自己名下 bot 覆盖的群。群里没有运行中的
+// bot 时至少清掉记录与标记 —— 该限制已无执行者。返回清掉的群数。
 func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 	rows, err := sh.Store.Read.Query(
 		`SELECT DISTINCT chat_id FROM join_mutes WHERE user_id=? LIMIT 200`, uid)
@@ -626,10 +623,10 @@ func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 		}
 		done := false
 		for _, b := range botsOfChat(sh, chatID) {
-			// 有在跑的 bot：走既有解除路径（删记录、撤通知、解禁言、标记）。
+			// 有运行中的 bot：走既有解除路径（删记录、撤通知、解禁言、标记）。
 			// 解除失败（人已离群、权限不足）不能当成成功 break —— 那样
-			// join_mutes 与形状会残留，调用方还会报告「已解除」，而复查
-			// 任务会照旧把禁言施加回去。换下一个 bot 试，都不成再走兜底。
+			// join_mutes 与形状会残留，调用方还会报告`已解除`，而复查
+			// 任务会再次把禁言施加回去。换下一个 bot 尝试，全部失败再走兜底。
 			if ok, _ := LiftMute(b, chatID, uid); ok {
 				done = true
 				break
@@ -656,12 +653,12 @@ func dropJoinMutesFor(sh *core.Shared, uid, adminUID int64) int {
 	return n
 }
 
-// gbanGuard 在有人进群时查适用的联合封禁组，命中即按**本群自己的处置方式**
-// 处置（演练群不动手、禁言档禁言、封禁档请出群，见 gbanApply）——联合封禁
-// 是「这个人已在别处被判为广告」的跨群结论，但怎么处置仍归各群的配置管。
+// gbanGuard 在有人进群时查适用的联合封禁组，命中即按本群自己的处置方式
+// 处置（演练群不执行、禁言档禁言、封禁档移出群，见 gbanApply）——联合封禁
+// 是该用户已在别处被判为广告的跨群结论，处置方式仍由各群配置决定。
 //
-// 这是联合封禁最值钱的部分：拦在门口，而不是等他发完广告再删。
-// 返回 true 表示这个人已被拦下，调用方不必再做后续处理。
+// 在进群阶段即拦截，无需等待其发言后处理。
+// 返回 true 表示该用户已被拦下，调用方不必再做后续处理。
 func gbanGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser) bool {
 	if u == nil {
 		return false
@@ -676,7 +673,7 @@ func gbanGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser) bool {
 		return false
 	}
 	if act == "dryrun" {
-		// 演练群：判定/名单照常走，但不动手，也不发群内消息。
+		// 演练群：判定/名单照常走，但不执行处置，也不发群内消息。
 		slog.Info("联合封禁：演练群不动手", "chat", conf.ChatID, "uid", u.ID)
 		return false
 	}
@@ -693,19 +690,19 @@ func gbanGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser) bool {
 }
 
 // GbanMessageGuard 在发言路径上执行联合封禁。白名单优先——/white 的
-// 「本群解封」就是白名单，管理员放行的人不该再被名单拦下。命中即按本群
-// 自己的处置方式处置（演练群不动手、禁言档禁言、封禁档请出群），删除本条
+// 本群解封即白名单，管理员放行的用户不应再被名单拦下。命中即按本群
+// 自己的处置方式处置（演练群不执行、禁言档禁言、封禁档移出群），删除本条
 // 并落一条流水，不再留底、不再送检。
 // 返回 true 表示这条消息已按联合封禁处理完，调用方直接返回。
 //
-// whitelisted 是调用方从画像行带出来的 /white 标记（见 touchMember）。
+// whitelisted 是调用方从画像行带出的 /white 标记（见 touchMember）。
 func GbanMessageGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser, msgID int64,
 	whitelisted bool) bool {
 
 	if u == nil || u.ID < 0 {
 		return false
 	}
-	// 总开关默认关：先看它，别为每条群消息白查一次白名单（快照线性扫）。
+	// 总开关默认关：先检查它，避免为每条群消息执行一次白名单查询（快照线性扫描）。
 	if !GbanEnabled(b.Shared) {
 		return false
 	}
@@ -720,7 +717,7 @@ func GbanMessageGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser, msgID int64
 	}
 	act, ok, desc := gbanApply(b, conf, u.ID)
 	if act == "dryrun" {
-		// 演练群：不动手，照常走后面的判定链路（判定照跑、开销照花）。
+		// 演练群：不执行处置，继续走后面的判定链路（判定与开销照常）。
 		return false
 	}
 	if !ok {
@@ -778,12 +775,12 @@ func GbanReasonLabel(r string) string {
 
 // CleanupData 按 settings.log_retention_days 删除过期数据。
 //
-// 非法值（0 / 负数 / 非数字）一律回落到 30 天而不是把 cutoff 算成「现在」——
+// 非法值（0 / 负数 / 非数字）一律回落到 30 天，而不将 cutoff 算成当前时间——
 // 后者会把全部历史一次性删光，且不可逆。
 //
 // 全部走 deleteBatched：写连接固定为 1，一条大 DELETE 从第一行到提交都持有
-// 写锁，期间所有群消息的留底与流水都在后面排队（广告洪峰时正好是最不能停的
-// 时候）。分批之间会让出写连接，消息写入得以插队。
+// 写锁，期间所有群消息的留底与流水都在排队（广告洪峰时影响最大）。
+// 分批之间会让出写连接，消息写入得以插队。
 func CleanupData(sh *core.Shared) {
 	days := sh.Cache.Snap().SettingInt("log_retention_days", 30)
 	if days < 1 {
@@ -800,19 +797,19 @@ func CleanupData(sh *core.Shared) {
 		slog.Error("清理群消息留底失败", "err", err)
 	}
 	// group_members 同样是群聊衍生数据（TG user_id + 发言计数），保留策略
-	// 要与上面一致，否则群从白名单移除后它的行永久留着。
-	// 有命中史的行保留：ad_hits 是风控证据，清掉等于给惯犯重置档案。
-	// 「最近活动」取发言与进群里较晚的那个：只看 last_msg_at 的话，进群后
-	// 还没发言的人（last_msg_at 为 0）第一轮就被删掉，丢了进群时间。
-	// 白名单（/white）是管理员的明确决定，不随不发言过期。
+	// 要与上面一致，否则群从白名单移除后其行会永久保留。
+	// 有命中史的行保留：ad_hits 是风控证据，清掉相当于重置惯犯档案。
+	// 最近活动取发言与进群中较晚的时间：只看 last_msg_at 时，进群后
+	// 尚未发言的用户（last_msg_at 为 0）会在首轮被删掉，丢失进群时间。
+	// 白名单（/white）是管理员的明确决定，不随不发言而过期。
 	// 谓词写成两个单列比较（MAX(a,b) < c 等价于 a < c AND b < c），
-	// 这样 last_msg_at 上的索引才用得上。
+	// 以利用 last_msg_at 上的索引。
 	if _, err := deleteBatched(sh, "group_members",
 		"last_msg_at < ? AND joined_at < ? AND ad_hits = 0 AND whitelisted = 0",
 		cut, cut); err != nil {
 		slog.Error("清理群成员画像失败", "err", err)
 	}
-	// 内容哈希按最近一次命中过期：广告模板换得很快，久不出现的留着只是占地方。
+	// 内容哈希按最近一次命中过期：广告模板更新频繁，久不出现的一直保留会占用空间。
 	if _, err := deleteBatched(sh, "ad_hashes", "last_hit_at < ?", cut); err != nil {
 		slog.Error("清理内容哈希失败", "err", err)
 	}
@@ -848,9 +845,9 @@ func CleanupData(sh *core.Shared) {
 		"expires_at != 0 AND expires_at < ?", time.Now().Unix()); err != nil {
 		slog.Error("清理过期资料放行失败", "err", err)
 	}
-	// join_mutes 不能按保留期删：它是无限期进群限制的唯一记录，删了等于把
-	// 还没解除的限制忘了（/unban 找不到、复查也不再施加）。但群不再由任何
-	// bot 管理时，这条限制已经没有执行者，清掉孤儿行避免表随删群无限增长。
+	// join_mutes 不能按保留期删除：它是无限期进群限制的唯一记录，删除后
+	// 该限制将无法被 /unban 找到、复查也不再施加。但群不再由任何
+	// bot 管理时，该限制已无执行者，清掉孤儿行避免表随删群无限增长。
 	if _, err := deleteBatched(sh, "join_mutes",
 		"chat_id NOT IN (SELECT chat_id FROM bot_chats)"); err != nil {
 		slog.Error("清理孤儿进群限制失败", "err", err)
@@ -858,7 +855,7 @@ func CleanupData(sh *core.Shared) {
 }
 
 // cleanupBatch 是每批删除的行数。取几千：一批的锁持有时间是毫秒级，
-// 又不会让循环因为批次太小而跑几百轮。
+// 又不会因批次太小而使循环执行数百轮。
 const cleanupBatch = 5000
 
 // deleteBatched 分批删除过期行，返回删除总数。

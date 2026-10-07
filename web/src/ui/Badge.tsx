@@ -1,5 +1,5 @@
-// 语义徽标（计划 3.1/3.4）：ok/no/warn 三色，底色沿用旧页 .badge.ok/.badge.no 的
-// 半透明色块；neutral 对应旧页无修饰的 .badge，用于「主 bot」这类中性标记。
+// 语义徽标：ok/no/warn 三色，底色为对应主题色的半透明色块；
+// neutral 用中性样式，用于主 bot 这类中性标记。
 import { Box, alpha } from '@mui/material'
 import type { SxProps, Theme } from '@mui/material/styles'
 import type { ReactNode } from 'react'

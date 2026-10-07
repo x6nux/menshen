@@ -1,7 +1,7 @@
 // Telegram WebApp 桥：SDK 由 index.html 自托管加载（/miniapp/telegram-web-app.js，
-// 不依赖 telegram.org）；这里仍轮询等待，就绪后 ready/expand，并把 BackButton、
+// 不依赖官方 CDN）；这里轮询等待就绪，随后 ready/expand，并把 BackButton、
 // themeChanged、openLink 收成一个对象，供导航栈与主题重建使用。
-// 不在 Telegram 里（或 SDK 始终没出现）时返回 available=false，不抛错。
+// 不在 Telegram 内（或 SDK 始终未出现）时返回 available=false，不抛错。
 import type { MiniThemeParams } from './theme'
 
 /** Telegram WebApp 里用到的部分；只声明用得上的方法，便于测试注入。 */
@@ -39,7 +39,7 @@ export interface TelegramBackButton {
 }
 
 export interface TelegramBridge {
-  /** SDK 是否就绪；false 时页面应渲染「请通过 Telegram 打开」的引导。 */
+  /** SDK 是否就绪；false 时页面应渲染 `请通过 Telegram 打开` 的引导。 */
   available: boolean
   initData: string
   /** URL ?bot= 指定要管理的 bot，缺省 '0'（主 bot）。 */
@@ -56,7 +56,7 @@ export interface TelegramBridge {
 }
 
 export interface InitTelegramOptions {
-  /** 最长等待毫秒，默认 3000（旧页面为 30 次 ×100ms）。 */
+  /** 最长等待毫秒，默认 3000。 */
   timeoutMs?: number
   /** 轮询间隔毫秒，默认 100。 */
   intervalMs?: number
@@ -153,7 +153,7 @@ export async function initTelegram(options: InitTelegramOptions = {}): Promise<T
   if (!wa || !inTelegram(wa)) return unavailableBridge(botId)
   const app = wa
 
-  // ready/expand 分开兜底：个别旧客户端只会在其中一个上抛。
+  // ready/expand 分开兜底：两者可能各自抛异常。
   try {
     app.ready()
   } catch {

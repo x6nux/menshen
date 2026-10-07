@@ -21,13 +21,13 @@ import (
 //
 // 网页只在 webhook 模式（public_url 非空）下存在。链接形如
 // <public_url>/_w/<用途>/<id>/<签名>；main 把路径中带 "_w" 段的请求
-// 交给 WebHandler，其余照旧进 webhook。
+// 交给 WebHandler，其余进入 webhook。
 
 // EnsureWebSecret 确保 settings.web_secret 存在（webhook 模式启动时调用）。
 //
-// 不进 settingDefaults：空值的含义是「还没生成」，给默认值会让所有部署
-// 共用同一个密钥。在启动阶段生成而不是首次使用时：并发下两次生成会互相
-// 覆盖，先签出去的链接随之失效。
+// 不进 settingDefaults：空值表示尚未生成，给默认值会让所有部署
+// 共用同一个密钥。在启动阶段生成而非首次使用时生成：并发下两次生成会互相
+// 覆盖，先签发的链接随之失效。
 func EnsureWebSecret(sh *core.Shared) error {
 	if sh.Cache.Snap().Setting("web_secret") != "" {
 		return nil
@@ -44,10 +44,10 @@ func EnsureWebSecret(sh *core.Shared) error {
 }
 
 // webSig 是网页链接的签名：hex(HMAC-SHA256(secret, msg))[:32]。
-// 用途前缀写进 msg（ap: / apv: / v: / vp:），一处的签名拿不到另一处用。
+// 用途前缀写进 msg（ap: / apv: / v: / vp:），一处签名不能用于另一处。
 //
-// 密钥缺失时返回空串：绝不能退化成「用空密钥签名」——那样任何人都能
-// 按公开的格式算出合法签名，顺序枚举 id 读取申诉理由与原文。
+// 密钥缺失时返回空串：不能退化为用空密钥签名，否则任何人都能
+// 按公开格式算出合法签名，顺序枚举 id 读取申诉理由与原文。
 func webSig(sh *core.Shared, msg string) string {
 	secret := sh.Cache.Snap().Setting("web_secret")
 	if secret == "" {
@@ -86,9 +86,9 @@ func logViewPostSig(sh *core.Shared, id, exp int64) string {
 	return webSig(sh, fmt.Sprintf("vp:%d:%d", id, exp))
 }
 
-// webURL 拼出对外链接；网页不可用（没配 public_url 或缺签名密钥）时
-// 返回空串，调用方按「网页不可用」处理。缺密钥时还发链接的话，页面上
-// 的签名校验形同虚设。
+// webURL 拼出对外链接；网页不可用（未配置 public_url 或缺签名密钥）时
+// 返回空串，调用方按网页不可用处理。缺密钥时若仍发链接，
+// 页面上的签名校验将失效。
 func webURL(sh *core.Shared, path string) string {
 	if !WebAvailable(sh) {
 		return ""
@@ -128,7 +128,7 @@ type webRoute struct {
 // parseWebRoute 从请求路径里解析网页路由。
 //
 // 与 TokenFromPath 同一思路：不依赖前缀，路径中任一段为 "_w" 即命中，
-// 反代再套几层子路径都认得出来。形状：.../_w/<kind>/<id>/<sig>
+// 反代再套几层子路径也能识别。形状：.../_w/<kind>/<id>/<sig>
 func parseWebRoute(p string) (webRoute, bool) {
 	segs := strings.Split(strings.Trim(p, "/"), "/")
 	for i, s := range segs {
@@ -167,7 +167,7 @@ func IsWebPagePath(p string) bool {
 
 // WebHandler 处理 _w 下的网页请求。
 //
-// 签名不对、记录不存在一律 404，不区分两者 —— 免得被人按编号扫出
+// 签名不对、记录不存在一律 404，不区分两者，避免被按编号枚举探出
 // 哪些申诉单存在。各页面的实现见 appeal_web.go / adview.go 的对应阶段。
 func WebHandler(sh *core.Shared) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +203,7 @@ func WebHandler(sh *core.Shared) http.Handler {
 func handleAppealPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {
 	ap, ok := loadAppealByID(sh.Store, rt.id)
 	if !ok || !webSigOK(sh, fmt.Sprintf("ap:%d:%d", ap.ID, ap.UserID), rt.sig) {
-		// 签名错与记录不存在不区分，免得被按编号扫
+		// 签名错与记录不存在不区分，避免被按编号枚举探测
 		writeWebJSON(w, http.StatusNotFound, map[string]any{"error": "链接无效或已被替换。"})
 		return
 	}

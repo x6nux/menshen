@@ -13,8 +13,8 @@ import (
 
 const chatAdminTTL = 10 * time.Minute
 
-// isChatAdmin 查此人是否为该群的管理员或群主，结果缓存 10 分钟。
-// 查询失败按「不是管理员」处理：API 故障不得放大权限。
+// IsChatAdmin 查此人是否为该群的管理员或群主，结果缓存 10 分钟。
+// 查询失败按不是管理员处理：API 故障不得放大权限。
 func IsChatAdmin(b *core.Bot, chatID, uid int64) bool {
 	key := fmt.Sprintf("%d:%d", chatID, uid)
 	if admin, ok := cachesOf(b.Shared).chatAdmin.Get(key); ok {
@@ -49,7 +49,7 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 	})
 	if err != nil {
 		// 查无此人（已离群/从未入群）是 TG 的确定回答，按普通成员处理
-		// 即可：结果与查询失败同向（不得放大权限），但不算故障，别刷警告。
+		// 即可：结果与查询失败同向（不得放大权限），但不算故障，不记警告。
 		var apiErr *tg.APIError
 		if errors.As(err, &apiErr) && apiErr.NotFound() {
 			return false, false
@@ -82,7 +82,7 @@ type bioEntry struct {
 //
 // 能不能查到一个人取决于**这个 bot 与他有没有共同会话**：工作 bot 入群、
 // 判过他的消息，查得到；主 bot 按设计不入群，永远查不到。共用一个键会让
-// 主 bot 失败留下的「空」盖掉工作 bot 查得到的结果（反之亦然），所以键里
+// 主 bot 失败留下的空结果盖掉工作 bot 查得到的结果（反之亦然），所以键里
 // 必须带 bot——同一个人的资料，不同 bot 得到的是不同答案。
 func bioCacheKey(b *core.Bot, uid int64) string {
 	return fmt.Sprintf("%d:%d", b.BotID(), uid)
@@ -101,7 +101,7 @@ func ForgetUserInfo(b *core.Bot, uid int64) {
 // 每条群消息多一次 TG 往返，必然撞上速率限制。
 //
 // 昵称与用户名一并缓存：/check <uid> 这类路径没有消息带这些字段，
-// 而「冒用国家领导人」的硬规则要按资料判人（见 leader.go）。
+// 而冒用国家领导人的硬规则要按资料判人（见 leader.go）。
 //
 // 查询失败返回空：与群管理员查询同向，TG 故障不得让判定链路停摆。
 func userInfo(b *core.Bot, uid int64) bioEntry {
@@ -161,8 +161,8 @@ type photoEntry struct {
 
 // userPhotoCount 取此人的头像张数（getUserProfilePhotos）。
 //
-// ok 为假表示这次没查成：调用方必须与「查到 0 张」区分开 —— 把查询
-// 失败当无头像，会在 TG 抖动时给正常用户扣一顶前置号的帽子。失败不
+// ok 为假表示这次没查成：调用方必须与查到 0 张区分开 —— 把查询
+// 失败当无头像，会在 TG 抖动时把正常用户误判为前置号。失败不
 // 缓存，下次候选再查。
 func userPhotoCount(b *core.Bot, uid int64) (int, bool) {
 	if uid <= 0 {

@@ -28,7 +28,7 @@ func TestProfileHandles(t *testing.T) {
 }
 
 // TestResolveLinkKindsAndCache：频道、bot 各自识别；同一个用户名只查一次；
-// 查不到的记成 unknown 并同样缓存——私有群每条消息都重查只是白撞速率限制。
+// 查不到的记成 unknown 并同样缓存——否则每条消息都重查，只会撞上速率限制。
 func TestResolveLinkKindsAndCache(t *testing.T) {
 	// bot 的简介要去公开预览页取，测试里指到一个关着的端口：立刻失败，
 	// 既不访问外网也不拖慢测试。
@@ -91,7 +91,7 @@ func TestMentionedBots(t *testing.T) {
 	}
 }
 
-// TestAdKindLabel：分类值来自模型输出，面板上直接显示 porn_bait 没人看得懂；
+// TestAdKindLabel：分类值来自模型输出，面板上直接显示 porn_bait 不易理解；
 // 表外的值原样显示，不吞信息。
 func TestAdKindLabel(t *testing.T) {
 	for in, want := range map[string]string{
@@ -102,8 +102,8 @@ func TestAdKindLabel(t *testing.T) {
 	}
 }
 
-// TestPromptsCoverNewSignals：新加的画像字段与口径必须写进两级提示词，
-// 光放进 state 模型不会自己建立关联。
+// TestPromptsCoverNewSignals：画像字段与判定口径必须写进两级提示词，
+// 只放进 state 模型不会自行建立关联。
 func TestPromptsCoverNewSignals(t *testing.T) {
 	for name, p := range map[string]string{"so": soInstructions, "llm": llmSystemPrompt} {
 		for _, must := range []string{"bio_links", "porn_bait", "mentioned_bots",
@@ -161,8 +161,8 @@ func TestBuildStateCarriesNewFields(t *testing.T) {
 	}
 }
 
-// TestMain 把「bot 简介」的抓取地址指到一个关着的端口：单元测试不该访问
-// 外网，漏配的测试会立刻失败而不是挂 5 秒；需要真实预览页的测试自己覆盖
+// TestMain 把 bot 简介的抓取地址指到一个关着的端口：单元测试不访问
+// 外网，漏配的测试会立刻失败而不是挂 5 秒；需要真实预览页的测试自行覆盖
 // 成 httptest 地址（见 TestResolveLinkBotAbout）。
 func TestMain(m *testing.M) {
 	old := botAboutURL

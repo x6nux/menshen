@@ -12,7 +12,7 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestRunAdDigestSingleFlight：面板「立即重新总结」每次点击都会起一轮，
+// TestRunAdDigestSingleFlight：面板的立即重新总结每次点击都会起一轮，
 // 重复点击/定时任务撞上时不得并发跑两轮（会双倍调大模型并竞态写摘要与游标）。
 func TestRunAdDigestSingleFlight(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)

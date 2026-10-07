@@ -9,10 +9,10 @@ import (
 // ---- 生效群配置（bot_chats）的写操作 ----
 //
 // TG 面板与 Mini App 共用这一份：校验与默认值只能有一处，否则两个界面
-// 迟早各长出一套规则（主 bot 加群的拦截就曾经只有一边有）。
+// 迟早各长出一套规则。
 
-// AddChat 把一个群加到某个 bot 名下。新群默认**演练**：判定照跑但不动群内，
-// 观察几天确认没有误伤再切正式。已存在时只补标题（空标题不覆盖已有的）。
+// AddChat 把一个群加到某个 bot 名下。新群默认**演练**：判定照常执行但
+// 不作用于群内，确认无误伤后再切正式。已存在时只补标题（空标题不覆盖已有）。
 func (sh *Shared) AddChat(botID, chatID int64, title string) error {
 	if chatID == 0 {
 		return Bad("chat_id 无效")
@@ -42,7 +42,7 @@ func (sh *Shared) RemoveChat(botID, chatID int64) error {
 }
 
 // ChatPatch 是群配置的部分更新：nil 字段不动（false / 0 都是合法值，
-// 不能拿零值当「没传」）。
+// 不能拿零值当没传）。
 type ChatPatch struct {
 	Enabled, Dryrun, GroupAlert *bool
 	Punish                      *int64 // -1 跟随 bot 设置 / 0 禁言 / 1 封禁

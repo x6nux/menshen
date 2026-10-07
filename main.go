@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 	// 时区名解析（tz_name）要查 IANA 数据库；静态编译（CGO_ENABLED=0）
-	// 的二进制不保证宿主机装了 tzdata，把数据库嵌进二进制里一劳永逸。
+	// 的二进制不保证宿主机装了 tzdata，把数据库嵌进二进制里即可不依赖它。
 	_ "time/tzdata"
 
 	"menshen/internal/antiad"
@@ -72,8 +72,8 @@ func main() {
 	stop := make(chan struct{})
 	reg := core.NewRegistry(sh, stop, dispatch)
 
-	// 配置里那个 bot 自动注册给第一个主管理员，省掉「部署完还要先去
-	// 面板里把自己加一遍」这一步。其余 bot 由管理员在面板上接入。
+	// 配置里那个 bot 自动注册给第一个主管理员，无需先在面板里手动添加。
+	// 其余 bot 由管理员在面板上接入。
 	if cfg.BotToken != "" {
 		if err := ensureMainBot(cfg, sh, reg); err != nil {
 			slog.Error("配置里的 bot 无法接入", "err", err)
@@ -111,7 +111,7 @@ func main() {
 
 // installLogging 把 slog 默认 logger 接到三路输出上：标准输出、与数据库
 // 同目录的滚动日志文件（data.db → data.log，备份 .1/.2/…）与进程内环形
-// 缓冲（网页版「运行日志」页读它）。控制台与文件保持 INFO，缓冲从 DEBUG
+// 缓冲（网页版运行日志页读它）。控制台与文件保持 INFO，缓冲从 DEBUG
 // 起采 —— 网页上能看到两边都没有的调试上下文。装完之后启动流程的日志
 // （迁移、注册 webhook、后台任务）三处都有。
 //
@@ -135,9 +135,9 @@ func installLogging(buf *logbuf.Buffer, dbPath string,
 // 模式下该字段可为空，配置一改就会漂移。
 //
 // 顺带做两件纠偏：
-//   - 配置换过 bot 时，旧主 bot 的标记摘掉（它降级为普通工作 bot）
-//   - 主 bot 名下遗留的群配置删掉：升级前它可能在群里判过，新语义下
-//     留着只会让面板显示与行为对不上
+//   - 除配置里的 bot 外，其余 bot 的主 bot 标记一律摘掉
+//   - 删掉主 bot 名下的群配置：主 bot 不入群，留着会让面板显示
+//     与行为对不上
 func ensureMainBot(cfg *config.Config, sh *core.Shared, reg *core.Registry) error {
 	snap := sh.Cache.Snap()
 	rec, ok := snap.BotTokens[cfg.BotToken]
@@ -172,11 +172,10 @@ func ensureMainBot(cfg *config.Config, sh *core.Shared, reg *core.Registry) erro
 	return sh.Cache.Reload()
 }
 
-// migrateLegacyChats 把早先那个全局的 antiad_chats 列表搬进 bot_chats。
+// migrateLegacyChats 把全局 antiad_chats 列表搬进 bot_chats。
 //
-// 只在「旧列表非空且新表为空」时跑一次，把这些群挂到最早接入的那个 bot
-// 名下。不做这一步的话，从单租户版本升上来的部署会在重启后突然对所有群
-// 失去防护，而面板上看不出任何异常。
+// 仅在旧列表非空且新表为空时执行一次，把这些群挂到最早接入的那个 bot
+// 名下，避免升级后群配置丢失。
 func migrateLegacyChats(sh *core.Shared, reg *core.Registry) {
 	snap := sh.Cache.Snap()
 	legacy := snap.SettingInt64List("antiad_chats")
@@ -218,7 +217,7 @@ func migrateLegacyChats(sh *core.Shared, reg *core.Registry) {
 // bindLegacyModels 把旧格式（无上游前缀）模型绑到唯一的上游名下。
 //
 // 模型名带前缀才能区分多上游。只有一个启用的上游时绑定是无歧义的，
-// 启动时顺手做完；有多个上游时不动数据，交给面板上的提示。
+// 启动时直接完成；有多个上游时不动数据，交给面板上的提示。
 func bindLegacyModels(sh *core.Shared) {
 	only := ""
 	for _, u := range sh.Cache.Snap().Upstreams {
@@ -348,12 +347,12 @@ func startPolling(cfg *config.Config, reg *core.Registry, stop <-chan struct{}) 
 		os.Exit(1)
 	}
 	// 先撤 webhook：getUpdates 与 webhook 互斥，库里还留着上一次的
-	// webhook 时 getUpdates 会一直拿 409，而表现为「一条消息都收不到」。
+	// webhook 时 getUpdates 会一直拿 409，表现为一条消息都收不到。
 	b.DropWebhook()
 	b.RegisterCommands()
 	go b.RunPolling(stop)
 
 	// 表里其余 bot 没有实例（loadAll 已经跳过并警告过），面板上也会
-	// 标出「没有在运行」。这里不再重复。
+	// 标出没有在运行。这里不再重复。
 	slog.Info("长轮询模式启动", "version", version, "tg_api", cfg.TGAPIBase)
 }

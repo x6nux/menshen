@@ -1,4 +1,4 @@
-// 分段控件（计划 3.2）：横向胶囊 chips，受控；用于记录[判定|申诉]、名单分段。
+// 分段控件：横向胶囊 chips，受控；用于记录[判定|申诉]、名单分段。
 import { ToggleButton, ToggleButtonGroup } from '@mui/material'
 import type { SxProps, Theme } from '@mui/material/styles'
 import type { ReactNode } from 'react'
@@ -42,7 +42,7 @@ export function Segmented({ value, onChange, options, ariaLabel, sx }: Segmented
       exclusive
       value={value}
       onChange={(_event, next: string | null) => {
-        // 取消选择（再点当前项）时保持原值，避免出现「没有分段」的空态。
+        // 取消选择（再点当前项）时保持原值，避免出现没有分段的空态。
         if (next !== null) onChange(next)
       }}
       aria-label={ariaLabel}

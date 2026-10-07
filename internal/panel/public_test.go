@@ -12,8 +12,8 @@ import (
 // TestPublicShellHandler：公开网页壳带统一 CSP（放行 Turnstile、无内联
 // nonce），产物存在时返回 public.html。
 //
-// CSP 少了收尾引号这类错误会让整个 script-src 静默失效（历史真实事故），
-// 所以这里逐段钉住关键指令。
+// CSP 少了收尾引号这类错误会让整个 script-src 静默失效，所以这里逐段
+// 校验关键指令。
 func TestPublicShellHandler(t *testing.T) {
 	base := publicShellCSP(nil)
 	for _, want := range []string{

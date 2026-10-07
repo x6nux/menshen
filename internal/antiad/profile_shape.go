@@ -15,7 +15,7 @@ import (
 // ---- 资料形状哈希（同模板批量账号跨账号复用，§10.3） ----
 //
 // 批量号常常同模板：昵称、简介是同一套文案，只换邀请链接、号码或名字。
-// 第一个账号被判广告后把资料的「形状」学下来，后面的同形状账号零 AI
+// 第一个账号被判广告后把资料的形状学下来，后面的同形状账号零 AI
 // 直接禁言，模板的变化不会白白再烧一遍判定。
 
 // 形状里的占位符：链接/号码/@用户名。用私用区单字符中转，最后再换成
@@ -47,12 +47,12 @@ var shapeStrip = strings.NewReplacer(
 	"\ufeff", "", // BOM
 )
 
-// profileShape 把资料归一化成「形状」：小写、去零宽与标点、压缩空白，
+// profileShape 把资料归一化成形状：小写、去零宽与标点、压缩空白，
 // 链接→[链接]、@用户名→[号]、数字段→[数]。
 //
-// 只取 bio：昵称是低熵文本（Robert Williamson/John Smith 这类同名者众），
-// 拿它做形状会显著扩大零 AI 误伤面；号商模板都在 bio。bio 为空 → 空串，
-// 不参与复用。有效字母不足 4 个或只剩占位符同样返回空串（没有区分度）。
+// 只取 bio：昵称是低熵文本（同名者众），拿它做形状会显著扩大零 AI 误伤面；
+// 号商模板都在 bio。bio 为空 → 空串，不参与复用。有效字母不足 4 个或只剩
+// 占位符同样返回空串（没有区分度）。
 func profileShape(p senderProfile) string {
 	src := strings.TrimSpace(p.Bio)
 	if src == "" {
@@ -89,8 +89,8 @@ func profileShape(p senderProfile) string {
 		return ""
 	}
 	out := strings.TrimSpace(b.String())
-	// 占位符两侧的空白并入占位符：「洗资 https://…」与「洗资https://…」
-	// 是同一模板，不该因为一个空格分裂成两个形状。
+	// 占位符两侧的空白并入占位符：否则同一模板会因一个空格
+	// 分裂成两个形状。
 	for _, m := range []string{string(shapeLinkMark), string(shapeAtMark),
 		string(shapeDigitMark)} {
 		out = strings.ReplaceAll(out, " "+m, m)
@@ -105,11 +105,11 @@ func profileShape(p senderProfile) string {
 // learnableShape 返回一条**值得学习**的资料形状：只有 bio 自身呈现了可疑
 // 特征（链接、联系方式、招揽话术）时才返回非空。
 //
-// 为什么加这道门：profileShape 只看 bio，但一条进群限制可能并非因 bio 而
-// 成立 —— 前置号看的是头像与随机用户名，资料必封规则可能命中昵称，AI 也
-// 可能因用户名判广告。此时把那段普通简介（「热爱生活，喜欢旅行」）学成
-// 模板，零 AI 的 shapeMute 就会误伤用同一句简介的正常人，而形状表是全
-// 平台共享的。宁可少学（漏掉检测），不可误学（误伤面被放大）。
+// profileShape 只看 bio，但一条进群限制可能并非因 bio 而成立 —— 前置号
+// 看的是头像与随机用户名，资料必封规则可能命中昵称，AI 也可能因用户名判
+// 广告。此时把那段普通简介学成模板，零 AI 的 shapeMute 就会误伤用同一句
+// 简介的正常人，而形状表是全平台共享的。误学（放大误伤面）的代价高于
+// 少学（漏检）。
 func learnableShape(p senderProfile) string {
 	bio := strings.ToLower(p.Bio)
 	if strings.TrimSpace(bio) == "" {

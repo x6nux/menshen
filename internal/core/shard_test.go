@@ -11,7 +11,7 @@ import (
 
 const shardChat int64 = -100
 
-// twoBots 建同一 owner 名下、同在 shardChat 的两个 bot，并让两者都「收到过」
+// twoBots 建同一 owner 名下、同在 shardChat 的两个 bot，并让两者都收到过
 // 这个群的更新——没收到过的 bot 不参与分担（见 TestClaimSenderSkipsUnseenBot）。
 func twoBots(t *testing.T, now time.Time) (a, b *core.Bot, reg *core.Registry) {
 	t.Helper()

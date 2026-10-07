@@ -85,7 +85,7 @@ func (e *miniTestEnv) adminInit() string {
 		"auth_date": strconv.FormatInt(e.now, 10), "user": `{"id":777,"username":"tester"}`})
 }
 
-// TestValidateMiniInitData 守的是 Mini App 的鉴权：签名不对、过期、
+// TestValidateMiniInitData 验证 Mini App 的鉴权：签名不对、过期、
 // 没有用户都不放行。
 func TestValidateMiniInitData(t *testing.T) {
 	const token = testutil.TestToken
@@ -190,7 +190,7 @@ func TestMiniSetPermissions(t *testing.T) {
 }
 
 // TestMiniStateGlobalDefaults：跟随全局的配置项要在输入框占位里显示
-// 「30(全局)」这样的全局默认值。次级管理员拿不到完整全局设置（global），
+// 形如 数值(全局) 的全局默认值。次级管理员拿不到完整全局设置（global），
 // 但 antiad/both 组的全局默认与两个模型列表键必须单独下发，否则他们的
 // 机器人页画不出占位。主管理员同样要有，前端统一从这里取。
 func TestMiniStateGlobalDefaults(t *testing.T) {
@@ -343,9 +343,8 @@ func TestClampPage(t *testing.T) {
 	}
 }
 
-// TestMiniBotAntiBanSettingPersists：bot 级「禁言改为封禁」的写入必须落库、
-// 进快照、并让该 bot 名下跟随的群立刻改为永久封禁。
-// 用户报过「设置了永久封禁却还是按默认时长禁言」，先守住这条链路。
+// TestMiniBotAntiBanSettingPersists：bot 级禁言改为封禁的写入必须落库、
+// 进快照，并让该 bot 名下跟随的群立刻改为永久封禁。
 func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -367,7 +366,7 @@ func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 		t.Error("开启后跟随 bot 的群应改为永久封禁")
 	}
 
-	// 状态里要能拿到全局默认，界面才能把「跟随」解析成实际处罚。
+	// 状态里要能拿到全局默认，界面才能把跟随解析成实际处罚。
 	w = miniDo(t, env.h, testutil.TestToken, init, testutil.TestBotID, "state", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("state 应 200，得到 %d", w.Code)
@@ -384,8 +383,7 @@ func TestMiniBotAntiBanSettingPersists(t *testing.T) {
 	}
 }
 
-// TestMiniGlobalDefaultsAndModels：Mini App 要能改「全局默认参数」与
-// 「默认模型」。此前只能设 per-bot 覆盖，各 bot 页里的「全局 XX」没地方改。
+// TestMiniGlobalDefaultsAndModels：Mini App 要能改全局默认参数与默认模型。
 func TestMiniGlobalDefaultsAndModels(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -511,7 +509,7 @@ func TestMiniStateSections(t *testing.T) {
 
 // TestMiniStateTZAndSettingsSet：展示时区要给所有管理员下发（次管没有 global，
 // 前端全站时间格式化依赖顶层 tz_name）；settings_set 只给主管理员，且只包含
-// 显式写过的键——快照里铺的代码默认值不算「已设置」。
+// 显式写过的键——快照里铺的代码默认值不算已设置。
 func TestMiniStateTZAndSettingsSet(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -569,7 +567,7 @@ func TestMiniStateTZAndSettingsSet(t *testing.T) {
 	}
 }
 
-// TestMiniAppProfileOKListAndRevoke：复判给的「资料放行」要能在 App 里
+// TestMiniAppProfileOKListAndRevoke：复判给的资料放行要能在 App 里
 // 看到并撤销（它只免资料这一路，不是整号放行，所以单列一张卡）。
 func TestMiniAppProfileOKListAndRevoke(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
@@ -694,7 +692,7 @@ func seedMiniLog(t *testing.T, b *core.Bot, uid int64, text, action string) int6
 	return id
 }
 
-// TestMiniAppBackfillAction：群组卡片上的「补全历史入群时间」要能手动触发
+// TestMiniAppBackfillAction：群组卡片上的补全历史入群时间要能手动触发
 // （绕过自动触发的 24 小时冷却），并把结果交给私聊通知。
 func TestMiniAppBackfillAction(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, nil)
@@ -741,9 +739,8 @@ func TestMiniAppBackfillAction(t *testing.T) {
 	}
 }
 
-// TestMiniUserWithoutBodyBotID：用户页不带 bot_id 时要用 X-Bot-Id 头兜底。
-// 以前这里读的是 w.Header().Get("")（永远空串），botID 一直是 0 —— 所有人
-// （包括主管理员）都会被判「无权查看该 bot 的数据」。
+// TestMiniUserWithoutBodyBotID：用户页不带 bot_id 时要用 X-Bot-Id 头兜底，
+// 否则 botID 为 0，所有人（包括主管理员）都会被判无权查看该 bot 的数据。
 func TestMiniUserWithoutBodyBotID(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -765,12 +762,9 @@ func TestMiniUserWithoutBodyBotID(t *testing.T) {
 	}
 }
 
-// TestMiniAppTodoCounts：工作台待办（state.todo）的口径——未结申诉按权限
-// 与「未结」状态集合统计，演练群与停用 bot 按可见范围统计；申诉结案后
-// 未结计数要跟着减少。
 // TestMiniUserStoredNameFallback：主管理员看用户页时 scopeBot 是主 bot，而主
 // bot 不入群、getChat 永远查不到这个人。昵称/用户名必须回落到判定流水里留存的
-// user_name（判定当时记下的），而不是一直显示「查不到」。
+// user_name（判定当时记下的），而不是一直显示查不到。
 func TestMiniUserStoredNameFallback(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -810,7 +804,7 @@ func TestMiniUserUsesBotWithCommonChat(t *testing.T) {
 	if err := sh.Cache.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	// 这个人被工作 bot 判过；流水里留底的是旧名字。
+	// 这个人被工作 bot 判过；流水里留底的是当时记录的名字。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
 		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
 		 action,reason,created_at,bot_id,user_name)
@@ -836,6 +830,9 @@ func TestMiniUserUsesBotWithCommonChat(t *testing.T) {
 	}
 }
 
+// TestMiniAppTodoCounts：工作台待办（state.todo）的口径——未结申诉按权限
+// 与未结状态集合统计，演练群与停用 bot 按可见范围统计；申诉结案后
+// 未结计数要跟着减少。
 func TestMiniAppTodoCounts(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -940,7 +937,7 @@ func TestMiniAppTodoCounts(t *testing.T) {
 	}
 }
 
-// TestMiniAppLogsTotal：记录列表要给出「当前筛选下的总数」，供前端无限
+// TestMiniAppLogsTotal：记录列表要给出当前筛选下的总数，供前端无限
 // 滚动判断还有没有下一页；total 的口径必须与列表的 WHERE 一致，且不随
 // 分页变化。
 func TestMiniAppLogsTotal(t *testing.T) {
@@ -1014,7 +1011,7 @@ func TestMiniAppLogsTotal(t *testing.T) {
 }
 
 // TestMiniAppChatBulkUpdate：群组批量更新——一个请求只碰一个 bot 的群
-// （bot_id 必填，防跨 bot 误伤同 chat_id 的行），fields 里没出现的键不改，
+// （bot_id 必填，防跨 bot 误改同 chat_id 的行），fields 里没出现的键不改，
 // 上限 100 个。
 func TestMiniAppChatBulkUpdate(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
@@ -1083,7 +1080,7 @@ func TestMiniAppChatBulkUpdate(t *testing.T) {
 	if out["note"] != "已更新 2 个群" {
 		t.Errorf("成功提示应为「已更新 2 个群」，得到 %v", out["note"])
 	}
-	// 「没出现的键不改」：只带 dryrun 时 enabled/punish 保持原样。
+	// 没出现的键不改：只带 dryrun 时 enabled/punish 保持原样。
 	if c := conf(testutil.TestBotID, -100); !c.Dryrun || !c.Enabled || c.Punish != 0 {
 		t.Errorf("主 bot 的 -100 应只改 dryrun，得到 %+v", c)
 	}
@@ -1147,8 +1144,8 @@ func TestMiniAppChatBulkUpdate(t *testing.T) {
 }
 
 // TestMiniAppServesEmbeddedApp：/miniapp 由嵌入的前端产物托管。
-// 已 npm --prefix web run build 时验证真实产物；产物缺失（全新克隆，webdist
-// 里只有 .gitkeep）时验证 503 占位页（不跳过整个测试，两条路径都要有回归）。
+// 有真实产物时验证产物；产物缺失时验证 503 占位页
+// （不跳过整个测试，两条路径都要有回归）。
 func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	env := newMiniEnv(t)
 	get := func(path string) *httptest.ResponseRecorder {
@@ -1165,8 +1162,7 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 
 	dist, ok := miniAppDistFS()
 	if !ok {
-		// 无产物（untagged 构建，或带 tag 但没跑 npm run build）：
-		// 入口页给 503 构建提示，其余前端路由没有页面可回退。
+		// 无产物：入口页给 503 构建提示，其余前端路由没有页面可回退。
 		w := get("/miniapp")
 		if w.Code != http.StatusServiceUnavailable ||
 			!strings.Contains(w.Body.String(), "前端未构建") {
@@ -1188,8 +1184,8 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("入口页应 no-store，得到 %q", got)
 	}
-	// 入口页必须引用自托管的 SDK；漏掉 script 标签时 Telegram 里会永远
-	// 停在引导页（线上踩过一次，这里守住）。
+	// 入口页必须引用自托管的 SDK；漏掉 script 标签时 Telegram 里会一直
+	// 停在引导页。
 	if !strings.Contains(w.Body.String(), `src="/miniapp/telegram-web-app.js"`) {
 		t.Error("入口页应引用自托管的 telegram-web-app.js（/miniapp/telegram-web-app.js）")
 	}
@@ -1237,7 +1233,7 @@ func TestMiniAppServesEmbeddedApp(t *testing.T) {
 }
 
 // TestMiniAppRouteBoundaries：路由规范化、HEAD 与 405 Allow 的边界。
-// 资产相关子用例只在有产物时跑（untagged 或未构建时没有真实资产可指），
+// 资产相关子用例只在有产物时跑（无产物时没有真实资产可指），
 // 页面/方法边界在两条路径下都跑。
 func TestMiniAppRouteBoundaries(t *testing.T) {
 	env := newMiniEnv(t)
@@ -1417,7 +1413,7 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 		t.Errorf("无可用模型的错误文案不对：%q", msg)
 	}
 
-	// 只有停用的模型也算「没有可用模型」。
+	// 只有停用的模型也算没有可用模型。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO models
 		(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
 		VALUES ('t6up/m1',0,0,0,0,0)`); err != nil {
@@ -1468,7 +1464,7 @@ func TestMiniAppUpstreamTest(t *testing.T) {
 		t.Errorf("连通测试不应计入判定链路的失败计数，AIFailStreak=%d", n)
 	}
 
-	// 成功：200 + ok:true + latency_ms + 「上游名/模型ID」文案，且只发一次请求。
+	// 成功：200 + ok:true + latency_ms + 上游名/模型ID 文案，且只发一次请求。
 	hits.Store(0)
 	mode.Store(0)
 	w = call()
@@ -1605,7 +1601,7 @@ func TestMiniUpstreamKinds(t *testing.T) {
 	}
 }
 
-// TestMiniAppUpstreamTestCloudflare：CF 渠道的连通测试走 /ai/run？——
+// TestMiniAppUpstreamTestCloudflare：CF 渠道的连通测试走 /ai/run 路径——
 // 未开 chat 时测主判定（Clef），请求体 model 只带最后一段。
 func TestMiniAppUpstreamTestCloudflare(t *testing.T) {
 	env := newMiniEnv(t)
@@ -1708,7 +1704,7 @@ func TestMiniRulesCRUD(t *testing.T) {
 		return store.AdRuleRec{}, false
 	}
 
-	// 造一条命中该正则的「正常」流水：保存后的自动测试必须把它算成误封。
+	// 造一条命中该正则的正常流水：保存后的自动测试必须把它算成误封。
 	if _, err := sh.Store.Write.Exec(`INSERT INTO antiad_log
 		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
 		 action,reason,created_at,bot_id)
@@ -1772,7 +1768,7 @@ func TestMiniRulesCRUD(t *testing.T) {
 	if msg, _ := decode(w)["error"].(string); !strings.Contains(msg, "全库测试") {
 		t.Errorf("未测过的错误文案应提到全库测试：%q", msg)
 	}
-	// 重跑一次测试（fp 仍为 1），恢复「测过」状态。
+	// 重跑一次测试（fp 仍为 1），恢复已测状态。
 	if w = mainDo(map[string]any{"action": "test", "id": id}); w.Code != http.StatusOK {
 		t.Fatalf("重跑测试应 200，得到 %d：%s", w.Code, w.Body.String())
 	}
@@ -1947,7 +1943,7 @@ func TestMiniRulesCRUD(t *testing.T) {
 }
 
 // TestMiniAppStateRedactsCaptchaSecret：state.global 会发给浏览器，密钥类
-// 设置（captcha_secret / web_secret）绝不能原样下发 —— 「是否已设置」由
+// 设置（captcha_secret / web_secret）绝不能原样下发——是否已设置由
 // settings_set 表达。
 func TestMiniAppStateRedactsCaptchaSecret(t *testing.T) {
 	env := newMiniEnv(t)

@@ -19,11 +19,11 @@ import (
 // ---- 识图：图片与贴纸 ----
 //
 // 可选：配了 antiad_vision_model 才判纯图/贴纸，带配文的图片也识（二维码常
-// 藏在图里、配文只写「看看」）。识图在判定 worker 里做，结果以「［图片］/
-// ［贴纸］」行并进 message.text，两级判定按同一套口径下结论。
+// 藏在图里、配文可能很短）。识图在判定 worker 里做，结果以 `［图片］`/
+// `［贴纸］` 行并进 message.text，两级判定按同一套口径下结论。
 
 const (
-	// visionMaxSide：取不超过它的最大一档，够看清图里的字，又不白花原图的 token。
+	// visionMaxSide：取不超过它的最大一档，够看清图里的字，又不额外消耗原图的 token。
 	visionMaxSide = 1280
 	// visionTTL 是识图结果的缓存时长，按 file_unique_id。
 	visionTTL     = 24 * time.Hour
@@ -41,7 +41,7 @@ const visionPrompt = "你是图片内容识别器，只描述、不下结论。�
 // visual 是一条消息里要识图的那张图。
 type visual struct {
 	fileID, uniqueID string
-	label            string // 进正文的前缀，如「［图片］」「［贴纸］😀 pack」
+	label            string // 进正文的前缀，形如 ［图片］、［贴纸］+ 表情/包名
 }
 
 // visualOf 取消息里要识图的图：图片取不超过 visionMaxSide 的最大一档（都更大时
@@ -69,7 +69,7 @@ func visualOf(m *tg.Message) (visual, bool) {
 	return visual{}, false
 }
 
-// visionOn 报告是否配了识图模型。没配时图片与贴纸照旧不判，零额外开销。
+// visionOn 报告是否配了识图模型。没配时图片与贴纸不判，零额外开销。
 func visionOn(snap *store.Snapshot) bool {
 	return strings.TrimSpace(snap.Setting("antiad_vision_model")) != ""
 }
@@ -158,9 +158,8 @@ func describeVisual(b *core.Bot, snap *store.Snapshot, v visual) (string, vision
 		}
 		desc = oneLine(desc)
 		if desc == "" && thinking != "" {
-			// 推理模型偶发把话全说在思考里、正文一个字没有（线上见过
-			// completion_tokens=55 而 content 为空）。思考同样是模型对
-			// 图片的描述，拿来用，比整条判定失败放行强。
+			// 推理模型偶发把话全说在思考里、正文一个字没有。思考同样是模型
+			// 对图片的描述，可作描述使用，比整条判定失败放行更好。
 			desc = oneLine(thinking)
 			slog.Info("反广告：识图只有思考内容，改用思考当描述", "模型", reply.Model)
 		}

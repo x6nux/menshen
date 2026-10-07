@@ -1,5 +1,5 @@
 // mock 数据：一份最小可用 State + 记录/用户/申诉样例。
-// 字段与 internal/panel/miniapp.go 的响应保持一致（类型来自 api/types.ts）。
+// 字段与后端 miniState 响应对齐（类型来自 api/types.ts）。
 import type {
   AppealDetail,
   AppealRow,
@@ -96,8 +96,8 @@ export const mockState: State = {
   global_defaults: { antiad_mute_minutes: '1440', antiad_ban: '0', antiad_cold: '1' },
   // tz_name 在顶层单独下发（所有管理员都有，见后端 miniState）。
   tz_name: 'Asia/Shanghai',
-  // global 是主管理员的设置全量：生产环境 = 代码默认值（settingDefaults）
-  // 铺底 + settings 表覆盖，所以每个设置项都有值。
+  // global 是主管理员的设置全量：代码默认值（settingDefaults）与 settings
+  // 表覆盖叠加，所以每个设置项都有值。
   global: {
     gban_global: '1',
     tz_name: 'Asia/Shanghai',

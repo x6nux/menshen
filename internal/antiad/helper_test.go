@@ -18,9 +18,9 @@ import (
 
 // dispatch 是本包测试用的 Update 分发函数。
 //
-// 真正的分发住在 main 包（它要同时看见 antiad 与 panel），内部包的测试
-// 够不着，只能复刻与本包相关的那几条分支。私聊与回调分支刻意不接：
-// 它们通向 panel，本包的测试也不该依赖它。
+// 真正的分发位于 main 包（需同时访问 antiad 与 panel），内部包的测试
+// 无法引用，只能复制与本包相关的分支。私聊与回调分支刻意不实现：
+// 它们通向 panel，本包测试不应依赖。
 //
 // 跨层的完整分发由顶层的 flow_test.go 覆盖。
 func dispatch(b *core.Bot, u *tg.Update) {
@@ -99,7 +99,7 @@ func soReply(choice string, conf float64, kind, scope string) string {
 }
 
 // soReplySev 同 soReply，但自定义危害度：高危害不受资历豁免那条要用它区分
-// 「普通广告」与「色情/诈骗这类高危害」。
+// 普通广告与色情/诈骗这类高危害。
 func soReplySev(choice string, conf float64, kind, scope string, sev float64) string {
 	return `{"answers":{"is_ad":{"choice":"` + choice + `","confidence":` +
 		strconv.FormatFloat(conf, 'f', -1, 64) + `},"ad_kind":{"choice":"` + kind +
@@ -109,10 +109,10 @@ func soReplySev(choice string, conf float64, kind, scope string, sev float64) st
 
 // llmReply 造一条大模型（非流式形状）响应。
 //
-// 判广告时带上 evidence：取证词是测试群标题，它一定出现在判定对象的
-// 语料里（见 evidenceCorpus）——不这么做，一致性门会把所有测试结论
-// 降级，测的就不是原本那条链路了。门本身的拦截与改正重试由
-// evidence_gate_test.go 用自造的响应专测。
+// 判广告时带上 evidence：取证词是测试群标题，必然出现在判定对象的
+// 语料里（见 evidenceCorpus）。否则一致性门会把所有测试结论降级，
+// 测试的就不是目标链路。门本身的拦截与改正重试由
+// evidence_gate_test.go 用自造响应专测。
 func llmReply(isAd bool, conf float64, kind, scope string) string {
 	inner, _ := json.Marshal(map[string]any{"is_ad": isAd, "confidence": conf,
 		"kind": kind, "scope": scope, "reason": "测试", "evidence": testEvidence})

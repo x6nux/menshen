@@ -32,8 +32,8 @@ import (
 // 再看此人是不是服务管理员。读写走与面板同一套规则（主管理员全通，
 // 次级管理员只碰自己名下的 bot），上游 / 模型 / 全局设置 / 名单只有主管理员能动。
 //
-// Mini App 只服务 Telegram。浏览器的网页版管理面板走 /admin（见 admin_panel.go），
-// 用会话 cookie 鉴权，不再复用这里的入口与鉴权路径。
+// Mini App 只服务 Telegram；浏览器的网页版管理面板走 /admin（见 admin_panel.go），
+// 用会话 cookie 鉴权，与这里的入口和鉴权路径分开。
 
 const miniInitDataHeader = "X-Tg-Init-Data"
 const miniBotIDHeader = "X-Bot-Id"
@@ -41,22 +41,20 @@ const miniBotIDHeader = "X-Bot-Id"
 // MiniAppHandler 返回 /miniapp 的处理器；由 main 组合进 HTTP 服务。
 //
 // 路由边界（前端是 React 产物，由 go:embed 托管，见 miniapp_embed.go）：
-//   - GET/HEAD  /miniapp           → 前端入口页；产物缺失（没跑 npm run build）时 503 构建提示
+//   - GET/HEAD  /miniapp           → 前端入口页；产物缺失时 503 构建提示
 //   - GET/HEAD  /miniapp/assets/*  → 前端静态资源，仅真实存在的普通文件（目录/缺失 404，禁止列举）
-//   - GET/HEAD  /miniapp/<其他>     → 产物根下的普通文件（如自托管 SDK）；否则 SPA 回退到入口页（无产物则 404）
-//   - POST      /miniapp/api[/…]   → API；其余方法 405，绝不落入 SPA 回退
+//   - GET/HEAD  /miniapp/<其他>     → 产物根下的普通文件；否则 SPA 回退到入口页（无产物则 404）
+//   - POST      /miniapp/api[/…]   → API；其余方法 405，不落入 SPA 回退
 func MiniAppHandler(sh *core.Shared) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Path
-		// 含 .. 的路径一律 404：path.Clean 会把 .. 解析到 assets 之外
-		// （/miniapp/assets/../index.html → /miniapp/index.html），那样它
-		// 就从 SPA 回退拿到入口页了。fs 层同样拒绝这类名字（fs.ValidPath）。
+		// 含 .. 的路径一律 404：path.Clean 会把 .. 解析到 assets 之外，
+		// 从而经 SPA 回退拿到入口页。fs 层同样拒绝这类名字（fs.ValidPath）。
 		if containsDotDot(raw) {
 			http.NotFound(w, r)
 			return
 		}
-		// path.Clean 归一 //、尾斜杠与 . 段：/miniapp//assets/x 与
-		// /miniapp/assets/x、/miniapp/ 与 /miniapp 都是同一路由。
+		// path.Clean 归一重复斜杠、尾斜杠与 . 段，使等价路径落到同一路由。
 		p := path.Clean(raw)
 		switch {
 		case p == "/miniapp":
@@ -86,9 +84,9 @@ func MiniAppHandler(sh *core.Shared) http.Handler {
 			if !allowPageMethod(w, r) {
 				return
 			}
-			// 产物根下的普通文件（自托管的 telegram-web-app.js 等）优先于 SPA
-			// 回退；文件名不带内容哈希，用短缓存。其余路径回退入口页（刷新/
-			// 外链不白屏），没有产物就没有页面可回退。
+			// 产物根下的普通文件优先于 SPA 回退；文件名不带内容哈希，用
+			// 短缓存。其余路径回退入口页（刷新/外链不白屏），没有产物就
+			// 没有页面可回退。
 			if miniAppDistFile(w, r, p, "public, max-age=3600") {
 				return
 			}
@@ -138,8 +136,7 @@ func writeHTML(w http.ResponseWriter, r *http.Request, status int, body string) 
 	}
 }
 
-// miniAppMissingHTML 是产物缺失时的占位页：文案直接给出构建方式，
-// 避免「忘了 npm run build」时只看到一片空白。
+// miniAppMissingHTML 是产物缺失时的占位页，文案直接给出构建方式。
 const miniAppMissingHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -431,9 +428,9 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 
 	stats := miniStats(sh, uid, main)
 
-	// global_defaults 是 antiad/both 组设置与两个模型列表键的全局默认值，
-	// 所有管理员都下发：机器人页要拿它在输入框占位里画「30(全局)」，
-	// 而次级管理员看不到完整全局设置（global），不能指望从那里取。
+	// global_defaults 是 antiad/both 组设置与模型列表键的全局默认值，
+	// 下发给所有管理员：机器人页需要它在输入框占位中显示全局值，
+	// 而次级管理员看不到完整全局设置（global），无法从那里取。
 	defaults := map[string]any{}
 	for _, sp := range settingSpecs {
 		if sp.group == "antiad" || sp.group == "both" {
@@ -455,7 +452,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 	}
 	if main {
 		// global 会发给浏览器：密钥类设置（web_secret / captcha_secret）
-		// 不能原样下发，拷贝一份删掉。「是否已设置」走 settings_set。
+		// 不能原样下发，拷贝一份后删除；是否已设置由 settings_set 反映。
 		g := make(map[string]string, len(snap.Settings))
 		for k, v := range snap.Settings {
 			g[k] = v
@@ -466,8 +463,8 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 		out["digest"] = snap.Setting("antiad_digest")
 		out["digest_fix"] = snap.Setting("antiad_digest_fix")
 		// settings_set 是显式写过的设置键（settings 表里有行的键）。
-		// snap.Settings 里铺了代码默认值，不能用来判断「已设置」；设置页的
-		// 「已设置 N 项」只数这个集合。
+		// snap.Settings 里铺了代码默认值，不能用来判断 `已设置`；设置页的
+		// `已设置 N 项` 只数这个集合。
 		out["settings_set"] = miniSettingsSet(sh)
 	}
 	out["whitelist"] = miniWhitelistRows(sh, uid, main)
@@ -552,7 +549,7 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 }
 
 // miniSettingsSet 返回显式写过的设置键（settings 表里有行的 k）。代码默认值
-// 只铺在快照内存里、不会进表——设置页「已设置 N 项」要的正是这个区别。
+// 只铺在快照内存里、不会进表——设置页 `已设置 N 项` 要的正是这个区别。
 func miniSettingsSet(sh *core.Shared) []string {
 	keys := []string{}
 	rows, err := sh.Store.Read.Query(`SELECT k FROM settings`)
@@ -709,8 +706,8 @@ func miniBot(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]
 			miniErr(w, http.StatusInternalServerError, "注册表不可用")
 			return
 		}
-		// 主 bot 的拦截在 Unregister 里，这里不重复判断：错的人只该看到
-		// 一个「不能移除」，不该从文案差异里读出它是不是主 bot。
+		// 主 bot 的拦截在 Unregister 里，这里不重复判断：无权限者只会看到
+		// 无法移除，不应从文案差异中推断目标是否为主 bot。
 		if err := sh.Reg.Unregister(botID); err != nil {
 			miniErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -760,7 +757,7 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	action := miniStr(body, "action")
 	if action == "bulk_update" {
 		// 批量更新一次只碰一个 bot 的群：bot_id 必填且先于权限检查校验，
-		// 否则主管理员缺 bot_id 时会被当成 0 号 bot 一路放行到「未知操作」。
+		// 否则主管理员缺 bot_id 时会被当成 0 号 bot 一路放行到 `未知操作`。
 		if botID == 0 {
 			miniErr(w, http.StatusBadRequest, "缺少 bot_id")
 			return
@@ -1332,7 +1329,7 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 	case "agent_start":
 		// 启动一轮 AI 规则发现（单飞、后台跑）。失败原因（没有 OpenAI
 		// 兼容上游、已在运行、指定记录不合法等）直接回给前端。
-		// 带 record_id 时进入「指定记录」模式：围绕该条已确认广告写规则，
+		// 带 record_id 时进入指定记录模式：围绕该条已确认广告写规则，
 		// 工具不受限，仍可搜索同类形态。
 		var err error
 		if id := miniInt(body, "record_id"); id > 0 {
@@ -1346,7 +1343,7 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 		}
 		miniOK(w, map[string]any{"ok": true, "agent": antiad.RuleAgentStatus(sh)})
 	case "agent_status":
-		// 冻结契约：T-C 前端按 agent 对象轮询运行态与步骤日志。
+		// 返回的 agent 对象形状固定：前端按它轮询运行态与步骤日志。
 		miniOK(w, map[string]any{"agent": antiad.RuleAgentStatus(sh)})
 	case "agent_stop":
 		miniOK(w, map[string]any{
@@ -1412,7 +1409,7 @@ func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at i
 
 // mainBotID 返回主 bot 的记录号；没配主 bot 时返回 0。
 // 主管理员在 Mini App 里要的是平台级视角（统计与记录不过滤 bot），
-// 拿主 bot 的记录号当作「全局范围」的标记用。
+// 拿主 bot 的记录号当作全局范围的标记用。
 func mainBotID(sh *core.Shared) int64 {
 	for _, rec := range sh.Cache.Snap().Bots {
 		if rec.IsMain {
@@ -1436,9 +1433,7 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64
 	page := clampPage(miniInt(body, "page"))
 	botID := miniInt(body, "bot_id")
 	if botID == 0 {
-		// 前端只在切 bot 时带 body；常规请求靠 X-Bot-Id 头（每个请求都带）。
-		// 以前这里读的是 w.Header().Get("")（永远空），于是所有人都被判
-		// 「无权查看该 bot 的数据」。
+		// 前端只在切 bot 时带 body；常规请求从 X-Bot-Id 头取（每个请求都带）。
 		botID, _ = strconv.ParseInt(r.Header.Get(miniBotIDHeader), 10, 64)
 	}
 	if botID == 0 || !sh.CanManageBot(uid, botID) {
@@ -1459,7 +1454,7 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64
 	d := antiad.LoadUserDossier(sh, scopeBot, target)
 	// 昵称/用户名/简介：挑一个与该用户有共同会话的 bot 现查，查不到再回落到
 	// 流水里留存的 user_name。主管理员这里 scopeBot 是主 bot（平台级视角），
-	// 而主 bot 不入群、查不到任何人——不换 bot 就永远是「查不到」。
+	// 而主 bot 不入群、查不到任何人，不换 bot 则始终查不到。
 	inst, _ := lookupBot(sh, scopeBot)
 	antiad.ResolveUserProfile(sh, &d, inst, scopeBot, target)
 
@@ -1504,8 +1499,8 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
 
 	// 筛选与搜索。默认无筛选（前端会带 verdict=deleted 进来）：
-	// 「已删除」是处置动作名前缀，而不是 verdict——放行/跳过的记录
-	// 也可能带处置，按动作筛才与「消息被删了」这个用户视角一致。
+	// 已删除是处置动作名前缀而非 verdict；放行/跳过的记录也可能带处置，
+	// 按动作筛选才与消息被删除的用户视角一致。
 	condWhere, condArgs := "", []any{}
 	switch miniStr(body, "verdict") {
 	case "deleted":
@@ -1513,8 +1508,8 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	case "ad":
 		condWhere += " AND verdict='ad'"
 	case "clean":
-		// 流水写入的是 'clean'（见 antiad.logAd）；'none' 是旧版遗留值，
-		// 一并认下，免得升级后老记录在筛选里消失。
+		// 流水写入的是 'clean'（见 antiad.logAd）；'none' 也一并匹配，
+		// 避免历史记录在筛选时被排除。
 		condWhere += " AND verdict IN ('clean','none')"
 	case "skipped":
 		condWhere += " AND verdict='skipped'"
@@ -1587,8 +1582,8 @@ func miniLogDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 		miniErr(w, http.StatusNotFound, "记录不存在")
 		return
 	}
-	// 流水正文为空时回查全量留底：老记录（冷判定演练分支曾不带原文）
-	// 与「留底在、流水空」的记录，详情页仍要能看到原文。
+	// 流水正文为空时回查全量留底（group_messages），使留底存在但流水
+	// 为空的记录在详情页仍能看到原文。
 	if text == "" && msgID != 0 {
 		sh.Store.Read.QueryRow(`SELECT text FROM group_messages
 			WHERE chat_id=? AND message_id=?`, chatID, msgID).Scan(&text)
@@ -1656,7 +1651,7 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 			return
 		}
 	case "unmute":
-		// 解封（判定维持）：与 TG 记录卡片的「🔓 解封」同一条路径 ——
+		// 解封（判定维持）：与 TG 记录卡片的 `🔓 解封` 同一条路径 ——
 		// 撤掉生效中的限制并清记录，但不动判定本身。记录行要完整取出来
 		// （ReleaseUser 要按动作决定解封还是解禁言，并在理由里留痕）。
 		full, ok2 := antiad.LoadAdLog(sh.Store, id)
@@ -1698,8 +1693,8 @@ func miniLogact(sh *core.Shared, w http.ResponseWriter, r *http.Request,
 func miniAppeals(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string]any) {
 	page := clampPage(miniInt(body, "page"))
 	clauseWhere, clauseArgs := miniBotsClause(sh, uid, sh.IsMain(uid))
-	// 「未结」筛选放在查询里：只筛已取回的那 20 行的话，更新更早的未结单
-	// 永远不出现在列表里，管理员会漏掉真正要处理的单子。
+	// 未结筛选放在查询里：只筛已取回的那 20 行的话，更新更早的未结单
+	// 永远不出现在列表里，管理员会遗漏真正要处理的单子。
 	if miniStr(body, "filter") == "open" {
 		clauseWhere += " AND status IN (" + store.AppealOpenStatusesSQL + ")"
 	}

@@ -13,17 +13,17 @@ import (
 
 // ---- 私聊全解（/uban）----
 //
-// /uad 是群管理员在一个群里「这次算了」；/uban 是服务管理员在私聊里把一个
-// 人**在自己能管的所有群里**一次放回来：撤联合封禁名单、逐群按真实状态
-// 解封 / 解禁言、清掉处罚记录与进群限制。
+// /uad 是群管理员在一个群里放行一次；/uban 是服务管理员在私聊里把一个人
+// 在自己能管的所有群一次放行：撤联合封禁名单、逐群按真实状态解封 /
+// 解禁言、清掉处罚记录与进群限制。
 //
-// **不加白名单**：清的是「会把人再封回去」的既有记录（名单会在发言/进群时
-// 自动执行，进群限制与未解除的处罚流水会被复查任务重新施加），之后的发言
-// 照常进入判定 —— 再发广告照样处置。
+// 不加白名单：清的是会把人再次封禁的既有记录（名单会在发言/进群时自动
+// 执行，进群限制与未解除的处罚流水会被复查任务重新施加），之后的发言照常
+// 进入判定 —— 再发广告照样处置。
 //
 // 范围按身份分：主管理员 = 全部 bot 的群 + 全局组 + 所有人的专属组；
 // 次级管理员 = 自己名下 bot 的群 + 全局组 + 自己的专属组（与 /uad 的
-// 「主/次管理员连全局组一起解」同口径）。
+// 主/次管理员连全局组一起解同口径）。
 
 const ubanUsage = "用法：<code>/uban &lt;user_id&gt;</code> 或 <code>/uban @用户名</code>" +
 	"（频道填 -100 开头的频道 ID）。\n" +
@@ -43,7 +43,7 @@ type UbanResult struct {
 // 调用方应放在独立 goroutine 上。
 func UbanEverywhere(sh *core.Shared, actor, uid int64) UbanResult {
 	var r UbanResult
-	// 先撤名单：不撤的话人一发言 / 一进群又会被名单禁回去。
+	// 先撤名单：不撤的话人一发言 / 一进群又会被名单禁言。
 	r.Gban = AdminLiftGban(sh, actor, uid)
 
 	snap := sh.Cache.Snap()
@@ -84,13 +84,13 @@ func UbanEverywhere(sh *core.Shared, actor, uid int64) UbanResult {
 // ubanInChat 在一个群里按真实状态解除限制，并清掉这个群里我们名下的记录。
 // 返回 unbanned / unmuted / failed，没被限制时返回空串。
 //
-// 只对确实被限制的人发「权限全开」：对没被禁言的人那等于提权到群默认之上。
+// 只对确实被限制的人发权限全开：对没被禁言的人那等于提权到群默认之上。
 // 解封带 only_if_banned（见 Unban），对没被封的人无副作用。
 func ubanInChat(sh *core.Shared, bots []*core.Bot, chatID, uid int64) string {
-	// 先落「主动解除」标记：chat_member 更新回流有延迟，复查别把它弹回去。
+	// 先落主动解除标记：chat_member 更新回流有延迟，复查别把它弹回去。
 	NoteLifted(sh, chatID, uid)
 	// 未解除的处罚流水也要标掉：人在 TG 侧可能早已能发言（限时到期、被验证
-	// 机器人放开），留着它复查任务会把人再禁回去。进群限制已由 AdminLiftGban
+	// 机器人放开），留着它复查任务会把人再次禁言。进群限制已由 AdminLiftGban
 	// 按同一范围清过。
 	defer func() {
 		for _, b := range bots {
@@ -99,7 +99,7 @@ func ubanInChat(sh *core.Shared, bots []*core.Bot, chatID, uid int64) string {
 	}()
 
 	if uid < 0 {
-		// 频道身份没有成员状态可问，当初是 banChatSenderChat 封的。
+		// 频道身份没有成员状态可问，用 banChatSenderChat 封禁。
 		for _, b := range bots {
 			if ok, _ := Unban(b, chatID, uid); ok {
 				return "unbanned"

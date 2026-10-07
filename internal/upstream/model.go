@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Kind 是渠道类型：决定「怎么和这个上游说话」——端点路径、鉴权头、
+// Kind 是渠道类型：决定与上游通信的方式——端点路径、鉴权头、
 // 请求体与响应信封的形态。supports_chat / supports_systemone 决定该渠道
 // 用在哪条链路上，与 kind 正交。
 type Kind string
@@ -58,7 +58,7 @@ func (k Kind) Label() string {
 }
 
 // ChatOnly 报告该类型能否用于主判定（systemone）。只有 OpenAI Completions
-// 与 Cloudflare 能承载「state + questions」的决策请求，其余都是对话协议，
+// 与 Cloudflare 能承载 state + questions 形式的决策请求，其余都是对话协议，
 // 只能做复判与形态总结。
 func (k Kind) ChatOnly() bool {
 	return k != KindOpenAI && k != KindCloudflare
@@ -95,10 +95,9 @@ type Model struct {
 
 // SplitModelName 把模型名切成（上游名, 模型ID）。
 //
-// 命名规范 <上游名>/<模型ID>：为了区分多个上游，模型名前缀上游名。
-// **按第一个 "/" 切** —— 模型 ID 自身可以带 "/"（OpenRouter 形态
-// openrouter/openai/gpt-4o），所以只能切第一个。
-// 没有前缀（旧格式）时上游名为空串，调用方走「任选可用上游」的旧路径。
+// 命名规范 <上游名>/<模型ID>：为区分多个上游，模型名前缀上游名。
+// **按第一个 "/" 切** —— 模型 ID 自身可以带 "/"，因此只能切第一个。
+// 没有前缀时上游名为空串，调用方走任选可用上游的路径。
 func SplitModelName(name string) (upstreamName, modelID string) {
 	if i := strings.IndexByte(name, '/'); i > 0 && i < len(name)-1 {
 		return name[:i], name[i+1:]
@@ -121,8 +120,8 @@ type Upstream struct {
 	// 老数据与手工构造的测试对象不用显式赋值。
 	Kind Kind
 	// 两个端点各自独立开关。少一个开关就会把请求发给不认这条路径的渠道，
-	// 拿回 404 —— 而 404 在反广告侧只表现为「判定失败 → 放行」，
-	// 功能静默失效，运维完全看不见。
+	// 拿回 404 —— 而 404 在反广告侧只表现为判定失败并放行，功能静默失效，
+	// 不易察觉。
 	SupportsChat      bool
 	SupportsSystemOne bool
 }
@@ -205,7 +204,7 @@ const (
 	EPChat Endpoint = iota
 	// EPSystemOne 是 TypeSafe 的决策端点（jev 系列）。它不是对话协议：
 	// 请求体是 state + questions，响应是带 confidence 的定型答案，且没有流式。
-	// 反广告的主判定就建立在这个「带置信度的结构化答案」上。
+	// 反广告的主判定就建立在这个带置信度的结构化答案上。
 	EPSystemOne
 )
 
@@ -226,9 +225,9 @@ var Paths = map[Endpoint]string{
 	EPSystemOne: "/v1/systemone",
 }
 
-// maxPickWeight 是参与加权选择时单条权重的上限。写入侧校验漏了或老库里
-// 有超大值（手改、脚本导入）时，物化权重的实现会按 weight 重复填充切片，
-// 1e9 就是一次 ~8GB 分配。选择算法本身不物化，这里再钳一道纯属兜底。
+// maxPickWeight 是参与加权选择时单条权重的上限。写入侧校验遗漏或库中存在
+// 超大值时，物化权重的实现会按 weight 重复填充切片，造成超大分配。选择
+// 算法本身不物化，此处再做一次钳制作为兜底。
 const maxPickWeight = 1000
 
 func pickWeight(u *Upstream) int64 {
@@ -245,8 +244,8 @@ func pickWeight(u *Upstream) int64 {
 // Pick 返回候选上游列表，首个为 sticky 选中者，其余按顺序供失败重试。
 // 按 hash(key) 做 sticky，weight 通过区间宽度体现。
 //
-// 不物化加权切片：区间算术等价于「按 weight 重复填充后取模」，但不会因为
-// 一个超大 weight 就分配出天文数字的切片。
+// 不物化加权切片：区间算术等价于按 weight 重复填充后取模，但不会因某个
+// 超大 weight 分配出巨大切片。
 func Pick(all []*Upstream, ep Endpoint, key string) []*Upstream {
 	var pool []*Upstream
 	var total int64
@@ -275,7 +274,7 @@ func Pick(all []*Upstream, ep Endpoint, key string) []*Upstream {
 		}
 	}
 
-	// 从 sticky 起点展开去重，得到「首选 + 其余候选」。
+	// 从 sticky 起点展开去重，得到首选 + 其余候选。
 	out := make([]*Upstream, 0, len(pool))
 	for i := 0; i < len(pool); i++ {
 		out = append(out, pool[(start+i)%len(pool)])

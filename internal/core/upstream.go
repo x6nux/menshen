@@ -13,7 +13,7 @@ import (
 // ValidUpstreamName 校验上游名能否作为模型名前缀。
 //
 // 前缀按第一个 "/" 解析，所以上游名不能含 "/"；含 ":" 会让面板的
-// callback_data 形态变脆，也一并拒绝。长度限制只是防呆。
+// callback_data 形态变复杂，也一并拒绝。长度限制只是防呆。
 func ValidUpstreamName(name string) error {
 	if name == "" {
 		return fmt.Errorf("名称不能为空")
@@ -30,7 +30,7 @@ func ValidUpstreamName(name string) error {
 // RenameUpstream 给上游改名，并连带改写所有引用它的模型名与模型设置。
 //
 // 模型名 <上游名>/<模型ID> 里嵌着上游名：改名不改写引用的话，一批模型
-// 会在一瞬间变成「绑定的上游不存在」——判定链路照跑、只是每次都失败，
+// 会立刻变成绑定的上游不存在 —— 判定链路仍会执行、只是每次都失败，
 // 而面板上一切正常。
 func (sh *Shared) RenameUpstream(id int64, newName string) error {
 	if err := ValidUpstreamName(newName); err != nil {
@@ -81,7 +81,7 @@ func (sh *Shared) RenameUpstream(id int64, newName string) error {
 	return sh.Cache.Reload()
 }
 
-// renameModelName 把模型名里的 old 前缀改成 new；不属于该上游的原样返回。
+// renameModelName 把模型名里的 old 前缀替换为 new；不属于该上游的原样返回。
 func renameModelName(name, old, newName string) string {
 	up, id := upstream.SplitModelName(name)
 	if up == old {
@@ -101,7 +101,7 @@ func renameModelRefs(tx *sql.Tx, old, newName string) error {
 // BindLegacyModels 把所有没有上游前缀的旧格式模型绑到指定上游名下，
 // 并连带改写设置与 bot 覆盖里的引用。返回改写的模型数。
 //
-// 只在「恰好一个上游」时由启动流程调用：无从推断该绑谁时不动数据，
+// 只在恰好一个上游时由启动流程调用：无从推断该绑谁时不动数据，
 // 留给面板上的提示让管理员自己决定。
 func (sh *Shared) BindLegacyModels(upstreamName string) (int, error) {
 	if err := ValidUpstreamName(upstreamName); err != nil {

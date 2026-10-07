@@ -142,7 +142,7 @@ func TestPrewarmCandidate(t *testing.T) {
 		t.Error("bot 消息不该命中")
 	}
 
-	// 开关关闭：一律不圈。
+	// 开关关闭：一律不选中。
 	b2, _ := testutil.NewTestBot(t, 2)
 	testutil.EnableAntiad(t, b2, -100)
 	if prewarmCandidate(b2, b2.Cache.Snap(), gm, msg("哈喽"), false) {
@@ -150,7 +150,7 @@ func TestPrewarmCandidate(t *testing.T) {
 	}
 }
 
-// setupPrewarm 建好群、开关与假上游，并造一条「新成员首条招呼」。
+// setupPrewarm 建好群、开关与假上游，并造一条新成员首条招呼。
 func setupPrewarm(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeTG, int64, int64) {
 	t.Helper()
 	b, _ := testutil.NewTestBot(t, 1)
@@ -201,7 +201,7 @@ func TestPrewarmHitMutes(t *testing.T) {
 	if action != actionPrewarmMuted {
 		t.Fatalf("action = %q，期望 %q", action, actionPrewarmMuted)
 	}
-	// 流水要挂被删招呼的消息号，申诉页的留底才能把它标成「被拦」。
+	// 流水要挂被删招呼的消息号，申诉页的留底才能把它标成`被拦`。
 	var msgID int64
 	if err := b.Store.Read.QueryRow(`SELECT message_id FROM antiad_log
 		WHERE chat_id=? AND user_id=? AND action=? ORDER BY id DESC LIMIT 1`,
@@ -214,7 +214,7 @@ func TestPrewarmHitMutes(t *testing.T) {
 }
 
 // 已在进群类禁言中的成员再发首条招呼：不重复禁言、不删招呼、不改 kind
-// （与 Layer 2 的判重对称，也堵住「冷判定先禁、招呼后到」的竞态）。
+// （与 Layer 2 的判重对称，也堵住冷判定先禁、招呼后到的竞态）。
 func TestPrewarmJudgeSkipsExistingJoinMute(t *testing.T) {
 	b, fake, uid, chat := setupPrewarm(t,
 		soReply("ad", 0.96, "promo", "account"),
@@ -408,7 +408,7 @@ func TestPrewarmSystemoneDownUsesLLM(t *testing.T) {
 	}
 }
 
-// 两级判定都失败：回落普通消息判定（也失败则按既有「判定失败放行」）。
+// 两级判定都失败：回落普通消息判定（也失败则按既有判定失败放行）。
 func TestPrewarmAIErrorFallsBackToMessageJudge(t *testing.T) {
 	b, _, uid, chat := setupPrewarm(t, "", "") // 未配模型：两条路都会失败
 	sendPrewarmMessage(t, b, uid, chat)
@@ -566,7 +566,7 @@ func TestUserPhotoCount(t *testing.T) {
 
 // setupPrewarmSweep 用真 Registry 起装：探测以 sh.Reg 遍历 bot，普通
 // NewTestBot 没有 Registry，整轮会被 nil 守卫跳过。返回的计数器用来
-// 断言「哪些路径一个 AI 都没花」。
+// 断言哪些路径一次 AI 都没调用。
 func setupPrewarmSweep(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeTG, int64,
 	*atomic.Int32, *atomic.Int32) {
 	t.Helper()
@@ -581,7 +581,7 @@ func setupPrewarmSweep(t *testing.T, so, llm string) (*core.Bot, *testutil.FakeT
 }
 
 // runPrewarmProbes 反复跑低优先级探测直到没有到期候选（每次最多处理
-// 一个），等价于旧测试里的「跑一轮 sweep + 等判定跑空」。
+// 一个）。
 func runPrewarmProbes(t *testing.T, sh *core.Shared) {
 	t.Helper()
 	for i := 0; i < 10000; i++ {
@@ -970,7 +970,7 @@ func TestPrewarmSweepSelectableAfterDue(t *testing.T) {
 	}
 }
 
-// 判定失败保留旧指纹：一次上游抖动不该把「化妆」当成已消费，下一档
+// 判定失败保留旧指纹：一次上游抖动不该把这次资料变化当成已消费，下一档
 // 到期还会重试；失败时冷却记录已清掉，重试不会被 10 分钟冷却挡住。
 func TestPrewarmSweepJudgeErrorKeepsHashAndRetries(t *testing.T) {
 	b, fake, chat, _, _ := setupPrewarmSweep(t, "", "") // 未配可用的 AI
@@ -1072,7 +1072,7 @@ func TestPrewarmSweepMuteFailureKeepsHashAndRetries(t *testing.T) {
 }
 
 // AI 冷却：10 分钟内资料再变也不判、不覆盖指纹，只把 next_at 推到冷却
-// 结束；冷却到点后仍会判，不吞掉未判的化妆。
+// 结束；冷却到点后仍会判，未判的资料变化不会被跳过。
 func TestPrewarmSweepAICooldown(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
 		soReply("clean", 0.95, "none", "message"), "")
@@ -1260,14 +1260,14 @@ func TestPrewarmSweepFirstSightSuspiciousJudges(t *testing.T) {
 	}
 }
 
-// 回归：昵称-only 的化妆（bio 仍为空、指纹已变）也要判。旧实现在
-// bio=="" 时直接跳过，这类「进门后改名挂广告」的号会永远漏掉。
+// 昵称变化（bio 仍为空、指纹已变）也要判：bio 为空不是跳过的理由，
+// 否则进门后改名挂广告的号不会被判。
 func TestPrewarmSweepNicknameOnlyChangeJudges(t *testing.T) {
 	b, fake, chat, soN, _ := setupPrewarmSweep(t,
 		soReply("ad", 0.96, "promo", "account"),
 		llmReply(true, 0.95, "promo", "account"))
 	addSweepMember(t, b, chat, 643, 25*3600, 0)
-	// 上次查过的是干净资料；现在昵称变成广告，简介仍为空。
+	// 上次查过的是干净资料；本次昵称变成广告，简介仍为空。
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 643, now-25*3600, now-1,
 		profileHash(senderProfile{FirstName: "Robert Williamson"}))
@@ -1292,7 +1292,7 @@ func TestPrewarmSweepNicknameOnlyChangeJudges(t *testing.T) {
 	}
 }
 
-// 资料已被复判放行且没改过：跳过，不重复吃同一个结论。
+// 资料已被复判放行且没改过：跳过，不重复判定。
 func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
 		soReply("ad", 0.96, "promo", "account"),
@@ -1300,7 +1300,7 @@ func TestPrewarmSweepSkipsAllowedProfile(t *testing.T) {
 	addSweepMember(t, b, chat, 608, 25*3600, 0)
 	bio := "免押小额洗资：https://t.me/+abcdef"
 	fakeSweepProfiles(t, fake, map[int64]sweepProfile{608: {bio: bio}})
-	// 预置一份旧指纹：本次资料算「变过」，直接进判定流程，专测
+	// 预置一份旧指纹：本次资料视为已变化，直接进判定流程，专测
 	// ProfileAllowed 这道门（首查路径另由 TestPrewarmSweepFirstSight* 覆盖）。
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 608, now-25*3600, now-1,
@@ -1358,7 +1358,7 @@ func TestPrewarmSweepCleanLogsJoinChecked(t *testing.T) {
 		soReply("clean", 0.9, "none", "message"),
 		llmReply(false, 0.9, "none", "message"))
 	addSweepMember(t, b, chat, 610, 25*3600, 0)
-	// 预置旧指纹（资料变过）→ 走冷判定；首查干净资料现在是零 AI 路径，
+	// 预置旧指纹（资料已变）→ 走冷判定；首查干净资料是零 AI 路径，
 	// 由 TestPrewarmSweepFirstSightCleanNoAI 覆盖。
 	now := time.Now().Unix()
 	setSweepSchedule(t, b, chat, 610, now-25*3600, now-1,
@@ -1540,8 +1540,9 @@ func TestPrewarmSweepQueueHighWater(t *testing.T) {
 	// 只有 defer 的 close 才让计数回落。
 
 	runPrewarmProbes(t, b.Shared)
-	// 直接盯计数：若在满水位上还提交了复查，AdBusy 会变成 257 —— 所有
-	// worker 都卡在 <-release 上，没有任务能结束把计数降回去。
+	// 直接盯计数：若在满水位上还提交了复查，AdBusy 会超过
+	// prewarmQueueHighWater —— 所有 worker 都卡在 <-release 上，没有任务
+	// 能结束把计数降回去。
 	if got := b.AdBusy(); got != prewarmQueueHighWater {
 		t.Fatalf("队列积压时不该再提交复查：AdBusy = %d，期望 %d",
 			got, prewarmQueueHighWater)
@@ -1578,7 +1579,7 @@ func TestPrewarmSweepBelowLineNote(t *testing.T) {
 }
 
 // 资料拉取全空不算首查完成：不落指纹、不花 AI，只推 next_at；恢复后
-// 同一份广告资料会被判并禁言（防线上 429 风暴把广告永久吞掉）。
+// 同一份广告资料会被判并禁言（避免上游限流时把广告资料长期跳过）。
 func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
 		soReply("ad", 0.96, "promo", "account"),
@@ -1620,10 +1621,9 @@ func TestPrewarmSweepEmptyFetchRetriesWithoutHash(t *testing.T) {
 }
 
 // 人已离群、TG 直接回 400 拒答（bot 看不见离群动作时 group_members 里
-// 仍留着此人）：按离群退避 7 天，而不是当成「拉取失败，不确定」在复查
-// 阶梯里无限空转——线上每档刷「查询群管理员失败/查询账号资料失败/资料
-// 拉取全空」三连警告，就是这条 400 没被认出来。member not found 与
-// MTProto 透传的 PARTICIPANT_ID_INVALID 两种文本都要认。
+// 仍留着此人）：按离群退避 7 天，而不是当成拉取失败、不确定在复查
+// 阶梯里反复空转。member not found 与 MTProto 透传的
+// PARTICIPANT_ID_INVALID 两种文本都要认。
 func TestPrewarmSweepGoneMemberNotFoundBacksOff(t *testing.T) {
 	for _, desc := range []string{"Bad Request: member not found",
 		"Bad Request: PARTICIPANT_ID_INVALID"} {
@@ -1768,9 +1768,8 @@ func TestPrewarmSweepProfileRuleEvidenceInPayload(t *testing.T) {
 	}
 }
 
-// 未变的命中资料重扫：非 enforce 规则命中只在真正送 AI 判定时计一次。
-// 旧实现把规则门放在指纹门之前且对所有命中计数，这份资料没变、也不该
-// 再判，却每上一档就给 ad_rules 记一次，计数被无限吹大。
+// 未变的命中资料重扫：非 enforce 规则命中只在真正送 AI 判定时计一次，
+// 否则资料未变也会每上一档就给 ad_rules 记一次，计数被无限放大。
 func TestPrewarmSweepRuleHitsNotInflatedOnRescan(t *testing.T) {
 	b, fake, chat, soN, llmN := setupPrewarmSweep(t,
 		soReply("clean", 0.9, "none", "message"),

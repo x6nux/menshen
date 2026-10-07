@@ -42,7 +42,7 @@ func TestTokenFromPath(t *testing.T) {
 // TestWebhookURLRoundTrip 确认我们发给 Telegram 的回调地址，自己解析得回来。
 //
 // 这两头分别在 config.go 和 webhook.go 里，改任何一边而忘了另一边，
-// 表现都是「setWebhook 成功但一条更新都收不到」—— 没有任何报错。
+// 表现都是 setWebhook 成功但收不到任何更新，且没有报错。
 func TestWebhookURLRoundTrip(t *testing.T) {
 	for _, base := range []string{
 		"https://ad.example.com",
@@ -74,8 +74,8 @@ func TestWebhookURLRoundTrip(t *testing.T) {
 	}
 }
 
-// TestValidToken 守的是 webhook 的入口：格式不设门槛的话，任何人往
-// /bot<随便什么> 发一次 POST 就能让本进程凭空多一个实例。
+// TestValidToken 验证 webhook 入口的 token 格式校验：不校验的话，
+// 任何 POST 到 /bot<任意内容> 都能让本进程创建一个实例。
 func TestValidToken(t *testing.T) {
 	good := []string{testutil.TestToken, "1234567890:" + strings.Repeat("a", 35)}
 	bad := []string{
@@ -107,9 +107,9 @@ func TestMaskToken(t *testing.T) {
 	}
 }
 
-// TestWebhookDispatch 确认 <前缀>/<TOKEN>/webhook 的更新真的被那个 bot
-// 处理了。观察点取群消息留底而不是队列本身：loadAll 已经把 worker 启起来
-// 了，队列里的东西转瞬就被取走，只有走完整条分发链路才会留下痕迹。
+// TestWebhookDispatch 验证 <前缀>/<TOKEN>/webhook 的更新由该 bot 处理。
+// 观察点取群消息留底而非队列本身：loadAll 已启动 worker，队列中的更新会
+// 很快被取走，只有走完整个分发链路才会留下记录。
 func TestWebhookDispatch(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	testutil.EnableAntiad(t, b, -100)
@@ -139,9 +139,9 @@ func TestWebhookDispatch(t *testing.T) {
 	}
 }
 
-// TestWebhookDispatchesEditedMessage 确认编辑过的群消息也走进反广告：
-// 分发里漏掉 edited_message 的话，「先发正常、再编辑成广告」畅通无阻，
-// 而留底里仍是编辑前的样子，复查也看不见。
+// TestWebhookDispatchesEditedMessage 验证编辑过的群消息也进入反广告：
+// 分发里遗漏 edited_message 的话，先发正常内容再编辑为广告的方式不会被
+// 检出，且留底仍是编辑前的内容，复查无法发现。
 func TestWebhookDispatchesEditedMessage(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, dispatch)
 	testutil.EnableAntiad(t, b, -100)
@@ -219,9 +219,8 @@ func TestWebhookHealthz(t *testing.T) {
 
 // TestWebhookUnknownTokenRejected 确认未登记的 token 直接被拒。
 //
-// 接入是注册制：没在 bots 表里登记过的 token，连 getMe 都不会发。
-// 没有归属就谈不上谁能管它、谁为它的开销负责；顺带也堵死了「拿本进程
-// 当跳板反复刷 TG」这条路 —— 拒绝发生在查表那一步，压根不出网。
+// 接入是注册制：未在 bots 表登记的 token 不会发出 getMe。没有归属就无从
+// 确定管理方与开销责任；拒绝发生在查表阶段，不会产生出网请求。
 func TestWebhookUnknownTokenRejected(t *testing.T) {
 	reg, _ := testutil.NewTestRegistry(t, dispatch)
 	before := reg.Size()
@@ -241,7 +240,7 @@ func TestWebhookUnknownTokenRejected(t *testing.T) {
 }
 
 // TestWebhookDisabledBotRejected 确认停用的 bot 收不到更新。
-// 停用要真的停：只在面板上标个灰、后台照常处理消息，是最坏的一种。
+// 停用要真正停止处理：只在面板上标记停用而后台继续处理是不可接受的。
 func TestWebhookDisabledBotRejected(t *testing.T) {
 	reg, _ := testutil.NewTestRegistry(t, dispatch)
 	if err := reg.SetBotEnabled(testutil.TestBotID, false); err != nil {
@@ -271,7 +270,7 @@ func TestEnqueueDropsWhenFull(t *testing.T) {
 }
 
 // TestEnqueueDedupsRedeliveredUpdates：TG 没收到 200 时会重推同一条更新，
-// 重复处理会让 msg_count 双计（把新人刷成老人）、让切换类按钮反转。
+// 重复处理会使 msg_count 双计（新人资历被高估）、使切换类按钮反转。
 func TestEnqueueDedupsRedeliveredUpdates(t *testing.T) {
 	var mu sync.Mutex
 	var n int
@@ -308,9 +307,9 @@ func TestEnqueueDedupsRedeliveredUpdates(t *testing.T) {
 
 // TestQueueWorkerIsSerial 确认 worker 串行消费。
 // 同一个人的更新有先后依赖：资历累计、留底，以及 recent_context 取的是
-// 「这条之前」的留底。并发消费会让它们随调度乱序。
+// 本条之前的留底。并发消费会让它们随调度乱序。
 func TestQueueWorkerIsSerial(t *testing.T) {
-	// 传真实的 dispatch：这个测试验证的就是「按到达顺序走完整条分发链」，
+	// 传真实的 dispatch：这个测试验证的就是按到达顺序走完整条分发链，
 	// 换成空分发就只剩队列自己在转，留底永远是空的。
 	b, _, _ := testutil.NewTestBotDispatch(t, 1, 1, dispatch)
 	testutil.EnableAntiad(t, b, -100)
@@ -359,9 +358,9 @@ func TestQueueWorkerIsSerial(t *testing.T) {
 	}
 }
 
-// TestPollAllowedUpdates 锁住那条从代码里看不出来的坑：
-// 一旦显式声明 allowed_updates，Telegram 的默认清单就整体失效，
-// 漏掉哪个哪个就彻底收不到，而 getUpdates/setWebhook 都不会报错。
+// TestPollAllowedUpdates 锁定一条不易从代码看出的约束：
+// 一旦显式声明 allowed_updates，Telegram 的默认清单即整体失效，
+// 遗漏的类型将完全收不到更新，且 getUpdates/setWebhook 都不会报错。
 func TestPollAllowedUpdates(t *testing.T) {
 	list := core.PollAllowedUpdates()
 	for _, must := range []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"} {
@@ -412,7 +411,7 @@ func TestSetWebhookReportsTGFailure(t *testing.T) {
 }
 
 // TestWebRouterRoutesWPaths：路径中任一段为 _w 的请求进网页处理器，
-// 其余照旧进 webhook；反代套几层子路径同样能识别。
+// 其余进 webhook；反代套几层子路径同样能识别。
 func TestWebRouterRoutesWPaths(t *testing.T) {
 	reg, _ := testutil.NewTestRegistry(t, nil)
 	web := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -452,9 +451,9 @@ func TestWebRouterRoutesWPaths(t *testing.T) {
 }
 
 // TestSendOmitsNilKeyboard：kb 为 nil（包括 typed-nil map）时不得带
-// reply_markup。把 nil map 存进 any 会让「kb != nil」判真，payload 里出现
-// reply_markup:null，TG 直接回「object expected as reply markup」——群内
-// 告警曾经因此整条发不出去。
+// reply_markup。把 nil map 存进 any 会使 kb != nil 判真，payload 里出现
+// reply_markup:null，TG 返回 object expected as reply markup，导致消息
+// 发送失败。
 func TestSendOmitsNilKeyboard(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fake := b.TG.(*testutil.FakeTG)

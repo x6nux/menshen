@@ -2,15 +2,14 @@ package logbuf
 
 // 运行日志落盘：与 SQLite 库文件同目录、同前缀的滚动日志文件。
 //
-// 标准输出在容器部署里往往没人盯（docker logs 有驱动上限，出问题第一
-// 反应也是「进容器看文件」），排查需要一份本地可查、大小可控的文件。
-// 滚动策略两条：
+// 标准输出在容器部署里往往无人查看，排查需要一份本地可查、大小可控的
+// 文件。滚动策略两条：
 //   - 单文件写到 maxFile 字节就把整个文件挪成 .1 备份（.1→.2→… 依次上移）；
-//   - 备份总量按「总上限 − 单文件上限」执行 —— 当前文件永远 ≤ 单文件
-//     上限，于是「当前 + 备份」不超总上限；总上限 = 单文件上限时不留备份。
+//   - 备份总量按总上限 − 单文件上限执行 —— 当前文件永远 ≤ 单文件上限，
+//     于是当前加备份不超总上限；总上限等于单文件上限时不留备份。
 //
 // 上限由调用方每次写入时提供（main 里读全局设置）：面板上改小立刻生效并
-// 触发清理，任一为 0 关闭文件日志。Write 永不返回错误、也绝不 panic：
+// 触发清理，任一为 0 关闭文件日志。Write 永不返回错误也不 panic：
 // 日志写不进去不能反过来打断业务，打不开文件按退避重试并在 stderr 提示。
 
 import (
@@ -34,8 +33,8 @@ func LogPathFor(dbPath string) string {
 	return filepath.Join(dir, base+".log")
 }
 
-// reopenBackoff 是打开失败后的重试间隔：磁盘满 / 权限错时每条日志都重试，
-// 只是把 CPU 烧在必然失败的 syscall 上。
+// reopenBackoff 是打开失败后的重试间隔：磁盘满 / 权限错时避免每条日志都
+// 重试而空耗 CPU。
 const reopenBackoff = 30 * time.Second
 
 // RotatingFile 是按大小滚动的日志文件，实现 io.Writer。
@@ -49,7 +48,7 @@ type RotatingFile struct {
 
 	lastFile  int64 // 上次见到的单文件上限，检测运行中的改动
 	lastTotal int64
-	seen      bool      // 是否读过一次 limits（首次不算「改动」）
+	seen      bool      // 是否读过一次 limits（首次不算改动）
 	failAt    time.Time // 上次打开失败的时刻；退避期内不再尝试
 }
 
@@ -157,7 +156,7 @@ func (f *RotatingFile) rotateLocked() {
 	f.openLocked()
 }
 
-// cleanupLocked 把备份总量压回「总上限 − 单文件上限」以内（给当前文件留
+// cleanupLocked 把备份总量压回总上限减单文件上限以内（给当前文件留
 // 一个单文件的余量），从最旧的备份开始删；当前文件永远保留。删除失败
 // 就到此为止，下轮滚动再试。
 func (f *RotatingFile) cleanupLocked(maxFile, maxTotal int64) {

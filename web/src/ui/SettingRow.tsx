@@ -1,4 +1,4 @@
-// 设置行（计划 3.2）：左 label + 可选 hint，右 value + ›，点击触发 onClick。
+// 设置行：左 label + 可选 hint，右 value + ›，点击触发 onClick。
 // 不传 onClick 时是纯展示行（无箭头、不可点）。
 import type { ReactNode } from 'react'
 import { ListRow } from './ListRow'

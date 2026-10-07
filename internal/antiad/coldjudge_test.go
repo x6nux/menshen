@@ -10,10 +10,10 @@ import (
 	"menshen/internal/tg"
 )
 
-// TestColdSuspicious 守进群预筛的两个方向。
+// TestColdSuspicious 覆盖进群预筛的两个方向。
 //
-// 漏报（该送检的没送）直接等于功能不存在；误报只是多花一次判定的钱，
-// 所以这里刻意不对称：可疑侧要全中，正常侧只挡住最常见的几类普通人。
+// 漏报（该送检的没送）会使功能失效；误报只多花一次判定开销。因此两侧刻意
+// 不对称：可疑侧要求全部命中，正常侧只过滤最常见的几类正常账号。
 func TestColdSuspicious(t *testing.T) {
 	cases := []struct {
 		name string
@@ -26,8 +26,8 @@ func TestColdSuspicious(t *testing.T) {
 			"做单进入公群有担保：https://t.me/+AOgLtfgl6sg2MDE5", true},
 		{"简介留联系方式", &tg.TGUser{FirstName: "李四"}, "薇信 abc123", true},
 		{"用户名带招揽用语", &tg.TGUser{Username: "riru5000_daili"}, "日入5000", true},
-		// 线上真实漏过的代收账号：没有外链也没有词表里的联系方式词，
-		// 光靠旧的三条会整条静默放过（连送检都没有）。
+		// 代收代付账号：没有外链也没有词表中的联系方式词，
+		// 仅靠原有判据会静默放过。
 		{"代收代付账号", &tg.TGUser{FirstName: "大成代收|小小"},
 			"代收代付，5个点，公示100万 USDT", true},
 		{"资料里挂 @联系方式", &tg.TGUser{FirstName: "小王"}, "业务联系 @lilai", true},
@@ -48,18 +48,18 @@ func TestColdSuspicious(t *testing.T) {
 	}
 }
 
-// TestColdSuspiciousNoUsernameIsNotASignal 单独拎出来：
-// 「没有用户名」看着像特征，其实大量正常人就是这样。拿它当判据会让预筛
-// 退化成「几乎人人都送检」，省钱这个唯一目的直接落空。
+// TestColdSuspiciousNoUsernameIsNotASignal 单独覆盖一种情况：
+// 没有用户名看似是特征，但大量正常账号也是如此。以它作判据会让预筛退化成
+// 几乎人人送检，失去节省开销的意义。
 func TestColdSuspiciousNoUsernameIsNotASignal(t *testing.T) {
 	if ok, _ := coldSuspicious(&tg.TGUser{FirstName: "小明"}, ""); ok {
 		t.Error("没有用户名不该构成怀疑理由")
 	}
 }
 
-// TestColdPrefilterOffByDefault：默认人人送检。资料平平的新人也要过一次
-// 冷判定 —— 判定模型很便宜，进群这道门口不漏人比省那一次调用重要。
-// 想省开销的部署可以把 antiad_cold_prefilter 打开。
+// TestColdPrefilterOffByDefault：默认不预筛，所有新人都过一次冷判定。
+// 判定模型开销低，进群这道门不漏判比节省一次调用更重要。需要降低开销的
+// 部署可以打开 antiad_cold_prefilter。
 func TestColdPrefilterOffByDefault(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -100,8 +100,8 @@ func TestUnbanPayloadRoundTrip(t *testing.T) {
 
 // TestNextUnbanDelay 确认退避是指数的且有封顶。
 //
-// 不限次数是刻意的（改简介改不到位的普通人不该被一次失败挡死），
-// 那么拦住「磨开销」就只能靠间隔递增：每次重试都要跑一轮 AI。
+// 重试次数不限（未改到位的用户不应被一次失败永久挡住），因此限制开销只能
+// 依靠间隔递增：每次重试都要跑一轮 AI。
 func TestNextUnbanDelay(t *testing.T) {
 	base := time.Minute
 	cases := []struct {
@@ -123,9 +123,8 @@ func TestNextUnbanDelay(t *testing.T) {
 	}
 }
 
-// TestNextUnbanDelayNoOverflow 守住大 n 下的移位溢出。
-// d = base << (n-1) 在 n 大到一定程度会翻成负数，负的等待时间意味着
-// 闸门形同虚设——恰好是攻击者最想要的那一端。
+// TestNextUnbanDelayNoOverflow 覆盖大 n 下的移位溢出。
+// d = base << (n-1) 在 n 足够大时会溢出成负数，负的等待时间会使闸门失效。
 func TestNextUnbanDelayNoOverflow(t *testing.T) {
 	for _, n := range []int{62, 63, 64, 100, 1000} {
 		if got := nextUnbanDelay(time.Minute, n); got != time.Hour {
@@ -202,10 +201,10 @@ func TestAppealEntryListsPenalties(t *testing.T) {
 	}
 }
 
-// TestAppealDropsBioCache 锁住申诉复核最容易出的那个问题。
+// TestAppealDropsBioCache 覆盖申诉复核时的资料缓存失效。
 //
-// 对方刚按提示改完简介就来申诉，这时缓存里还躺着一小时前的旧值。
-// 不清缓存的话，他无论怎么改都过不了，而日志里一切正常。
+// 用户刚按提示改完简介就来申诉，此时缓存中仍是改前的旧值。若不清缓存，
+// 无论怎么改都会复核失败，而日志中没有任何异常。
 func TestAppealDropsBioCache(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	const stale = "加我微信 abc"
@@ -227,11 +226,11 @@ func TestAppealDropsBioCache(t *testing.T) {
 	}
 }
 
-// TestJoinHandledOnce 锁住入群去重。
+// TestJoinHandledOnce 覆盖入群去重。
 //
-// 同一次入群 TG 会推两份：chat_member 事件与「XXX 加入群组」服务消息，
-// 两条路都汇进 onJoin。不去重的话联合封禁拦截、冷判定都各跑两遍——
-// 两次 AI 开销、群里两条通知、管理员两条私聊。这里借联合封禁观察。
+// 同一次入群 TG 会推送两条：chat_member 事件与加入群组的 service 消息，
+// 两条路都汇进 onJoin。不去重会使联合封禁拦截与冷判定各跑两遍，产生两次
+// AI 开销、两条群内通知与两条管理员私聊。这里借联合封禁观察。
 func TestJoinHandledOnce(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -241,7 +240,7 @@ func TestJoinHandledOnce(t *testing.T) {
 	if err := b.PutSetting("gban_enabled", "1"); err != nil {
 		t.Fatal(err)
 	}
-	// 该群选「封禁出群」：联合封禁按本群配置执行，这里测的是封禁路径。
+	// 该群选封禁出群：联合封禁按本群配置执行，这里测的是封禁路径。
 	testutil.SetChatPunish(t, b, -100, 1)
 
 	HandleChatMemberUpdate(b, &tg.ChatMemberUpdated{
@@ -258,9 +257,9 @@ func TestJoinHandledOnce(t *testing.T) {
 	}
 }
 
-// TestColdJudgeLogsJoinChecked：入群检查判正常也要落一条流水，否则管理员
-// 查用户页对大多数新成员是一片空白（线上真实反馈「看不见入群检查」）。
-// action 用 join_checked：它不是处置，用户页的「被处置过」与私聊汇总都要排除。
+// TestColdJudgeLogsJoinChecked：入群检查判正常也要落一条流水，否则用户页
+// 对大多数新成员为空。action 用 join_checked：它不是处置，用户页的处置计数
+// 与私聊汇总都要排除。
 func TestColdJudgeLogsJoinChecked(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -329,8 +328,8 @@ func TestApplyJoinMuteNotifyIdempotent(t *testing.T) {
 	}
 }
 
-// TestJoinMuteNoticeOneLine：群内限制通知一行化——uid + 原因，昵称与
-// 用户名照旧不贴；它受「群内展示」开关控制，发了就安排到点自动撤回。
+// TestJoinMuteNoticeOneLine：群内限制通知保持一行——uid + 短结论，不贴昵称与
+// 用户名；它受群内展示开关控制，发出后安排到点自动撤回。
 func TestJoinMuteNoticeOneLine(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -374,7 +373,7 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 		t.Errorf("完整理由应留在冷判定记录里，得到 %q", stored)
 	}
 	// 文本链接带冷判定记录号：管理员点进来落到记录卡片，被限制的人进申诉入口。
-	// 群内提示已从内联按钮改为文本链接（按钮在部分客户端容易被忽略）。
+	// 群内提示用文本链接而非内联按钮（按钮在部分客户端容易被忽略）。
 	var logID int64
 	if err := b.Store.Read.QueryRow(
 		`SELECT id FROM antiad_log ORDER BY id DESC LIMIT 1`).Scan(&logID); err != nil {
@@ -392,7 +391,7 @@ func TestJoinMuteNoticeOneLine(t *testing.T) {
 		t.Errorf("通知应安排自动撤回（err=%v, n=%d）", err, cleanup)
 	}
 
-	// 关掉「群内展示」：禁言照常执行，群里一个字都不发。
+	// 关掉群内展示：禁言照常执行，群里一个字都不发。
 	if _, err := b.Store.Write.Exec(
 		`UPDATE bot_chats SET group_alert=0 WHERE chat_id=-100`); err != nil {
 		t.Fatal(err)

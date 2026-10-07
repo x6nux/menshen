@@ -1,4 +1,4 @@
-// 我的页：身份卡与入口列表，可见性按 2.1 矩阵（次管没有上游/模型/设置入口），
+// 我的页：身份卡与入口列表，可见性按矩阵（次级管理员没有上游/模型/设置入口），
 // 入口点击进入对应二级页（lists 带 section）。
 import { fireEvent, screen } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'

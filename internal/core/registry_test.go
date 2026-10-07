@@ -23,7 +23,7 @@ func (p probeTG) Call(method string, payload any) (json.RawMessage, error) {
 }
 
 // TestSetBotModelsAndLegacyFallback：per-bot 覆盖写进新 JSON 列；旧单值
-// 列在列表为空时仍作为单元素列表读出来，升级不要求管理员重配。
+// 列在列表为空时仍作为单元素列表读出来，无需管理员重配。
 func TestSetBotModelsAndLegacyFallback(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 
@@ -52,7 +52,7 @@ func TestSetBotModelsAndLegacyFallback(t *testing.T) {
 
 // TestRenameUpstreamRewritesModelRefs：模型名里嵌着上游名，改名必须
 // 连带改写模型名、默认模型设置与 bot 覆盖 —— 漏掉任何一处，那批模型
-// 都会变成「绑定的上游不存在」，判定静默失效。
+// 都会变成绑定的上游不存在，判定静默失效。
 func TestRenameUpstreamRewritesModelRefs(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	w := b.Store.Write
@@ -128,7 +128,7 @@ func TestRenameUpstreamRewritesModelRefs(t *testing.T) {
 }
 
 // TestRegisterMarksMainBot 确认 isMain 参数落到 bots.is_main：
-// 主 bot 标记是「不入群、不判定」的唯一依据，注册时就该带上。
+// 主 bot 标记是不入群、不判定的唯一依据，注册时就该带上。
 func TestRegisterMarksMainBot(t *testing.T) {
 	_, _, sh := testutil.NewTestBotDispatch(t, 777, 777, nil)
 	sh.Cfg.PublicURL = "https://test.invalid" // Register 的子 bot 只在 webhook 模式下放行
@@ -179,9 +179,9 @@ func TestSetBotOwnerSyncsLiveInstance(t *testing.T) {
 	}
 }
 
-// TestMainBotCannotBeDisabledOrRemoved 守的是两个会把面板弄失联的动作：
+// TestMainBotCannotBeDisabledOrRemoved 验证两个会让面板失联的动作被拒绝：
 // 停用主 bot 后没人能再启用它，移除它则会在下次启动时被 ensureMainBot
-// 加回来 —— 表现为「删了又复活」，只会让人更糊涂。
+// 加回来，表现为删了又复活。
 func TestMainBotCannotBeDisabledOrRemoved(t *testing.T) {
 	reg, b := testutil.NewTestRegistry(t, nil)
 	testutil.RegisterMainTestBot(t, b.Shared, testutil.TestToken, testutil.TestBotID, 777)

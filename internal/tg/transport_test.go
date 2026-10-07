@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-// TestNewHTTPRoutesThroughProxy 确认传进来的 RoundTripper 真的被用上了。
+// TestNewHTTPRoutesThroughProxy 验证传入的 RoundTripper 确实被使用。
 //
-// 不只是断言字段相等：那只能证明赋值没写错，证明不了请求真的绕了代理。
-// 这里起一个假代理，看它有没有收到指向目标主机的那一条请求 —— 接错线时
-// 请求会直奔目标地址，假代理一条都收不到。
+// 不只是断言字段相等（那只能证明赋值正确），而是起一个假代理，检查它是否
+// 收到指向目标主机的请求：若未走代理，请求会直接发往目标地址，假代理收不到
+// 任何请求。
 func TestNewHTTPRoutesThroughProxy(t *testing.T) {
 	var gotHost, gotPath string
 	proxy := httptest.NewServer(http.HandlerFunc(
@@ -30,8 +30,8 @@ func TestNewHTTPRoutesThroughProxy(t *testing.T) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = http.ProxyURL(pu)
 
-	// 目标用 http 而不是 https：https 会先发 CONNECT 建隧道，
-	// 假代理看不到里面的路径，也就验证不了「请求确实是发给它的」。
+	// 目标使用 http 而非 https：https 会先发 CONNECT 建隧道，
+	// 假代理看不到内部路径，无法验证请求确实经过它。
 	c := NewHTTP("http://api.telegram.invalid", "tok", tr)
 	if _, err := c.Call("getMe", nil); err != nil {
 		t.Fatalf("经代理调用失败: %v", err)
@@ -46,11 +46,11 @@ func TestNewHTTPRoutesThroughProxy(t *testing.T) {
 	}
 }
 
-// TestNewHTTPNilTransportKeepsDefault 锁住「不配代理 = 沿用默认」。
+// TestNewHTTPNilTransportKeepsDefault 锁定不配代理 = 沿用默认。
 //
 // client.Transport 必须保持 nil，这样 net/http 才会落到 DefaultTransport，
-// 而它的 Proxy 是 ProxyFromEnvironment —— 环境变量代理靠的就是这条路径。
-// 在这里塞一个自造的 Transport 会把 HTTPS_PROXY 悄悄废掉。
+// 其 Proxy 是 ProxyFromEnvironment，环境变量代理依赖这条路径。
+// 自己构造 Transport 会使 HTTPS_PROXY 失效。
 func TestNewHTTPNilTransportKeepsDefault(t *testing.T) {
 	h, ok := NewHTTP("https://x", "tok", nil).(*httpTransport)
 	if !ok {
@@ -62,8 +62,8 @@ func TestNewHTTPNilTransportKeepsDefault(t *testing.T) {
 	}
 }
 
-// TestCallRetriesAfterFloodWait：429 + 短的 retry_after 会等一轮再来，
-// 第二次成功。限流是瞬时状态，直接失败会让删除/禁言在广告洪峰里成批丢失。
+// TestCallRetriesAfterFloodWait：429 且 retry_after 较短时会等待后重试，
+// 第二次成功。限流是瞬时状态，直接失败会使删除/禁言在广告高峰时批量丢失。
 func TestCallRetriesAfterFloodWait(t *testing.T) {
 	var n int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,10 +109,10 @@ func TestCallFloodWaitTooLongFailsFast(t *testing.T) {
 	}
 }
 
-// TestCallBadRequestIsStructuredAPIError：400 的「查无此人」类拒答要带
-// 结构化的 description 回来——上层靠它区分「TG 明确说没有」与「网络故障」，
-// 前者是常态不该刷警告（离群成员曾因此在复查阶梯里无限空转）。两类文本
-// 都要认：Bot API 自述的 * not found，与透传的 MTProto *_ID_INVALID。
+// TestCallBadRequestIsStructuredAPIError：400 的查无此人类拒答要带回
+// 结构化的 description：上层据此区分 TG 明确返回不存在与网络故障，前者是
+// 常态，不应打印警告。两类文本都要识别：Bot API 自述的 * not found，
+// 与透传的 MTProto *_ID_INVALID。
 func TestCallBadRequestIsStructuredAPIError(t *testing.T) {
 	gone := []string{
 		"Bad Request: chat not found",
@@ -164,7 +164,7 @@ func TestCallBadRequestIsStructuredAPIError(t *testing.T) {
 	}
 
 	// 非 JSON 的 400（网关错误页）：Desc 解析不出，NotFound 必须为假，
-	// 宁可当故障重试，也不能把网关抽风当成「人不在了」。
+	// 按故障重试处理，不得当作对象不存在。
 	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`<html>bad request</html>`))
@@ -178,8 +178,8 @@ func TestCallBadRequestIsStructuredAPIError(t *testing.T) {
 }
 
 // TestCallServerErrorIncludesStatus：5xx 不重试（不确定 TG 是否已处理），
-// 但错误里要能看见状态码——原实现把错误页当成功响应返回，调用方只能报
-// 「响应无法解析」，排障时看不出是网关挂了。
+// 但错误里要能看到状态码：否则出错时只能得到响应无法解析，排障时无法辨识
+// 网关故障。
 func TestCallServerErrorIncludesStatus(t *testing.T) {
 	var n int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

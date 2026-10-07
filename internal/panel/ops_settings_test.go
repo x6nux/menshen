@@ -8,8 +8,7 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestSetSettingRules 钉住 TG 面板与 Mini App 共用的设置规则，尤其是
-// 两边曾经各写一份、写出分歧的那几条。
+// TestSetSettingRules 钉住 TG 面板与 Mini App 共用的设置规则。
 func TestSetSettingRules(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 	sh := b.Shared
@@ -51,7 +50,7 @@ func TestSetSettingRules(t *testing.T) {
 		{main, 0, "antiad_group_footer", "-", "ok", ""},
 		{main, 0, "antiad_vision_model", "up/none", "bad", ""},
 		{main, 0, "antiad_vision_model", "up/m", "ok", "up/m"},
-		{main, 0, "antiad_vision_model", "-", "ok", ""}, // 曾经 Mini App 报「模型不存在」
+		{main, 0, "antiad_vision_model", "-", "ok", ""}, // "-" 撤销视觉模型
 		{main, 0, "antiad_so_models", "up/m, up/m", "ok", `["up/m"]`},
 		{main, 0, "antiad_so_models", "-", "ok", "[]"},
 		{main, 0, "antiad_act_hard", "101", "bad", ""},
@@ -71,7 +70,7 @@ func TestSetSettingRules(t *testing.T) {
 		}
 	}
 
-	// 旧单值键随列表一起清掉：留着的话列表清空后读侧会回退到它。
+	// 单值键随列表一起清掉：留着的话列表清空后读侧会回退到它。
 	if err := sh.PutSetting("antiad_llm_model", "up/m"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +81,7 @@ func TestSetSettingRules(t *testing.T) {
 		t.Errorf("旧单值键应被清空，得到 %q", v)
 	}
 
-	// per-bot：归属人可改自己的 bot；全局项不能按 bot 覆盖；空值/「-」撤销覆盖。
+	// per-bot：归属人可改自己的 bot；全局项不能按 bot 覆盖；空值或 "-" 撤销覆盖。
 	bot := testutil.TestBotID
 	if err := setSetting(sh, sub, bot, "antiad_act_hard", "70"); opKind(err) != "denied" {
 		t.Errorf("次管改别人的 bot 应被拒，得到 %v", err)
@@ -105,7 +104,7 @@ func TestSetSettingRules(t *testing.T) {
 }
 
 // TestSetSettingCaptchaKeys：入群验证的密钥类设置存 settings 表，写入
-// 规则只有一份（本函数）。重点钉住「选了外部两家但密钥没配齐」的拦截。
+// 规则只有一份（本函数）。重点钉住选了外部两家但密钥没配齐的拦截。
 func TestSetSettingCaptchaKeys(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 777)
 	sh := b.Shared
@@ -123,7 +122,7 @@ func TestSetSettingCaptchaKeys(t *testing.T) {
 	if err := setSetting(sh, main, 0, "captcha_provider", "hcaptcha"); err == nil {
 		t.Error("密钥未配齐时选外部提供方应被拒")
 	}
-	// 配齐两把钥匙后放行。
+	// 配齐两项密钥后放行。
 	if err := setSetting(sh, main, 0, "captcha_site_key", "sk"); err != nil {
 		t.Fatalf("site key: %v", err)
 	}
@@ -138,7 +137,7 @@ func TestSetSettingCaptchaKeys(t *testing.T) {
 	if err := setSetting(sh, main, 0, "captcha_provider", "cap"); err != nil {
 		t.Fatalf("cap 应无需密钥即可选: %v", err)
 	}
-	// 已移除的 reCAPTCHA 必须拒绝。
+	// reCAPTCHA 必须拒绝。
 	if err := setSetting(sh, main, 0, "captcha_provider", "recaptcha"); err == nil {
 		t.Error("recaptcha 应当被拒")
 	}
@@ -150,7 +149,7 @@ func TestSetSettingCaptchaKeys(t *testing.T) {
 	if err := setSetting(sh, main, 0, "captcha_demo_keys", "hcaptcha=sk,sec"); err != nil {
 		t.Fatalf("合法测试台密钥应通过: %v", err)
 	}
-	// 「-」= 清空。
+	// "-" 表示清空。
 	if err := setSetting(sh, main, 0, "captcha_demo_keys", "-"); err != nil {
 		t.Fatalf("清空应通过: %v", err)
 	}

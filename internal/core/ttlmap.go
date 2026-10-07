@@ -32,7 +32,7 @@ func (t *TTLMap[K, V]) Set(k K, v V, ttl time.Duration) {
 
 // SetNX 只在键不存在（或已过期）时写入，返回是否写成功。
 //
-// 用于「用掉一次」这类一次性凭据（Cap 的验证令牌防重放）：Get 再 Set
+// 用于用掉一次这类一次性凭据（Cap 的验证令牌防重放）：Get 再 Set
 // 不是原子的，两个并发请求会双双通过。过期条目按不存在处理并就地替换。
 func (t *TTLMap[K, V]) SetNX(k K, v V, ttl time.Duration) bool {
 	item := ttlItem[V]{v: v, exp: time.Now().Add(ttl)}

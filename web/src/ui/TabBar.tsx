@@ -1,4 +1,4 @@
-// 底部 Tab 栏（计划 3.2）：五个一级 Tab；选中主色、未选中灰；
+// 底部 Tab 栏：五个一级 Tab；选中主色、未选中灰；
 // 底部安全区用 env(safe-area-inset-bottom)；仅在 tab 根页显示——导航栈非空
 // （正在看二级页）时整条隐藏，返回后自动恢复。
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined'

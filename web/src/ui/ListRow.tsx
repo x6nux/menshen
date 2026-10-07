@@ -1,4 +1,4 @@
-// 通用列表行（计划 3.2）：左主文案 16px + 可选灰色副行 13px（可等宽），
+// 通用列表行：左主文案 16px + 可选灰色副行 13px（可等宽），
 // 右侧徽标/值/自定义 trailing 与可选 › 箭头；有 onClick 时整行可点，
 // 行高 ≥52 由 theme 的 MuiListItemButton overrides 保证，按下态用 action.hover。
 import KeyboardArrowRight from '@mui/icons-material/KeyboardArrowRight'

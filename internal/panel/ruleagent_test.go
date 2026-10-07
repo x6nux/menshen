@@ -1,7 +1,7 @@
 package panel
 
 // 规则发现 Agent 的面板接口测试：三个 agent_* 动作都只有主管理员能用，
-// agent_status 的返回是 T-C 前端依赖的冻结契约。
+// agent_status 的返回值是前端依赖的固定契约。
 
 import (
 	"encoding/json"

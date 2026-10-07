@@ -1,4 +1,4 @@
-// 记录详情（计划 4.4）：信息卡 + 原文卡 + 底部固定操作栏。
+// 记录详情：信息卡 + 原文卡 + 底部固定操作栏。
 // 数据必须单独请求 log{id}（列表正文里后端会回查全量留底，列表数据不完整）。
 // 操作走 logact；成功后由 mutation 统一失效 ['log']/['logs']/['user']/['state']，
 // 详情与列表都会刷新；服务端 note 优先 toast。
@@ -14,7 +14,7 @@ import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
 import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
-// 主操作（与旧页四个按钮一一对应）；危险项带确认文案。
+// 主操作；危险项带确认文案。
 // 内容区底部预留由 useBarReserve 实测（主管理员 6 按钮 + 说明约 210px，兜底值）。
 interface ActionSpec {
   action: string
@@ -34,7 +34,6 @@ const PRIMARY_ACTIONS: ActionSpec[] = [
     label: '人工标记广告',
     danger: true,
     confirmTitle: '人工标记广告？',
-    // 旧页 confirm 文案原样保留。
     confirmDescription: '不经 AI 直接按最高档处置？',
   },
 ]
@@ -103,7 +102,7 @@ export function LogDetailPage({ id }: { id: number }) {
   }
 
   // 针对这条记录跑一轮 AI 规则发现：Agent 围绕本条原文写正则，并用 find /
-  // list_uncovered 等工具搜索同类形态；进度在「我的 → AI 必封规则」里看。
+  // list_uncovered 等工具搜索同类形态；进度在 `我的 → AI 必封规则` 页查看。
   const startRuleAgent = () => {
     ruleMut.mutate(
       { action: 'agent_start', record_id: id },

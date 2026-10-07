@@ -15,8 +15,8 @@ import (
 // Registry 管理所有接入的 bot 实例，是 webhook 分发与面板操作的共同入口。
 //
 // 接入是**注册制**：token 必须先由某个管理员在面板上登记（写进 bots 表、
-// 绑定 owner），webhook 才认它。早先那种「任何 getMe 通过的 token 都能接
-// 进来」在多租户下站不住 —— 没有归属就谈不上谁能管它、谁为它的开销负责。
+// 绑定 owner），webhook 才认它。没有归属就谈不上谁能管它、谁为它的开销
+// 负责。
 type Registry struct {
 	sh   *Shared
 	stop <-chan struct{}
@@ -30,7 +30,7 @@ type Registry struct {
 
 	// pendingDrops 记录尚未完成的 deleteWebhook（每个 token 至多一个）。
 	// 重新注册同一个 token 时必须等它结束：迟到的 deleteWebhook 会把新实例
-	// 刚设上的 webhook 悄悄删掉，而表现是「setWebhook 成功却收不到更新」。
+	// 刚设上的 webhook 悄悄删掉，而表现是 setWebhook 成功却收不到更新。
 	pendingDrops sync.Map // token -> chan struct{}
 }
 
@@ -61,7 +61,7 @@ func (r *Registry) waitPendingDrop(token string) {
 func NewRegistry(sh *Shared, stop <-chan struct{}, d Dispatcher) *Registry {
 	r := &Registry{sh: sh, stop: stop, dispatch: d,
 		byToken: map[string]*Bot{}, byID: map[int64]*Bot{}}
-	// 回填：联合封禁那类「跨全部 bot」的操作要从 Shared 走到这里。
+	// 回填：联合封禁那类跨全部 bot 的操作要从 Shared 走到这里。
 	sh.Reg = r
 	return r
 }
@@ -80,7 +80,7 @@ func (r *Registry) LookupID(botID int64) (*Bot, bool) {
 	return b, ok
 }
 
-// each 遍历当前全部实例，供定时任务与联合封禁使用。
+// Each 遍历当前全部实例，供定时任务与联合封禁使用。
 func (r *Registry) Each(fn func(*Bot)) {
 	r.mu.Lock()
 	list := make([]*Bot, 0, len(r.byID))
@@ -100,7 +100,7 @@ func (r *Registry) Size() int {
 }
 
 // newTransport 按 token 建一个指向 Telegram 的传输层。
-// 抽出来是为了让测试能整体替换（见 transportFor）。
+// 抽出来是为了让测试能整体替换（见 TransportFor）。
 func (sh *Shared) newTransport(token string) tg.Transport {
 	if sh.TransportFor != nil {
 		return sh.TransportFor(token)
@@ -131,7 +131,7 @@ func (r *Registry) spawn(rec *store.BotRec) *Bot {
 // loadAll 从 bots 表把所有已启用的 bot 拉起来。启动时调用一次。
 //
 // 已停用的 bot 不建实例：webhook 打过来会找不到实例而被拒，
-// 这正是「停用」应有的表现 —— 比留着实例再逐条丢弃更省也更明确。
+// 这正是停用应有的表现 —— 比留着实例再逐条丢弃更省也更明确。
 func (r *Registry) LoadAll() {
 	snap := r.sh.Cache.Snap()
 	polling := !r.sh.Cfg.UseWebhook()
@@ -193,11 +193,11 @@ func (sh *Shared) ProbeBot(token string) (int64, string, error) {
 	return resp.Result.ID, resp.Result.Username, nil
 }
 
-// precheck 是接入前不出网就能做完的全部校验。
+// Precheck 是接入前不出网就能做完的全部校验。
 //
 // 单独抽出来是为了让调用方先挡掉绝大多数失败：格式敲错、重复接入、
-// 超配额这三类占了失败的大头，先花一次 getMe 的往返再告诉他「你已经
-// 加过了」既慢又蠢，何况那一次往返本身就可能卡上几十秒。
+// 超配额这三类占了失败的大头，先花一次 getMe 的往返再返回重复接入的
+// 错误既慢且无必要，何况那一次往返本身就可能卡上几十秒。
 //
 // 返回的错误是给管理员看的人话，可以直接贴进 TG 消息。
 func (r *Registry) Precheck(token string, ownerID int64) error {
@@ -232,15 +232,15 @@ func (r *Registry) Precheck(token string, ownerID int64) error {
 	return nil
 }
 
-// register 登记一个新 bot 并立即拉起来。
+// Register 登记一个新 bot 并立即拉起来。
 //
-// isMain 标记「配置里的主 bot」：它只做配置管理与接入其他 bot，不入群、
+// isMain 标记配置里的主 bot：它只做配置管理与接入其他 bot，不入群、
 // 不判定广告。面板接入的 bot 一律传 false。
 //
 // 它会打一次 getMe，可能卡上几十秒，所以调用方应当在独立 goroutine 里
 // 调它 —— 更新处理是串行的，同步等在这里会让整个 bot 停摆。
 //
-// 注册完还要 finishSetup（命令菜单 + webhook）才算真的能收消息，
+// 注册完还要 FinishSetup（命令菜单 + webhook）才算真的能收消息，
 // 那一步分开是因为它的失败不该让接入整体回滚：webhook 没设上可以重试，
 // 而把已经落库的 bot 再删掉只会让人更糊涂。
 func (r *Registry) Register(token string, ownerID int64, isMain bool) (*store.BotRec, error) {
@@ -283,11 +283,11 @@ func (r *Registry) Register(token string, ownerID int64, isMain bool) (*store.Bo
 	return rec, nil
 }
 
-// finishSetup 把一个刚接入（或刚重新启用）的 bot 准备到能干活的状态：
+// FinishSetup 把一个刚接入（或刚重新启用）的 bot 准备到能干活的状态：
 // 注册命令菜单，并在 webhook 模式下挂上回调地址。
 //
 // 轮询模式下**不设 webhook**：getUpdates 与 webhook 互斥，设了会让
-// getUpdates 一直拿 409，而表现是「一条消息都收不到」。
+// getUpdates 一直拿 409，而表现是一条消息都收不到。
 func (b *Bot) FinishSetup() error {
 	// 命令菜单失败无关紧要（多半是对方还没和这个 bot 说过话），
 	// 不该盖掉真正要紧的 webhook 结果。
@@ -297,7 +297,7 @@ func (b *Bot) FinishSetup() error {
 		return nil
 	}
 	// 等上一次的 deleteWebhook 结束：迟到的 deleteWebhook 会把这里刚设上的
-	// webhook 悄悄删掉，而表现是「setWebhook 成功却一条更新都收不到」。
+	// webhook 悄悄删掉，而表现是 setWebhook 成功却一条更新都收不到。
 	if b.Reg != nil {
 		b.Reg.waitPendingDrop(b.Token)
 	}
@@ -308,10 +308,10 @@ func (b *Bot) FinishSetup() error {
 	return nil
 }
 
-// unregister 摘掉一个 bot：撤 webhook、删配置、停实例。
+// Unregister 摘掉一个 bot：撤 webhook、删配置、停实例。
 //
 // 它名下的 bot_chats / bot_settings 一并删除 —— 留着只会在下次有人用
-// 同一个 bot_id 接入时，让他莫名其妙地继承一批陌生的群配置。
+// 同一个 bot_id 接入时，让他继承一批陌生的群配置。
 // 判定流水（antiad_log）保留：那是账本，不因为 bot 走了就该抹掉。
 func (r *Registry) Unregister(botID int64) error {
 	rec := r.sh.Cache.Snap().Bots[botID]
@@ -320,7 +320,7 @@ func (r *Registry) Unregister(botID int64) error {
 	}
 	if rec.IsMain {
 		// 主 bot 由配置文件定义，删掉它等于让面板失联，而且下次启动
-		// ensureMainBot 又会把它加回来 —— 看起来「删了又复活」。
+		// ensureMainBot 又会把它加回来，看起来像删了又复活。
 		return fmt.Errorf("主 bot 由配置文件定义，不能移除")
 	}
 
@@ -364,7 +364,7 @@ func (r *Registry) Unregister(botID int64) error {
 	return nil
 }
 
-// setBotEnabled 启停一个 bot。停用即摘掉实例，webhook 打过来会被拒；
+// SetBotEnabled 启停一个 bot。停用即摘掉实例，webhook 打过来会被拒；
 // 重新启用时再拉起来并补设一次 webhook。
 func (r *Registry) SetBotEnabled(botID int64, on bool) error {
 	rec := r.sh.Cache.Snap().Bots[botID]
@@ -420,7 +420,7 @@ func (r *Registry) SetBotEnabled(botID int64, on bool) error {
 	return nil
 }
 
-// setBotOwner 改派归属。只有主管理员能调。
+// SetBotOwner 改派归属。只有主管理员能调。
 func (sh *Shared) SetBotOwner(botID, ownerID int64) error {
 	if _, err := sh.Store.Write.Exec(
 		`UPDATE bots SET owner_id=? WHERE bot_id=?`, ownerID, botID); err != nil {
@@ -443,7 +443,7 @@ func (sh *Shared) SetBotOwner(botID, ownerID int64) error {
 // 回到全局默认。which 取 "so" 或 "llm"。
 //
 // 写新的 JSON 列并清掉旧单值列：留着旧值的话，下次读侧回退时它可能
-// 冒出来，出现「面板显示 A、实际跑 B」的错位。
+// 冒出来，出现面板显示 A、实际跑 B 的错位。
 func (sh *Shared) SetBotModels(botID int64, which string, models []string) error {
 	col, old := "so_models", "so_model"
 	if which == "llm" {

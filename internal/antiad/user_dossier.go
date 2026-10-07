@@ -61,7 +61,7 @@ func LoadUserDossier(sh *core.Shared, botID, uid int64) UserDossier {
 	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM group_messages
 		WHERE user_id=? AND chat_id `+in, args...).Scan(&d.Kept)
 
-	// 判定流水：总数与处置数分开算，管理员一眼能看出「查过 vs 罚过」。
+	// 判定流水：总数与处置数分开算，管理员能直接区分查过与罚过。
 	scope, scopeArgs := logScope(snap, botID)
 	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log WHERE user_id=?`+scope,
 		append([]any{uid}, scopeArgs...)...).Scan(&d.Total)
@@ -103,8 +103,8 @@ func logScope(snap *store.Snapshot, botID int64) (string, []any) {
 	return " AND bot_id=?", []any{botID}
 }
 
-// processedCond 是「被真正处置过」的判据：动作不是「未处置/未送检/入群检查/
-// 前置号检查」，也不是演练前缀（演练什么都没做）。默认列表按它过滤，噪音少。
+// processedCond 是被真正处置过的判据：动作不是未处置/未送检/入群检查/
+// 前置号检查，也不是演练前缀（演练什么都没做）。默认列表按它过滤，噪音少。
 const processedCond = `action NOT IN ('none','skipped','join_checked','prewarm_checked') AND action NOT LIKE 'dryrun:%'`
 
 // ProcessedCond 是 processedCond 的导出版，面板与 Mini App 的 SQL 直接用。
@@ -170,22 +170,21 @@ func UserProfile(b *core.Bot, uid int64) (name, username, bio string) {
 // ResolveUserProfile 给资料卡补昵称/用户名/简介，三层兜底，按 ①→② 的顺序生效：
 //
 //	① 留底（打底）：用流水里的 user_name——判定当时记下的，不依赖 TG，人还在
-//	   流水里就一定有名字。这是「查不到」不再出现的保证。
+//	   流水里就一定有名字。
 //	② 现查（补充，也是最新值）：挑一个与该用户**有共同会话**的 bot 做 getChat。
-//	   工作 bot 入群、判过他的消息，查得到；主 bot 按设计不入群，永远查不到——
-//	   主管理员在用户页看到「查不到」就是因为这里原先固定用主 bot 查。候选先是
-//	   调用方手头的实例 primary（面板就是发消息那个 bot，可以为 nil），再按
-//	   「最近判过他的 bot」从注册表里挑；命中一次就同时拿到昵称、用户名与简介。
-//	③ 兜底不串味：资料缓存按 (bot, uid) 分开（见 bioCacheKey），主 bot 那一份
-//	   查不到的「空」不会盖掉工作 bot 查得到的结果。
+//	   工作 bot 入群、判过他的消息，查得到；主 bot 按设计不入群，永远查不到。
+//	   候选先是调用方手头的实例 primary（面板就是发消息那个 bot，可以为 nil），
+//	   再按最近判过他的 bot 从注册表里挑；命中一次就同时拿到昵称、用户名与简介。
+//	③ 兜底按 bot 隔离：资料缓存按 (bot, uid) 分开（见 bioCacheKey），主 bot 那一
+//	   份查不到的空结果不会盖掉工作 bot 查得到的结果。
 //
 // 现查拿到的非空字段覆盖留底值（空字段不动，避免把已有名字抹掉）；两层都拿不
-// 到才留空，界面照常显示「查不到」——那时人确实没留下过任何痕迹。
+// 到才留空，界面照常显示查不到——那时人确实没留下过任何痕迹。
 func ResolveUserProfile(sh *core.Shared, d *UserDossier, primary *core.Bot, scopeBot, uid int64) {
 	if uid == 0 {
 		return
 	}
-	// ① 留底先铺上：现查是增强，不该让「没查到」把已有的名字抹掉。
+	// ① 留底先铺上：现查是增强，不该让没查到把已有的名字抹掉。
 	if name, username := splitStoredName(storedUserName(sh, scopeBot, uid)); name != "" || username != "" {
 		d.Name, d.Username = name, username
 	}
@@ -206,7 +205,7 @@ func ResolveUserProfile(sh *core.Shared, d *UserDossier, primary *core.Bot, scop
 	}
 }
 
-// profileInstances 按「最可能查得到资料」的顺序给出候选 bot 实例：先 hand
+// profileInstances 按最可能查得到资料的顺序给出候选 bot 实例：先 hand
 // （调用方手头那个），再按该用户最近流水里出现过的 bot（工作 bot 入群、与他
 // 有共同会话）。流水范围与流水查询一致，所以次管不会借别人的 bot 去查。
 func profileInstances(sh *core.Shared, hand *core.Bot, scopeBot, uid int64) []*core.Bot {
@@ -238,7 +237,7 @@ func LookupInstance(sh *core.Shared, botID int64) (*core.Bot, bool) {
 	return sh.Reg.LookupID(botID)
 }
 
-// profileBots 按「最可能查得到资料」的顺序给出候选 bot：先取该用户最近流水
+// profileBots 按最可能查得到资料的顺序给出候选 bot：先取该用户最近流水
 // 里出现过的 bot（工作 bot 入群、与他有共同会话），最后落回 scopeBot。
 // 流水范围与流水查询一致，所以次管不会借别人的 bot 去查。
 func profileBots(sh *core.Shared, scopeBot, uid int64) []int64 {
@@ -266,7 +265,7 @@ func profileBots(sh *core.Shared, scopeBot, uid int64) []int64 {
 }
 
 // storedUserName 读流水里留存的昵称（判定当时记的，格式见 displayUserName：
-// 「名 姓 (@username)」）。取最近一条非空的；一条都没有就返回空串。
+// 名 姓 (@username)）。取最近一条非空的；一条都没有就返回空串。
 func storedUserName(sh *core.Shared, botID, uid int64) string {
 	scope, args := logScope(sh.Cache.Snap(), botID)
 	var name string
@@ -276,7 +275,7 @@ func storedUserName(sh *core.Shared, botID, uid int64) string {
 	return name
 }
 
-// splitStoredName 把 displayUserName 拼出的「名 姓 (@username)」拆回昵称与
+// splitStoredName 把 displayUserName 拼出的 名 姓 (@username) 拆回昵称与
 // 用户名。只有用户名时昵称为空，只有昵称时用户名为空。
 func splitStoredName(s string) (name, username string) {
 	s = strings.TrimSpace(s)

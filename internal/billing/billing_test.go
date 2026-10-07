@@ -6,8 +6,8 @@ import (
 	"menshen/internal/upstream"
 )
 
-// TestExtractUsageOpenAI：OpenAI 的 prompt_tokens 包含 cached_tokens，
-// 不减掉就会出现「四类之和 > 真实总量」，成本被重复计算。
+// TestExtractUsageOpenAINormalizesCached 验证 OpenAI 的 prompt_tokens 含
+// cached_tokens 时会被归一化，避免四类 token 之和超过真实总量而重复计费。
 func TestExtractUsageOpenAINormalizesCached(t *testing.T) {
 	body := []byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,
 		"prompt_tokens_details":{"cached_tokens":80,"cache_write_tokens":5}}}`)
@@ -21,8 +21,8 @@ func TestExtractUsageOpenAINormalizesCached(t *testing.T) {
 	}
 }
 
-// TestExtractUsageSystemOne：systemone 是扁平结构，input_tokens 同样包含
-// cached_tokens。
+// TestExtractUsageSystemOne 验证 systemone 的扁平结构里 input_tokens 同样
+// 含 cached_tokens。
 func TestExtractUsageSystemOne(t *testing.T) {
 	body := []byte(`{"usage":{"input_tokens":50,"output_tokens":7,
 		"input_tokens_details":{"cached_tokens":30}}}`)
@@ -32,8 +32,8 @@ func TestExtractUsageSystemOne(t *testing.T) {
 	}
 }
 
-// TestExtractUsageBadBodyIsZero：用量只影响面板上的开销数字，解析失败
-// 必须返回零值而不是报错——不能让一次统计失败把判定结果一起丢掉。
+// TestExtractUsageBadBodyIsZero 验证用量解析失败时返回零值而不是报错：
+// 用量只影响面板上的开销数字，不应让统计失败影响判定结果。
 func TestExtractUsageBadBodyIsZero(t *testing.T) {
 	for _, body := range []string{
 		`<html>502 Bad Gateway</html>`,
@@ -63,8 +63,8 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
-// TestComputeCost：四类 token 各乘各的单价，向上取整为 quota，
-// 零用量与脏数据（负价）都不得产生负数成本。
+// TestComputeCost 验证四类 token 各乘各的单价、向上取整为 quota，
+// 零用量与脏数据（负价）都不产生负数成本。
 func TestComputeCost(t *testing.T) {
 	m := &upstream.Model{PromptPrice: 1, CompletionPrice: 2,
 		CacheReadPrice: 0.1, CacheWritePrice: 3}
@@ -79,7 +79,7 @@ func TestComputeCost(t *testing.T) {
 	if got := ComputeCost(Usage{PromptTokens: 1}, m); got != 1 {
 		t.Errorf("极小用量应向上取整为 1 quota，得到 %d", got)
 	}
-	// 老库里的脏数据（负价）不得算出负数。
+	// 脏数据（负价）不得算出负数。
 	if got := ComputeCost(Usage{PromptTokens: 100},
 		&upstream.Model{PromptPrice: -1}); got != 0 {
 		t.Errorf("负价应零成本，得到 %d", got)

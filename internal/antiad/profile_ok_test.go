@@ -19,7 +19,7 @@ func profileFixture() senderProfile {
 		FirstName: "Mavita", Bio: "有问题请联系我的管家 @Childkiller_bot"}
 }
 
-// TestProfileOKGrantLookupAndInvalidation：资料放行按「资料指纹」绑定，
+// TestProfileOKGrantLookupAndInvalidation：资料放行按资料指纹绑定，
 // 改过资料、过期、超过上限都有明确行为。
 func TestProfileOKGrantLookupAndInvalidation(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
@@ -43,7 +43,7 @@ func TestProfileOKGrantLookupAndInvalidation(t *testing.T) {
 	if got != until {
 		t.Errorf("放行查询应返回到期时间 %d，得到 %d", until, got)
 	}
-	// 画像上要用它压掉「凭资料判广告」这一路。
+	// 画像上用它压掉凭资料判广告这一路。
 	p2 := profileFixture()
 	markProfileOK(b, &p2)
 	if !p2.ProfileOK || p2.ProfileOKUntil == "" {
@@ -76,8 +76,8 @@ func TestProfileOKGrantLookupAndInvalidation(t *testing.T) {
 }
 
 // TestReviewCleanGrantsProfileOK：复判判为正常、且给了放行时长时落库，
-// 并把「资料放行 N 小时」写进流水说明；判成广告时忽略这个字段；
-// 判成「账号广告号」时撤销已有的放行。
+// 并把“资料放行 N 小时”写进流水说明；判成广告时忽略这个字段；
+// 判成账号广告号时撤销已有的放行。
 func TestReviewCleanGrantsProfileOK(t *testing.T) {
 	// 复判正常 + 24 小时放行。
 	b, fake := testutil.NewTestBot(t, 1)
@@ -85,7 +85,7 @@ func TestReviewCleanGrantsProfileOK(t *testing.T) {
 	fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
 		llmReplyWithOK(false, 0.3, "none", "message", 24))
 
-	// 让画像带上「写着自己 bot 的简介」：这类资料正是会被反复判的那种。
+	// 让画像带上写有自己 bot 的简介：这类资料容易被反复判为广告。
 	fake.RespFunc = func(method string, payload map[string]any) (string, bool) {
 		if method == "getChat" {
 			return `{"ok":true,"result":{"id":7001,"type":"private","first_name":"Mavita",` +
@@ -125,7 +125,7 @@ func TestReviewCleanGrantsProfileOK(t *testing.T) {
 		t.Errorf("判成广告时不该给资料放行，得到 %d 行", n)
 	}
 
-	// 判成「账号本身就是广告号」时，已有的放行作废。
+	// 判成账号本身就是广告号时，已有的放行作废。
 	b3, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b3, -100)
 	fakeAIWith(t, b3, soReply("ad", 0.95, "scam", "account"),
@@ -141,8 +141,8 @@ func TestReviewCleanGrantsProfileOK(t *testing.T) {
 	}
 }
 
-// TestColdJudgeSkipsClearedProfile：资料刚被复判放过、又没改过时不再冷判定 ——
-// 同一份资料反复判只会把同一个误判重演一遍。
+// TestColdJudgeSkipsClearedProfile：资料刚被复判放过、又没改过时不再冷判定：
+// 同一份资料反复判定只会重复同一误判。
 func TestColdJudgeSkipsClearedProfile(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -174,7 +174,7 @@ func TestColdJudgeSkipsClearedProfile(t *testing.T) {
 		t.Errorf("资料已放行时不该限制进群，得到 %d 条", n)
 	}
 
-	// 改了资料（介绍换成引流话术）：放行失效，冷判定照跑。
+	// 改了资料（介绍换成引流话术）：放行失效，冷判定照常执行。
 	bio = "做单日结 5000 私聊我"
 	ForgetUserInfo(b, u.ID) // 简介有 1 小时缓存，测试里直接清掉
 	if n := countRows(t, b, `SELECT COUNT(*) FROM profile_ok`); n != 1 {
@@ -239,11 +239,10 @@ func TestProfileOKStoreLayer(t *testing.T) {
 	}
 }
 
-// TestProfileOKGrantUsesEnrichedProfile：资料放行必须用**带简介的**画像立案。
+// TestProfileOKGrantUsesEnrichedProfile：资料放行必须用带简介的画像立案。
 //
-// 实测：同步段那份画像还没取简介，拿它算指纹的话，指纹与后续判定时算出来的
-// 对不上，放行永远命中不了 —— 同一个人一天里被反复放行 12/24/48 小时，
-// 却每次都被初判按同一份资料判成广告，再靠复判放回来。
+// 同步段的画像尚未取到简介，用它计算指纹会与后续判定时算出的指纹不一致，
+// 导致放行始终命中不了。
 func TestProfileOKGrantUsesEnrichedProfile(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -267,7 +266,7 @@ func TestProfileOKGrantUsesEnrichedProfile(t *testing.T) {
 		profileHash(enriched), time.Now().Unix()); until == 0 {
 		t.Error("放行的指纹必须与判定时算的一致（含简介），否则放行命中不了")
 	}
-	// 反向：用「还没取简介」的那份画像算，命中不了 —— 那正是之前的 bug。
+	// 反向：用尚未取简介的画像计算指纹，不应命中。
 	if until := b.Cache.Snap().ProfileAllowed(b.BotID(), 7001,
 		profileHash(senderProfile{UserID: 7001, Username: "someone"}),
 		time.Now().Unix()); until != 0 {
@@ -275,12 +274,11 @@ func TestProfileOKGrantUsesEnrichedProfile(t *testing.T) {
 	}
 }
 
-// TestCheckProfileReviewNotShieldedByProfileOK：管理员 /check 一个没有留底的人
-// 走资料复查时，既有的资料放行不能当盾牌 —— 这次复查的对象就是资料本身。
+// TestCheckProfileReviewNotShieldedByProfileOK：管理员 /check 一个没有留底的
+// 人并走资料复查时，既有的资料放行不能作为依据——这次复查的对象就是资料本身。
 //
-// 线上真实漏过：明显的 VPS 广告资料先被冷判定放行 6 小时，管理员 /check 想
-// 复核，模型却以「该资料已被 profile_ok 放行」为由判正常，反手把放行续到
-// 72 小时。复查判成广告号后，原有的放行也要撤掉。
+// 复查提示词不得携带 profile_ok，否则模型会以资料已被放行为由判正常并续期。
+// 复查判成广告号后，原有的放行也要撤销。
 func TestCheckProfileReviewNotShieldedByProfileOK(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -328,8 +326,8 @@ func TestCheckProfileReviewNotShieldedByProfileOK(t *testing.T) {
 	if fake.CountCalls("restrictChatMember") == 0 {
 		t.Error("资料判成广告号后应限制发言")
 	}
-	// 群内展示默认关的群里，判成广告号也必须把结果发回群：没有回执，
-	// 管理员会以为 /check 根本没生效（线上真实反馈）。
+	// 群内展示默认关闭的群里，判成广告号也必须把结果发回群，否则管理员
+	// 无法确认 /check 是否生效。
 	if fake.CountCalls("sendMessage") == 0 {
 		t.Error("判成广告号的资料复查也必须回执")
 	}

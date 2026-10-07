@@ -12,13 +12,13 @@ import (
 
 // ---- /check 的多步响应 ----
 //
-// 命令一收到先发一条「当前状态」，之后每完成一步（规则 → 初判 → 复判 →
-// 处置）就把小节追加进同一条消息（editMessageText）。判定要跑两个模型，
-// 干等一条最终结果动辄几十秒；逐步编辑让发起人看着结论逐级出炉，也顺便
-// 知道现在进行到哪一步、卡在哪一级。
+// 命令一收到先发一条当前状态，之后每完成一步（规则 → 初判 → 复判 →
+// 处置）就把小节追加进同一条消息（editMessageText）。判定需调用两个模型，
+// 等待最终结果需要数十秒；逐步编辑让发起人看到结论逐级产生，也能了解
+// 当前进行到哪一步、卡在哪一级。
 //
-// 群内静默打开时 sendGroup 发不出消息（msgID=0），后续小节整体跳过：
-// 静默的承诺是「群里一个字都不发」，编辑一条不存在的消息同样是发。
+// 群内静默时 sendGroup 发不出消息（msgID=0），后续小节整体跳过：
+// 静默的约束是群里不发送任何消息，编辑一条不存在的消息同样属于发送。
 
 type checkProgress struct {
 	b      *core.Bot
@@ -101,8 +101,8 @@ func (p *checkProgress) judgeStep(stage string, v adVerdict, err error) {
 	if stage == "llm" && v.Reason != "" {
 		sb.WriteString("\n<i>" + html.EscapeString(core.TruncateRunes(v.Reason, 120)) + "</i>")
 	}
-	// 复判声明的证据单列一行：管理员第一眼要看的就是「他凭什么判」。理由
-	// 正文有 120 字上限，证据跟在后面会被截掉，必须自己一行。
+	// 复判声明的证据单列一行：管理员需要看到判定依据。理由正文有 120 字
+	// 上限，证据跟在后面会被截掉，必须自己一行。
 	if stage == "llm" && len(v.Evidence) > 0 {
 		sb.WriteString("\n证据：<i>" + html.EscapeString(
 			core.TruncateRunes(strings.Join(v.Evidence, "、"), 100)) + "</i>")

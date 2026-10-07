@@ -33,8 +33,8 @@ func TestWebSecretGeneratedOnce(t *testing.T) {
 }
 
 // TestWebSignatureRequiresSecret：密钥缺失时签名与链接都必须为空。
-// 退化成「用空密钥签名」的话，任何人都能按公开格式算出合法 HMAC，
-// 顺序枚举 apv/<id> 就能读到申诉理由与原文。
+// 退化为用空密钥签名时，任何人都能按公开格式算出合法 HMAC，
+// 顺序枚举 apv/<id> 便可读到申诉理由与原文。
 func TestWebSignatureRequiresSecret(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	b.Cfg.PublicURL = "https://ad.example.com"
@@ -93,7 +93,7 @@ func TestWebSigPurposeIsolation(t *testing.T) {
 	}
 }
 
-// TestParseWebRoute：路径里任一段为 _w 即命中，反代套几层子路径都认。
+// TestParseWebRoute：路径里任一段为 _w 即命中，反代套几层子路径也能识别。
 func TestParseWebRoute(t *testing.T) {
 	cases := []struct {
 		path string

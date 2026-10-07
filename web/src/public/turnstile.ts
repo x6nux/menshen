@@ -32,9 +32,8 @@ declare global {
 let loader: Promise<TurnstileApi | null> | null = null
 
 /**
- * loadTurnstile 注入官方脚本（render=explicit）；失败返回 null 并清掉缓存
- * 的加载 promise，下次调用重新注入——否则一次网络抖动就把组件判死刑，
- * 只能整页刷新才恢复。
+ * loadTurnstile 注入官方脚本（render=explicit）；失败时返回 null 并清除缓存的
+ * 加载 promise，下次调用重新注入，避免一次失败后必须整页刷新才能恢复。
  */
 export function loadTurnstile(): Promise<TurnstileApi | null> {
   if (window.turnstile) return Promise.resolve(window.turnstile)

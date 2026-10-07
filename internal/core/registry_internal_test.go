@@ -117,8 +117,8 @@ func TestDisableBotDropsWebhook(t *testing.T) {
 }
 
 // TestFinishSetupWaitsForPendingDrop：重新接入同一个 token 时必须等上一次
-// deleteWebhook 结束——迟到的 deleteWebhook 会把刚设上的 webhook 悄悄删掉，
-// 而表现是「setWebhook 成功却一条更新都收不到」。
+// deleteWebhook 结束 —— 迟到的 deleteWebhook 会把刚设上的 webhook 悄悄删掉，
+// 而表现是 setWebhook 成功却一条更新都收不到。
 func TestFinishSetupWaitsForPendingDrop(t *testing.T) {
 	sh := newCoreTestShared(t)
 	sh.Cfg.PublicURL = "https://ad.example.com"

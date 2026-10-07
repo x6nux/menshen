@@ -1,4 +1,4 @@
-// 空态（计划 3.3）：图标 + 一句文案 + 可选主按钮。
+// 空态：图标 + 一句文案 + 可选主按钮。
 import InboxOutlined from '@mui/icons-material/InboxOutlined'
 import { Box, Typography } from '@mui/material'
 import type { ReactNode } from 'react'

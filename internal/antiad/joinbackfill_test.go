@@ -49,8 +49,8 @@ func TestJoinBackfillAppliesOnlyUnknown(t *testing.T) {
 }
 
 // TestJoinBackfillRefusesWhenBusy：同一时间只允许一个补全任务（同一个 bot 的
-// MTProto 会话文件不能并发使用）。忙的时候要如实回「有任务在跑」，不能先答应
-// 再悄悄丢掉——接口已经回过「已开始」，协程里抢不到锁直接 return 就是撒谎。
+// MTProto 会话文件不能并发使用）。忙时须如实返回有任务在跑，不能先应答再丢弃：
+// 接口已回复已开始，协程抢不到锁直接 return 会与应答矛盾。
 func TestJoinBackfillRefusesWhenBusy(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"
@@ -161,9 +161,9 @@ func TestResolveJoinTime(t *testing.T) {
 	}
 }
 
-// TestJoinBackfillNotTriggeredOnAdminGrant：拿到管理员权限不再自动全量
-// 补全 —— 改成按需实时查询（ResolveJoinTime），要预热整群走 Mini App 的
-// 「补全历史入群时间」按钮。守门测试：别让全量扫描悄悄回来。
+// TestJoinBackfillNotTriggeredOnAdminGrant：拿到管理员权限不自动全量补全，
+// 入群时间按需实时查询（ResolveJoinTime）；预热整群走 Mini App 的补全历史
+// 入群时间按钮。
 func TestJoinBackfillNotTriggeredOnAdminGrant(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	b.Cfg.TGAPIID, b.Cfg.TGAPIHash = 2040, "hash"

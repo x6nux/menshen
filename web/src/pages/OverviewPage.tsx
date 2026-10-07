@@ -1,4 +1,4 @@
-// 概览（工作台，计划 4.1）：待办跳转 + 近 24h 指标 + 最近命中 + 机器人状态。
+// 概览（工作台）：待办跳转 + 近 24h 指标 + 最近命中 + 机器人状态。
 // 数据源是外壳已经拉到的 ['state'] 缓存；最近命中额外请求 logs{verdict:'ad'}。
 import { Box, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'

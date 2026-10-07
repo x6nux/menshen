@@ -7,9 +7,9 @@ import (
 	"menshen/internal/testutil"
 )
 
-// TestEnforceNeedsTestRun 单独钉住「从未跑过全库测试不许开强制」：
-// last_fp 的默认 0 只代表「没测出误封」，不代表「测过且干净」。AI 直接
-// 写库的候选就是这种形态 —— 它若能直接开强制，就绕过了防误封不变量。
+// TestEnforceNeedsTestRun 固定从未跑过全库测试不许开强制这一不变量：
+// last_fp 的默认 0 只代表没测出误封，不代表测过且干净。AI 直接
+// 写库的候选即为此形态 —— 若能直接开强制，就绕过了防误封不变量。
 func TestEnforceNeedsTestRun(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	res, err := b.Store.Write.Exec(`INSERT INTO ad_rules

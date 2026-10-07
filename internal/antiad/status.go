@@ -13,9 +13,9 @@ import (
 )
 
 // RestrictionStatusText 渲染某人当前生效的限制，供 /check 的结果附注：
-// 写清楚「限制了啥、被什么判的、在哪个群」；联合封禁额外给出前往对应
-// bot 解除的链接 —— 全局组指向主 bot，专属组指向条目归属人的 bot
-// （链接打开的是那个 bot 里这个人的资料卡，卡片上有「解除联合封禁」）。
+// 写清限制类型、判定来源与所在群；联合封禁额外给出前往对应 bot 解除的
+// 链接 —— 全局组指向主 bot，专属组指向条目归属人的 bot（链接打开的是
+// 那个 bot 里这个人的资料卡，卡片上有解除联合封禁入口）。
 //
 // 返回的按钮行已包好 URLBtn，调用方用 tg.KBAppend 追加即可。
 // 文本为空表示当前没有任何生效中的限制。
@@ -60,12 +60,12 @@ func RestrictionStatusText(sh *core.Shared, botID, uid int64) (string, [][2]stri
 	return strings.TrimRight(sb.String(), "\n"), links
 }
 
-// userDeepLink 打开某人的资料卡（卡片上有「解除联合封禁」按钮）。
+// userDeepLink 打开某人的资料卡（卡片上有解除联合封禁按钮）。
 func userDeepLink(botUsername string, uid int64) string {
 	return "https://t.me/" + botUsername + "?start=" + UserPayload(uid)
 }
 
-// messagePenaltyName 把消息级处罚的动作翻成「禁言 / 封禁出群」。
+// messagePenaltyName 把消息级处罚的动作翻成禁言或封禁出群。
 func messagePenaltyName(action string) string {
 	a := strings.TrimPrefix(action, "dryrun:")
 	if strings.Contains(a, "banned") {
@@ -91,8 +91,8 @@ func mainBotUsername(snap *store.Snapshot) string {
 	return best
 }
 
-// ownerBotUsername 取「对应的机器人」的用户名：优先当前群所在的这个 bot
-// （专属组条目本来就是它的归属人的），否则取该归属人名下号最小的一个。
+// ownerBotUsername 取对应的机器人用户名：优先当前群所在的这个 bot
+// （专属组条目本就属于它的归属人），否则取该归属人名下号最小的一个。
 func ownerBotUsername(snap *store.Snapshot, ownerID, preferBotID int64) string {
 	if rec := snap.Bots[preferBotID]; rec != nil && rec.OwnerID == ownerID &&
 		rec.Username != "" {

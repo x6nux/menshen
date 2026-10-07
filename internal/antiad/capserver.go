@@ -158,8 +158,8 @@ type capChallengePayload struct {
 	Iat int64  `json:"iat"`
 }
 
-// capRedeemPayload 是兑换令牌的载荷。它与挑战是两回事：挑战证明「算力」，
-// 兑换令牌是「已通过」的凭据，给入群验证那边核验。
+// capRedeemPayload 是兑换令牌的载荷。它与挑战不同：挑战证明算力，
+// 兑换令牌是已通过的凭据，给入群验证那边核验。
 type capRedeemPayload struct {
 	N   string `json:"n"`
 	Exp int64  `json:"exp"`

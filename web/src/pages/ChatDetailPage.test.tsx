@@ -1,4 +1,4 @@
-// 群组详情：5.1 迁移不变量（实际执行 + 永久禁言/封禁出群）、处罚切换、
+// 群组详情：实际执行 + 永久禁言/封禁出群、处罚切换、
 // 补全入群时间（服务端 note）、移除确认（含对象名与后果）。
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { HttpResponse, http } from 'msw'
@@ -26,7 +26,7 @@ function ChatStackHarness() {
   return <ChatDetailPage botId={BOT_ID} chatId={CHAT_ID} />
 }
 
-/** 迁移自旧 Go 测试：bot 禁言时长为 0（永久）时，群详情必须说清实际执行。 */
+/** punishState 构造 bot 禁言时长为 0（永久）的状态：群详情必须说清实际执行。 */
 function punishState(): State {
   const state = structuredClone(mockState)
   state.bot_settings = { [String(BOT_ID)]: { antiad_mute_minutes: '0' } }
@@ -63,7 +63,7 @@ describe('ChatDetailPage', () => {
 
     expect(await screen.findByText('实际执行')).toBeInTheDocument()
     expect(screen.getByTestId('effective-punish')).toHaveTextContent('永久禁言')
-    // 处罚方式选择器含「跟随 bot 设置」
+    // 处罚方式选择器含 `跟随 bot 设置`
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '处罚方式' }))
     expect(await screen.findByRole('option', { name: '跟随 bot 设置' })).toBeInTheDocument()
 
@@ -92,7 +92,7 @@ describe('ChatDetailPage', () => {
 
     renderPage(<ChatDetailPage botId={BOT_ID} chatId={CHAT_ID} />)
 
-    // fixtures：bot 2 覆盖 antiad_mute_minutes=30 → 实际执行「禁言 30 分钟」
+    // fixtures：bot 2 覆盖 antiad_mute_minutes=30 → 实际执行 `禁言 30 分钟`
     expect(await screen.findByText('实际执行')).toBeInTheDocument()
     expect(screen.getByTestId('effective-punish')).toHaveTextContent('禁言 30 分钟')
     expect(screen.getByText(/要改成永久禁言/)).toBeInTheDocument()

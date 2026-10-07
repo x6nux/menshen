@@ -12,31 +12,31 @@ import (
 
 // ---- 资料临时放行（复判确认资料没问题） ----
 //
-// 场景：账号资料（昵称、用户名、简介、挂的链接）是长期存在的东西，初判
-// 看一眼资料就判广告号；复判看过上下文判为正常，可下一条消息又会被同一份
-// 资料拖进删除。所以复判可以给**资料**一个临时放行：这段时间里资料不再
-// 作为广告证据，正文、引用、历史照常判断 —— 「拆开看」，而不是整号放行。
+// 账号资料（昵称、用户名、简介、挂的链接）长期不变，初判可能仅凭资料判为
+// 广告；复判看过上下文判为正常后，若不给资料放行，下一条消息仍会被同一份
+// 资料拖入删除。因此复判可给资料一个临时放行：期间资料不再作为广告证据，
+// 正文、引用、历史照常判断——只放行资料，不放行整个账号。
 //
-// 放行时长由复判模型在 1~72 小时之间给（越像正常业务给得越长），非正数
-// 表示不放行；放行绑定资料内容，他改了简介就重新判。
+// 放行时长由复判模型在 1~72 小时之间给出，非正数表示不放行；放行绑定资料
+// 内容，资料变更后重新判定。
 
 const (
-	// profileOKMaxHours 是放行时长的上限。资料长期不放行会让人反复被同一个
-	// 误判缠住；但没有上限等于让模型给个「永久」。
+	// profileOKMaxHours 是放行时长的上限。资料长期不放行会使用户反复受到同一
+	// 误判影响；但没有上限等于让模型给出永久放行。
 	profileOKMaxHours = 72
 	// profileOKMinHours 是模型给出正数时长时的下限。
 	profileOKMinHours = 1
 )
 
-// profileOKClause 说明「资料已被复判放行」这一信号，两级判定与冷判定共用。
+// profileOKClause 说明资料已被复判放行这一信号，两级判定与冷判定共用。
 const profileOKClause = "sender.profile_ok 为 true 表示这个账号的**资料**（昵称、" +
 	"用户名、简介与挂的链接）不久前已被复判确认不构成广告，在 profile_ok_until " +
 	"之前不得再凭资料判为广告（名字奇怪、只有一个频道/bot 链接、写着联系方式，" +
 	"都不算理由）；正文、引用、历史照常判断 —— 放行只免掉资料这一路，他之后" +
 	"发广告照样按广告处置。"
 
-// profileHash 是资料指纹：用户名 + 昵称 + 简介。它绑定「这次放行的是哪份
-// 资料」——改过资料就自动失效，免得放行被改头换面接着用。
+// profileHash 是资料指纹：用户名 + 昵称 + 简介。它绑定放行所针对的那份
+// 资料——资料变更后自动失效，避免放行被继续沿用。
 func profileHash(p senderProfile) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.Join([]string{
 		strings.TrimSpace(p.Username), strings.TrimSpace(p.FirstName),
@@ -97,7 +97,7 @@ func DropProfileOK(b *core.Bot, uid int64, why string) {
 	}
 }
 
-// RevokeProfileOK 撤销某个 bot 给某人的资料放行（面板上的「撤销」也走这里）。
+// RevokeProfileOK 撤销某个 bot 给某人的资料放行（面板上的撤销操作也走这里）。
 func RevokeProfileOK(sh *core.Shared, botID, uid int64, why string) error {
 	res, err := sh.Store.Write.Exec(
 		`DELETE FROM profile_ok WHERE bot_id=? AND user_id=?`, botID, uid)
@@ -111,9 +111,9 @@ func RevokeProfileOK(sh *core.Shared, botID, uid int64, why string) error {
 	return sh.Cache.Reload()
 }
 
-// markProfileOK 把「资料已放行」标进画像，提示词据此不再凭资料判广告。
-// 频道身份（负 ID）不适用：它的「资料」是频道名与频道简介，处置路径也
-// 不同，放行没有意义。
+// markProfileOK 把资料已放行标进画像，提示词据此不再凭资料判广告。
+// 频道身份（负 ID）不适用：其资料是频道名与频道简介，处置路径也不同，
+// 放行没有意义。
 func markProfileOK(b *core.Bot, p *senderProfile) {
 	if p.UserID <= 0 || p.IsChannel {
 		return
@@ -128,7 +128,7 @@ func markProfileOK(b *core.Bot, p *senderProfile) {
 		b.Cache.Snap().Location()).Format("2006-01-02 15:04")
 }
 
-// profileOKNote 是写进流水「处置说明」的那句，管理员在记录卡片上能看到。
+// profileOKNote 是写进流水处置说明的那句，管理员在记录卡片上能看到。
 func profileOKNote(hours int) string {
 	return "资料放行 " + itoaSmall(hours) + " 小时"
 }

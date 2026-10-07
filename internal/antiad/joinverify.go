@@ -17,10 +17,10 @@ import (
 //
 // 新人进群先禁言，在群里发一条带验证链接的提示；本人用浏览器完成人机
 // 验证（Turnstile / hCaptcha / 内置 Cap）后自动解除。它拦在门口，
-// 与冷判定独立：冷判定看资料、验证看「是不是人」，两者可以同时开。
+// 与冷判定独立：冷判定看资料、验证看是否为人，两者可以同时开。
 //
 // 与 join_mutes 分开记：那是可申诉的处罚（资料/前置号判为广告），入群
-// 验证是自助门槛，通过即解除。混表会让申诉页把「还没点验证」列成处罚。
+// 验证是自助门槛，通过即解除。混表会让申诉页把尚未完成验证列成处罚。
 
 // join_verify.status 的取值。
 const (
@@ -30,8 +30,8 @@ const (
 	jvExpired  = "expired"
 )
 
-// jvMaxAttempts 是同一张验证单允许的失败次数。到顶只标记，不再受理；
-// 真正的处理是等窗口到期由 SweepJoinVerifies 踢出。
+// jvMaxAttempts 是同一张验证单允许的失败次数。达到上限只标记，不再受理；
+// 实际处理是等窗口到期由 SweepJoinVerifies 踢出。
 const jvMaxAttempts = 5
 
 // jvSweepLimit 是每分钟复查的待验证行数上限。
@@ -50,10 +50,10 @@ type joinVerifyRec struct {
 	VerifiedAt int64
 }
 
-// joinVerifyEnabled 报告该群是否该走「先验证再进群」。
+// joinVerifyEnabled 报告该群是否走先验证再进群流程。
 //
 // 三个条件缺一不可：设置打开、网页子系统可用、验证码提供方配置齐全。
-// 缺项时静默按关闭处理会在「配了却没人验证」时无从查起，所以每处都在
+// 缺项时静默按关闭处理会在已经配置却不产生验证时无从查起，所以每处都在
 // 调用点留了日志（见 startJoinVerify 与面板）。
 func joinVerifyEnabled(b *core.Bot) bool {
 	if b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_joinverify", 0) != 1 {
@@ -110,13 +110,13 @@ func startJoinVerify(b *core.Bot, conf store.BotChat, u *tg.TGUser) {
 		slog.Info("入群验证：演练模式，不限制新人", "chat", conf.ChatID, "uid", u.ID)
 		return
 	}
-	// 群内静默时不发任何消息，链接也就送不出去 —— 禁言只会让人卡死。
-	// 宁可放过，也不要把人静默关在门外。
+	// 群内静默时不发送任何消息，链接无法送达 —— 此时禁言会让本人无法
+	// 完成验证。这种情况跳过，不施加禁言。
 	if groupSilent(b) {
 		slog.Warn("入群验证：群内静默下无法送达验证链接，跳过", "chat", conf.ChatID)
 		return
 	}
-	// 同一次入群 TG 会推两份（chat_member 与 service 消息），别重复禁言与发链接。
+	// 同一次入群 TG 会推两份（chat_member 与 service 消息），避免重复禁言与发链接。
 	if _, ok := pendingJoinVerify(b.Store, conf.ChatID, u.ID); ok {
 		return
 	}
@@ -281,7 +281,7 @@ func joinVerifyPost(sh *core.Shared, w http.ResponseWriter, r *http.Request, rec
 	recordJoinVerifyAttempt(b, rec, ip, ua, fp, hard, soft)
 
 	if result != "pass" {
-		// 失败只累加；到顶标记 failed（不再受理），真正处理等窗口到期踢出。
+		// 失败只累加；达到上限标记 failed（不再受理），实际处理等窗口到期踢出。
 		if _, err := b.Store.Write.Exec(
 			`UPDATE join_verify SET attempts=attempts+1 WHERE id=?`, rec.ID); err != nil {
 			slog.Warn("入群验证：累加失败次数出错", "jv", rec.ID, "err", err)
@@ -295,7 +295,7 @@ func joinVerifyPost(sh *core.Shared, w http.ResponseWriter, r *http.Request, rec
 		return
 	}
 
-	// 通过：解除限制（若账号还背着资料类限制则保留，改由申诉通道处理）。
+	// 通过：解除限制（若账号另有资料类限制则保留，改由申诉通道处理）。
 	muted, note := passJoinVerify(b, rec)
 	if muted {
 		writeWebJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": note})
@@ -307,8 +307,8 @@ func joinVerifyPost(sh *core.Shared, w http.ResponseWriter, r *http.Request, rec
 
 // passJoinVerify 收尾：解除验证禁言、撤回提示、标记通过。
 //
-// 账号同时背着资料类限制（join_mutes）时**不**解除：那条限制有自己的
-// 申诉出口，一键放开会让门口验证变成绕过画像限制的后门。返回 true 表示
+// 账号同时存在资料类限制（join_mutes）时不解除：该限制有自己的申诉
+// 出口，自动放开会让入群验证成为绕过画像限制的通道。返回 true 表示
 // 仍处于限制中，note 是给用户看的说明。
 func passJoinVerify(b *core.Bot, rec joinVerifyRec) (bool, string) {
 	NoteLifted(b.Shared, rec.ChatID, rec.UserID)
@@ -347,7 +347,7 @@ func deleteJoinVerifyNotice(b *core.Bot, rec joinVerifyRec) {
 
 // recordJoinVerifyAttempt 把这次尝试的 IP / UA / 指纹落库，覆盖上一行。
 //
-// 只留最近一次：与申诉不同，这里要的是「当前这个人用的是什么环境」，
+// 只留最近一次：与申诉不同，这里要的是当前这个人用的是什么环境，
 // 而不是逐次审计。原始的 signals JSON 不落库（join_verify 没有该列）。
 func recordJoinVerifyAttempt(b *core.Bot, rec joinVerifyRec, ip, ua, fp string,
 	hard, soft []string) {
@@ -418,7 +418,7 @@ func SweepJoinVerifies(b *core.Bot, now time.Time) {
 }
 
 // kickJoinVerify 把未通过验证的人踢出群：封禁后立即解封，本人可重新进群。
-// 直接 ban 而不解封的话，他连重进的机会都没有。
+// 直接 ban 而不解封的话，本人无法重新进群。
 func kickJoinVerify(b *core.Bot, chatID, uid int64) (bool, string) {
 	if ok, desc := BanSender(b, chatID, uid); !ok {
 		return false, desc

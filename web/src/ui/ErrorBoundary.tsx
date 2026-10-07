@@ -7,7 +7,7 @@ import type { ErrorInfo, ReactNode } from 'react'
 
 interface ErrorBoundaryProps {
   children: ReactNode
-  /** title 是出错卡片的标题，默认「页面出错了」。 */
+  /** title 是出错卡片的标题，默认为“页面出错了”。 */
   title?: string
 }
 

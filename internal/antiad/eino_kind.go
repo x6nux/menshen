@@ -69,7 +69,7 @@ func einoTargetURL(u *upstream.Upstream, modelID string) (string, error) {
 	}
 	// 容错：有的管理员按 OpenAI 习惯把 base_url 登记成带 /v1 的网关前缀
 	//（OpenAI Completions 渠道两种写法等价）。翻译渠道在 base 后接自己的
-	// 路径，先把尾巴上的 /v1 去掉再拼，两种写法都能落对。
+	// 路径，先把尾巴上的 /v1 去掉再拼，两种写法都能拼出正确端点。
 	base = strings.TrimSuffix(base, "/v1")
 	switch u.EffectiveKind() {
 	case upstream.KindOpenAIResp:
@@ -136,7 +136,7 @@ func (t *einoKindRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		// 网关无视 stream:false 直接回 SSE：SDK 没法解析，换成一个明确
-		// 的错误响应，别让管理员面对晦涩的「invalid character 'd'」。
+		// 的错误响应，别让管理员面对晦涩的 JSON 解析错误。
 		resp.Body.Close()
 		return errorHTTPResponse(resp.StatusCode,
 			"上游无视 stream=false 直接返回了 SSE 流，该渠道不支持非流式请求"), nil
@@ -712,7 +712,7 @@ func anthropicReply(raw []byte) ([]byte, error) {
 				Function: einoWireFunc{Name: c.Name, Arguments: args}})
 		case "thinking":
 			reasoning.WriteString(c.Thinking)
-		default: // text（type 为空的旧网关也按 text 处理）
+		default: // text（type 为空时同样按 text 处理）
 			text.WriteString(c.Text)
 		}
 	}
