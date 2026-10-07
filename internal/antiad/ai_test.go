@@ -82,6 +82,15 @@ func TestPromptsExplainMatchedRules(t *testing.T) {
 		if !strings.Contains(p, "可以判正常") {
 			t.Errorf("%s 提示词未给出结合语境推翻的出口", name)
 		}
+		// 实测误判（节点列表命中规则、模型照「强证据」跟判）：推翻出口必须
+		// 写明「note 是样本的完整形态，缺引流载荷不算呈现」与「群主题内同形
+		// 内容按正常处理」，否则模型只会照抄规则结论。
+		if !strings.Contains(p, "不算呈现该形态") {
+			t.Errorf("%s 提示词未说明形态只命中一部分时不算呈现", name)
+		}
+		if !strings.Contains(p, "正常讨论的") || !strings.Contains(p, "这类内容") {
+			t.Errorf("%s 提示词未说明群主题内的同形内容按正常处理", name)
+		}
 	}
 }
 

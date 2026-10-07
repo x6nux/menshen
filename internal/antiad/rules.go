@@ -97,7 +97,8 @@ type MatchedRule struct {
 // 与 known_ad_patterns（形态摘要，提示词明确说它只是参考、不是判决）不同：
 // 这些是主管理员启用、且通过全库零误封测试的高精度规则，提示词要求模型
 // 按**强证据**对待；但规则是纯模式匹配、不看语境，模型仍可结合上下文
-// 推翻（引用他人广告做批评/警示、正常讨论里恰好同形等）。
+// 推翻（引用他人广告做批评/警示、形态只中一半缺引流载荷、恰是本群主题的
+// 正常内容等，见 matchedRulesClause）。
 func MatchedRuleInfos(snap *store.Snapshot, text string) []MatchedRule {
 	var out []MatchedRule
 	for _, r := range MatchRules(snap, text) {
