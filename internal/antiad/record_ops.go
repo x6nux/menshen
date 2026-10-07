@@ -252,6 +252,23 @@ func ReleaseUserInChat(b *core.Bot, chatID, uid, actor int64) (bool, string) {
 	return true, note
 }
 
+// formalMessageMuteActive 报告此人在本群是否还有我们判的、未解除且未到期
+// 的消息级禁言（antiad_mute_minutes=0 表示永久）。复查判正常时据此决定
+// 要不要解除原判禁言：只看本群、只看消息级 —— 进群类限制有自己的复查路径
+// （reviewProfileOnly），不由消息复查顺手解。
+func formalMessageMuteActive(b *core.Bot, chatID, uid int64) bool {
+	minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
+	var at int64
+	err := b.Store.Read.QueryRow(`SELECT created_at FROM antiad_log
+		WHERE bot_id=? AND chat_id=? AND user_id=? AND lifted_at=0
+		AND action IN ('muted','deleted_muted') ORDER BY id DESC LIMIT 1`,
+		b.BotID(), chatID, uid).Scan(&at)
+	if err != nil {
+		return false
+	}
+	return minutes <= 0 || at+minutes*60 > time.Now().Unix()
+}
+
 // MarkPenaltiesLifted 把某人在某群尚未标记解除的处罚流水标成已解除。
 //
 // 申诉入口按「仍在生效的处罚」决定要不要给入口。限时禁言靠时间窗自然过期，

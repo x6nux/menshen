@@ -433,6 +433,16 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		lifted = true
 		note = joinNotes(note, "已解除临时禁言")
 	}
+	// 复查判为正常时，原判留下的正式禁言（含永久）也一并解除：管理员发起
+	// 复查多半就是因为「人被罚了却看着不像广告」，判了正常还留着他禁言，
+	// 只能再靠人工全解（实测：正式禁言被管理员手动解除后还会被外部解除
+	// 复查弹回去）。LiftMute 会先落「主动解除」标记，不会被判言复查弹回。
+	if !v.IsAd && !dryrun && formalMessageMuteActive(b, chatID, tgt.From.ID) {
+		if ok, _ := LiftMute(b, chatID, tgt.From.ID); ok {
+			lifted = true
+			note = joinNotes(note, "已解除原判禁言")
+		}
+	}
 	// 人工复查同样能给资料放行：管理员发起复查、复判确认资料没问题时，
 	// 别让他之后又被同一份资料缠上。
 	if !v.IsAd && !dryrun && v.ProfileOKHours > 0 {

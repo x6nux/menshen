@@ -256,12 +256,12 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		okHours = clampProfileHours(out.ProfileOKHours)
 	}
 
-	return adVerdict{
+	return evidenceGate(st, adVerdict{
 		IsAd: out.IsAd, Confidence: out.Confidence, Kind: out.Kind, Scope: out.Scope,
 		Severity: out.Severity,
 		Reason:   out.Reason, Decider: "llm", Model: reply.Model,
 		ProfileOKHours: okHours, Usage: reply.Usage, Cost: reply.Cost,
-	}, nil
+	}), nil
 }
 
 // extractJSONObject 从模型输出里抠出首个完整的 JSON 对象。
