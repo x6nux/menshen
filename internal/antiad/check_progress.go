@@ -58,6 +58,17 @@ func (p *checkProgress) step(section string) {
 	p.b.EditNoPreview(p.chatID, p.msgID, p.sb.String(), p.kb)
 }
 
+// modelShort 把模型全名 <上游名>/<模型ID> 剥成模型 ID：复查卡片是发给
+// 群里看的，上游名是内部路由信息。全名本身仍按原口径记进流水与资料卡
+// （换模型校准阈值时要知道是谁答的）。上游名不含 /（ValidUpstreamName
+// 校验保证），剥的总是第一段；没有 / 的名字原样返回。
+func modelShort(full string) string {
+	if _, id, ok := strings.Cut(full, "/"); ok {
+		return id
+	}
+	return full
+}
+
 // judgeStep 把一级判定结论编辑进进度消息。stage 为 "so"（初判）或
 // "llm"（复判），结论与错误都是该级的原始值（judgeBoth 在回调之后才合并）。
 //
@@ -77,7 +88,7 @@ func (p *checkProgress) judgeStep(stage string, v adVerdict, err error) {
 		return
 	}
 	if v.Model != "" {
-		sb.WriteString("（" + html.EscapeString(v.Model) + "）")
+		sb.WriteString("（" + html.EscapeString(modelShort(v.Model)) + "）")
 	}
 	sb.WriteString("：" + html.EscapeString(adWord(v.IsAd)))
 	if v.IsAd && v.Kind != "" && v.Kind != "none" {
