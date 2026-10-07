@@ -147,12 +147,12 @@ func TestLLMStreamAssemblesContentAndUsage(t *testing.T) {
 		sseStart(w)
 		sseChunk(w, `{"choices":[{"delta":{"role":"assistant"}}]}`)
 		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true,"}}]}`)
-		sseChunk(w, `{"choices":[{"delta":{"content":"\"confidence\":0.88,\"kind\":\"scam\",\"reason\":\"流式\"}"}}]}`)
+		sseChunk(w, `{"choices":[{"delta":{"content":"\"confidence\":0.88,\"kind\":\"scam\",\"reason\":\"流式\",\"evidence\":[\"测试群\"]}"}}]}`)
 		sseChunk(w, `{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30}}`)
 		sseChunk(w, `[DONE]`)
 	})
 
-	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	v, err := judgeLLM(b, b.Cache.Snap(), testAdState(), adVerdict{}, llmSystemPrompt)
 	if err != nil {
 		t.Fatalf("judgeLLM: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 		}
 		// 第二路：立刻给出结论。
 		sseStart(w)
-		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true,\"confidence\":0.9,\"kind\":\"scam\",\"reason\":\"快模型\"}"}}]}`)
+		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true,\"confidence\":0.9,\"kind\":\"scam\",\"reason\":\"快模型\",\"evidence\":[\"测试群\"]}"}}]}`)
 		sseChunk(w, `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 		sseChunk(w, `[DONE]`)
 	})
@@ -411,7 +411,7 @@ func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 	setGlobal(t, b, "antiad_llm_models", `["fake/slow","fake/fast"]`)
 
 	start := time.Now()
-	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	v, err := judgeLLM(b, b.Cache.Snap(), testAdState(), adVerdict{}, llmSystemPrompt)
 	if err != nil {
 		t.Fatalf("慢模型被切掉后应换到快模型并成功：%v", err)
 	}

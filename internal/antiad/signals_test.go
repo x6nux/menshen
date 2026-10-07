@@ -141,7 +141,7 @@ func TestVerdictScopeParsed(t *testing.T) {
 	if err != nil || so.Scope != "account" {
 		t.Errorf("systemone scope = %q, err = %v", so.Scope, err)
 	}
-	llm, err := judgeLLM(b, snap, adState{}, adVerdict{}, llmSystemPrompt)
+	llm, err := judgeLLM(b, snap, testAdState(), adVerdict{}, llmSystemPrompt)
 	if err != nil || llm.Scope != "account" {
 		t.Errorf("大模型 scope = %q, err = %v", llm.Scope, err)
 	}

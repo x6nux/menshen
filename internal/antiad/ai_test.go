@@ -106,7 +106,7 @@ func TestAICallRetriesTransientFailure(t *testing.T) {
 		fakeAIOK(w, r)
 	})
 
-	if _, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt); err != nil {
+	if _, err := judgeLLM(b, b.Cache.Snap(), testAdState(), adVerdict{}, llmSystemPrompt); err != nil {
 		t.Fatalf("一次 502 之后应重试成功: %v", err)
 	}
 	if n := hits.Load(); n != 2 {
@@ -166,9 +166,9 @@ func TestSystemOneReasonFormat(t *testing.T) {
 func TestLLMVerdictCarriesSeverity(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"choices":[{"message":{"content":"{\"is_ad\":true,\"confidence\":0.95,\"kind\":\"scam\",\"scope\":\"message\",\"severity\":2.2,\"reason\":\"洗钱引流\"}"}}]}`))
+		w.Write([]byte(`{"choices":[{"message":{"content":"{\"is_ad\":true,\"confidence\":0.95,\"kind\":\"scam\",\"scope\":\"message\",\"severity\":2.2,\"reason\":\"洗钱引流\",\"evidence\":[\"测试群\"]}"}}]}`))
 	})
-	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt)
+	v, err := judgeLLM(b, b.Cache.Snap(), testAdState(), adVerdict{}, llmSystemPrompt)
 	if err != nil {
 		t.Fatal(err)
 	}

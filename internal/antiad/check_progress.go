@@ -101,6 +101,12 @@ func (p *checkProgress) judgeStep(stage string, v adVerdict, err error) {
 	if stage == "llm" && v.Reason != "" {
 		sb.WriteString("\n<i>" + html.EscapeString(core.TruncateRunes(v.Reason, 120)) + "</i>")
 	}
+	// 复判声明的证据单列一行：管理员第一眼要看的就是「他凭什么判」。理由
+	// 正文有 120 字上限，证据跟在后面会被截掉，必须自己一行。
+	if stage == "llm" && len(v.Evidence) > 0 {
+		sb.WriteString("\n证据：<i>" + html.EscapeString(
+			core.TruncateRunes(strings.Join(v.Evidence, "、"), 100)) + "</i>")
+	}
 	p.step(sb.String())
 }
 

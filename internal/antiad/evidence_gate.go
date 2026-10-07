@@ -10,17 +10,18 @@ package antiad
 // 只能出自模型生成；提示词 4.1/6 明令不得编造，但没有程序化校验，
 // 高置信度的编造照样直接删消息、禁言。
 //
-// 这里在复判结论落锤前做一次机械核对：判词里当**证据**引用的东西——
-// 域名、t.me 引用、@用户名、电话模样的长数字串、「」『』引号段——
-// 必须能在判定对象的字段（正文、quoted、资料、bio_links、上下文、
-// 命中规则）里找到原文；判词说「载荷在引用里」时 state 里必须有 quoted。
+// 防线有两层。第一层是提示词（17 条 / 冷判定 11 条）：判为广告必须给
+// evidence 数组——从判定对象原文**逐字摘出**的关键词，可多项。第二层是
+// 这里的机械核对：证据必须能在判定对象字段（正文、quoted、资料、
+// bio_links、上下文、命中规则）里逐字找到，判词说「载荷在引用里」时
+// state 里必须有 quoted，判词里出现的域名/@用户名/链接引用也得真实存在。
 // 对不上说明判词在描写一个不存在的输入，结论按未定放行——
 // 宁可漏判，不按编造的证据处罚。放行的条目在流水与复查卡片里
 // 带前缀说明，管理员看得见为什么。
 //
-// 已知取舍：提示词要求「变形还原后再判断」，理由若引用还原后的写法
-// （原文写「看煮页」、判词引「看主页」）会被误拦；那类条目按未定放行、
-// 留给人工复核，与「复判失败放行」同一个失败方向。
+// reason 本身可以概括、可以变形还原（那是给人看的说明）：核对只咬
+// evidence 与硬 token 两条通道，不咬判词措辞——原文写「看煮页」、
+// 判词写「看主页」不算不一致，只要 evidence 摘的是「看煮页」。
 
 import (
 	"log/slog"
@@ -35,9 +36,6 @@ import (
 var evidenceTokenRe = regexp.MustCompile(
 	`(?i)t\.me/[+%]?[a-z0-9_-]+|@[a-z][a-z0-9_]{3,31}|` +
 		`[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,12}|\+?\d{7,}`)
-
-// evidenceQuoteRe 抽取判词里用引号当原文引的段。
-var evidenceQuoteRe = regexp.MustCompile(`[「『]([^「」『』]{2,60})[」』]`)
 
 // stripInvisible 去掉空白与零宽字符：广告文案爱用零宽字符拆词
 // （「首‌发」），判词引用时通常已剥掉；两边都归一化后才比得上。
@@ -133,9 +131,23 @@ func evidenceCorpus(st adState) string {
 
 // evidenceGate 核对判词引用的证据是否真的在判定对象里。相符时原样返回；
 // 不符时把结论降为未定（IsAd=false），reason 前缀写明对不上的地方。
+//
+// 复判路径（judgeLLM）不走这里 —— 它拿到 misses 后先给模型一次改正机会，
+// 重试仍不符才降级（见 judgeLLM 的改正重试）。这个组合入口留给不经重试的
+// 调用方与测试。
 func evidenceGate(st adState, v adVerdict) adVerdict {
-	if !v.IsAd || strings.TrimSpace(v.Reason) == "" {
-		return v
+	if misses := evidenceMisses(st, v); len(misses) > 0 {
+		slog.Warn("反广告：复判理由与输入不符，按未定放行",
+			"chat", st.Chat.ID, "uid", st.Sender.UserID, "不符项", misses)
+		return evidenceDemote(v, misses)
+	}
+	return v
+}
+
+// evidenceMisses 返回判词与判定对象对不上的地方；空表示通过。
+func evidenceMisses(st adState, v adVerdict) []string {
+	if !v.IsAd {
+		return nil
 	}
 	var misses []string
 
@@ -150,7 +162,8 @@ func evidenceGate(st adState, v adVerdict) adVerdict {
 		misses = append(misses, "判词把载荷归到引用里，本条没有 quoted 字段")
 	}
 
-	// 门二：硬证据 token 必须能在判定对象里找到。
+	// 门二：判词里的硬证据 token（域名、t.me 引用、@用户名、电话模样的
+	// 长数字串）必须能在判定对象里找到。
 	for _, tok := range evidenceTokenRe.FindAllString(stripInvisible(v.Reason), -1) {
 		key := evidenceKey(tok)
 		if key == "" || promptEvidenceVocab[key] {
@@ -161,27 +174,57 @@ func evidenceGate(st adState, v adVerdict) adVerdict {
 		}
 	}
 
-	// 门三：引号里当原文引的段同样必须在判定对象里（与门二互补：
-	// 「约炮」这类纯中文捏造不走门二）。
-	for _, m := range evidenceQuoteRe.FindAllStringSubmatch(v.Reason, -1) {
-		seg := stripInvisible(m[1])
-		if len([]rune(seg)) < 2 {
+	// 门三：核对模型声明的证据（evidence，提示词要求逐字摘自判定对象原文，
+	// 可多项）。判为广告却给不出证据、或给出的「原文」在判定对象里找不到，
+	// 都说明判词在描写一个不存在的输入。
+	//
+	// 判词正文（reason）可以概括、变形还原——那是给人看的说明，不再逐字
+	// 核对（旧做法从判词里抽引号段核对，会把「原文写看煮页、判词写看主页」
+	// 这类还原误拦）；判广告的依据是否真实存在，由 evidence 这条通道保证。
+	if len(v.Evidence) == 0 {
+		misses = append(misses, "判为广告但没有声明证据（evidence 为空）")
+	}
+	for _, ev := range v.Evidence {
+		// 摘录带不带引号都算同一份原文；零宽与空白照例归一化。
+		seg := strings.Trim(strings.ToLower(stripInvisible(ev)),
+			"「」『』\"“”‘’'")
+		if seg == "" {
 			continue
 		}
-		if !strings.Contains(corpusNorm, strings.ToLower(seg)) {
-			misses = append(misses, "判词引用了「"+m[1]+"」，判定对象中不存在")
+		if strings.Contains(corpusNorm, seg) {
+			continue
+		}
+		// 严格比对不上再走一遍「只留字符」的宽松口径：广告文案靠零宽字符与
+		// 怪标点拆词（「　急‌招‌‧拍·照‍📷⁠　​日⁠结百左右」），模型摘录时
+		// 通常归一成常规写法。容忍标点与表情差异、要求字符顺序一致——
+		// 换字（看煮页→看主页）仍然对不上。
+		if sq := squashEvidence(seg); sq != "" &&
+			strings.Contains(squashEvidence(corpus), sq) {
+			continue
+		}
+		misses = append(misses, "声明的证据「"+ev+"」在判定对象中不存在")
+	}
+	return misses
+}
+
+// squashEvidence 只留字母、数字与表意文字，去掉标点、表情与空白。
+// 用于证据核对的宽松口径（见 evidenceMisses 门三）。
+func squashEvidence(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
 		}
 	}
+	return b.String()
+}
 
-	if len(misses) == 0 {
-		return v
-	}
+// evidenceDemote 把结论降为未定并写明不符项，理由保留在后便于对照。
+func evidenceDemote(v adVerdict, misses []string) adVerdict {
 	shown := strings.Join(misses, "；")
 	if len(misses) > 3 {
 		shown = strings.Join(misses[:3], "；") + " 等"
 	}
-	slog.Warn("反广告：复判理由与输入不符，按未定放行",
-		"chat", st.Chat.ID, "uid", st.Sender.UserID, "不符项", misses)
 	v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
 	v.Reason = "（判词与输入不符，按未定放行待人工复核：" + shown + "）" + v.Reason
 	return v

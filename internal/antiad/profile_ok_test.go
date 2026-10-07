@@ -189,7 +189,8 @@ func TestColdJudgeSkipsClearedProfile(t *testing.T) {
 // llmReplyWithOK 造一条带 profile_ok_hours 的复判响应。
 func llmReplyWithOK(isAd bool, conf float64, kind, scope string, okHours int) string {
 	inner, _ := json.Marshal(map[string]any{"is_ad": isAd, "confidence": conf,
-		"kind": kind, "scope": scope, "profile_ok_hours": okHours, "reason": "测试"})
+		"kind": kind, "scope": scope, "profile_ok_hours": okHours,
+		"reason": "测试", "evidence": testEvidence})
 	out, _ := json.Marshal(map[string]any{"choices": []any{
 		map[string]any{"message": map[string]any{"content": string(inner)}}}})
 	return string(out)

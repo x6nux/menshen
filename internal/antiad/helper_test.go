@@ -78,8 +78,7 @@ func fakeAIOK(w http.ResponseWriter, r *http.Request) {
 			`"ad_kind":{"choice":"scam"},"severity":{"score":2}}}`))
 		return
 	}
-	w.Write([]byte(`{"choices":[{"message":{"content":` +
-		`"{\"is_ad\":true,\"confidence\":0.9,\"kind\":\"scam\",\"reason\":\"测试\"}"}}]}`))
+	w.Write([]byte(llmReply(true, 0.9, "scam", "message")))
 }
 
 // waitIdle 等判定队列与复判队列都跑空。判定是异步的，断言前必须等它落地。
@@ -109,13 +108,26 @@ func soReplySev(choice string, conf float64, kind, scope string, sev float64) st
 }
 
 // llmReply 造一条大模型（非流式形状）响应。
+//
+// 判广告时带上 evidence：取证词是测试群标题，它一定出现在判定对象的
+// 语料里（见 evidenceCorpus）——不这么做，一致性门会把所有测试结论
+// 降级，测的就不是原本那条链路了。门本身的拦截与改正重试由
+// evidence_gate_test.go 用自造的响应专测。
 func llmReply(isAd bool, conf float64, kind, scope string) string {
 	inner, _ := json.Marshal(map[string]any{"is_ad": isAd, "confidence": conf,
-		"kind": kind, "scope": scope, "reason": "测试"})
+		"kind": kind, "scope": scope, "reason": "测试", "evidence": testEvidence})
 	out, _ := json.Marshal(map[string]any{"choices": []any{
 		map[string]any{"message": map[string]any{"content": string(inner)}}}})
 	return string(out)
 }
+
+// testEvidence 是测试罐头响应里的证据词：testutil 建的群标题，必然在语料里。
+var testEvidence = []string{"测试群"}
+
+// testAdState 是直接调判定函数（judgeLLM / judgeSystemOne）的测试用的 state：
+// 只带一个群标题，让罐头响应里的 testEvidence 能通过一致性门。走完整链路的
+// 测试用 testutil.GroupMsg 造消息，标题同样会进 state。
+func testAdState() adState { return adState{Chat: adChatInfo{Title: "测试群"}} }
 
 // fakeAIWith 起假上游：systemone 与大模型各回固定内容，并各自计数。
 func fakeAIWith(t *testing.T, b *core.Bot, so, llm string) (soN, llmN *atomic.Int32) {

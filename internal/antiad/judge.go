@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"menshen/internal/billing"
@@ -33,8 +34,12 @@ type adVerdict struct {
 	// ProfileOKHours 是复判给的「资料临时放行」时长（1~72 小时，0 = 不放行）。
 	// 只有复判判为正常、且可疑的只是资料本身时才会给（见 profile_ok.go）。
 	ProfileOKHours int
-	Usage          billing.Usage
-	Cost           int64 // quota
+	// Evidence 是复判模型声明判广告的证据：从判定对象原文**逐字摘出**的
+	// 关键词/短语，可多项。一致性门（evidence_gate.go）拿它与判定对象
+	// 核对，流水与复查卡片也展示它——管理员不用再从判词里猜依据。
+	Evidence []string
+	Usage    billing.Usage
+	Cost     int64 // quota
 }
 
 // buildSystemOneReq 构造 jev 请求体。
@@ -213,7 +218,74 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	if err != nil {
 		return adVerdict{}, err
 	}
+	v, obj, err := parseLLMReply(reply)
+	if err != nil {
+		return adVerdict{Usage: reply.Usage, Cost: reply.Cost}, err
+	}
 
+	misses := evidenceMisses(st, v)
+	if len(misses) == 0 {
+		return v, nil
+	}
+
+	// 证据与判定对象对不上：给模型一次改正机会 —— 原提示词原样重发，
+	// 附上它上一轮的输出与错误说明，把「evidence 必须逐字摘自判定对象」
+	// 二次强调一遍。上游抖动导致的偶发编造与提示词漂移都在这一轮里
+	// 有一次自纠的机会；重试仍不符才按未定放行（见 evidenceDemote）。
+	retryReq := map[string]any{
+		"temperature":    0,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+		"messages": append(slices.Clone(req["messages"].([]map[string]string)),
+			map[string]string{"role": "assistant", "content": obj},
+			map[string]string{"role": "user",
+				"content": fmt.Sprintf(evidenceRetryNote, strings.Join(misses, "；"))}),
+	}
+	reply2, err2 := aiCall(b.Shared, upstream.EPChat, llmModels, retryReq, upstreamNotifier(b))
+	if err2 != nil {
+		// 重试没跑成不改变失败方向：仍按未定放行，但把这次尝试的花费一并记上。
+		slog.Warn("反广告：证据改正重试失败，按未定放行",
+			"chat", st.Chat.ID, "uid", st.Sender.UserID,
+			"不符项", misses, "err", err2)
+		v.Cost += reply2.Cost
+		v.Usage = billing.MergeUsage(v.Usage, reply2.Usage)
+		return evidenceDemote(v, misses), nil
+	}
+	fixed, _, err2 := parseLLMReply(reply2)
+	if err2 != nil {
+		slog.Warn("反广告：证据改正重试无法解析，按未定放行",
+			"chat", st.Chat.ID, "uid", st.Sender.UserID, "不符项", misses, "err", err2)
+		v.Cost += reply2.Cost
+		v.Usage = billing.MergeUsage(v.Usage, reply2.Usage)
+		return evidenceDemote(v, misses), nil
+	}
+	// 两次调用的钱都是判这条消息花的。
+	fixed.Cost += v.Cost
+	fixed.Usage = billing.MergeUsage(fixed.Usage, v.Usage)
+
+	if m2 := evidenceMisses(st, fixed); len(m2) > 0 {
+		slog.Warn("反广告：证据改正重试仍不符，按未定放行",
+			"chat", st.Chat.ID, "uid", st.Sender.UserID, "不符项", m2)
+		return evidenceDemote(fixed, m2), nil
+	}
+	return fixed, nil
+}
+
+// evidenceRetryNote 是改正重试附在末尾的用户消息：一次把要求说死。
+const evidenceRetryNote = "你上一次的输出未通过证据核对：%s。\n" +
+	"请重新输出完整的 JSON（字段与要求不变）。特别注意：evidence 数组里每一项" +
+	"都必须从判定对象（message.text、quoted、sender 的昵称/用户名/简介/bio_links、" +
+	"recent_context、review_history、matched_rules）的原文里**逐字**摘出，" +
+	"不得编造、改写、概括或变形还原（原文写「看煮页」就摘「看煮页」）；" +
+	"判为广告必须给出至少一项真实存在的证据。样本库（known_ad_patterns / " +
+	"known_false_positives）里的文字不是判定对象，不得摘进 evidence。"
+
+// parseLLMReply 把上游响应解析成复判结论。返回值里的 obj 是模型这次输出的
+// JSON 原文，改正重试要把它作为上一轮的 assistant 消息回传。
+//
+// 只解析、不做证据核对：核对与改正重试的编排在 judgeLLM 里，那里才知道
+// 还能不能再给模型一次机会。
+func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 	var resp struct {
 		Choices []struct {
 			Message struct {
@@ -222,14 +294,11 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(reply.Raw, &resp); err != nil || len(resp.Choices) == 0 {
-		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
-			fmt.Errorf("反广告：大模型响应无法解析")
+		return adVerdict{}, "", fmt.Errorf("反广告：大模型响应无法解析")
 	}
-
 	obj := extractJSONObject(resp.Choices[0].Message.Content)
 	if obj == "" {
-		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
-			fmt.Errorf("反广告：大模型未返回 JSON")
+		return adVerdict{}, "", fmt.Errorf("反广告：大模型未返回 JSON")
 	}
 	var out struct {
 		IsAd       bool    `json:"is_ad"`
@@ -238,13 +307,14 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		Scope      string  `json:"scope"`
 		Severity   float64 `json:"severity"`
 		Reason     string  `json:"reason"`
+		// Evidence 是模型声明的判广告证据（原文逐字摘录，见 adVerdict）。
+		Evidence []string `json:"evidence"`
 		// ProfileOKHours 是「资料临时放行」时长：只在判为正常、且可疑的
-		// 只是资料本身时有意义。判成广告时一律忽略。
+		// 只是资料本身时有意义。判为广告时一律忽略。
 		ProfileOKHours int `json:"profile_ok_hours"`
 	}
 	if err := json.Unmarshal([]byte(obj), &out); err != nil {
-		return adVerdict{Usage: reply.Usage, Cost: reply.Cost},
-			fmt.Errorf("反广告：大模型 JSON 解析失败: %w", err)
+		return adVerdict{}, "", fmt.Errorf("反广告：大模型 JSON 解析失败: %w", err)
 	}
 	// is_ad=true 却说不出广告类别是模型自相矛盾（实测理由写着「按正常交流
 	// 处理」）。按模型结论定档只看 is_ad，照它会删消息、记哈希，按正常走。
@@ -255,13 +325,27 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	if !out.IsAd {
 		okHours = clampProfileHours(out.ProfileOKHours)
 	}
-
-	return evidenceGate(st, adVerdict{
+	// evidence 上限：最多 5 项、每项 60 字。它是核对与展示用的原文摘录，
+	// 不是自由作文；空项丢掉。
+	ev := make([]string, 0, len(out.Evidence))
+	for _, e := range out.Evidence {
+		if e = strings.TrimSpace(e); e == "" {
+			continue
+		}
+		if r := []rune(e); len(r) > 60 {
+			e = string(r[:60])
+		}
+		ev = append(ev, e)
+		if len(ev) == 5 {
+			break
+		}
+	}
+	return adVerdict{
 		IsAd: out.IsAd, Confidence: out.Confidence, Kind: out.Kind, Scope: out.Scope,
 		Severity: out.Severity,
 		Reason:   out.Reason, Decider: "llm", Model: reply.Model,
-		ProfileOKHours: okHours, Usage: reply.Usage, Cost: reply.Cost,
-	}), nil
+		ProfileOKHours: okHours, Evidence: ev, Usage: reply.Usage, Cost: reply.Cost,
+	}, obj, nil
 }
 
 // extractJSONObject 从模型输出里抠出首个完整的 JSON 对象。

@@ -24,6 +24,11 @@ func logAd(b *core.Bot, m *tg.Message, v adVerdict, action, reason string) int64
 		verdict = "skipped" // 没送检，不是判定失败
 	}
 	note := v.Reason
+	// 复判声明的证据并进理由列：面板、资料卡与申诉页都从这一列取文字，
+	// 落在这里管理员事后回看时才知道当初凭什么判的（见 evidence_gate.go）。
+	if len(v.Evidence) > 0 {
+		note = appendNote(note, "证据："+strings.Join(v.Evidence, "、"))
+	}
 	if reason != "" {
 		note = strings.TrimSpace(note + " | " + reason)
 	}

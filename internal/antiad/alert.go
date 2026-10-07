@@ -140,7 +140,8 @@ func renderAdAlertBrief(b *core.Bot, m *tg.Message, v adVerdict, act adAction,
 // 与广告告警分开：正常结论不带 🚫，也不附「点我申诉」——那个人没有被
 // 处置，申诉入口对他没有意义，出现在群里反而像一张罚单。管理员在全局
 // 设置里挂的附加链接照旧附上（那是使用说明一类的东西）。
-// lifted 表示这次复查顺手解掉了复判期留下的临时禁言。
+// lifted 表示这次复查顺手解掉了禁言：复判期留下的临时禁言，或原判的
+// 正式禁言（/check 判正常时会一并解除，见 reviewAndAct）。
 func renderReviewClean(b *core.Bot, m *tg.Message, v adVerdict, lifted bool) string {
 	var sb strings.Builder
 	sb.WriteString("✅ ")
@@ -149,7 +150,7 @@ func renderReviewClean(b *core.Bot, m *tg.Message, v adVerdict, lifted bool) str
 		sb.WriteString(" · " + html.EscapeString(s))
 	}
 	if lifted {
-		sb.WriteString("，已解除临时禁言。")
+		sb.WriteString("，已解除禁言。")
 	} else {
 		sb.WriteString("，未处置。")
 	}

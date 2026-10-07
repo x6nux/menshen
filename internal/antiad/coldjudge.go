@@ -224,9 +224,16 @@ const coldLLMPrompt = "你是 Telegram 群组的入群审核员。用户消息�
 	"在 profile_ok_hours 里给出资料放行时长（整数小时 1~72）：越接近日常形态给得" +
 	"越长（24~72），犹豫但证据不足的给短一些（1~6），资料确实写着推广、招揽、" +
 	"收益承诺的给 0。\n" +
+	// evidence 是一致性门（evidence_gate.go）的核对对象，与消息判定同一口径。
+	"11. is_ad 为 true 时必须给 evidence：字符串数组，每项从 sender 的昵称、" +
+	"用户名、简介或 bio_links 里**逐字摘出**让你判为广告的关键词或短语，" +
+	"最多 5 项、每项不超过 40 字；不得改写、概括或变形还原，原文写「看煮页」" +
+	"就摘「看煮页」。known_ad_patterns 是样本库，不是判定对象，" +
+	"里面的文字不得摘进 evidence。is_ad 为 false 时 evidence 给空数组。\n" +
 	"只输出一个 JSON 对象，不要任何解释文字：\n" +
 	`{"is_ad":true|false,"confidence":0.0~1.0,` +
 	`"kind":"none|crypto|porn|gambling|scam|promo|spam_flood",` +
+	`"evidence":["从资料原文逐字摘出的广告关键词，多个用数组"],` +
 	`"profile_ok_hours":0~72,` +
 	`"reason":"一句话中文说明，指出具体是哪里的什么内容"}`
 

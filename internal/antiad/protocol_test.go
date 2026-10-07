@@ -19,7 +19,8 @@ import (
 func TestGeminiChatChannel(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 
-	const verdict = `{"is_ad":true,"confidence":0.9,"kind":"scam","scope":"message","severity":2,"reason":"测试"}`
+	const verdict = `{"is_ad":true,"confidence":0.9,"kind":"scam","scope":"message",` +
+		`"severity":2,"reason":"测试","evidence":["测试群"]}`
 	var gotPath, gotQuery, gotKey, gotBody atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath.Store(r.URL.Path)
@@ -57,7 +58,7 @@ func TestGeminiChatChannel(t *testing.T) {
 		t.Fatalf("putSetting: %v", err)
 	}
 
-	v, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, soInstructions)
+	v, err := judgeLLM(b, b.Cache.Snap(), testAdState(), adVerdict{}, soInstructions)
 	if err != nil {
 		t.Fatalf("Gemini 渠道复判失败: %v", err)
 	}
