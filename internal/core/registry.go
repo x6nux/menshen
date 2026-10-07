@@ -345,6 +345,7 @@ func (r *Registry) Unregister(botID int64) error {
 		`DELETE FROM bot_chats WHERE bot_id=?`,
 		`DELETE FROM bot_settings WHERE bot_id=?`,
 		`DELETE FROM join_mutes WHERE bot_id=?`,
+		`DELETE FROM bot_chat_seen WHERE bot_id=?`,
 		`DELETE FROM bots WHERE bot_id=?`,
 	} {
 		if _, err := tx.Exec(q, botID); err != nil {

@@ -85,6 +85,7 @@ var settingSpecs = []settingSpec{
 	{"log_file_max_mb", "日志单文件上限（MB）", "非负整数；单个日志文件写到这么大就滚成备份。0 = 关闭文件日志", 0, 0, ""},
 	{"log_file_total_mb", "日志总大小上限（MB）", "非负整数；当前文件加全部备份超过它就从最旧的备份删起。0 = 关闭文件日志", 0, 0, ""},
 	{"max_bots_per_admin", "每人 bot 数上限", "非负整数，0 = 不限；主管理员不受限", 0, 0, ""},
+	{"subbot_autoleave_minutes", "子 bot 未配置自动退群（分钟）", "非负整数；子 bot 被拉进群后超过它仍未在面板把该群加到它名下，就自动退群，避免无关群白占 webhook。0 = 关闭。默认 60", 0, 0, ""},
 	{"antiad_digest_min", "形态总结触发样本数", "非负整数，0 = 关闭自动总结", 0, 0, ""},
 	{"antiad_digest_max", "形态摘要字数上限", "正整数，它会乘以每一条群消息的成本", 1, 0, ""},
 	{"antiad_unban_base", "自助解除重试基数（秒）", "正整数，第 n 次要等 base×2^(n-1)，封顶 1 小时", 1, 0, ""},
@@ -182,6 +183,7 @@ var settingSections = []struct {
 	{"护栏与成本", []string{
 		"antiad_rpm_chat", "antiad_cmd_rpm",
 		"log_retention_days", "log_file_max_mb", "log_file_total_mb", "max_bots_per_admin",
+		"subbot_autoleave_minutes",
 		"antiad_upstream_alert_after", "antiad_upstream_alert_minutes",
 	}},
 	{"学习与名单", []string{

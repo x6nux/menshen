@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS bot_settings (
   PRIMARY KEY (bot_id, k)
 );
 
+-- 子 bot 的在群痕迹：my_chat_member 实时维护，「加群后超时未配置自动退群」
+-- （见 core/chatpresence.go）的清理任务读它。落库而不是内存：进程重启后
+-- TG 不会重推一次 my_chat_member，内存里的痕迹丢了，那些群就永远退不掉了。
+CREATE TABLE IF NOT EXISTS bot_chat_seen (
+  bot_id     INTEGER NOT NULL,
+  chat_id    INTEGER NOT NULL,
+  first_seen INTEGER NOT NULL,
+  PRIMARY KEY (bot_id, chat_id)
+);
+
 -- 联合封禁的全局组。默认存在，bot 可选择加入（bots 级设置 gban_global）：
 -- 加入的 bot 共享彼此的命中，也接收全组执行。
 CREATE TABLE IF NOT EXISTS gban (

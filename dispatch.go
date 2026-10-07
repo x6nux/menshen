@@ -41,6 +41,9 @@ func dispatch(b *core.Bot, u *tg.Update) {
 			handleMainBotChatMember(b, u.MyChatMember)
 			return
 		}
+		// 在群痕迹先行：超时未配置自动退群靠它计时（core/chatpresence.go）。
+		// 反广告的权限告警有自己的开关，这里不能被它挡住。
+		b.NoteChatPresence(u.MyChatMember)
 		antiad.HandleMyChatMemberUpdate(b, u.MyChatMember)
 	}
 }
@@ -56,7 +59,7 @@ func handleMainBotChatMember(b *core.Bot, cu *tg.ChatMemberUpdated) {
 	if cu.Chat.Type == "private" {
 		return
 	}
-	if !tgMemberPresent(cu.NewChatMember) {
+	if !core.ChatMemberPresent(cu.NewChatMember) {
 		return // left / kicked：本来就不在群里
 	}
 	if ok, desc := b.CallOK("leaveChat", map[string]any{"chat_id": cu.Chat.ID}); !ok {
@@ -65,20 +68,6 @@ func handleMainBotChatMember(b *core.Bot, cu *tg.ChatMemberUpdated) {
 		return
 	}
 	slog.Info("主 bot 已自动退出群/频道", "chat", cu.Chat.ID, "type", cu.Chat.Type)
-}
-
-// tgMemberPresent 报告这次成员变更之后 bot 是否在群里。
-//
-// member / administrator / creator 没有 is_member 字段，一律算在群里；
-// restricted 要额外看 is_member —— 被踢走的人也会留下受限状态。
-func tgMemberPresent(cm *tg.ChatMemberInfo) bool {
-	switch cm.Status {
-	case "member", "administrator", "creator":
-		return true
-	case "restricted":
-		return cm.IsMember
-	}
-	return false
 }
 
 func handleMessage(b *core.Bot, m *tg.Message) {

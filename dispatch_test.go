@@ -73,7 +73,8 @@ func TestMainBotDoesNotLeaveWhenNotInChat(t *testing.T) {
 }
 
 // TestWorkerBotInviteDoesNotLeave 对照组：工作 bot 被拉进群照旧走反广告
-// 的权限告警，不会退出 —— 它就是要待在群里干活的。
+// 的权限告警，不会立刻退出 —— 但要在在群痕迹里记一笔：超过
+// subbot_autoleave_minutes 还没在面板配置的群，由分钟清扫负责退掉。
 func TestWorkerBotInviteDoesNotLeave(t *testing.T) {
 	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
 	if err := b.PutSetting("antiad_enabled", "1"); err != nil {
@@ -81,10 +82,18 @@ func TestWorkerBotInviteDoesNotLeave(t *testing.T) {
 	}
 	dispatch(b, mainBotInvite(-100999, "supergroup", "member", true))
 	if n := fake.CountCalls("leaveChat"); n != 0 {
-		t.Errorf("工作 bot 不该退出群，leaveChat 调了 %d 次", n)
+		t.Errorf("工作 bot 不该当场退群，leaveChat 调了 %d 次", n)
 	}
 	if n := fake.CountCalls("sendMessage"); n == 0 {
 		t.Error("工作 bot 被拉进群但没给管理员权限时应私聊告警")
+	}
+	var got int64
+	if err := b.Store.Read.QueryRow(`SELECT chat_id FROM bot_chat_seen
+		WHERE bot_id=?`, b.BotID()).Scan(&got); err != nil {
+		t.Fatalf("工作 bot 进群应记在群痕迹: %v", err)
+	}
+	if got != -100999 {
+		t.Errorf("在群痕迹的 chat_id = %d，期望 -100999", got)
 	}
 }
 
