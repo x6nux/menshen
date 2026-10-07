@@ -176,8 +176,12 @@ func soChoiceLabel(choice string) string {
 	return choice
 }
 
-// judgeLLM 用大模型复判。prior 是 systemone 的初判（可为零值），
-// sysPrompt 由调用方给（消息判定与进群冷判定各一份）。
+// judgeLLM 用大模型复判，sysPrompt 由调用方给（消息判定与进群冷判定各一份）。
+//
+// prior 是上一级的结论（systemone 初判 / 命中规则 / 内容哈希）。**只有内容
+// 哈希那一档会进载荷**：另外两档是别的判定的输出，传过去会把复判锚定在它
+// 上面（见下面 prior_verdict 的注释）。调用方照旧把上一级结论传进来，由
+// 这里统一决定放不放行 —— 策略只写在一处。
 func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	sysPrompt string) (adVerdict, error) {
 
@@ -189,7 +193,15 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	payload := map[string]any{
 		"state": st,
 	}
-	if prior.Decider != "" {
+	// prior_verdict 只传内容哈希那一档：它不是模型的意见，是本服务自己的
+	// 账本（同样的内容此前已判为广告），对复判是硬证据。
+	//
+	// systemone（jev）与命中规则的结论**不传**：那是另一个判定的输出，
+	// 传过去只会把复判锚定在它上面 —— 实测出过错判顺着 prior 编造理由
+	// （#26266 的「正文约炮」），也让「两模型独立互证」变成「复判复述初判」，
+	// 复查就失去了交叉验证的意义。规则命中的证据本来就以 matched_rules
+	// 出现在 state 里，不需要再借 prior 说一遍。
+	if prior.Decider == deciderHash {
 		payload["prior_verdict"] = map[string]any{
 			"is_ad": prior.IsAd, "confidence": prior.Confidence,
 			"kind": prior.Kind, "by": prior.Decider,
@@ -399,7 +411,8 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState,
 		return llm, nil
 	}
 
-	// 以大模型为准（它看到了 systemone 的初判），但两方结论都要留在
+	// 以大模型为准（两模型独立判定，复判不再看到初判的结论 —— 见
+	// judgeLLM 的 prior_verdict 说明），但两方结论都要留在
 	// reason 里：复查的价值正在于让人看见两个模型是否一致。
 	final := llm
 	final.Decider = "systemone+llm"
@@ -468,8 +481,10 @@ func needReview(b *core.Bot, snap *store.Snapshot, v adVerdict, act adAction) bo
 	return v.Confidence < trust || act.Mute || act.Ban
 }
 
-// review 是大模型复判，以它为准：它看到了初判，是信息更全的一级。
-// prior 可以是 systemone 的初判，也可以是内容哈希（见 hashHit）。
+// review 是大模型复判，以它为准：同一份 state 交给它独立判断（初判不随
+// 载荷传给它，见 judgeLLM），它只是信息更全的一级。prior 是上一级结论
+// （systemone 初判或内容哈希，见 hashHit）：复判失败时用它回退采信，
+// 最终 Decider 也由它与 llm 拼成。
 func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysPrompt string) adVerdict {
 	llm, err := judgeLLM(b, snap, st, prior, sysPrompt)
 	if err != nil {

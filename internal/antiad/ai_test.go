@@ -1,6 +1,8 @@
 package antiad
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -10,6 +12,56 @@ import (
 	"menshen/internal/store"
 	"menshen/internal/testutil"
 )
+
+// TestLLMDoesNotReceiveSystemonePrior：复判的输入里不带 systemone 的结论 ——
+// 初判结论会锚定复判（实测复判顺着 prior 编造证据，#26266），也让两级
+// 「独立互证」变成复述。内容哈希那一档是本服务账本，仍照传。
+func TestLLMDoesNotReceiveSystemonePrior(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	var body atomic.Value
+	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		fakeAIOK(w, r)
+	})
+	// userContent 取出请求里那条待判定的 JSON（system 提示词不在核对范围：
+	// 它本来就说明 prior_verdict 字段的语义）。
+	userContent := func() string {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(body.Load().(string)), &req); err != nil {
+			t.Fatalf("请求体解析失败: %v", err)
+		}
+		for _, m := range req.Messages {
+			if m.Role == "user" {
+				return m.Content
+			}
+		}
+		return ""
+	}
+
+	soPrior := adVerdict{IsAd: true, Confidence: 0.97, Kind: "porn", Decider: "systemone"}
+	if _, err := judgeLLM(b, b.Cache.Snap(), testAdState(), soPrior, llmSystemPrompt); err != nil {
+		t.Fatal(err)
+	}
+	if got := userContent(); strings.Contains(got, "prior_verdict") ||
+		strings.Contains(got, "0.97") || strings.Contains(got, "porn") {
+		t.Errorf("systemone 的结论不该进复判载荷: %s", got)
+	}
+
+	hashPrior := adVerdict{IsAd: true, Confidence: 1, Kind: "scam", Decider: deciderHash}
+	if _, err := judgeLLM(b, b.Cache.Snap(), testAdState(), hashPrior, llmSystemPrompt); err != nil {
+		t.Fatal(err)
+	}
+	if got := userContent(); !strings.Contains(got, "prior_verdict") ||
+		!strings.Contains(got, "hash") {
+		t.Errorf("内容哈希的 prior 应照传: %s", got)
+	}
+}
 
 // TestBuildSystemOneReqScoreCriteriaIsList 锁住 jev 的请求契约。
 //
