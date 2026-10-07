@@ -54,6 +54,19 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 // 必须按发起人限频，否则任何成员都能靠刷命令烧钱。
 func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string) {
 	snap := b.Cache.Snap()
+	ttl := time.Duration(snap.BotSettingInt(b.BotID(), "antiad_alert_ttl", 300)) * time.Second
+	reply := func(text string) { groupNotice(b, conf.ChatID, text, nil, ttl) }
+
+	if !b.AdLimits.Allow(fmt.Sprintf("ad:cmd:%d", m.From.ID),
+		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
+		reply("复查太频繁，请稍后再试。")
+		return
+	}
+	// 命令本身立即删除，usage/报错与复查卡片按 antiad_alert_ttl 延迟撤回
+	// （与 /jtime、/uad 一致）：/check 对全群开放，命令和卡片留在群里
+	// 只会引人去刷，结论看过就该退场。
+	b.TG.Call("deleteMessage", map[string]any{
+		"chat_id": conf.ChatID, "message_id": m.MessageID})
 
 	var target *tg.TGUser
 	var targetMsgID int64
@@ -69,28 +82,24 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 			if name, ok := strings.CutPrefix(strings.TrimSpace(arg), "@"); ok {
 				var found bool
 				if uid, found = resolveUsernameID(b, name); !found {
-					sendGroup(b, m.Chat.ID, "查不到这个用户名，请改用 user_id。"+
-						"（私有用户名查不到）", nil)
+					reply("查不到这个用户名，请改用 user_id。" +
+						"（私有用户名查不到）")
 					return
 				}
 			} else {
-				sendGroup(b, m.Chat.ID, adCmdUsage, nil)
+				reply(adCmdUsage)
 				return
 			}
 		}
 		target = &tg.TGUser{ID: uid}
 	default:
-		sendGroup(b, m.Chat.ID, adCmdUsage, nil)
+		reply(adCmdUsage)
 		return
 	}
 
-	if !b.AdLimits.Allow(fmt.Sprintf("ad:cmd:%d", m.From.ID),
-		snap.BotSettingInt(b.BotID(), "antiad_cmd_rpm", 3)) {
-		sendGroup(b, m.Chat.ID, "复查太频繁，请稍后再试。", nil)
-		return
-	}
-
-	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit)
+	// 复查看全部历史：判过、罚过的消息也是这个账号的证据（是否收回
+	// 是申诉流程的事），不按 punished 过滤。
+	hist := loadUserMessages(b.Store, m.Chat.ID, target.ID, adReviewLimit, false)
 	if len(hist) == 0 {
 		// 数据库里连这个人的任何痕迹都没有（发言留底、判定流水、入群画像
 		// 三样皆无）时直接给结论，不请求模型：随机 user_id 查资料既花钱，
