@@ -276,9 +276,10 @@ func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
 		if h.MessageID == m.MessageID {
 			continue
 		}
-		// 留底存的是 displayText（含引用）；历史只带本人正文，引用段
-		// （别人的话）剥掉。纯引用的消息没有正文可展示，直接跳过。
-		t := stripQuotedTail(h.Text)
+		// 留底存的是 displayText（含引用）。引用段是别人的话，但不能
+		// 直接剥掉：剥掉会丢本人正文的对话语境（打赏玩笑被读成收款
+		// 索要），换成带归属的标记两边的实测误判都防住（见 historyText）。
+		t := historyText(h.Text)
 		if strings.TrimSpace(t) == "" {
 			continue
 		}

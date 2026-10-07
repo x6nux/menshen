@@ -586,26 +586,30 @@ func TestGroupQuoteNotJudged(t *testing.T) {
 	}
 }
 
-// TestStripQuotedTail：剥引用段只认 displayText 的拼接位（行首或换行后的
-// 「［引用］」），正文里恰好出现这个词时不动刀。
-func TestStripQuotedTail(t *testing.T) {
+// TestHistoryText：喂给模型的历史条目里引用段保留但换带归属的标记 ——
+// 剥掉会丢本人正文的对话语境（打赏玩笑被读成收款索要），原样保留会把
+// 「引用广告提醒管理员」的人看成发广告的人。正文里恰好出现这个词时不动刀。
+func TestHistoryText(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"我操\n［引用］你来柬埔寨 我跟你详谈", "我操"},
-		{"［引用］纯引用没有正文", ""},
+		{"我操\n［引用］你来柬埔寨 我跟你详谈",
+			"我操\n［引用·别人的话］你来柬埔寨 我跟你详谈"},
+		{"［引用］纯引用没有正文", "［引用·别人的话］纯引用没有正文"},
 		{"普通发言", "普通发言"},
 		{"正文里提到［引用］这个词但没换行", "正文里提到［引用］这个词但没换行"},
 	}
 	for _, c := range cases {
-		if got := stripQuotedTail(c.in); got != c.want {
-			t.Errorf("stripQuotedTail(%q) = %q, 期望 %q", c.in, got, c.want)
+		if got := historyText(c.in); got != c.want {
+			t.Errorf("historyText(%q) = %q, 期望 %q", c.in, got, c.want)
 		}
 	}
 }
 
-// TestRecentContextStripsGroupQuotes：recent_context 拿留底回填，留底存的
-// 是 displayText（含引用）。引用段是别人的话，历史里必须剥掉 —— 否则
-// 「引用广告提醒管理员」的人，在模型眼里就是发广告的人。
-func TestRecentContextStripsGroupQuotes(t *testing.T) {
+// TestRecentContextKeepsQuotesWithAttribution：recent_context 拿留底回填，
+// 留底存的是 displayText（含引用）。引用段是别人的话，剥掉会丢本人正文的
+// 对话语境（线上实测：打赏玩笑「100u吃个米粉+地址」被读成收款索要）；
+// 保留但必须换成带归属的标记，否则「引用广告提醒管理员」的人会被当成
+// 发广告的人。纯引用条目（如带图回复）也进历史。
+func TestRecentContextKeepsQuotesWithAttribution(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	recordMessage(b, -100, 1, 42, "我操\n［引用］你来柬埔寨 我跟你详谈", 1000, "")
 	recordMessage(b, -100, 2, 42, "［引用］纯引用没有正文", 1001, "")
@@ -618,8 +622,13 @@ func TestRecentContextStripsGroupQuotes(t *testing.T) {
 	for _, c := range st.RecentContext {
 		got = append(got, c.Text)
 	}
-	if want := []string{"我操", "普通发言"}; !slices.Equal(got, want) {
-		t.Fatalf("recent_context = %q, 期望 %q（引用段剥掉、纯引用不进历史）", got, want)
+	want := []string{
+		"我操\n［引用·别人的话］你来柬埔寨 我跟你详谈",
+		"［引用·别人的话］纯引用没有正文",
+		"普通发言",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recent_context = %q, 期望 %q（引用段带归属标记保留）", got, want)
 	}
 }
 

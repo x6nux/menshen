@@ -198,13 +198,41 @@ func joinQuote(t string, q *adQuotedInfo) string {
 	return t + "\n" + quoteMark + q.Text
 }
 
+// historyQuoteMark 是历史条目里引用段的标记：与 quoteMark 同指一段内容，
+// 但写明归属 —— 引用段是被引用者的原话，不是发言者本人说的。
+const historyQuoteMark = "［引用·别人的话］"
+
+// historyText 把留底文本转成喂给模型的历史条目（recent_context 与 /check
+// 的 review_history 都从这里走）。
+//
+// 引用段不能直接剥掉，也不能原样保留，两边都有实测误判：
+//   - 剥掉（stripQuotedTail 的旧做法）：本人正文失去对话语境 —— 老成员
+//     回应群友「准备上天台了」的打赏玩笑「100u吃个米粉就行+钱包地址」，
+//     引用被剥掉后在整体复查里被读成「收款索要」，整个账号定性为广告、
+//     连带删了正常发言。
+//   - 原样保留：「引用广告提醒管理员」的人，历史里那段广告看起来像他
+//     自己在发广告（同样线上实测过）。
+//
+// 换成带归属的标记后，模型既能用引用段理解本人在回应什么，又不会把
+// 别人的话记在发言者头上。
+func historyText(text string) string {
+	// 引用段由 displayText 接在正文后面（换行 + 标记），或整条都是引用；
+	// 只改第一处标记 —— 引用内容里再出现「［引用］」字样是原文，不动。
+	if strings.HasPrefix(text, quoteMark) {
+		return historyQuoteMark + text[len(quoteMark):]
+	}
+	if i := strings.Index(text, "\n"+quoteMark); i >= 0 {
+		return text[:i] + "\n" + historyQuoteMark +
+			text[i+len("\n"+quoteMark):]
+	}
+	return text
+}
+
 // stripQuotedTail 去掉留底文本里的引用段，返回本人正文。
 //
-// 留底存的是 displayText（正文 + 引用），recent_context 与 /check 的
-// review_history 都是拿留底回填的。引用内容属于被引用者：把「引用广告
-// 提醒管理员」的人的历史里那段广告原样喂给复判，模型会把它当成这个人
-// 的发言（线上实测过）。判定载荷里群内引用已被过滤（见 buildState），
-// 历史按同一口径剥掉。
+// 留底存的是 displayText（正文 + 引用），审计口径要本人正文时用它。
+// 喂给模型的历史条目不走这里 —— 单纯剥掉会丢掉本人正文的对话语境，
+// 那走 historyText（引用保留、换带归属的标记）。
 func stripQuotedTail(text string) string {
 	// 引用段由 displayText 接在正文后面（换行 + 标记），或整条都是引用。
 	if i := strings.Index(text, "\n"+quoteMark); i >= 0 {

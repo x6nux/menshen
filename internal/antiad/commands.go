@@ -147,9 +147,10 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	state := buildState(b, snap, tgt, profile)
 	state.ReviewHistory = make([]core.CtxMsg, 0, len(hist))
 	for _, h := range hist {
-		// 群内引用是别人的话，复查的是这个账号本人说了什么：剥掉引用段，
-		// 免得「引用广告提醒管理员」在他的历史里看起来像他自己在发广告。
-		t := stripQuotedTail(h.Text)
+		// 引用段是别人的话，但单纯剥掉会丢本人正文的对话语境（实测：
+		// 打赏玩笑「100u吃个米粉就行+地址」被读成收款索要）。换成带
+		// 归属的标记，模型不会把别人的话记在发言者头上（见 historyText）。
+		t := historyText(h.Text)
 		if strings.TrimSpace(t) == "" {
 			continue
 		}
