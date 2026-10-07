@@ -201,6 +201,9 @@ CREATE INDEX IF NOT EXISTS idx_antiad_user ON antiad_log(chat_id, user_id);
 -- (chat_id, message_id)：TG 重推同一条 update 时不得留两份。
 -- 没有文字的消息（图片、贴纸）也记，text 为空：判成广告号时要连带删掉
 -- 此人近期的全部消息，靠的就是这里的 message_id。media_group 是相册 ID。
+-- punished = 1 表示这条消息已按处罚处置过（删除/连带删除/前置号删除）：
+-- 处置完的消息不再进后续判定的 recent_context，否则模型会把一条早已
+-- 处理完的消息一直当成「此人刚发的广告」，同一条消息反复把人封。
 CREATE TABLE IF NOT EXISTS group_messages (
   chat_id     INTEGER NOT NULL,
   message_id  INTEGER NOT NULL,
@@ -208,6 +211,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
   text        TEXT    NOT NULL,
   at          INTEGER NOT NULL,
   media_group TEXT    NOT NULL DEFAULT '',
+  punished    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gmsg_user ON group_messages(chat_id, user_id, at);
@@ -451,6 +455,9 @@ func migrate(db *sql.DB) error {
 		// 带着 chat_id、user_id，走 idx_gmsg_user；而 schemaSQL 先于 migrate 执行，
 		// 在这一列上建索引会让老库启动时直接报「no such column」。
 		{"group_messages", "media_group", "TEXT NOT NULL DEFAULT ''"},
+		// punished：这条留底已按处罚处置过。recent_context 据此把已处置的
+		// 消息排除掉，避免同一条消息在后续判定里反复把人往封禁推。
+		{"group_messages", "punished", "INTEGER NOT NULL DEFAULT 0"},
 		// punish：本群的处罚方式。-1 = 跟随 bot 设置（antiad_ban），0 = 禁言，1 = 封禁。
 		{"bot_chats", "punish", "INTEGER NOT NULL DEFAULT -1"},
 		// is_main：主 bot 标记。老库升级时先全部按工作 bot 处理，

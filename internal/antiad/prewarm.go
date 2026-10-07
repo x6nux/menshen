@@ -269,6 +269,8 @@ func prewarmJudge(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		slog.Warn("前置号复核：删除招呼消息失败",
 			"chat", m.Chat.ID, "msg", m.MessageID, "tg", desc)
 	}
+	// 招呼随处置退场：解禁回来的人不该再被这条已删掉的招呼缠着。
+	markPunished(b, m.Chat.ID, m.MessageID)
 	applyJoinMuteNotify(b, conf, m.From, v, joinMuteSpec{
 		Kind: kindPrewarm, Action: actionPrewarmMuted, Note: "前置号识别",
 		Body:     prewarmLogText(m.From, m, state.Sender.Bio, state.Sender, v),
@@ -299,6 +301,8 @@ func prewarmShellDispose(b *core.Bot, conf store.BotChat, m *tg.Message,
 			slog.Warn("前置号识别：删除招呼消息失败",
 				"chat", m.Chat.ID, "msg", m.MessageID, "tg", desc)
 		}
+		// 招呼随处置退场（markPunished 自行跳过 MsgID=0）。
+		markPunished(b, m.Chat.ID, m.MessageID)
 	}
 	applyJoinMuteNotify(b, conf, m.From, v, joinMuteSpec{
 		Kind: kindPrewarm, Action: actionPrewarmMuted, Note: "前置号识别",

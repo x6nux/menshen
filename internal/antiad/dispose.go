@@ -170,6 +170,9 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 		if ok, desc := DeleteMessage(b, m.Chat.ID, m.MessageID); !ok {
 			notes = append(notes, noteDeleteFailed+": "+desc)
 		}
+		// 处置即标记，不问 TG 删没删成：这条消息已被定罪，删除失败另有
+		// 告警与补刀按钮兜着，不该再让它留在上下文里继续发威。
+		markPunished(b, m.Chat.ID, m.MessageID)
 		if m.MediaGroupID != "" {
 			if ok, desc := deleteAlbum(b, m); !ok {
 				notes = append(notes, "删除相册其余图片失败: "+desc)
@@ -184,8 +187,13 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 			// 查询失败时 ids 为空，若照旧调 deleteMessages 会返回成功，
 			// 流水里还会写「已连带删除此人近期全部消息」—— 一次静默的假成功。
 			notes = append(notes, "连带删除失败: 读取留底出错")
-		} else if ok, desc := deleteMessages(b, m.Chat.ID, ids); !ok {
-			notes = append(notes, "连带删除失败: "+desc)
+		} else {
+			if ok, desc := deleteMessages(b, m.Chat.ID, ids); !ok {
+				notes = append(notes, "连带删除失败: "+desc)
+			}
+			// 被连带删掉的消息同样退场：账号判成广告号后他近期说的每句
+			// 话都不该再出现在之后任何一次判定的上下文里。
+			markPunished(b, m.Chat.ID, ids...)
 		}
 	}
 	if act.Mute {
@@ -331,6 +339,8 @@ func deleteAlbum(b *core.Bot, m *tg.Message) (bool, string) {
 	if err != nil {
 		return false, "读取相册留底失败"
 	}
+	// 相册其余几张也随处置退场：它们的配文可能才是广告载荷。
+	markPunished(b, m.Chat.ID, ids...)
 	return deleteMessages(b, m.Chat.ID, ids)
 }
 

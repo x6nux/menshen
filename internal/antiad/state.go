@@ -262,13 +262,17 @@ const ctxTextLimit = 200
 // 会把它当成本条消息引用的内容——线上真实误判过。从留底取而不是另开
 // 一个内存环：环按群共享、容量有限，活跃群里本人的上一条早被挤出去了；
 // 留底按人建了索引，重启也不丢。
+//
+// 已处罚过的消息不进来（markPunished）：它们早已从群里删掉，却会在
+// 每一次后续判定里被当成「此人刚发的广告」，压着新消息反复把人往
+// 封禁推 —— 这条消息的账已经结清了，不该再记在上下文里。
 func recentOwn(s *store.Store, m *tg.Message, n int) []core.CtxMsg {
 	if n <= 0 || m.From == nil {
 		return nil
 	}
 	var out []core.CtxMsg
 	// 多取一条：当前这条通常已经留底，过滤掉之后仍有 n 条。
-	for _, h := range loadUserMessages(s, m.Chat.ID, m.From.ID, n+1) {
+	for _, h := range loadUserMessages(s, m.Chat.ID, m.From.ID, n+1, true) {
 		if h.MessageID == m.MessageID {
 			continue
 		}

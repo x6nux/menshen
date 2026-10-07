@@ -89,6 +89,7 @@ func TestMigrateOldDB(t *testing.T) {
 	defer s.Close()
 	for _, c := range [][2]string{{"bot_chats", "punish"},
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
+		{"group_messages", "punished"},
 		{"bots", "is_main"}, {"upstreams", "kind"},
 		{"ad_rules", "last_ads_total"}, {"ad_rules", "last_kinds"},
 		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},

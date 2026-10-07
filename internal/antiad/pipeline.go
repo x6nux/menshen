@@ -167,6 +167,7 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 
 	// 相册里判定之后才到的那几张：整组已判成广告，到一张删一张。
 	if m.MediaGroupID != "" && albumDoomed(b, m.Chat.ID, m.MediaGroupID) {
+		markPunished(b, m.Chat.ID, m.MessageID)
 		b.CallOK("deleteMessage", map[string]any{"chat_id": m.Chat.ID, "message_id": m.MessageID})
 		return
 	}

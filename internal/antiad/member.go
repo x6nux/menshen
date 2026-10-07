@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"strings"
 	"time"
 
 	"menshen/internal/core"
@@ -222,6 +223,32 @@ func recordedText(b *core.Bot, chatID, msgID int64) string {
 	return t
 }
 
+// markPunished 把留底行标成「已处罚」。
+//
+// 已按广告处置过的消息（删除、连带删除、前置号删掉的招呼）必须退出
+// 后续判定的 recent_context：它早已从群里消失，模型却仍把它当成
+// 「此人刚说过的话」，新消息会跟着这条旧账被反复处罚 —— 而同一条
+// 消息的处置早就做完了。留底行不存在（gban 护栏路径不留底）时静默跳过。
+func markPunished(b *core.Bot, chatID int64, ids ...int64) {
+	var ph []string
+	args := []any{chatID}
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		ph = append(ph, "?")
+		args = append(args, id)
+	}
+	if len(ph) == 0 {
+		return
+	}
+	q := `UPDATE group_messages SET punished=1
+		WHERE chat_id=? AND message_id IN (` + strings.Join(ph, ",") + `)`
+	if _, err := b.Store.Write.Exec(q, args...); err != nil {
+		slog.Error("反广告：留底标记已处罚失败", "chat", chatID, "err", err)
+	}
+}
+
 // gmsgRow 是一条留底记录。
 type gmsgRow struct {
 	MessageID int64
@@ -233,12 +260,19 @@ type gmsgRow struct {
 //
 // 正序是给模型看的：复查要判断「这个账号一路以来在干什么」，
 // 倒序会让它把最新的当成开头。
-func loadUserMessages(s *store.Store, chatID, uid int64, limit int) []gmsgRow {
+//
+// excludePunished 为真时跳过已处罚的消息（见 markPunished），只让还没
+// 被处置过的发言进 recent_context；/check 复查传 false——整体复查
+// 看的就是全部历史，判过的消息也是这个账号的证据。
+func loadUserMessages(s *store.Store, chatID, uid int64, limit int, excludePunished bool) []gmsgRow {
 	// 没有文字的（图片、贴纸）只为连带删除留着 ID，复查里是空行。
-	rows, err := s.Read.Query(`SELECT message_id,text,at FROM group_messages
-		WHERE chat_id=? AND user_id=? AND text != ''
-		ORDER BY at DESC, message_id DESC LIMIT ?`,
-		chatID, uid, limit)
+	q := `SELECT message_id,text,at FROM group_messages
+		WHERE chat_id=? AND user_id=? AND text != ''`
+	if excludePunished {
+		q += ` AND punished=0`
+	}
+	q += ` ORDER BY at DESC, message_id DESC LIMIT ?`
+	rows, err := s.Read.Query(q, chatID, uid, limit)
 	if err != nil {
 		slog.Error("反广告：读取留底失败", "chat", chatID, "uid", uid, "err", err)
 		return nil
