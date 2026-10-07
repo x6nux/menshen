@@ -9,6 +9,12 @@ import { durationText } from './format'
  */
 export const CAPTCHA_DEMO_PATH = '/_w/demo/1/x'
 
+/**
+ * APPEAL_DEMO_PATH 是申诉验证测试台（_w/apdemo）的固定路径：
+ * 校验走申诉页同一条 Turnstile 路径，用于排查申诉验证不通过。
+ */
+export const APPEAL_DEMO_PATH = '/_w/apdemo/1/x'
+
 export type ControlKind = 'toggle' | 'number' | 'text' | 'select'
 
 /**

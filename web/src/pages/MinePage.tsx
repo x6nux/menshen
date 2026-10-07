@@ -5,7 +5,7 @@ import { Box, Typography } from '@mui/material'
 import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { meLabel } from '../lib/format'
-import { CAPTCHA_DEMO_PATH } from '../lib/settings'
+import { APPEAL_DEMO_PATH, CAPTCHA_DEMO_PATH } from '../lib/settings'
 import { useNav } from '../nav'
 import { ErrorState, ListRow, SectionCard, Skeletons } from '../ui'
 
@@ -90,6 +90,12 @@ export function MinePage() {
             secondary="在浏览器里逐个完成 Turnstile / hCaptcha / Cap 验证"
             chevron
             onClick={() => window.open(CAPTCHA_DEMO_PATH, '_blank', 'noopener')}
+          />
+          <ListRow
+            primary="申诉验证测试台"
+            secondary="走申诉页同一条 Turnstile 校验路径，排查解封验证不通过"
+            chevron
+            onClick={() => window.open(APPEAL_DEMO_PATH, '_blank', 'noopener')}
           />
         </SectionCard>
       )}

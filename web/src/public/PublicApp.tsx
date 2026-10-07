@@ -8,6 +8,7 @@ import { buildMiniTheme } from '../theme'
 import { ErrorBoundary } from '../ui'
 import { parseRoute } from './api'
 import { InvalidState } from './InvalidState'
+import { AppealDemoPage } from './pages/AppealDemoPage'
 import { AppealVerifyPage } from './pages/AppealVerifyPage'
 import { AppealViewPage } from './pages/AppealViewPage'
 import { CaptchaDemoPage } from './pages/CaptchaDemoPage'
@@ -55,6 +56,10 @@ export function PublicApp() {
         ) : route.kind === 'demo' ? (
           <ErrorBoundary>
             <CaptchaDemoPage route={route} />
+          </ErrorBoundary>
+        ) : route.kind === 'apdemo' ? (
+          <ErrorBoundary>
+            <AppealDemoPage route={route} />
           </ErrorBoundary>
         ) : route.kind === 'v' ? (
           <ErrorBoundary>

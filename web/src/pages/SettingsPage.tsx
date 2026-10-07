@@ -506,7 +506,7 @@ export function SettingsPage() {
       <SectionCard title="入群人机验证">
         <SwitchRow
           primary="人机验证测试台"
-          secondary="开启后 <public_url>/_w/demo/1/x 可逐个测试各验证方式；仅测试用"
+          secondary="开启后 <public_url>/_w/demo/1/x 可逐个测试各验证方式，/_w/apdemo/1/x 测申诉验证路径；仅测试用"
           checked={global.captcha_demo === '1'}
           disabled={toggleMut.isPending}
           onChange={(next) => toggleKey('captcha_demo', next)}

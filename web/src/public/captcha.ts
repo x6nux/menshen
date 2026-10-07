@@ -77,23 +77,30 @@ export function mountCaptcha(el: HTMLElement, o: CaptchaOpts): () => void {
   }
 }
 
-/** injectScript 注入一个脚本，onerror 时也 resolve（调用方按 null 处理）。 */
-function injectScript(src: string, type?: string): Promise<void> {
+/** injectScript 注入一个脚本；成功 resolve(true)，失败 resolve(false)。 */
+function injectScript(src: string, type?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const s = document.createElement('script')
     if (type) s.type = type
     s.src = src
     s.async = true
     s.defer = true
-    s.onload = () => resolve()
-    s.onerror = () => resolve()
+    s.onload = () => resolve(true)
+    s.onerror = () => {
+      s.remove()
+      resolve(false)
+    }
     document.head.appendChild(s)
   })
 }
 
 let hcaptchaLoader: Promise<HCaptchaApi | null> | null = null
 
-/** loadHCaptcha 注入 hCaptcha（render=explicit）；失败返回 null。 */
+/**
+ * loadHCaptcha 注入 hCaptcha（render=explicit）；失败返回 null 并清掉缓存
+ * 的加载 promise，下次调用重新注入。成功路径只认官方 onload 回调：
+ * 脚本文件加载完不等于 API 就绪，提前 resolve 会把未就绪当成失败。
+ */
 export function loadHCaptcha(): Promise<HCaptchaApi | null> {
   if (window.hcaptcha?.render) return Promise.resolve(window.hcaptcha)
   if (hcaptchaLoader) return hcaptchaLoader
@@ -102,7 +109,12 @@ export function loadHCaptcha(): Promise<HCaptchaApi | null> {
       () => resolve(window.hcaptcha ?? null)
     void injectScript(
       'https://js.hcaptcha.com/1/api.js?render=explicit&onload=msHCaptchaOnload',
-    ).then(() => resolve(window.hcaptcha ?? null))
+    ).then((ok) => {
+      if (!ok) {
+        hcaptchaLoader = null
+        resolve(null)
+      }
+    })
   })
   return hcaptchaLoader
 }
@@ -112,6 +124,8 @@ let capLoader: Promise<void> | null = null
 /** loadCap 注入 Cap 的 web component（模块脚本）；注册后自定义元素自动升级。 */
 export function loadCap(): Promise<void> {
   if (capLoader) return capLoader
-  capLoader = injectScript('https://cdn.jsdelivr.net/npm/cap-widget', 'module')
+  capLoader = injectScript('https://cdn.jsdelivr.net/npm/cap-widget', 'module').then((ok) => {
+    if (!ok) capLoader = null
+  })
   return capLoader
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"menshen/internal/core"
@@ -128,5 +129,89 @@ func captchaDemoPost(sh *core.Shared, w http.ResponseWriter, r *http.Request) {
 		msg += "（软信号：" + strings.Join(soft, "；") + "）"
 	}
 	slog.Info("人机验证演示：通过", "提供方", p.name)
+	writeWebJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": msg})
+}
+
+// ---- 申诉验证演示页（_w/apdemo）----
+//
+// 与人机验证演示页（_w/demo）同一套测试台：校验走与申诉页完全相同的
+// verifyTurnstile（config 的 Turnstile 密钥、action / cdata / hostname
+// 全部照查），所以这里通过即代表申诉验证那条路也通。申诉页本身只回
+// 一句「验证未通过」，排查密钥、域名白名单或 cdata 绑定问题时，具体
+// 原因全靠这页显示。
+//
+// cdata 用路由里的 <id>（任意正整数即可，固定链接用 /1/x），不落库、
+// 不影响任何真实申诉单。
+
+// handleAppealDemoPage 处理 GET ?json=1（sitekey 与 cdata）与 POST 校验。
+func handleAppealDemoPage(sh *core.Shared, w http.ResponseWriter, r *http.Request, rt webRoute) {
+	if !CaptchaDemoOn(sh) {
+		writeWebJSON(w, http.StatusNotFound, map[string]any{"error": "链接无效或已被替换。"})
+		return
+	}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Query().Get("json") == "1":
+		writeWebJSON(w, http.StatusOK, map[string]any{
+			"sitekey": sh.Cfg.TurnstileSiteKey,
+			"cdata":   strconv.FormatInt(rt.id, 10),
+		})
+	case r.Method == http.MethodPost:
+		appealDemoPost(sh, w, r, rt.id)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// appealDemoPost 校验一次提交，与人机验证演示页一样把失败原因显示出来。
+func appealDemoPost(sh *core.Shared, w http.ResponseWriter, r *http.Request, appealID int64) {
+	if sh.Cfg.TurnstileSiteKey == "" || sh.Cfg.TurnstileSecret == "" {
+		writeWebJSON(w, http.StatusOK, map[string]any{
+			"ok": false,
+			"msg": "服务端未配置申诉验证的 Turnstile 密钥" +
+				"（config.yaml 的 turnstile_site_key / turnstile_secret）。",
+		})
+		return
+	}
+	ip := clientIP(sh, r)
+	if !sh.AdLimits.Allow("web:apdemo:"+ip, 30) {
+		writeWebJSON(w, http.StatusTooManyRequests, map[string]any{
+			"ok": false, "msg": "请求太频繁，请稍后再试。"})
+		return
+	}
+	var body struct {
+		Token   string     `json:"token"`
+		Signals webSignals `json:"signals"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).
+		Decode(&body); err != nil {
+		writeWebJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "msg": "请求体无法解析。"})
+		return
+	}
+	if body.Token == "" {
+		writeWebJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "msg": "组件没有返回令牌，可能没加载出来。"})
+		return
+	}
+
+	ua := r.Header.Get("User-Agent")
+	hard, soft := evalSignals(ua, body.Signals)
+	if len(hard) > 0 {
+		writeWebJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "msg": "命中自动化特征：" + strings.Join(hard, "；")})
+		return
+	}
+	if ok, why := verifyTurnstile(sh, body.Token, ip, appealID); !ok {
+		slog.Info("申诉验证演示：未通过", "原因", why)
+		writeWebJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "msg": "Turnstile 未通过：" + why})
+		return
+	}
+	msg := "申诉验证路径通过（action / cdata / hostname 全部相符）"
+	if len(soft) > 0 {
+		msg += "（软信号：" + strings.Join(soft, "；") + "）"
+	}
+	slog.Info("申诉验证演示：通过")
 	writeWebJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": msg})
 }

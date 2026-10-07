@@ -47,7 +47,7 @@ export async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await resp.json()) as T
 }
 
-export type WebRouteKind = 'ap' | 'apv' | 'v' | 'jv' | 'demo'
+export type WebRouteKind = 'ap' | 'apv' | 'v' | 'jv' | 'demo' | 'apdemo'
 
 export interface WebRoute {
   kind: WebRouteKind
@@ -63,7 +63,14 @@ export function parseRoute(pathname: string): WebRoute | null {
   const i = segs.indexOf('_w')
   if (i < 0 || i + 3 >= segs.length) return null
   const kind = segs[i + 1]
-  if (kind !== 'ap' && kind !== 'apv' && kind !== 'v' && kind !== 'jv' && kind !== 'demo')
+  if (
+    kind !== 'ap' &&
+    kind !== 'apv' &&
+    kind !== 'v' &&
+    kind !== 'jv' &&
+    kind !== 'demo' &&
+    kind !== 'apdemo'
+  )
     return null
   const id = Number(segs[i + 2])
   if (!Number.isInteger(id) || id <= 0) return null
@@ -136,6 +143,13 @@ export interface CaptchaDemoProvider {
 /** CaptchaDemoData 是人机验证演示页（demo）的数据接口返回。 */
 export interface CaptchaDemoData {
   providers: CaptchaDemoProvider[]
+}
+
+/** AppealDemoData 是申诉验证测试台（apdemo）的数据接口返回。 */
+export interface AppealDemoData {
+  sitekey: string
+  /** 绑定进 Turnstile 令牌的自定义数据（这里就是测试台路由里的 id）。 */
+  cdata: string
 }
 
 export interface Gate {

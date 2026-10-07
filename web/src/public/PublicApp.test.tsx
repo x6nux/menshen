@@ -165,6 +165,8 @@ describe('PublicApp', () => {
     expect(screen.getByText(/张三 \(@zs\)/)).toBeInTheDocument()
     expect(screen.getByText('AI 复核后维持原判', { exact: false })).toBeInTheDocument()
     expect(screen.getByText(/资料仍写着推广/)).toBeInTheDocument()
+    // 人机验证区块挂共享 Turnstile 组件容器。
+    expect(screen.getByTestId('turnstile')).toBeInTheDocument()
     // 留底里的 HTML 按文本渲染，不注入 DOM。
     expect(screen.getByText(/<b>bold<\/b>/)).toBeInTheDocument()
   })
@@ -334,6 +336,31 @@ describe('PublicApp · 人机验证测试台', () => {
     server.use(http.get('*/_w/demo/1/x', () => HttpResponse.json({ providers: [] })))
     render(<PublicApp />)
     expect(await screen.findByText(/未配置任何验证方式/)).toBeInTheDocument()
+  })
+})
+
+describe('PublicApp · 申诉验证测试台', () => {
+  it('渲染 Turnstile 组件容器并显示 site key 与 cdata', async () => {
+    at('/_w/apdemo/1/x')
+    server.use(
+      http.get('*/_w/apdemo/1/x', () =>
+        HttpResponse.json({ sitekey: 'asite', cdata: '1' }),
+      ),
+    )
+    render(<PublicApp />)
+
+    expect(await screen.findByText('申诉验证测试台')).toBeInTheDocument()
+    expect(screen.getByTestId('turnstile')).toBeInTheDocument()
+    expect(screen.getByText(/site key：asite/)).toBeInTheDocument()
+  })
+
+  it('未配置 Turnstile 密钥时给出提示', async () => {
+    at('/_w/apdemo/1/x')
+    server.use(
+      http.get('*/_w/apdemo/1/x', () => HttpResponse.json({ sitekey: '', cdata: '1' })),
+    )
+    render(<PublicApp />)
+    expect(await screen.findByText(/未配置申诉验证的 Turnstile 密钥/)).toBeInTheDocument()
   })
 })
 

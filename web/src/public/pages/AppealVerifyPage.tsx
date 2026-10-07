@@ -1,12 +1,12 @@
 // 申诉验证页（_w/ap/<id>/<sig>）：展示处罚依据 + Turnstile + 采集浏览器
 // 特征提交，换取解禁码。原服务端模板页的 React 重写。
-import { Box, CircularProgress, Typography } from '@mui/material'
+import { Box, Button, CircularProgress, Typography } from '@mui/material'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, postJSON } from '../api'
 import type { AppealData, WebRoute } from '../api'
 import { collectSignals } from '../fingerprint'
 import { errorText, InvalidState } from '../InvalidState'
-import { loadTurnstile } from '../turnstile'
+import { TurnstileWidget } from '../TurnstileWidget'
 
 const LIMIT_LABEL: Record<string, string> = {
   join_profile: '进群资料审核限制',
@@ -24,6 +24,11 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
   const [error, setError] = useState('')
   const [result, setResult] = useState<{ ok: boolean; code?: string; msg: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // 提交失败后组件里的令牌已被服务端核销，重试需要 reset 重新挑战；
+  // reset 由「重试」按钮驱动，不自动进行（非交互挑战会自动出新令牌，
+  // 自动 reset 会无人操作地连续烧掉失败次数）。
+  const [resetKey, setResetKey] = useState(0)
+  const busyRef = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -41,6 +46,10 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
 
   const submit = useCallback(
     async (token: string) => {
+      // 组件可能在重试时重复回调、令牌过期重发时也会再触发；一次提交
+      // 在途时忽略后续令牌。
+      if (busyRef.current) return
+      busyRef.current = true
       setSubmitting(true)
       try {
         const signals = await collectSignals()
@@ -52,11 +61,23 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
       } catch (err) {
         setResult({ ok: false, msg: errorText(err) })
       } finally {
+        busyRef.current = false
         setSubmitting(false)
       }
     },
     [route.path],
   )
+
+  // 成功后不再接受任何组件事件；失败信息不清掉成功结果。
+  const onToken = useCallback((token: string) => void submit(token), [submit])
+  const onError = useCallback((msg: string) => {
+    setResult((prev) => (prev?.ok ? prev : { ok: false, msg }))
+  }, [])
+
+  const retry = useCallback(() => {
+    setResult(null)
+    setResetKey((k) => k + 1)
+  }, [])
 
   if (error) return <InvalidState message={error} />
   if (!data) return <Placeholder />
@@ -141,7 +162,15 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
           完成下方的人机验证后，会给你一个<b>解禁码</b>，把它交给群管理员即可解除限制。
         </Typography>
         {data.sitekey ? (
-          <TurnstileWidget sitekey={data.sitekey} cdata={data.cdata} onToken={submit} />
+          !result?.ok && (
+            <TurnstileWidget
+              sitekey={data.sitekey}
+              cdata={data.cdata}
+              resetKey={resetKey}
+              onToken={onToken}
+              onError={onError}
+            />
+          )
         ) : (
           <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
             本页未配置人机验证，请联系群管理员处理。
@@ -150,49 +179,24 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
         <Typography sx={{ fontSize: 13, color: 'text.secondary', mt: 1 }}>
           验证组件加载不出来时，请用系统浏览器打开本页。
         </Typography>
-        <ResultArea submitting={submitting} result={result} />
+        <ResultArea
+          submitting={submitting}
+          result={result}
+          onRetry={result && !result.ok && data.sitekey ? retry : undefined}
+        />
       </Section>
     </Box>
   )
 }
 
-/** TurnstileWidget 显式渲染；token 到达即回调提交。 */
-function TurnstileWidget({
-  sitekey,
-  cdata,
-  onToken,
-}: {
-  sitekey: string
-  cdata: string
-  onToken: (token: string) => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    let cancelled = false
-    let widgetID: string | null = null
-    void loadTurnstile().then((ts) => {
-      if (cancelled || !ts || !ref.current) return
-      widgetID = ts.render(ref.current, {
-        sitekey,
-        action: 'appeal',
-        cdata,
-        callback: onToken,
-      })
-    })
-    return () => {
-      cancelled = true
-      if (widgetID) window.turnstile?.remove(widgetID)
-    }
-  }, [sitekey, cdata, onToken])
-  return <Box ref={ref} data-testid="turnstile" sx={{ my: 1 }} />
-}
-
 function ResultArea({
   submitting,
   result,
+  onRetry,
 }: {
   submitting: boolean
   result: { ok: boolean; code?: string; msg: string } | null
+  onRetry?: () => void
 }) {
   if (submitting)
     return (
@@ -227,7 +231,14 @@ function ResultArea({
       </Box>
     )
   return (
-    <Typography sx={{ fontSize: 14, color: 'error.main', mt: 1.5 }}>{result.msg}</Typography>
+    <Box sx={{ mt: 1.5 }}>
+      <Typography sx={{ fontSize: 14, color: 'error.main' }}>{result.msg}</Typography>
+      {onRetry && (
+        <Button size="small" variant="outlined" sx={{ mt: 1 }} onClick={onRetry}>
+          重试验证
+        </Button>
+      )}
+    </Box>
   )
 }
 
