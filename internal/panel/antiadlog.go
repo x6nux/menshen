@@ -426,7 +426,7 @@ func handleAntiAdCallback(b *core.Bot, q *tg.CallbackQuery) {
 		b.AnswerCallback(q.ID, note)
 		showUserLogs(b, chatID, msgID, q.From.ID, target, int(page), all)
 
-	case "ok", "fp", "del", "mute", "ban", "rel":
+	case "ok", "fp", "del", "mute", "ban", "rel", "ad":
 		if len(parts) < 4 {
 			b.AnswerCallback(q.ID, "参数缺失")
 			return
@@ -513,7 +513,7 @@ func IsAdDispositionCallback(data string) bool {
 		return false
 	}
 	switch parts[2] {
-	case "ok", "fp", "del", "mute", "ban", "rel":
+	case "ok", "fp", "del", "mute", "ban", "rel", "ad":
 		return true
 	}
 	return false
@@ -627,6 +627,19 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		}
 		b.AnswerCallback(q.ID, msg)
 
+	case "ad":
+		// 记录判为正常/未定时的人工改判：等同群内 /banad —— 不经 AI，按本群
+		// 处罚方式最高档处置，另起一条 manual 流水（与配置台的「人工标记广告」
+		// 同一入口）。原文取流水里留的那份，消息可能已被删。
+		snap := inst.Cache.Snap()
+		conf, _ := snap.ChatConf(row.BotID, row.ChatID)
+		if note := antiad.ManualMarkByRecord(inst, conf, row.ChatID, row.MessageID,
+			row.UserID, row.Text, q.From.ID); note != "" {
+			b.AnswerCallback(q.ID, "已标记广告，部分动作失败: "+core.TruncateRunes(note, 60))
+			return
+		}
+		b.AnswerCallback(q.ID, "已标记广告并处置")
+
 	case "del":
 		if ok, desc := antiad.DeleteMessage(inst, row.ChatID, row.MessageID); !ok {
 			b.AnswerCallback(q.ID, "删除失败: "+core.TruncateRunes(desc, 60))
@@ -670,6 +683,13 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			return
 		}
 		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(minutes))
+		// 禁言同时连带删除此人近期全部消息：判定成广告后他近期说的话
+		// 都应一起退场，而不是只留在群里等人再点一次删除。
+		if ok2, desc := antiad.PurgeUserMessages(inst, row.ChatID, row.UserID); ok2 {
+			reason = appendReason(reason, antiad.PurgeNote)
+		} else {
+			reason = appendReason(reason, "连带删除失败: "+core.TruncateRunes(desc, 60))
+		}
 		// 同 del 分支：undone 不能被这次禁言覆盖（封禁在上面已拦下）。
 		if row.Action == "undone" {
 			antiad.UpdateAdLog(inst, row.ID, row.Action, reason)
@@ -699,7 +719,14 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			b.AnswerCallback(q.ID, "封禁失败: "+core.TruncateRunes(desc, 60))
 			return
 		}
-		antiad.UpdateAdLog(inst, row.ID, "banned", appendReason(row.Reason, "管理员封禁出群"))
+		reason := appendReason(row.Reason, "管理员封禁出群")
+		// 封禁同时连带删除此人近期全部消息，与禁言同一口径。
+		if ok2, desc := antiad.PurgeUserMessages(inst, row.ChatID, row.UserID); ok2 {
+			reason = appendReason(reason, antiad.PurgeNote)
+		} else {
+			reason = appendReason(reason, "连带删除失败: "+core.TruncateRunes(desc, 60))
+		}
+		antiad.UpdateAdLog(inst, row.ID, "banned", reason)
 		b.AnswerCallback(q.ID, "已封禁出群")
 	}
 }

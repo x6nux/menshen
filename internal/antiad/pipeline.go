@@ -350,7 +350,25 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 识图的钱也是判这条消息花的。
 	v.Usage, v.Cost = billing.MergeUsage(v.Usage, vis.Usage), v.Cost+vis.Cost
 
+	// 初判下限：低于它的广告结论不足以据以先动手，但**仍交复判**。早期版本
+	// 在这里直接放行，实测会把低置信的真广告漏掉（邀请码返利一类初判常常
+	// 只给个位数到二十几的置信度），而复判模型对这种形态的把握远高于初判，
+	// 值得多问一次。下限因此只约束先行动作，不再决定复判与否。
+	floor := snap.BotSettingInt(b.BotID(), "antiad_so_floor", store.DefaultSoFloor)
+	belowFloor := v.IsAd && v.Confidence*100 < float64(floor)
+	floorConf := v.Confidence * 100
+	// floorNote 由 finish 补进流水理由：复判成功时理由会被复判自己的判词
+	// 覆盖，不在这里补一句，事后回看就不知道下限曾拦过一次。
+	floorNote := ""
+	if belowFloor {
+		floorNote = fmt.Sprintf("（初判置信度 %.0f%% 低于下限线 %d%%，未据初判先动手）",
+			floorConf, floor)
+	}
+
 	finish := func(v adVerdict, pre adAction, preNote string) {
+		if floorNote != "" {
+			v.Reason = floorNote + v.Reason
+		}
 		// 规则命中但最终判为正常：把命中未被采信记进日志。规则页的
 		// 命中数是运营数据，这里补定案视角 —— 一条规则总被推翻，说明它
 		// 覆盖过宽或只是与正常讨论同形。
@@ -365,19 +383,16 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 规则命中时必须过大模型复判（systemone 已被跳过）；其余沿用采信线与
 	// 要罚才复判。
 	forceReview := ruleHit && hasLLM(b, snap)
-	if !needReview(b, snap, v, act) && !forceReview {
+	if !needReview(b, snap, v, act) && !forceReview && !belowFloor {
 		finish(v, adAction{}, "")
 		return
 	}
-	// 初判下限：置信度低于它的广告结论是噪声，直接放行、连复判都不跑 ——
-	// 那种结论跑复判只是花钱买一个必然被推翻的结果。按未定记流水，管理员
-	// 在记录里能看到为什么放行。
-	if v.IsAd && v.Confidence*100 < float64(snap.BotSettingInt(
-		b.BotID(), "antiad_so_floor", store.DefaultSoFloor)) {
-		floor := snap.BotSettingInt(b.BotID(), "antiad_so_floor", store.DefaultSoFloor)
+	// 低于下限：先不动手，等复判定案；没有复判模型时仍需放行 —— 低置信初判
+	// 无第二级把关，不值得据以处罚。
+	if belowFloor && !hasLLM(b, snap) {
+		floorNote = fmt.Sprintf("（初判置信度 %.0f%% 低于下限线 %d%%，无复判模型，按未定放行）",
+			floorConf, floor)
 		v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
-		v.Reason = fmt.Sprintf("（初判置信度 %.0f%% 低于下限线 %d%%，直接放行，未复判）",
-			v.Confidence*100, floor) + v.Reason
 		finish(v, adAction{}, "")
 		return
 	}
@@ -400,7 +415,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
 			NoteTempMute(b.Shared, m.Chat.ID, m.From.ID)
 		}
-	} else if v.Confidence*100 >= float64(snap.BotSettingInt(
+	} else if !belowFloor && v.Confidence*100 >= float64(snap.BotSettingInt(
 		b.BotID(), "antiad_pre_act_conf", store.DefaultPreActConf)) {
 		pre = adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)

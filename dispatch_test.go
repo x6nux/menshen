@@ -310,3 +310,47 @@ func TestUbanCommandRouting(t *testing.T) {
 		t.Errorf("陌生人不该能触发全解：%v", p)
 	}
 }
+
+// TestBanGbanCommandRouting：私聊 /ban、/gban 只对服务管理员生效。参数不全
+// 回用法；带了目标就同步发出进度回执（真正的处置在异步 goroutine 里）。
+// 陌生人发同样的文字不会触发 —— 它落到申诉通道，不暴露命令。
+func TestBanGbanCommandRouting(t *testing.T) {
+	dm := func(uid int64, text string) *tg.Update {
+		return &tg.Update{Message: &tg.Message{MessageID: 1, Date: 1700000000, Text: text,
+			From: &tg.TGUser{ID: uid}, Chat: &tg.Chat{ID: uid, Type: "private"}}}
+	}
+	b, fake, sh := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	if err := sh.AddAdmin(888, "次管", 777); err != nil {
+		t.Fatal(err)
+	}
+
+	// 参数不全：回用法说明。
+	for _, text := range []string{"/ban", "/gban", "/ban abc-def", "/gban abc-def"} {
+		fake.Reset()
+		dispatch(b, dm(777, text))
+		p := fake.LastCall("sendMessage")
+		if p == nil || !strings.Contains(p["text"].(string), "用法") {
+			t.Errorf("%q 应得到用法说明，得到 %v", text, p)
+		}
+	}
+
+	// 合法目标：同步发出进度回执（处置本身在异步 goroutine 里）。
+	fake.Reset()
+	dispatch(b, dm(777, "/ban 555"))
+	if p := fake.LastCall("sendMessage"); p == nil || !strings.Contains(p["text"].(string), "555") {
+		t.Errorf("/ban <uid> 应发进度回执，得到 %v", p)
+	}
+	fake.Reset()
+	dispatch(b, dm(777, "/gban 555 mute"))
+	if p := fake.LastCall("sendMessage"); p == nil || !strings.Contains(p["text"].(string), "联合封禁") {
+		t.Errorf("/gban <uid> 应发进度回执，得到 %v", p)
+	}
+
+	// 陌生人：不触发命令，不发进度回执。
+	fake.Reset()
+	dispatch(b, dm(12345, "/ban 555"))
+	if p := fake.LastCall("sendMessage"); p != nil &&
+		strings.Contains(p["text"].(string), "正在你能管") {
+		t.Errorf("陌生人不该能触发 /ban：%v", p)
+	}
+}

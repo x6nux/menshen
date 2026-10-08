@@ -29,9 +29,9 @@ import (
 // 大模型复判；达到它就直接采信初判，不再复判。
 const DefaultSoTrust = 95
 
-// DefaultSoFloor 是初判下限的默认值（百分数）：初判置信度低于它的
-// 广告结论是噪声，直接放行、连复判都不跑。
-const DefaultSoFloor = 30
+// DefaultSoFloor 是初判下限的默认值（百分数）：初判置信度低于它时，
+// 不据初判先动手，仍交大模型复判定案；没有复判模型时才是放行线。
+const DefaultSoFloor = 20
 
 // DefaultPreActConf 是初判线的默认值（百分数）：初判置信度低于它时
 // 只送复判，不先删消息、不临时禁言。
@@ -121,7 +121,7 @@ var settingDefaults = map[string]string{
 	"antiad_pre_act_conf": strconv.Itoa(DefaultPreActConf), // 初判先行动作线
 	"antiad_mute_conf":    strconv.Itoa(DefaultMuteConf),   // 禁言/封禁的置信度下限
 	"antiad_severe_mute":  "2",                             // 高危害不受资历豁免（危害度）
-	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不复判
+	"antiad_so_floor":     strconv.Itoa(DefaultSoFloor),    // 初判下限：低于它不先动手
 	"antiad_act_hard":     "90",                            // 删除 + 禁言线
 	"antiad_act_soft":     "75",                            // 删除线
 	"antiad_new_hours":    "72",                            // 新人时长界
@@ -271,6 +271,9 @@ type GbanRec struct {
 	SrcChat   int64
 	ByBot     int64
 	CreatedAt int64
+	// Mode 是手工指定的处罚方式（mute / ban）。空串表示服从各群自己的
+	// 处置配置；只有 /gban 显式选择时才会写上。
+	Mode string
 }
 
 // WhiteRec 是 ad_whitelist 的一行。
@@ -787,7 +790,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 	}
 
 	rows, err = q.Query(
-		`SELECT user_id,reason,src_chat,by_bot,created_at FROM gban`)
+		`SELECT user_id,reason,src_chat,by_bot,created_at,mode FROM gban`)
 	if err != nil {
 		return err
 	}
@@ -795,7 +798,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 	for rows.Next() {
 		var g GbanRec
 		if err := rows.Scan(&g.UserID, &g.Reason, &g.SrcChat, &g.ByBot,
-			&g.CreatedAt); err != nil {
+			&g.CreatedAt, &g.Mode); err != nil {
 			return err
 		}
 		snap.Gban[g.UserID] = g
@@ -883,7 +886,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 	}
 	rows.Close()
 
-	rows, err = q.Query(`SELECT owner_id,user_id,reason,src_chat,created_at
+	rows, err = q.Query(`SELECT owner_id,user_id,reason,src_chat,created_at,mode
 		FROM gban_own_bans`)
 	if err != nil {
 		return err
@@ -893,7 +896,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 		var g GbanRec
 		var ownerID int64
 		if err := rows.Scan(&ownerID, &g.UserID, &g.Reason, &g.SrcChat,
-			&g.CreatedAt); err != nil {
+			&g.CreatedAt, &g.Mode); err != nil {
 			return err
 		}
 		if snap.GbanOwnBans[ownerID] == nil {

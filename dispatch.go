@@ -128,7 +128,8 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
-	// /log、/user、/white：记录查询与豁免名单；/uban：在能管的所有群里全解。
+	// /log、/user、/white：记录查询与豁免名单；/uban：在能管的所有群里全解；
+	// /ban、/gban：在能管的所有群里处罚 / 写入联合封禁名单。
 	switch {
 	case text == "/uban" || strings.HasPrefix(text, "/uban ") ||
 		strings.HasPrefix(text, "/uban@"):
@@ -137,6 +138,22 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 			_, arg, _ = strings.Cut(arg, " ")
 		}
 		antiad.HandleUbanCommand(b, m, strings.TrimSpace(arg))
+		return
+	case text == "/ban" || strings.HasPrefix(text, "/ban ") ||
+		strings.HasPrefix(text, "/ban@"):
+		arg := strings.TrimPrefix(text, "/ban")
+		if strings.HasPrefix(arg, "@") { // /ban@botname <uid> [mode]
+			_, arg, _ = strings.Cut(arg, " ")
+		}
+		antiad.HandleBanCommandDM(b, m, strings.TrimSpace(arg))
+		return
+	case text == "/gban" || strings.HasPrefix(text, "/gban ") ||
+		strings.HasPrefix(text, "/gban@"):
+		arg := strings.TrimPrefix(text, "/gban")
+		if strings.HasPrefix(arg, "@") { // /gban@botname <uid> [mode]
+			_, arg, _ = strings.Cut(arg, " ")
+		}
+		antiad.HandleGbanCommandDM(b, m, strings.TrimSpace(arg))
 		return
 	case text == "/log" || strings.HasPrefix(text, "/log ") ||
 		strings.HasPrefix(text, "/log@"):

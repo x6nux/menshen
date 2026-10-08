@@ -352,7 +352,8 @@ func TestPromptsExplainPayloadLines(t *testing.T) {
 // 模型结论处置，避免低置信结论触发删消息、临时禁言与连带删除；达到采信线
 // 的初判仍然采信。
 //
-// 用 50% 区间：低于下限线（30%）的一档不复判，由 TestSoFloorSkipsReview 覆盖。
+// 用 50% 区间：低于下限线（20%）的一档不先动手，但仍送复判，由
+// TestSoFloorSkipsPreAction 覆盖。
 func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 	// 弱初判（50%）：复判失败 → 按未定放行，不追加处置。
 	b, fake := testutil.NewTestBot(t, 1)
@@ -482,54 +483,61 @@ func TestPreActLineConfigurable(t *testing.T) {
 	}
 }
 
-// TestSoFloorSkipsReview：初判下限（默认 30%）以下的广告结论直接放行，
-// 连复判都不跑：这种结论是噪声，复判必然被推翻。
-func TestSoFloorSkipsReview(t *testing.T) {
-	// 初判 20%（低于下限）：不复判、不处置、不删消息。
+// TestSoFloorSkipsPreAction：初判下限（默认 20%）以下的广告结论不据以先
+// 动手，但仍交复判定案 —— 早期版本在这里直接放行，实测会把低置信的真广告
+// 漏掉（邀请码返利一类初判常只给个位数置信度）；只有没配复判模型时，下限
+// 才回到「放行线」的含义。
+func TestSoFloorSkipsPreAction(t *testing.T) {
+	// 初判 10%（低于下限）+ 复判正常：不先动手，终判放行。
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.20, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
-	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "我回来了"))
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.10, "promo", "message"),
+		llmReply(false, 0.9, "none", "message"))
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "看我的邀请码"))
 	waitIdle(t, b)
 
-	if llmN.Load() != 0 {
-		t.Errorf("低于下限不该跑复判，跑了 %d 次", llmN.Load())
-	}
 	if soN.Load() != 1 {
 		t.Errorf("初判应照常跑一次，得到 %d 次", soN.Load())
 	}
+	if llmN.Load() != 1 {
+		t.Errorf("低于下限也应送复判，跑了 %d 次", llmN.Load())
+	}
 	if n := fake.CountCalls("deleteMessage") + fake.CountCalls("restrictChatMember"); n != 0 {
-		t.Errorf("低于下限不该有任何处置，得到 %d 次调用", n)
+		t.Errorf("低于下限不该有先行动作，得到 %d 次调用", n)
 	}
 	if verdict, action, reason := logRow(t, b); verdict != "clean" || action != "none" ||
 		!strings.Contains(reason, "低于下限线") {
-		t.Errorf("应记成未定放行并写明原因：verdict=%q action=%q reason=%q", verdict, action, reason)
+		t.Errorf("复判正常应放行并写明下限原因：verdict=%q action=%q reason=%q",
+			verdict, action, reason)
 	}
 
-	// 初判 40%（高于下限、低于初判线）：照常复判，只是不先动手。
-	b2, _ := testutil.NewTestBot(t, 1)
+	// 初判 10% + 复判确认广告：低置信的真广告不再漏掉。
+	b2, fake2 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
-	_, llmN2 := fakeAIWith(t, b2, soReply("ad", 0.40, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
-	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
+	fakeAIWith(t, b2, soReply("ad", 0.10, "promo", "message"),
+		llmReply(true, 0.9, "promo", "message"))
+	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "快来看看 M8P5J1 https://muse.ai/join"))
 	waitIdle(t, b2)
-	if llmN2.Load() != 1 {
-		t.Errorf("高于下限应照常复判，跑了 %d 次", llmN2.Load())
+	if verdict, action, _ := logRow(t, b2); verdict != "ad" || !strings.Contains(action, "deleted") {
+		t.Errorf("低置信广告经复判确认后应处置：verdict=%q action=%q", verdict, action)
+	}
+	// 低于下限不先动手：消息只由终判删一次。
+	if n := fake2.CountCalls("deleteMessage"); n != 1 {
+		t.Errorf("消息应只在终判时删一次，得到 %d 次", n)
 	}
 
-	// 下限设成 0：关闭这条，20% 也照常复判。
-	b3, _ := testutil.NewTestBot(t, 1)
+	// 没配复判模型：下限回到放行线，低置信初判不处罚。
+	b3, fake3 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b3, -100)
-	if err := b3.PutBotSetting(b3.BotID(), "antiad_so_floor", "0"); err != nil {
-		t.Fatal(err)
-	}
-	_, llmN3 := fakeAIWith(t, b3, soReply("ad", 0.20, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
-	HandleGroupMessage(b3, testutil.GroupMsg(-100, 44, 9, "加微信 日入5000"))
+	fakeAIWith(t, b3, soReply("ad", 0.10, "promo", "message"), "")
+	setGlobal(t, b3, "antiad_llm_model", "")
+	HandleGroupMessage(b3, testutil.GroupMsg(-100, 44, 9, "看我的邀请码"))
 	waitIdle(t, b3)
-	if llmN3.Load() != 1 {
-		t.Errorf("下限为 0 时应照常复判，跑了 %d 次", llmN3.Load())
+	if verdict, action, _ := logRow(t, b3); verdict != "clean" || action != "none" {
+		t.Errorf("无复判模型时低置信初判应放行：verdict=%q action=%q", verdict, action)
+	}
+	if n := fake3.CountCalls("deleteMessage") + fake3.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("无复判模型时不该有处置，得到 %d 次", n)
 	}
 }
 

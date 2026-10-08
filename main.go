@@ -52,6 +52,12 @@ func main() {
 	}
 	defer db.Close()
 
+	// 内置必封规则在构建缓存之前补种，否则这一轮判定拿不到它。
+	if err := store.SeedBuiltinRules(db); err != nil {
+		slog.Error("补种内置规则失败", "err", err)
+		os.Exit(1)
+	}
+
 	cache, err := store.NewCache(db)
 	if err != nil {
 		slog.Error("构建缓存失败", "err", err)

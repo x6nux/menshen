@@ -121,10 +121,18 @@ func gbanRecordBoth(sh *core.Shared, ownerID, uid int64, reason string, srcChat,
 // gbanAdd 把人写进名单。已在名单里时保留最早那条记录 ——
 // 首次判定的来源与理由比后来的重复命中更有价值。
 func GbanAdd(sh *core.Shared, uid int64, reason string, srcChat, byBot int64) error {
+	return GbanAddMode(sh, uid, "", reason, srcChat, byBot)
+}
+
+// GbanAddMode 与 GbanAdd 相同，但记一次手动选定的处罚方式（mode 为
+// "mute" / "ban"，空串表示服从各群配置）。已在名单里时保留最早那条的
+// 来源与理由，只在本次给了非空方式时覆盖方式列。
+func GbanAddMode(sh *core.Shared, uid int64, mode, reason string, srcChat, byBot int64) error {
 	if _, err := sh.Store.Write.Exec(`INSERT INTO gban
-		(user_id,reason,src_chat,by_bot,created_at) VALUES (?,?,?,?,?)
-		ON CONFLICT(user_id) DO NOTHING`,
-		uid, core.TruncateRunes(reason, 200), srcChat, byBot, time.Now().Unix()); err != nil {
+		(user_id,reason,src_chat,by_bot,created_at,mode) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(user_id) DO UPDATE SET mode =
+			CASE WHEN excluded.mode != '' THEN excluded.mode ELSE gban.mode END`,
+		uid, core.TruncateRunes(reason, 200), srcChat, byBot, time.Now().Unix(), mode); err != nil {
 		return err
 	}
 	return sh.Cache.Reload()
@@ -209,6 +217,9 @@ func EnforceGban(sh *core.Shared, uid int64, reason string) {
 //	封禁档   → banChatMember（移出群）
 //	禁言档   → restrictChatMember（按本 bot 的禁言时长，0 = 永久）
 //
+// 例外是名单行手动选定的方式（/gban 时显式指定，见 GbanAddMode）：它覆盖
+// 群的默认档。自动命中的行不带方式，仍服从群配置。
+//
 // 返回实际动作（ban / mute / dryrun）与是否成功。频道身份由 BanSender /
 // MuteSender 各自处理（封频道不支持限时，退回永久封）。
 func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string) {
@@ -216,7 +227,16 @@ func gbanApply(b *core.Bot, conf store.BotChat, uid int64) (string, bool, string
 	if conf.Dryrun {
 		return "dryrun", true, ""
 	}
-	if snap.BanMode(conf) {
+	ban := snap.BanMode(conf)
+	if rec, ok := gbanHit(b.Shared, b.BotID(), conf.ChatID, uid); ok {
+		switch rec.Mode {
+		case "ban":
+			ban = true
+		case "mute":
+			ban = false
+		}
+	}
+	if ban {
 		ok, desc := BanSender(b, conf.ChatID, uid)
 		return "ban", ok, desc
 	}
@@ -455,10 +475,18 @@ func GbanOwnSetChat(sh *core.Shared, ownerID, chatID int64, on bool) error {
 // GbanOwnAddBan 把人写进专属组的账本。已在账上时保留最早那条 ——
 // 首次判定的来源与理由比后来的重复命中更有价值。
 func GbanOwnAddBan(sh *core.Shared, ownerID, uid int64, reason string, srcChat int64) error {
+	return GbanOwnAddBanMode(sh, ownerID, uid, "", reason, srcChat)
+}
+
+// GbanOwnAddBanMode 与 GbanOwnAddBan 相同，但记一次手动选定的处罚方式
+// （空串表示服从各群配置）。与 GbanAddMode 同口径：保留最早来源与理由，
+// 只在本次给了非空方式时覆盖方式列。
+func GbanOwnAddBanMode(sh *core.Shared, ownerID, uid int64, mode, reason string, srcChat int64) error {
 	if _, err := sh.Store.Write.Exec(`INSERT INTO gban_own_bans
-		(owner_id,user_id,reason,src_chat,created_at) VALUES (?,?,?,?,?)
-		ON CONFLICT(owner_id,user_id) DO NOTHING`,
-		ownerID, uid, core.TruncateRunes(reason, 200), srcChat, time.Now().Unix()); err != nil {
+		(owner_id,user_id,reason,src_chat,created_at,mode) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(owner_id,user_id) DO UPDATE SET mode =
+			CASE WHEN excluded.mode != '' THEN excluded.mode ELSE gban_own_bans.mode END`,
+		ownerID, uid, core.TruncateRunes(reason, 200), srcChat, time.Now().Unix(), mode); err != nil {
 		return err
 	}
 	return sh.Cache.Reload()

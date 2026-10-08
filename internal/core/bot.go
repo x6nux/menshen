@@ -655,6 +655,8 @@ var adminCmds = []map[string]string{
 	{"command": "user", "description": "查看某人的资料与处置记录（/user user_id）"},
 	{"command": "white", "description": "把某人加入本 bot 的豁免名单"},
 	{"command": "uban", "description": "在你能管的所有群里解除某人的封禁与禁言（/uban user_id）"},
+	{"command": "ban", "description": "在你能管的所有群里禁言或封禁某人（/ban user_id [mute|ban]）"},
+	{"command": "gban", "description": "把某人写入联合封禁名单并全平台执行（/gban user_id [mute|ban]）"},
 }
 
 // registerAdminCommands 为单个管理员设置 chat scope 的命令菜单。

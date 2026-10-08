@@ -308,13 +308,13 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
 
 	// 全部成功：不再给删除/禁言按钮
-	rows := adAlertRows(act, "deleted_muted", "", 7, false, "🔇 禁言")
+	rows := adAlertRows(act, "deleted_muted", "", 7, false, "🔇 禁言", true)
 	if hasBtn(rows, "a:ad:del:7") || hasBtn(rows, "a:ad:mute:7") {
 		t.Error("处置成功后不该再给补刀按钮")
 	}
 
 	// 删除失败：删除按钮必须回来，禁言按钮仍然不给
-	rows = adAlertRows(act, "deleted_muted", noteDeleteFailed+": no rights", 7, false, "🔇 禁言")
+	rows = adAlertRows(act, "deleted_muted", noteDeleteFailed+": no rights", 7, false, "🔇 禁言", true)
 	if !hasBtn(rows, "a:ad:del:7") {
 		t.Error("删除失败后必须给回删除按钮")
 	}
@@ -323,7 +323,7 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	}
 
 	// 演练模式：两个都要给，因为实际什么都没执行
-	rows = adAlertRows(act, "deleted_muted", "", 7, true, "🔇 禁言")
+	rows = adAlertRows(act, "deleted_muted", "", 7, true, "🔇 禁言", true)
 	if !hasBtn(rows, "a:ad:del:7") || !hasBtn(rows, "a:ad:mute:7") {
 		t.Error("演练模式下两个补刀按钮都要给")
 	}
@@ -331,6 +331,18 @@ func TestAdAlertKBRestoresFailedButtons(t *testing.T) {
 	// 封禁按钮任何情况下都在
 	if !hasBtn(rows, "a:ad:ban:7") {
 		t.Error("封禁按钮应始终存在")
+	}
+
+	// 判定正确按钮已取消；翻转按钮按当前判定给相反的那个。
+	if hasBtn(rows, "a:ad:ok:7") {
+		t.Error("不该再有「判定正确」按钮")
+	}
+	if !hasBtn(rows, "a:ad:fp:7") || hasBtn(rows, "a:ad:ad:7") {
+		t.Error("判定为广告时应给「误判」按钮")
+	}
+	rows = adAlertRows(adAction{Name: "none"}, "none", "", 7, false, "🔇 禁言", false)
+	if !hasBtn(rows, "a:ad:ad:7") || hasBtn(rows, "a:ad:fp:7") {
+		t.Error("判定为正常时应给「广告」按钮")
 	}
 }
 

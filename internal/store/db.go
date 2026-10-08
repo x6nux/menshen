@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS gban (
   reason     TEXT    NOT NULL DEFAULT '',
   src_chat   INTEGER NOT NULL DEFAULT 0,
   by_bot     INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  mode       TEXT    NOT NULL DEFAULT ''
 );
 
 -- 专属联合封禁组：每个管理员（主/次）名下一个，可整体开关并圈定生效群。
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS gban_own_bans (
   reason     TEXT    NOT NULL DEFAULT '',
   src_chat   INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT 0,
+  mode       TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (owner_id, user_id)
 );
 
@@ -511,6 +513,11 @@ func migrate(db *sql.DB) error {
 		// shape：这条进群限制对应的资料形状哈希（profile_shapes.shape）。
 		// 解除限制时按它反查删除，避免误伤解掉之后形状还在复用。
 		{"join_mutes", "shape", "TEXT NOT NULL DEFAULT ''"},
+		// mode：联合封禁名单行手动选定的处罚方式（mute / ban）。空串表示
+		// 服从各群自己的处置配置 —— 自动命中的行永远是空串，只有 /gban
+		// 显式指定时才会写上。
+		{"gban", "mode", "TEXT NOT NULL DEFAULT ''"},
+		{"gban_own_bans", "mode", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

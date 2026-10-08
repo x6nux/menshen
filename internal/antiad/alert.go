@@ -296,13 +296,18 @@ func SweepAlertCleanup(b *core.Bot, now time.Time) {
 // 按钮按当前还能执行的操作动态生成：已删除的记录不再提供删除按钮。
 // callback_data 形如 a:ad:fp:12345，远小于 64 字节上限。
 // muteLabel 由调用方按该 bot 的禁言时长渲染（永久禁言需可辨识）。
+//
+// 第一行是判定翻转按钮，按当前判定给相反的那个：已是广告给「误判」（改正为
+// 正常并解除限制），判为正常/未定给「广告」（人工改判为广告，等同 /banad）。
+// 「判定正确」不设按钮——判定已经落地执行，再点一次不改变任何状态。
 func adAlertRows(act adAction, action string, note string, logID int64, dryrun bool,
-	muteLabel string) [][][2]string {
+	muteLabel string, isAd bool) [][][2]string {
 
-	rows := [][][2]string{{
-		{"✅ 判定正确", fmt.Sprintf("a:ad:ok:%d", logID)},
-		{"↩️ 误判", fmt.Sprintf("a:ad:fp:%d", logID)},
-	}}
+	flip := [2]string{"↩️ 误判", fmt.Sprintf("a:ad:fp:%d", logID)}
+	if !isAd {
+		flip = [2]string{"🚫 广告", fmt.Sprintf("a:ad:ad:%d", logID)}
+	}
+	rows := [][][2]string{{flip}}
 	// 失败的那一步也要放回按钮：act.Delete 为真只说明打算删除，
 	// 删失败时若隐藏按钮，需要人工处置时便没有入口。
 	var manual [][2]string

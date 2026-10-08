@@ -108,6 +108,10 @@ const (
 	purgeNote = "连带删除此人近期全部消息"
 )
 
+// PurgeNote 是 purgeNote 的对外副本：面板的记录处置把同一句写进流水理由，
+// 汇总与记录卡片据它显示「全删」，两处必须是同一份字面量。
+const PurgeNote = purgeNote
+
 // IsBanAction 报告流水动作名是否代表封禁出群（dryrun: 前缀不算已执行，但
 // 判定上仍是封禁档，故一并剥掉前缀再比）。
 func IsBanAction(action string) bool {
@@ -428,6 +432,28 @@ func gmsgIDs(b *core.Bot, where string, args ...any) ([]int64, error) {
 		return ids, err
 	}
 	return ids, nil
+}
+
+// PurgeUserMessages 连带删除某人在某群近期的全部留底消息（时间窗同
+// purgeWindow：TG 只允许删 48 小时内的）。管理员在记录卡片上点禁言/封禁时
+// 调用——判定为广告后，他近期说的话都应一起退场，而不是只处理当前这条。
+//
+// 返回删除是否成功与失败说明；被删的消息一并标记退场，之后不再进入
+// 任何一次判定的上下文（与 ApplyAction 的连带删除同口径）。
+func PurgeUserMessages(b *core.Bot, chatID, uid int64) (bool, string) {
+	ids, err := gmsgIDs(b, `chat_id=? AND user_id=? AND at > ?`,
+		chatID, uid, time.Now().Add(-purgeWindow).Unix())
+	if err != nil {
+		// 查询失败与「一条都没有」必须分开：当成空列表会让连带删除
+		// 静默地什么都不做却报成功。
+		return false, "读取留底出错"
+	}
+	if len(ids) == 0 {
+		return true, ""
+	}
+	ok, desc := deleteMessages(b, chatID, ids)
+	markPunished(b, chatID, ids...)
+	return ok, desc
 }
 
 // deleteMessages 批量删除，每次最多 100 条（TG 的上限），找不到的 TG 会自动跳过。

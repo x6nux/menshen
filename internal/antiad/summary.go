@@ -196,8 +196,11 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 	}
 	fmt.Fprintf(&sb, "\n原文:\n<code>%s</code>",
 		html.EscapeString(core.TruncateRunes(r.Text, 500)))
+	// 判定翻转按钮看的是「当前是否按广告处置」：已标记误判（undone）的记录
+	// 判定结论虽仍是 ad，但已被管理员推翻，此时该给的是「广告」按钮。
 	rows := adAlertRows(act, r.Action, r.Reason, r.ID, dryrun,
-		"🔇 "+MuteLabel(b.Cache.Snap().BotSettingInt(r.BotID, "antiad_mute_minutes", 1440)))
+		"🔇 "+MuteLabel(b.Cache.Snap().BotSettingInt(r.BotID, "antiad_mute_minutes", 1440)),
+		r.Verdict == "ad" && name != "undone")
 	if links := adAlertLinks(b, r.ID); len(links) > 0 {
 		rows = append(rows, links)
 	}

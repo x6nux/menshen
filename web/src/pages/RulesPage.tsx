@@ -128,6 +128,7 @@ function agentStatus(agent: RuleAgent | undefined): {
 /** sourceLabel 规则来源文案；未知来源原样显示。 */
 function sourceLabel(source: string): string {
   if (source === 'ai') return 'AI 发现'
+  if (source === 'builtin') return '内置'
   return source || '未知'
 }
 

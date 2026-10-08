@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -507,5 +508,115 @@ func TestConfirmDoesNotDowngradeBan(t *testing.T) {
 	}
 	if action != "deleted_banned" {
 		t.Errorf("手工禁言后动作应保持封禁，得到 %q", action)
+	}
+}
+
+// seedLogVerdict 落一条指定判定与动作的流水（seedLog 固定 verdict=ad）。
+func seedLogVerdict(t *testing.T, b *core.Bot, uid int64, text, verdict, action string) int64 {
+	t.Helper()
+	res, err := b.Store.Write.Exec(`INSERT INTO antiad_log (chat_id,user_id,message_id,text,
+		verdict,confidence,decider,ad_kind,action,reason,created_at,bot_id)
+		VALUES (-100,?,7,?,?,0.95,'systemone','promo',?,'',0,?)`,
+		uid, text, verdict, action, b.BotID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// kbJSON 把内联键盘序列化成字符串，便于断言按钮是否存在。
+func kbJSON(t *testing.T, kb map[string]any) string {
+	t.Helper()
+	data, err := json.Marshal(kb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestRecordCardFlipButton：记录卡片按当前判定显示相反的那个翻转按钮 ——
+// 判为广告给「误判」，判为正常给「广告」；「判定正确」按钮已移除。
+func TestRecordCardFlipButton(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	adID := seedLog(t, b, 42, "日入过万", "deleted_muted")
+	row, ok := antiad.LoadAdLog(b.Store, adID)
+	if !ok {
+		t.Fatal("读取广告记录失败")
+	}
+	_, kb := antiad.RenderAdRecord(b, row)
+	blob := kbJSON(t, kb)
+	if !strings.Contains(blob, fmt.Sprintf("a:ad:fp:%d", adID)) {
+		t.Error("判定为广告的记录应给「误判」按钮")
+	}
+	if strings.Contains(blob, "a:ad:ad:") || strings.Contains(blob, "a:ad:ok:") {
+		t.Errorf("判定为广告的记录不该给「广告」或「判定正确」按钮：%s", blob)
+	}
+
+	cleanID := seedLogVerdict(t, b, 43, "正常聊天", "clean", "none")
+	row2, ok := antiad.LoadAdLog(b.Store, cleanID)
+	if !ok {
+		t.Fatal("读取正常记录失败")
+	}
+	_, kb2 := antiad.RenderAdRecord(b, row2)
+	blob2 := kbJSON(t, kb2)
+	if !strings.Contains(blob2, fmt.Sprintf("a:ad:ad:%d", cleanID)) {
+		t.Error("判定为正常的记录应给「广告」按钮")
+	}
+	if strings.Contains(blob2, "a:ad:fp:") || strings.Contains(blob2, "a:ad:ok:") {
+		t.Errorf("判定为正常的记录不该给「误判」或「判定正确」按钮：%s", blob2)
+	}
+}
+
+// TestManualMarkAdFromCard：判为正常的记录上点「广告」＝人工改判，等同 /ban：
+// 另起一条 manual 流水并删除该消息。
+func TestManualMarkAdFromCard(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	id := seedLogVerdict(t, b, 42, "看我的邀请码 M8P5J1", "clean", "none")
+
+	HandleAdminCallback(b, cb(1, "a:ad:ad:"+itoa(id)))
+
+	var n int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM antiad_log
+		WHERE verdict='ad' AND decider='manual'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("人工改判应另起一条 manual 流水，得到 %d 条", n)
+	}
+	if fake.CountCalls("deleteMessage") == 0 {
+		t.Error("人工改判应按最高档处置：至少删掉当前这条消息")
+	}
+}
+
+// TestManualMuteBanPurgesMessages：记录卡片上点禁言/封禁都要连带删除此人
+// 近期的全部留底消息，并在理由里留痕。
+func TestManualMuteBanPurgesMessages(t *testing.T) {
+	for _, op := range []string{"mute", "ban"} {
+		t.Run(op, func(t *testing.T) {
+			b, fake := testutil.NewTestBot(t, 1)
+			testutil.EnableAntiad(t, b, -100)
+			id := seedLog(t, b, 42, "日入过万", "deleted")
+			now := time.Now().Unix()
+			for _, mid := range []int64{7, 8, 9} {
+				if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+					(chat_id,message_id,user_id,text,at) VALUES (-100,?,42,'x',?)`, mid, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			HandleAdminCallback(b, cb(1, "a:ad:"+op+":"+itoa(id)))
+
+			if n := fake.CountCalls("deleteMessages"); n == 0 {
+				t.Fatalf("人工%s应连带删除此人全部消息，得到 %d 次 deleteMessages", op, n)
+			}
+			var reason string
+			if err := b.Store.Read.QueryRow(`SELECT reason FROM antiad_log WHERE id=?`, id).
+				Scan(&reason); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(reason, antiad.PurgeNote) {
+				t.Errorf("理由应写明连带删除，得到 %q", reason)
+			}
+		})
 	}
 }
