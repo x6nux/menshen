@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"menshen/internal/core"
@@ -34,28 +35,45 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 	if uid < 0 {
 		// 频道身份：频道当不了群管理员，与之对等的是本群的关联频道——
 		// 讨论群里能以它的身份发言的只有群主一方。
-		raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID})
-		var resp tg.ChatFullResp
-		if err != nil || json.Unmarshal(raw, &resp) != nil || !resp.OK {
+		raw, q, err := chatQuery(b, chatID, "getChat", map[string]any{"chat_id": chatID})
+		if err != nil {
 			slog.Warn("反广告：查询关联频道失败，按普通频道处理",
 				"chat", chatID, "sender_chat", uid, "err", err)
 			return false, false
 		}
+		var resp tg.ChatFullResp
+		if json.Unmarshal(raw, &resp) != nil || !resp.OK {
+			slog.Warn("反广告：查询关联频道返回异常，按普通频道处理",
+				"chat", chatID, "sender_chat", uid, "resp", string(raw))
+			return false, false
+		}
+		noteChatQueryBot(b, chatID, q)
 		return resp.Result.LinkedChatID == uid, true
 	}
 
-	raw, err := b.TG.Call("getChatMember", map[string]any{
+	raw, q, err := chatQuery(b, chatID, "getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid,
 	})
 	if err != nil {
-		// 查无此人（已离群/从未入群）是 TG 的确定回答，按普通成员处理
-		// 即可：结果与查询失败同向（不得放大权限），但不算故障，不记警告。
 		var apiErr *tg.APIError
-		if errors.As(err, &apiErr) && apiErr.NotFound() {
-			return false, false
+		switch {
+		case errors.As(err, &apiErr) && apiErr.AdminRequired():
+			// 群里的 bot 一个都不是管理员——这是配置问题，管理员需要知道
+			// 把其中某个提为管理员，否则成员身份永远查不到。
+			slog.Warn("反广告：群内没有管理员 bot，查不了成员身份，按普通成员处理",
+				"chat", chatID, "uid", uid)
+		case errors.As(err, &apiErr) && apiErr.NotFound():
+			// 查无此人（已离群/从未入群）是 TG 的确定回答，按普通成员处理
+			// 即可：结果与查询失败同向（不得放大权限），但不算故障，不记警告，
+			// 也不必换 bot 再问一遍。
+			if !chatInvisibleToBot(err) {
+				// 答得出「查无此人」说明这个 bot 问得动本群成员。
+				noteChatQueryBot(b, chatID, q)
+			}
+		default:
+			slog.Warn("反广告：查询群管理员失败，按普通成员处理",
+				"chat", chatID, "uid", uid, "err", err)
 		}
-		slog.Warn("反广告：查询群管理员失败，按普通成员处理",
-			"chat", chatID, "uid", uid, "err", err)
 		return false, false
 	}
 	var resp tg.ChatMemberResp
@@ -64,7 +82,98 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 			"chat", chatID, "uid", uid, "resp", string(raw))
 		return false, false
 	}
+	noteChatQueryBot(b, chatID, q)
 	return resp.Result.Status == "administrator" || resp.Result.Status == "creator", true
+}
+
+// chatQueryBotTTL 是「哪个 bot 能在这个群查成员」的记录时长。把 bot 免去
+// 管理员之后，最多这么久就会重新挑一次。
+const chatQueryBotTTL = 30 * time.Minute
+
+// chatQuery 在群内问得动成员状态的 bot 里挑一个，发出 method 调用。
+//
+// getChatMember 只有群管理员发得动（getChat 也要求是群成员），而发起查询的
+// bot 未必是：主 bot 按设计不入群，同群挂着几个 bot 时也只提了其中一个。
+// 于是逐个候选试到有一个答得上来，调用方再把成功的那个记下来（见
+// noteChatQueryBot）。返回最后一次失败的错误，调用方据此决定怎么记日志。
+//
+// 网络故障不换 bot 再试：候选走的是同一条出口与同一份代理，换一个只是把
+// 传输层超时再等一遍，而这条查询跑在串行的更新处理路径上。
+func chatQuery(b *core.Bot, chatID int64, method string,
+	payload map[string]any) (json.RawMessage, *core.Bot, error) {
+
+	var last *core.Bot
+	var lastErr error
+	for _, q := range chatQueryBots(b, chatID) {
+		raw, err := q.TG.Call(method, payload)
+		if err == nil {
+			return raw, q, nil
+		}
+		var apiErr *tg.APIError
+		if !errors.As(err, &apiErr) {
+			return nil, q, err
+		}
+		last, lastErr = q, err
+	}
+	return nil, last, lastErr
+}
+
+// chatQueryBots 排出在该群问得动成员状态的候选 bot，按尝试顺序：上次问成的
+// 排最前，其次是发起查询的这个 bot，最后是覆盖本群的其他 bot。
+func chatQueryBots(b *core.Bot, chatID int64) []*core.Bot {
+	if b.Reg == nil {
+		return []*core.Bot{b} // 长轮询只有一个 bot
+	}
+	var out []*core.Bot
+	seen := map[int64]bool{}
+	add := func(o *core.Bot) {
+		if o == nil || seen[o.BotID()] {
+			return
+		}
+		seen[o.BotID()] = true
+		out = append(out, o)
+	}
+	if id, ok := cachesOf(b.Shared).chatQueryBot.Get(chatID); ok {
+		if o, live := b.Reg.LookupID(id); live {
+			add(o)
+		}
+	}
+	if !b.IsMainBot() {
+		add(b)
+	}
+	snap := b.Cache.Snap()
+	for botID := range snap.Bots {
+		// 主 bot 不入群，问它只会得到 chat not found，白跑一趟。
+		if rec := snap.Bots[botID]; rec.IsMain {
+			continue
+		}
+		// 挂在该群名下的 bot 才可能是那里的管理员；没配置的 bot 即使
+		// 在群里也只是个普通成员，问不动成员状态。
+		if _, ok := snap.ChatConf(botID, chatID); !ok {
+			continue
+		}
+		if o, live := b.Reg.LookupID(botID); live {
+			add(o)
+		}
+	}
+	return out
+}
+
+// noteChatQueryBot 记下这次查成的 bot，供该群后续查询直接用。
+func noteChatQueryBot(b *core.Bot, chatID int64, q *core.Bot) {
+	if q == nil {
+		return
+	}
+	cachesOf(b.Shared).chatQueryBot.Set(chatID, q.BotID(), chatQueryBotTTL)
+}
+
+// chatInvisibleToBot 报告错误是「这个 bot 根本看不到该群」（不是群成员），
+// 而不是「此人不在群里」。两者都是 TG 的 400 查无此 X，含义相反：前者换
+// 一个 bot 再问还有希望，也绝不能被记成问得动本群的 bot；后者是确定答案。
+func chatInvisibleToBot(err error) bool {
+	var apiErr *tg.APIError
+	return errors.As(err, &apiErr) &&
+		strings.Contains(strings.ToLower(apiErr.Desc), "chat not found")
 }
 
 // bioTTL 是个人简介的缓存时长。简介本身很少变，但广告号会在被处置后

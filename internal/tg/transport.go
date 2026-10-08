@@ -132,6 +132,18 @@ func (e *APIError) NotFound() bool {
 	return false
 }
 
+// AdminRequired 报告这是不是「这个 bot 不是该群管理员」的拒答。
+//
+// getChatMember 对非管理员的 bot 只保证能查到自己，问别人时 TG 以
+// CHAT_ADMIN_REQUIRED 拒答。这不是故障：同一群里可能挂着几个 bot，只有
+// 一个是管理员，调用方据此换一个再问（见 antiad 的群管理员查询）。
+func (e *APIError) AdminRequired() bool {
+	if e == nil || e.Code != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(strings.ToLower(e.Desc), "chat_admin_required")
+}
+
 // retryAfter 从 429 响应体里取 parameters.retry_after（秒）。
 func retryAfter(raw []byte) (time.Duration, bool) {
 	var r struct {

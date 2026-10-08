@@ -14,6 +14,11 @@ type caches struct {
 	// 全量送检时不缓存等于每条群消息一次 getChatMember，
 	// 必然撞上 Telegram 的全局速率限制。
 	chatAdmin core.TTLMap[string, bool]
+	// chatQueryBot 记下某个群里问得动成员状态的 bot，键 chatID，值 botID。
+	// getChatMember 只有群管理员发得动，而发起查询的 bot 未必是管理员
+	// （主 bot 不入群、同群多 bot 时只有一个被提为管理员）：挑出来存着，
+	// 后续查询直接用它，不必每回都把非管理员的重试一遍。
+	chatQueryBot core.TTLMap[int64, int64]
 	// bio 缓存 TG 个人资料（getChat），键 "botID:uid"。广告号的强特征常写在
 	// 简介里，但全量送检下不缓存就是每条群消息多一次 TG 往返。键里带 bot：
 	// 查不查得到取决于该 bot 与用户有没有共同会话，共用一个键会让查不到的
@@ -87,6 +92,7 @@ func GCCaches(sh *core.Shared) {
 	now := time.Now()
 	c := cachesOf(sh)
 	c.chatAdmin.GC(now)
+	c.chatQueryBot.GC(now)
 	c.bio.GC(now)
 	c.photo.GC(now)
 	c.link.GC(now)

@@ -290,6 +290,7 @@ banned"，容易以为 `date` 是限制时间而跳过 —— 实测对 `left=fa
 | 现象 | 出处 | 含义 / 处理 |
 |---|---|---|
 | `400 user not found` | getChatMember | 查不到此人；按未知处理 |
+| `400 CHAT_ADMIN_REQUIRED` | getChatMember | 发起查询的 bot 不是该群管理员；换群内另一个 bot 再问（见 `antiad.chatQueryBots`） |
 | `USER_NOT_PARTICIPANT` | channels.getParticipant | 目标不在群；入群时间无解 |
 | `BOT_METHOD_INVALID` | 各类 MTProto 方法 | bot 被禁止调用该方法（见第 6 节） |
 | `FLOOD_WAIT_X` | MTProto | 请求过快，等 X 秒 |
