@@ -15,8 +15,8 @@ func memberUpdate(chatID int64, chatType, status string, isMember bool, at int64
 		Chat: &tg.Chat{ID: chatID, Type: chatType, Title: "测试群"},
 		Date: at,
 		NewChatMember: &tg.ChatMemberInfo{
-			User:     &tg.TGUser{ID: testutil.TestBotID},
-			Status:   status, IsMember: isMember,
+			User:   &tg.TGUser{ID: testutil.TestBotID},
+			Status: status, IsMember: isMember,
 		},
 	}
 }
