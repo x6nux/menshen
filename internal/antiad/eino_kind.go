@@ -108,6 +108,11 @@ func (t *einoKindRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, fmt.Errorf("规则发现请求体不是合法 JSON: %w", err)
 	}
+	// 上游明确拒绝 temperature 的模型（见 upstream/temperature.go）：翻译时
+	// 不再带该参数。Eino 把 temperature 写在模型配置里，改不了，这里去掉。
+	if upstream.TemperatureUnsupported(in.Model) {
+		in.Temperature = nil
+	}
 	// Eino 发的 model 字段已是不带上游前缀的模型 ID，翻译时原样透传。
 	body, err := json.Marshal(t.translateRequest(&in))
 	if err != nil {

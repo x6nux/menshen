@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"menshen/internal/core"
+	"menshen/internal/upstream"
 )
 
 // ---- Eino 客户端的流式传输层 ----
@@ -60,7 +61,8 @@ func (t *einoStreamRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// forceStreamBody 把 JSON 请求体里的 stream 置为 true。
+// forceStreamBody 把 JSON 请求体里的 stream 置为 true，并去掉上游不接受的
+// temperature（见 dropUnsupportedTemperature）。
 // 非 JSON 体原样放行（Eino 的 chat 请求都是 JSON，兜底而已）。
 func forceStreamBody(req *http.Request) error {
 	if req.Body == nil || req.Method != http.MethodPost {
@@ -74,6 +76,7 @@ func forceStreamBody(req *http.Request) error {
 	var body map[string]any
 	if json.Unmarshal(raw, &body) == nil {
 		body["stream"] = true
+		dropUnsupportedTemperature(body)
 		if nb, merr := json.Marshal(body); merr == nil {
 			raw = nb
 		}
@@ -84,6 +87,21 @@ func forceStreamBody(req *http.Request) error {
 		return io.NopCloser(bytes.NewReader(raw)), nil
 	}
 	return nil
+}
+
+// dropUnsupportedTemperature 去掉上游明确拒绝 temperature 的模型的该参数。
+//
+// Eino 把 temperature 写在模型配置里（见 ruleagent.newRuleAgentChatModel），
+// 建好实例后改不了，传输层是唯一能按模型改写请求体的地方。判定链路在
+// upstream.BuildBody 里做同一件事。
+func dropUnsupportedTemperature(body map[string]any) {
+	if _, ok := body["temperature"]; !ok {
+		return
+	}
+	id, _ := body["model"].(string)
+	if upstream.TemperatureUnsupported(id) {
+		delete(body, "temperature")
+	}
 }
 
 // toolCallAcc 按 index 累加一条流式 tool_call 的分片。

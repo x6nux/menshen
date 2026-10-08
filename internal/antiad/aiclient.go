@@ -464,6 +464,21 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 				detail = core.TruncateRunes(m, 200)
 			}
 		}
+		// 模型不接受 temperature：记下它（见 upstream/temperature.go），
+		// 立即重发。判定要可复现所以固定 temperature=0，但有的模型直接
+		// 拒绝该参数，不让步就是整条判定失败放行。下一次尝试会经 BuildBody
+		// 自动去掉它。这不算网络故障，不退避。
+		if upstream.TemperatureRejected(resp.StatusCode, detail) {
+			_, id := upstream.SplitModelName(model)
+			upstream.MarkTemperatureUnsupported(id)
+			slog.Warn("反广告：模型不接受 temperature 参数，去掉后重试",
+				"模型", model, "上游", upName(up), "状态", resp.StatusCode)
+			return aiResult{
+				err: fmt.Errorf("上游 %s 返回 %d：模型不接受 temperature 参数，已去掉该参数重试",
+					upName(up), resp.StatusCode),
+				stage: st, elapsed: time.Since(start),
+				retryable: true, noBackoff: true}
+		}
 		return aiResult{err: fmt.Errorf("上游 %s 返回 %d: %s",
 			upName(up), resp.StatusCode, detail),
 			stage: st, elapsed: time.Since(start)}

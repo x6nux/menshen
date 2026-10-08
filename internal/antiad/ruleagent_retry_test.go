@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	openai "github.com/meguminnnnnnnnn/go-openai"
+
+	"menshen/internal/upstream"
 )
 
 // fakeRetryModel 按脚本返回错误：第 n 次调用返回 errs[n-1]，脚本耗尽后成功。
@@ -99,7 +102,7 @@ func TestRetryChatModelFixedThenExponential(t *testing.T) {
 	}
 	inner := &fakeRetryModel{errs: errs}
 
-	out, err := withModelRetry(inner).Generate(context.Background(), nil)
+	out, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil)
 	if err != nil || out == nil {
 		t.Fatalf("第 11 次应成功：out=%v err=%v", out, err)
 	}
@@ -129,7 +132,7 @@ func TestRetryChatModelStopsAtLimit(t *testing.T) {
 	}
 	inner := &fakeRetryModel{errs: errs}
 
-	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err == nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil); err == nil {
 		t.Fatal("重试耗尽应返回错误")
 	}
 	if inner.callCount() != 11 || len(*sleeps) != 10 {
@@ -145,7 +148,7 @@ func TestRetryChatModelSkipsDeterministic4xx(t *testing.T) {
 			HTTPStatus: "400 Bad Request", Err: errors.New("invalid request")},
 	}}
 
-	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err == nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil); err == nil {
 		t.Fatal("应返回错误")
 	}
 	if inner.callCount() != 1 || len(*sleeps) != 0 {
@@ -161,7 +164,7 @@ func TestRetryChatModelRetries429And5xx(t *testing.T) {
 		&openai.RequestError{HTTPStatusCode: http.StatusBadGateway, Err: errors.New("bad gateway")},
 	}}
 
-	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err != nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil); err != nil {
 		t.Fatalf("429/502 后应重试成功：%v", err)
 	}
 	if inner.callCount() != 3 || len(*sleeps) != 2 {
@@ -174,7 +177,7 @@ func TestRetryChatModelStopsOnCancel(t *testing.T) {
 	sleeps := setupRetryTest(t)
 	inner := &fakeRetryModel{errs: []error{fmt.Errorf("wrap: %w", context.Canceled)}}
 
-	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err == nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil); err == nil {
 		t.Fatal("应返回错误")
 	}
 	if inner.callCount() != 1 || len(*sleeps) != 0 {
@@ -192,7 +195,7 @@ func TestRetryChatModelCancelDuringWait(t *testing.T) {
 	}
 	inner := &fakeRetryModel{errs: []error{timeoutErr(), timeoutErr()}}
 
-	if _, err := withModelRetry(inner).Generate(ctx, nil); err == nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(ctx, nil); err == nil {
 		t.Fatal("取消后应返回错误")
 	}
 	if inner.callCount() != 1 {
@@ -205,7 +208,7 @@ func TestRetryChatModelCancelDuringWait(t *testing.T) {
 func TestRetryChatModelStreamRetriesCreation(t *testing.T) {
 	sleeps := setupRetryTest(t)
 	inner := &fakeRetryModel{errs: []error{timeoutErr()}}
-	m, err := withModelRetry(inner).WithTools(nil)
+	m, err := withModelRetry(inner, "t/retry-model").WithTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,11 +229,32 @@ func TestRetryChatModelRetriesAPIError429(t *testing.T) {
 			Message: "当前分组上游负载已饱和，请稍后再试"},
 	}}
 
-	if _, err := withModelRetry(inner).Generate(context.Background(), nil); err != nil {
+	if _, err := withModelRetry(inner, "t/retry-model").Generate(context.Background(), nil); err != nil {
 		t.Fatalf("APIError 429 后应重试成功：%v", err)
 	}
 	if inner.callCount() != 2 || len(*sleeps) != 1 {
 		t.Errorf("应 2 次请求 / 1 次等待，得到 %d / %d", inner.callCount(), len(*sleeps))
+	}
+}
+
+// TestRetryChatModelStripsRejectedTemperature：模型以 400 拒绝 temperature
+// 时，记下该模型并立即重发一次（不退避），重发由传输层去掉该参数。
+func TestRetryChatModelStripsRejectedTemperature(t *testing.T) {
+	sleeps := setupRetryTest(t)
+	const modelID = "t/no-temp-model"
+	inner := &fakeRetryModel{errs: []error{
+		&openai.APIError{HTTPStatusCode: http.StatusBadRequest,
+			Message: "`temperature` is deprecated for this model"},
+	}}
+
+	if _, err := withModelRetry(inner, modelID).Generate(context.Background(), nil); err != nil {
+		t.Fatalf("被拒 temperature 后应重发成功：%v", err)
+	}
+	if inner.callCount() != 2 || len(*sleeps) != 0 {
+		t.Errorf("应 2 次请求 / 0 次等待，得到 %d / %d", inner.callCount(), len(*sleeps))
+	}
+	if !upstream.TemperatureUnsupported(modelID) {
+		t.Error("被拒的模型应被记下，后续请求不再带 temperature")
 	}
 }
 
@@ -250,6 +274,11 @@ func TestRetryableModelError(t *testing.T) {
 		{"APIError 429", &openai.APIError{HTTPStatusCode: 429, Message: "rate limited"}, true},
 		{"APIError 503", &openai.APIError{HTTPStatusCode: 503, Message: "unavailable"}, true},
 		{"APIError 400", &openai.APIError{HTTPStatusCode: 400, Message: "bad request"}, false},
+		// Eino 的 OpenAI 组件把上面那套错误**改写**成自己的 APIError
+		// （不包装原错误），真实链路看到的是它，必须同样按状态码分类。
+		{"Eino APIError 429", &einoopenai.APIError{HTTPStatusCode: 429, Message: "rate limited"}, true},
+		{"Eino APIError 502", &einoopenai.APIError{HTTPStatusCode: 502, Message: "bad gateway"}, true},
+		{"Eino APIError 400", &einoopenai.APIError{HTTPStatusCode: 400, Message: "invalid request"}, false},
 		{"取消", context.Canceled, false},
 		{"未知错误", errors.New("boom"), false},
 		{"nil", nil, false},

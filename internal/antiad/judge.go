@@ -213,7 +213,8 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 
 	req := map[string]any{
 		// temperature 必须为 0：判定要可复现，同一条消息两次判出不同结果
-		// 会让管理员完全无法校准阈值。
+		// 会让管理员完全无法校准阈值。模型不接受该参数时，BuildBody 会按
+		// 模型去掉它（见 upstream/temperature.go）。
 		"temperature": 0,
 		// 流式才能按首字判断上游是否卡住（见 aiAttempt）；include_usage
 		// 让上游在流末附上用量，否则开销无从计算。

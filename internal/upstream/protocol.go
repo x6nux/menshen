@@ -39,8 +39,15 @@ func (u *Upstream) SetAuth(req *http.Request) {
 //
 // OpenAI Completions 渠道原样透传（只补 model）；其余类型只挑自己认识的
 // 字段重新组装，避免把 stream_options 这类参数发给不认它的上游。
+//
+// 已被上游拒绝过 temperature 的模型（见 TemperatureUnsupported）在这里
+// 统一去掉该参数：它是各渠道请求体组装唯一的出入口，判定链路的每条请求
+// 都经过这里。
 func (u *Upstream) BuildBody(ep Endpoint, model string, payload map[string]any) map[string]any {
 	_, id := SplitModelName(model)
+	if TemperatureUnsupported(id) {
+		payload = dropTemperature(payload)
+	}
 	switch u.EffectiveKind() {
 	case KindOpenAIResp:
 		return bodyOpenAIResponses(id, payload)
@@ -96,6 +103,22 @@ func (u *Upstream) NormalizeResponse(ep Endpoint, raw []byte) ([]byte, error) {
 }
 
 // ---- 请求体组装 ----
+
+// dropTemperature 返回去掉 temperature 的载荷副本。不改调用方的 map：
+// 同一份载荷会在重试时反复经过 BuildBody（含并发多路）。
+func dropTemperature(payload map[string]any) map[string]any {
+	if _, ok := payload["temperature"]; !ok {
+		return payload
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if k == "temperature" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
 
 func clonePayload(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in)+1)

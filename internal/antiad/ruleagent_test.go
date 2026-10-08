@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -95,6 +96,56 @@ func waitRuleAgentDone(t *testing.T, timeout time.Duration) map[string]any {
 			t.Fatalf("规则发现 %v 内没有结束，当前状态：%v", timeout, st)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRuleAgentDropsRejectedTemperature：模型以 400 拒绝 temperature 时，
+// 传输层记下它并去掉该参数，本轮照常跑完 —— 一个不认的参数不该废掉整轮发现。
+func TestRuleAgentDropsRejectedTemperature(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	const model = "hotrule/no-temp-agent"
+
+	var withTemp, without atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(raw), `"temperature"`) {
+			withTemp.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":{"message":"` + "`temperature`" +
+				` is deprecated for this model"}}`))
+			return
+		}
+		without.Add(1)
+		w.Write([]byte(oaTextReply("无需新增规则。")))
+	}))
+	defer srv.Close()
+
+	if _, err := b.Store.Write.Exec(`INSERT INTO upstreams
+		(name,base_url,api_key,weight,status,supports_chat,supports_systemone)
+		VALUES ('hotrule',?,'k',1,1,1,0)`, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Store.Write.Exec(`INSERT INTO models
+		(name,prompt_price,completion_price,cache_read_price,cache_write_price,enabled)
+		VALUES (?,0,0,0,0,1)`, model); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PutSetting("antiad_rule_model", model); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := StartRuleDiscovery(b.Shared, 7); err != nil {
+		t.Fatalf("启动规则发现失败: %v", err)
+	}
+	st := waitRuleAgentDone(t, 10*time.Second)
+	if errText, _ := st["error"].(string); errText != "" {
+		t.Fatalf("被拒 temperature 不该让本轮失败: %v；带参数 %d 次 / 不带参数 %d 次",
+			st, withTemp.Load(), without.Load())
+	}
+	if withTemp.Load() != 1 || without.Load() != 1 {
+		t.Errorf("应 1 次带参数（被拒）+ 1 次不带参数，得到 %d / %d",
+			withTemp.Load(), without.Load())
 	}
 }
 

@@ -18,9 +18,12 @@ import (
 	"net/http"
 	"time"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	openai "github.com/meguminnnnnnnnn/go-openai"
+
+	"menshen/internal/upstream"
 )
 
 // 重试策略参数是 var 而不是 const：测试要替换成不真等的实现，覆盖固定
@@ -55,6 +58,30 @@ func ruleAgentRetryDelay(retry int) time.Duration {
 	return ruleAgentRetryBase << (retry - ruleAgentRetryFixedCount - 1)
 }
 
+// apiErrorInfo 从错误链里取 HTTP 状态码与供应商消息。
+//
+// 同一件事有两套错误类型：SDK 的 RequestError（请求构造/传输层失败）与
+// APIError（读到 HTTP 状态与 JSON 错误体），以及 Eino 的 OpenAI 组件把它
+// 转成的自己的 APIError —— 那次转换是**改写**而不是包装，原错误不在链上
+// （见 eino-ext/components/model/openai/types.go 的 convOrigAPIError），
+// 所以只认 SDK 那套会在真实链路上漏判：可自愈的 429/5xx 被当成确定性
+// 错误直接放弃，模型拒绝 temperature 的 400 也认不出来。
+func apiErrorInfo(err error) (status int, msg string, ok bool) {
+	var einoErr *einoopenai.APIError
+	if errors.As(err, &einoErr) {
+		return einoErr.HTTPStatusCode, einoErr.Message, true
+	}
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.HTTPStatusCode, apiErr.Message, true
+	}
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		return reqErr.HTTPStatusCode, reqErr.Error(), true
+	}
+	return 0, "", false
+}
+
 // retryableModelError 判断一个模型请求错误是否值得重试。
 func retryableModelError(err error) bool {
 	if err == nil {
@@ -65,19 +92,8 @@ func retryableModelError(err error) bool {
 		return false
 	}
 	// HTTP 错误按状态码分类：429 与 5xx 可重试，其余 4xx 是确定性的。
-	// go-openai 有两种错误类型：RequestError（请求构造/传输层失败，带
-	// 期待的状态码）与 APIError（读到 HTTP 状态与 JSON 错误体）—— 网关
-	// 回整包 429/5xx 时是后者，两处都要按状态码判断，漏一处就会把可
-	// 自愈的故障当成确定性错误直接放弃。
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
-		return reqErr.HTTPStatusCode == http.StatusTooManyRequests ||
-			reqErr.HTTPStatusCode >= 500
-	}
-	var apiErr *openai.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.HTTPStatusCode == http.StatusTooManyRequests ||
-			apiErr.HTTPStatusCode >= 500
+	if status, _, ok := apiErrorInfo(err); ok {
+		return status == http.StatusTooManyRequests || status >= 500
 	}
 	// 传输层错误：超时、连接重置、DNS 抖动等都算 net.Error。
 	var netErr net.Error
@@ -98,16 +114,26 @@ func retryableModelError(err error) bool {
 
 // retryChatModel 给 ToolCallingChatModel 加网络重试。Generate 整段重试；
 // Stream 只重试建立阶段，流一旦返回，消费中的错误无法透明重试。
+//
+// 另有一类不是网络故障的失败也在这里就地自愈：上游拒绝 temperature 参数
+// （见 upstream.TemperatureUnsupported）。Eino 把 temperature 写在模型配置
+// 里，建好之后改不掉，所以在传输层按模型去掉该参数 —— 这里记下模型后立刻
+// 重发一次，重发会经过那条去掉参数的路。
 type retryChatModel struct {
-	inner model.ToolCallingChatModel
+	inner   model.ToolCallingChatModel
+	modelID string // 发给上游的模型名，用于登记「不接受 temperature」
+	// stripped 表示本实例已经为 temperature 重发过一次：重发仍然被拒说明
+	// 去参数没生效（例如上游文案里另有 temperature 字样），再快速重发没有
+	// 意义，交回常规重试与失败处理。
+	stripped bool
 }
 
 // withModelRetry 包装模型；nil 原样返回。
-func withModelRetry(inner model.ToolCallingChatModel) model.ToolCallingChatModel {
+func withModelRetry(inner model.ToolCallingChatModel, modelID string) model.ToolCallingChatModel {
 	if inner == nil {
 		return nil
 	}
-	return &retryChatModel{inner: inner}
+	return &retryChatModel{inner: inner, modelID: modelID}
 }
 
 func (m *retryChatModel) Generate(ctx context.Context, in []*schema.Message,
@@ -120,6 +146,11 @@ func (m *retryChatModel) Generate(ctx context.Context, in []*schema.Message,
 			return out, nil
 		}
 		lastErr = err
+		// 模型不接受 temperature：记下来，下一轮传输层会去掉它，这里立即
+		// 重发 —— 参数问题重发就解决，等 5 秒退避纯属浪费。
+		if m.noteTemperatureRejection(err) {
+			continue
+		}
 		if attempt >= ruleAgentRetryCount || !retryableModelError(err) || ctx.Err() != nil {
 			return nil, lastErr
 		}
@@ -139,6 +170,9 @@ func (m *retryChatModel) Stream(ctx context.Context, in []*schema.Message,
 			return out, nil
 		}
 		lastErr = err
+		if m.noteTemperatureRejection(err) {
+			continue
+		}
 		if attempt >= ruleAgentRetryCount || !retryableModelError(err) || ctx.Err() != nil {
 			return nil, lastErr
 		}
@@ -153,7 +187,24 @@ func (m *retryChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingC
 	if err != nil {
 		return nil, err
 	}
-	return &retryChatModel{inner: inner}, nil
+	return &retryChatModel{inner: inner, modelID: m.modelID, stripped: m.stripped}, nil
+}
+
+// noteTemperatureRejection 报告这次失败是否为「模型不接受 temperature」。
+// 是则记下模型并返回 true，让调用方立即重发；同一个实例只认一次。
+func (m *retryChatModel) noteTemperatureRejection(err error) bool {
+	if m.stripped {
+		return false
+	}
+	status, msg, ok := apiErrorInfo(err)
+	if !ok || !upstream.TemperatureRejected(status, msg) {
+		return false
+	}
+	m.stripped = true
+	upstream.MarkTemperatureUnsupported(m.modelID)
+	slog.Warn("规则发现：模型不接受 temperature 参数，去掉后重试",
+		"模型", m.modelID, "状态", status)
+	return true
 }
 
 // waitRetry 等一次重试；等待期间被取消时返回 ctx 错误，调用方立即收尾。

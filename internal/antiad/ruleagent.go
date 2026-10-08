@@ -508,7 +508,8 @@ func pickFallbackRuleAgentModel(snap *store.Snapshot) (string, *upstream.Upstrea
 // 解决：OpenAI Completions 渠道沿用流式转换（eino_stream.go，请求改
 // stream=true、SSE 重建成整包）；Responses / Anthropic / Gemini 渠道由
 // eino_kind.go 做请求/响应双向翻译（非流式）。temperature=0：规则发现要
-// 的是稳定复现，不是创造力。
+// 的是稳定复现，不是创造力；模型不接受该参数时由传输层按模型去掉，见
+// upstream/temperature.go。
 func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 	fullName string) (model.ToolCallingChatModel, error) {
 
@@ -551,7 +552,7 @@ func newRuleAgentChatModel(sh *core.Shared, u *upstream.Upstream,
 		return nil, err
 	}
 	// 包一层网络重试：上游偶发超时/5xx 不该让整轮发现直接失败。
-	return withModelRetry(m), nil
+	return withModelRetry(m, modelID), nil
 }
 
 // ---- 执行 ----
