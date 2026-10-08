@@ -152,7 +152,14 @@ func reassertMute(b *core.Bot, conf store.BotChat, cu *tg.ChatMemberUpdated) {
 			"chat", chatID, "uid", u.ID, "限制", why)
 		return
 	}
-	if ok2, desc := MuteSender(b, chatID, u.ID, left); !ok2 {
+	ok2, desc := MuteSender(b, chatID, u.ID, left)
+	if !ok2 {
+		if desc == noteAlreadyBanned {
+			// 人已被封禁出群：封禁比禁言重，不重新施加（否则会把人拉回群）。
+			slog.Info("反广告：不重新施加禁言（对方已被封禁出群）",
+				"chat", chatID, "uid", u.ID)
+			return
+		}
 		slog.Warn("反广告：重新施加禁言失败", "chat", chatID, "uid", u.ID, "tg", desc)
 		return
 	}
@@ -245,7 +252,11 @@ func ReassertActiveMutes(sh *core.Shared) {
 		if !reassertAllowed(sh, it.chatID, it.uid) {
 			continue
 		}
-		if ok2, desc := MuteSender(rec, it.chatID, it.uid, 0); !ok2 {
+		ok2, desc := MuteSender(rec, it.chatID, it.uid, 0)
+		if !ok2 {
+			if desc == noteAlreadyBanned {
+				continue // 已被封禁出群：封禁比禁言重，不降级
+			}
 			slog.Warn("禁言复查：重新施加失败",
 				"chat", it.chatID, "uid", it.uid, "tg", desc)
 			continue

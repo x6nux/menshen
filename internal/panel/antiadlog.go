@@ -552,12 +552,17 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		}
 
 		done, fail, skip := "", "", ""
+		// 记录里已是封禁：不再补禁言。禁言对已被封禁出群的人是降级，
+		// 流水也会从封禁改写成禁言。判定确认本身照记，标签保持封禁。
+		alreadyBanned := antiad.IsBanAction(row.Action)
 		if ban {
 			if ok2, desc := antiad.BanSender(inst, row.ChatID, row.UserID); !ok2 {
 				fail = "封禁失败: " + core.TruncateRunes(desc, 60)
 			} else {
 				done = "封禁出群"
 			}
+		} else if alreadyBanned {
+			skip = "该记录已是封禁出群"
 		} else if ok2, desc := antiad.MuteSender(inst, row.ChatID, row.UserID,
 			time.Duration(mins)*time.Minute); !ok2 {
 			// 人已经退群/被踢/已被禁言时禁言必然失败，这不算故障。
@@ -581,6 +586,8 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			action = "deleted_muted"
 		case fail == "" && skip == "":
 			action = "muted"
+		case alreadyBanned:
+			// 这次没做禁言，标签不降级。
 		case deleted:
 			action = "deleted"
 		}
@@ -627,10 +634,9 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		}
 		reason := appendReason(row.Reason, "管理员手工删除")
 		// 告警按钮是静态的，点过 ban 之后同一条消息上的删除按钮仍可点。
-		// undone/banned 是比删除更强的终态判定，不能被这次删除覆盖：
-		// undone 是负采样的判据，banned 已经把人请出群了。
+		// undone 是负采样的判据；封禁比删除更强，同样不能被这次删除覆盖。
 		// TG 侧照常删，只是不改 action 标签，实际动作记进 reason 留痕。
-		if row.Action == "undone" || row.Action == "banned" {
+		if row.Action == "undone" || antiad.IsBanAction(row.Action) {
 			antiad.UpdateAdLog(inst, row.ID, row.Action, reason)
 			b.AnswerCallback(q.ID, "已删除（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return
@@ -646,6 +652,12 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 		b.AnswerCallback(q.ID, "已删除")
 
 	case "mute":
+		// 记录里已是封禁：禁言是降级 —— restrictChatMember 会把他拉回群、
+		// 发不出言的成员，记录也会从封禁改写成禁言。直接拒绝，TG 与流水都不动。
+		if antiad.IsBanAction(row.Action) {
+			b.AnswerCallback(q.ID, "该记录已是封禁出群，不降级为禁言")
+			return
+		}
 		minutes := inst.Cache.Snap().BotSettingInt(row.BotID, "antiad_mute_minutes", 1440)
 		if ok, desc := antiad.MuteSender(inst, row.ChatID, row.UserID,
 			time.Duration(minutes)*time.Minute); !ok {
@@ -658,8 +670,8 @@ func applyAdManualAction(b, inst *core.Bot, q *tg.CallbackQuery, op string, row 
 			return
 		}
 		reason := appendReason(row.Reason, "管理员手工"+antiad.MuteLabel(minutes))
-		// 同 del 分支：undone/banned 不能被这次禁言覆盖。
-		if row.Action == "undone" || row.Action == "banned" {
+		// 同 del 分支：undone 不能被这次禁言覆盖（封禁在上面已拦下）。
+		if row.Action == "undone" {
 			antiad.UpdateAdLog(inst, row.ID, row.Action, reason)
 			b.AnswerCallback(q.ID, "已禁言（该记录保持「"+keepActionLabel(row.Action)+"」状态）")
 			return

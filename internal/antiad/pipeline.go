@@ -201,6 +201,8 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 			act := withPunish(adAction{Delete: true, Mute: true, Alert: true,
 				Name: "deleted_muted"}, snap.BanMode(conf))
 			note := ApplyAction(b, m, act, conf.Dryrun)
+			// 对方已被封禁出群时禁言那一步被跳过：流水仍记封禁，不降级成禁言。
+			act = withPunish(act, muteSkippedBanned(note))
 			// action 名在演练期由 logAction 加 dryrun: 前缀，与其余处置一致。
 			logAd(b, m, v, logAction(act, conf.Dryrun), note)
 			slog.Info("反广告：命中必封规则，按最高档处置", "chat", m.Chat.ID,
@@ -394,7 +396,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	if ruleHit {
 		pre = adAction{Delete: true, Mute: m.From.ID > 0, Temp: true}
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)
-		if pre.Mute && !conf.Dryrun {
+		if pre.Mute && !conf.Dryrun && !muteSkippedBanned(preNote) {
 			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
 			NoteTempMute(b.Shared, m.Chat.ID, m.From.ID)
 		}
@@ -402,7 +404,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		b.BotID(), "antiad_pre_act_conf", store.DefaultPreActConf)) {
 		pre = adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)
-		if pre.Mute && !conf.Dryrun {
+		if pre.Mute && !conf.Dryrun && !muteSkippedBanned(preNote) {
 			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
 			NoteTempMute(b.Shared, m.Chat.ID, m.From.ID)
 		}

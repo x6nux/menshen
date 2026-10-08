@@ -448,10 +448,9 @@ func applyJoinMuteNotify(b *core.Bot, conf store.BotChat, u *tg.TGUser,
 		return
 	}
 
-	if ok, desc := b.CallOK("restrictChatMember", map[string]any{
-		"chat_id": conf.ChatID, "user_id": u.ID,
-		"permissions": MutedPermissions(),
-	}); !ok {
+	// 走 MuteSender 而不是裸发 restrictChatMember：对方已被封禁出群时这一步
+	// 必须跳过 —— 禁言会把他变回在群成员，等于把封禁降级成禁言。
+	if ok, desc := MuteSender(b, conf.ChatID, u.ID, 0); !ok {
 		slog.Warn("反广告：限制发言失败",
 			"chat", conf.ChatID, "uid", u.ID, "来源", spec.Note, "tg", desc)
 		return

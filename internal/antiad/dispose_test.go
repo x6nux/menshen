@@ -641,7 +641,7 @@ func TestDeleteRealFailureStillReported(t *testing.T) {
 }
 
 // TestMuteGoneByErrorText：PARTICIPANT_ID_INVALID 直接说明对方不在群里，
-// 不必再查 getChatMember，也不再报 `禁言失败`。
+// MuteMoot 不必再查 getChatMember，也不再报 `禁言失败`。
 func TestMuteGoneByErrorText(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -653,8 +653,9 @@ func TestMuteGoneByErrorText(t *testing.T) {
 	if strings.Contains(note, noteMuteFailed) {
 		t.Fatalf("人已出群，禁言失败不该上报，得到 %q", note)
 	}
-	if n := fake.CountCalls("getChatMember"); n != 0 {
-		t.Errorf("错误文本已经说明对方不在群，不该再查成员，实际 %d 次", n)
+	// 一次是禁言前的封禁检查（MuteSender），MuteMoot 不该再查第二次。
+	if n := fake.CountCalls("getChatMember"); n != 1 {
+		t.Errorf("错误文本已经说明对方不在群，成员只该查一次，实际 %d 次", n)
 	}
 }
 
@@ -706,5 +707,71 @@ func TestMuteRealFailureStillReported(t *testing.T) {
 	note = ApplyAction(b, testutil.GroupMsg(-100, 43, 8, "广告"), act, false)
 	if !strings.Contains(note, noteMuteFailed) {
 		t.Fatalf("成员查询失败时要保守上报，得到 %q", note)
+	}
+}
+
+// TestMuteSenderSkipsBanned：对方已被封禁出群时禁言直接跳过 ——
+// restrictChatMember 会把他变回「在群里、只是发不了言」，等于把封禁降级
+// 成禁言并把人拉回群。
+func TestMuteSenderSkipsBanned(t *testing.T) {
+	cases := []struct {
+		name, resp string
+	}{
+		{"已被封禁出群", `{"ok":true,"result":{"status":"kicked"}}`},
+		{"被移出群但留着权限记录", `{"ok":true,"result":{"status":"restricted","is_member":false}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, fake := testutil.NewTestBot(t, 1)
+			testutil.EnableAntiad(t, b, -100)
+			fake.Resp["getChatMember"] = c.resp
+
+			act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+			note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false)
+			if n := fake.CountCalls("restrictChatMember"); n != 0 {
+				t.Errorf("已被封禁的人不该再禁言，发了 %d 次 restrictChatMember", n)
+			}
+			if !strings.Contains(note, "无需禁言") || !strings.Contains(note, noteAlreadyBanned) {
+				t.Errorf("应说明无需禁言，得到 %q", note)
+			}
+		})
+	}
+
+	// 在群且能发言的人照常禁言：这条守卫不能把正常处置一并挡掉。
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"member"}}`
+	act := adAction{Delete: true, Mute: true, Name: "deleted_muted"}
+	if note := ApplyAction(b, testutil.GroupMsg(-100, 42, 7, "广告"), act, false); note != "" {
+		t.Fatalf("正常成员应禁言成功，得到 %q", note)
+	}
+	if n := fake.CountCalls("restrictChatMember"); n != 1 {
+		t.Errorf("正常成员应被禁言一次，实际 %d 次", n)
+	}
+}
+
+// TestBannedUserNotDowngradedToMute：判定要禁言时对方已被封禁出群 ——
+// 不追加禁言，流水记成封禁。记成禁言的话，申诉与复查会按禁言去解，
+// 一次权限全开就把封禁也解掉、还把人放回群里。
+func TestBannedUserNotDowngradedToMute(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
+		llmReply(true, 0.95, "scam", "message"))
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"kicked"}}`
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "加微信 日入5000"))
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("已被封禁的人不该收到禁言调用，实际 %d 次", n)
+	}
+	verdict, action, reason := logRow(t, b)
+	if verdict != "ad" || action != "deleted_banned" {
+		t.Errorf("流水应记成封禁，得到 verdict=%q action=%q reason=%q",
+			verdict, action, reason)
+	}
+	if !strings.Contains(reason, noteAlreadyBanned) {
+		t.Errorf("理由里应写明对方已被封禁出群，得到 %q", reason)
 	}
 }

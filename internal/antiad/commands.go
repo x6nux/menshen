@@ -334,6 +334,8 @@ func HandleBanAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	}
 
 	note := ApplyAction(b, target, act, conf.Dryrun)
+	// 对方已被封禁出群时禁言那一步被跳过：流水仍记封禁，不降级成禁言。
+	act = withPunish(act, muteSkippedBanned(note))
 	logID := logAd(b, target, v, logAction(act, conf.Dryrun), note)
 
 	if !conf.Dryrun {
@@ -423,6 +425,8 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 		act.Delete = false
 	}
 	note := ApplyAction(b, tgt, act, dryrun)
+	// 对方已被封禁出群时禁言那一步被跳过：流水仍记封禁，不降级成禁言。
+	act = withPunish(act, muteSkippedBanned(note))
 	// 复查结论正常时，顺手把复判期那条还没来得及解的临时禁言解掉：
 	// 管理员多半就是看到判定正常却还禁着言，才来复查的。只有确实是
 	// 我们刚上的临时禁言才会动（见 LiftTempMuteIfFresh），别人的正式

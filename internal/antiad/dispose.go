@@ -101,9 +101,28 @@ const (
 	noteDeleteFailed = "删除失败"
 	noteMuteFailed   = "禁言失败"
 	noteBanFailed    = "封禁失败"
+	// noteAlreadyBanned 是「对方已被封禁出群」的禁言跳过说明。它由 MuteSender
+	// 自己给出，不是 TG 的错误文本：处置链路据它把这一档记成封禁，而不是禁言。
+	noteAlreadyBanned = "对方已被封禁出群"
 	// purgeNote 记进流水理由，标明这次连带删除了此人近期的全部消息（见 logNote）。
 	purgeNote = "连带删除此人近期全部消息"
 )
+
+// IsBanAction 报告流水动作名是否代表封禁出群（dryrun: 前缀不算已执行，但
+// 判定上仍是封禁档，故一并剥掉前缀再比）。
+func IsBanAction(action string) bool {
+	switch strings.TrimPrefix(action, "dryrun:") {
+	case "banned", "deleted_banned", "gban_banned":
+		return true
+	}
+	return false
+}
+
+// muteSkippedBanned 报告处置说明里是否是「对方已被封禁出群」。处置链路据此
+// 把这一档记成封禁：记成禁言会让申诉路径发一次权限全开，等于把封禁也解了。
+func muteSkippedBanned(note string) bool {
+	return strings.Contains(note, noteAlreadyBanned)
+}
 
 // planAction 按判定结论与本群设置定处置：禁言档在封禁模式下改为封禁出群；
 // 仅删除档可选附短时禁言（antiad_short_mute）。
@@ -224,10 +243,18 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 // MuteSender 限时禁言；d <= 0 表示永久禁言（不带 until_date 的
 // restrictChatMember 就是无限期，人留在群里但发不了言）。
 // 频道身份（负 ID）没有成员权限可改，只能 banChatSenderChat，且不支持限时。
+//
+// 已被封禁出群的人不解禁言：restrictChatMember 会把他变回「在群里、只是
+// 发不了言」，等于把封禁降级成禁言并把人拉回群。返回 noteAlreadyBanned 让
+// 调用方按无需禁言处理。
 func MuteSender(b *core.Bot, chatID, uid int64, d time.Duration) (bool, string) {
 	if uid < 0 {
 		return b.CallOK("banChatSenderChat", map[string]any{
 			"chat_id": chatID, "sender_chat_id": uid})
+	}
+	if bannedInChat(b, chatID, uid) {
+		slog.Info("反广告：跳过禁言（对方已被封禁出群）", "chat", chatID, "uid", uid)
+		return false, noteAlreadyBanned
 	}
 	payload := map[string]any{
 		"chat_id": chatID, "user_id": uid,
@@ -237,6 +264,32 @@ func MuteSender(b *core.Bot, chatID, uid int64, d time.Duration) (bool, string) 
 		payload["until_date"] = time.Now().Add(d).Unix()
 	}
 	return b.CallOK("restrictChatMember", payload)
+}
+
+// bannedInChat 报告此人此刻是否已被封禁出群：TG 成员状态为 kicked，或
+// restricted 且 is_member=false（被移出群，只留了权限记录）。
+//
+// 查不成返回 false：一次 TG 抖动不该改变处置方向，真正失败的禁言另有
+// MuteMoot 兜底。
+func bannedInChat(b *core.Bot, chatID, uid int64) bool {
+	if uid <= 0 {
+		return false
+	}
+	raw, err := b.TG.Call("getChatMember", map[string]any{
+		"chat_id": chatID, "user_id": uid,
+	})
+	if err != nil {
+		return false
+	}
+	var resp tg.ChatMemberResp
+	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
+		return false
+	}
+	if resp.Result.Status == "kicked" {
+		return true
+	}
+	return resp.Result.Status == "restricted" &&
+		resp.Result.IsMember != nil && !*resp.Result.IsMember
 }
 
 // participantGoneDesc 报告禁言失败的错误文本是否直接说明对方不在群里。
@@ -256,6 +309,10 @@ func participantGoneDesc(desc string) bool {
 func MuteMoot(b *core.Bot, chatID, uid int64, desc string) string {
 	if uid <= 0 {
 		return "" // 频道身份没有成员状态可查
+	}
+	// MuteSender 自己发现对方已被封禁出群：结论已定，不再问一次 TG。
+	if desc == noteAlreadyBanned {
+		return noteAlreadyBanned
 	}
 	if participantGoneDesc(desc) {
 		slog.Info("反广告：禁言跳过（对方已不在群/已被封禁出群）",
@@ -437,12 +494,13 @@ func logNote(act adAction, note string, dryrun bool) string {
 }
 
 // firstNote 注明复判前先做了什么：终判不认的话，删掉的消息也回不来，得留痕。
-func firstNote(pre adAction, dryrun bool) string {
+// preNote 里带着对方已被封禁出群的说明时不再写临时禁言：那一步没做成。
+func firstNote(pre adAction, preNote string, dryrun bool) string {
 	var did []string
 	if pre.Delete {
 		did = append(did, "删除消息")
 	}
-	if pre.Mute {
+	if pre.Mute && !muteSkippedBanned(preNote) {
 		did = append(did, fmt.Sprintf("临时禁言 %d 分钟", tempMute/time.Minute))
 	}
 	if len(did) == 0 {
@@ -493,8 +551,14 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	todo := act
 	todo.Delete = act.Delete && !pre.Delete
 	note := joinNotes(preNote, ApplyAction(b, m, todo, dryrun))
+	// 对方已被封禁出群：这一档不再降级成禁言（MuteSender 已跳过），流水也按
+	// 封禁记 —— 记成禁言后，申诉与复查会发一次权限全开，连封禁一起解掉。
+	if act.Mute && muteSkippedBanned(note) {
+		act = withPunish(act, true)
+	}
+	// 临时禁言那一步没做成（人已被封禁出群）时不去解除：那会发一次权限全开。
 	if pre.Mute && pre.Temp && !v.IsAd && !dryrun &&
-		!todo.Mute && !todo.Ban && !act.Short {
+		!muteSkippedBanned(preNote) && !todo.Mute && !todo.Ban && !act.Short {
 		if LiftTempMute(b, m.Chat.ID, m.From.ID) {
 			note = joinNotes(note, "复判正常，已解除临时禁言")
 		}
@@ -511,7 +575,7 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 	if !dryrun && v.IsAd && v.Scope == "account" {
 		DropProfileOK(b, m.From.ID, "资料又判为广告号")
 	}
-	if act.Short {
+	if act.Short && !muteSkippedBanned(note) {
 		p := fmt.Sprintf("附短时禁言 %d 分钟", int(tempMute/time.Minute))
 		if dryrun {
 			p = "本应" + p
@@ -523,7 +587,7 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 		act.Delete, act.Name = true, "deleted"
 	}
 	logID := logAd(b, m, v, logAction(act, dryrun),
-		joinNotes(firstNote(pre, dryrun), logNote(act, note, dryrun)))
+		joinNotes(firstNote(pre, preNote, dryrun), logNote(act, note, dryrun)))
 
 	// 演练期的判定不该污染真实画像：切回正式模式后，这些人的 prior_ad_hits
 	// 应该还是干净的。复判判为正常的也不算。

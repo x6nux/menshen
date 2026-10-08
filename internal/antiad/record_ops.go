@@ -53,6 +53,8 @@ func ManualMarkByRecord(b *core.Bot, conf store.BotChat,
 		MessageID: msgID, Text: text}
 
 	note := ApplyAction(b, tgt, act, conf.Dryrun)
+	// 对方已被封禁出群时禁言那一步被跳过：流水仍记封禁，不降级成禁言。
+	act = withPunish(act, muteSkippedBanned(note))
 	logID := logAd(b, tgt, v, logAction(act, conf.Dryrun), note)
 	if !conf.Dryrun {
 		// 与群内 /banad 同语义：人工标记广告后，之前的资料放行作废。
@@ -197,8 +199,7 @@ func adHitsCounted(r AdLogRow) bool {
 // actor 是执行人：服务管理员（主/次）连全局组一起解除，群管理员只解除
 // 本群所属的专属组。返回给管理员看的一句结果。
 func ReleaseUser(b *core.Bot, r AdLogRow, actor int64) string {
-	name := strings.TrimPrefix(r.Action, "dryrun:")
-	ban := name == "banned" || name == "deleted_banned" || name == "gban_banned"
+	ban := IsBanAction(r.Action)
 
 	// 无论记录上写的是什么，两步都试一遍：记录可能只是消息级禁言，而
 	// 人同时被别处封禁过；反过来也一样。only_if_banned 保证不会把没被封的

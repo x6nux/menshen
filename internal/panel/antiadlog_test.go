@@ -470,3 +470,42 @@ func TestUndoneRecordNotRepunished(t *testing.T) {
 		}
 	}
 }
+
+// TestConfirmDoesNotDowngradeBan：记录已是封禁时，确认判定与手工禁言都不该
+// 把人从封禁降级成禁言 —— restrictChatMember 会把他拉回群，流水也会从封禁
+// 改写成禁言，之后按标签解禁只会发一次权限全开。
+func TestConfirmDoesNotDowngradeBan(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	id := seedLog(t, b, 555, "转发色情相册截图", "deleted_banned")
+
+	HandleAdminCallback(b, cb(1, "a:ad:ok:"+itoa(id)))
+
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("记录已是封禁，确认时不该再禁言，发了 %d 次", n)
+	}
+	var action, reason string
+	if err := b.Store.Read.QueryRow(`SELECT action,reason FROM antiad_log WHERE id=?`, id).
+		Scan(&action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if action != "deleted_banned" {
+		t.Errorf("动作应保持封禁，得到 %q", action)
+	}
+	if !strings.Contains(reason, "该记录已是封禁出群") {
+		t.Errorf("理由应写明未追加禁言，得到 %q", reason)
+	}
+
+	HandleAdminCallback(b, cb(1, "a:ad:mute:"+itoa(id)))
+
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("手工禁言也不该发 restrictChatMember，发了 %d 次", n)
+	}
+	if err := b.Store.Read.QueryRow(`SELECT action FROM antiad_log WHERE id=?`, id).
+		Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != "deleted_banned" {
+		t.Errorf("手工禁言后动作应保持封禁，得到 %q", action)
+	}
+}
