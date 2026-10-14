@@ -142,6 +142,13 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 
+	// 别的机器人的命令同理：/ad、/spam@xxx、/quote@xxx 是成员在举报，
+	// 引用段是被举报者的内容。当普通消息判会把举报的人判成发广告的人
+	// （见 otherBotCommand）。
+	if otherBotCommand(m) {
+		return
+	}
+
 	// 联合封禁在发言路径同样生效（进群路径是 gbanGuard）：白名单优先，
 	// 命中即禁言、删除本条，不再留底、不再送检。
 	if GbanMessageGuard(b, conf, m.From, m.MessageID, gm.Whitelisted) {

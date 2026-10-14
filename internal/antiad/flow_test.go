@@ -104,6 +104,45 @@ func TestAdCommandNotRecorded(t *testing.T) {
 	}
 }
 
+// TestOtherBotCommandNotJudged 是「举报的人被判成发广告的人」的端到端锁：
+// 成员引用一条广告发别的机器人的举报命令时，那条命令既不留底也不送检。
+// 带参数的同类命令不是纯命令，照旧进判定 —— 召唤傀儡 bot 的引流形态
+// （/start 88 @a @b）就长这样，不能一起放行。
+func TestOtherBotCommandNotJudged(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 777)
+	testutil.EnableAntiad(t, b, -100)
+	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.96, "scam", "message"),
+		llmReply(true, 0.95, "scam", "message"))
+
+	ad := testutil.GroupMsg(-100, 43, 5, "加我微信 xxx")
+	for i, text := range []string{"/ad", "/spam@GodKnowYouBot", "/quote@nmnmfunbot"} {
+		m := testutil.GroupMsg(-100, 42, int64(10+i), text)
+		m.ReplyToMessage = ad
+		HandleGroupMessage(b, m)
+	}
+	waitIdle(t, b)
+
+	if n := soN.Load() + llmN.Load(); n != 0 {
+		t.Errorf("举报命令不该送检，实际发了 %d 次模型请求", n)
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages`); n != 0 {
+		t.Errorf("举报命令不该留底，实际 %d 条", n)
+	}
+
+	// 对照组：带参数的命令照常走完整链路，证明上面不是「什么都没跑」。
+	withArg := testutil.GroupMsg(-100, 42, 20, "/start 88 @a8palibot @mkpqobot")
+	withArg.ReplyToMessage = ad
+	HandleGroupMessage(b, withArg)
+	waitIdle(t, b)
+
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages`); n != 1 {
+		t.Errorf("带参数的命令应照常留底，实际 %d 条", n)
+	}
+	if soN.Load() == 0 {
+		t.Error("带参数的命令应照常送检，实际没发模型请求")
+	}
+}
+
 // TestRecordJoinKeepsMsgCount 确认退群重进只更新 joined_at：
 // 历史发言量仍是有效画像。
 func TestRecordJoinKeepsMsgCount(t *testing.T) {

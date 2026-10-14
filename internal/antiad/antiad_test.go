@@ -240,6 +240,56 @@ func TestParseAdCommand(t *testing.T) {
 	}
 }
 
+// TestOtherBotCommand：别的机器人的举报命令要与本服务自己的命令同等对待。
+// 成员引用一条广告发 /ad、/spam@xxx 是举报动作，当普通群聊内容送检会把他
+// 判成发广告的人：模型把「短正文 + 引用里的广告」读成载荷全在引用的规避
+// 形态。带参数的命令、挂着任何载荷的消息，以及把外部聊天内容当载荷带进来
+// 的，都不是纯命令，照旧送检。
+func TestOtherBotCommand(t *testing.T) {
+	quote := &tg.Message{Text: "加我微信 xxx"}
+	// 内联按钮的字段类型是匿名结构体，用 webhook 原文造比复写一遍类型更稳。
+	var withButtons tg.Message
+	if err := json.Unmarshal([]byte(`{"text":"/ad","reply_markup":{"inline_keyboard":`+
+		`[[{"text":"加群","url":"https://x.invalid"}]]}}`), &withButtons); err != nil {
+		t.Fatalf("构造带按钮的消息失败: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		m    *tg.Message
+		want bool
+	}{
+		{"纯命令", &tg.Message{Text: "/ad"}, true},
+		{"带 @bot 后缀", &tg.Message{Text: "/spam@GodKnowYouBot"}, true},
+		{"引用一条群内广告举报", &tg.Message{Text: "/ad", ReplyToMessage: quote}, true},
+		{"引文是选中的片段", &tg.Message{Text: "/ad", ReplyToMessage: quote,
+			Quote: &tg.TextQuote{Text: "加我微信"}}, true},
+		{"带参数不是纯命令", &tg.Message{Text: "/ad 8823720828"}, false},
+		{"召唤傀儡 bot 的多 @ 命令", &tg.Message{Text: "/start 88 @a8palibot @mkpqobot"}, false},
+		{"数字命令名不是 Telegram 命令",
+			&tg.Message{Text: "/8247697129@nmnmfunbot"}, false},
+		{"汉字命令名不是 Telegram 命令", &tg.Message{Text: "/签到"}, false},
+		{"裸斜杠", &tg.Message{Text: "/"}, false},
+		{"外部聊天引用是载荷", &tg.Message{Text: "/ad",
+			ExternalReply: &tg.ExternalReplyInfo{Text: "频道推广"}}, false},
+		{"配图可能挂着载荷", &tg.Message{Text: "/ad",
+			Photo: []tg.PhotoSize{{FileID: "x"}}}, false},
+		{"隐藏链接是载荷", &tg.Message{Text: "/ad",
+			Entities: []tg.MessageEntity{{Type: "text_link", URL: "https://x.invalid"}}}, false},
+		{"内联按钮是载荷", &withButtons, false},
+		{"转发来源是载荷", &tg.Message{Text: "/ad",
+			ForwardOrigin: json.RawMessage(`{"sender_user_name":"某频道"}`)}, false},
+		{"普通正文", &tg.Message{Text: "这个广告又来了"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := otherBotCommand(c.m); got != c.want {
+				t.Errorf("otherBotCommand(%q) = %v, 期望 %v", c.m.Text, got, c.want)
+			}
+		})
+	}
+}
+
 // TestSplitDigest 的关键是标题缺失时的回退：管理员手工改乱格式，
 // 不该因此丢掉全部学习成果。
 func TestSplitDigest(t *testing.T) {

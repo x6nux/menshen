@@ -47,6 +47,55 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 	return "", "", false
 }
 
+// isCommandToken 报告 text 是否恰好是一个发给某个机器人的斜杠命令 token：
+// 形如 /name 或 /name@botname，不带参数。命令名按 Telegram 的命令语法限制为
+// 字母开头、字母数字下划线组成 —— 数字或汉字开头的（/60、
+// /8247697129@xxx、/签到）不是命令，照旧交判定。
+func isCommandToken(text string) bool {
+	f := strings.Fields(text)
+	if len(f) != 1 || len(f[0]) < 2 || f[0][0] != '/' {
+		return false
+	}
+	name := f[0][1:]
+	if i := strings.Index(name, "@"); i >= 0 {
+		name = name[:i]
+	}
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// otherBotCommand 报告这条消息是否只是「发给某个机器人的一条命令」。
+//
+// 群里常见的形态是成员用别的反广告 bot 的命令举报：引用一条广告发 /ad、
+// /spam@xxx。命令本身是举报动作，引用段是被举报者的内容，当普通群聊内容
+// 送检会把他判成发广告的人：模型把「短正文 + 引用里的广告」读成载荷全在
+// 引用的规避形态，把反复发举报命令读成刷屏骚扰。这类消息与本服务自己的
+// 命令同等对待：不留底、不进判定。
+//
+// 只在消息除命令外什么都没有时才成立：配图、文件、卡片、按钮、隐藏链接、
+// 转发、召唤者任一存在都可能挂着载荷（msgText 会为它们多出一行带方括号的
+// 前缀），外部聊天引用更是「正文极短、载荷全在引用」的主要规避形态，
+// 这些照旧送检。调用点在本服务自己的命令识别之后。
+func otherBotCommand(m *tg.Message) bool {
+	if m.ExternalReply != nil || hasMediaCarrier(m) {
+		return false
+	}
+	if msgText(m) != m.Text {
+		return false
+	}
+	return isCommandToken(m.Text)
+}
+
 // handleAdCommand 处理群内 /check 复查。
 //
 // 命令对所有人开放（它不直接封禁，走的是与自动判定同一套处置矩阵），
