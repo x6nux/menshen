@@ -1031,12 +1031,23 @@ func cmdArg(text, cmd string) string {
 	return fields[0]
 }
 
+// recordID 解析记录号输入。记录号在告警、汇总、记录页上一律写作「#71294」，
+// 管理员会连着 # 一起照抄，所以 /log 与记录页搜索都要认这个写法。
+func recordID(s string) (int64, bool) {
+	num := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "#"))
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // HandleLogCommand 处理管理员私聊的 /log <记录号>。
 func HandleLogCommand(b *core.Bot, m *tg.Message, text string) {
-	id, err := strconv.ParseInt(cmdArg(text, "/log"), 10, 64)
-	if err != nil || id <= 0 {
+	id, ok := recordID(cmdArg(text, "/log"))
+	if !ok {
 		b.Send(m.Chat.ID, "用法：<code>/log &lt;记录号&gt;</code>\n\n"+
-			"记录号见群内告警或私聊汇总里的「#编号」。", nil)
+			"记录号见群内告警或私聊汇总里的「#编号」，可以连 # 一起发。", nil)
 		return
 	}
 	ShowLogCard(b, m.Chat.ID, m.From.ID, id)

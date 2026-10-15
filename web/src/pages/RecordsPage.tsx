@@ -156,7 +156,7 @@ export function RecordsPage() {
             value={q}
             onChange={changeQ}
             onSubmit={submitQ}
-            placeholder="搜原文 / 理由 / uid / 群号"
+            placeholder="搜原文 / 理由 / 记录号 / uid / 群号"
             ariaLabel="搜索记录"
           />
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1, mb: 0.5 }}>

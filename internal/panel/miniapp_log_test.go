@@ -74,8 +74,42 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	if got := ids(call("logs", map[string]any{"q": "556"})); !got[2] || len(got) != 1 {
 		t.Errorf("纯数字应按 uid 搜到 #2，得到 %v", got)
 	}
+	if got := ids(call("logs", map[string]any{"q": "4"})); !got[4] || len(got) != 1 {
+		t.Errorf("纯数字也应能按记录号搜到 #4，得到 %v", got)
+	}
+	if got := ids(call("logs", map[string]any{"q": "#4"})); !got[4] || len(got) != 1 {
+		t.Errorf("带 # 的记录号应精确命中 #4，得到 %v", got)
+	}
+	// 「#N」是记录号，不去撞正文：正文里写着「看 #3 这条」的记录不该被带出来。
+	if got := ids(call("logs", map[string]any{"q": "#3"})); !got[3] || len(got) != 1 {
+		t.Errorf("记录号搜索应只命中 #3，得到 %v", got)
+	}
 	if got := ids(call("logs", map[string]any{"user_id": 555})); !got[1] || len(got) != 1 {
 		t.Errorf("按 uid 筛选应命中 #1，得到 %v", got)
+	}
+}
+
+// TestRecordID：记录号在告警、汇总与记录详情页上写作「#71294」，/log 与记录页
+// 搜索都要认这个写法 —— 管理员是照抄过去的，多带一个 # 就查不到那条记录。
+func TestRecordID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"71294", 71294, true},
+		{"#71294", 71294, true},
+		{"  #71294  ", 71294, true},
+		{"#0", 0, false},
+		{"-3", 0, false},
+		{"#", 0, false},
+		{"#abc", 0, false},
+		{"", 0, false},
+	}
+	for _, c := range cases {
+		if got, ok := recordID(c.in); ok != c.ok || got != c.want {
+			t.Errorf("recordID(%q) = (%d,%v)，期望 (%d,%v)", c.in, got, ok, c.want, c.ok)
+		}
 	}
 }
 

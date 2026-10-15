@@ -1522,15 +1522,26 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 		condWhere += " AND chat_id=?"
 		condArgs = append(condArgs, chat)
 	}
-	if qs := miniStr(body, "q"); qs != "" {
-		like := "%" + qs + "%"
-		condWhere += " AND (text LIKE ? OR reason LIKE ?"
-		condArgs = append(condArgs, like, like)
-		if n, err := strconv.ParseInt(qs, 10, 64); err == nil {
-			condWhere += " OR user_id=? OR chat_id=?"
-			condArgs = append(condArgs, n, n)
+	if qs := strings.TrimSpace(miniStr(body, "q")); qs != "" {
+		n, num := recordID(qs)
+		switch {
+		case num && strings.HasPrefix(qs, "#"):
+			// 「#71294」是告警、汇总与记录详情页上的写法，管理员会照抄进搜索框：
+			// 只按流水 id 精确匹配。不认记录号的话，记录号既搜不到那条记录本身，
+			// 里面的数字撞上某个 uid / 群号时还会带出一堆无关记录。
+			condWhere += " AND id=?"
+			condArgs = append(condArgs, n)
+		default:
+			like := "%" + qs + "%"
+			condWhere += " AND (text LIKE ? OR reason LIKE ?"
+			condArgs = append(condArgs, like, like)
+			if num {
+				// 不带 # 的纯数字：记录号、uid、群号都试一遍。
+				condWhere += " OR id=? OR user_id=? OR chat_id=?"
+				condArgs = append(condArgs, n, n, n)
+			}
+			condWhere += ")"
 		}
-		condWhere += ")"
 	}
 
 	q := append([]any{}, clauseArgs...)
