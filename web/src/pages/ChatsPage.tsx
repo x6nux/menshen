@@ -18,10 +18,11 @@ import { useMiniState } from '../api/hooks'
 import { useChatMutation } from '../api/mutations'
 import type { Bot, Chat } from '../api/types'
 import { filterRows } from '../lib/filters'
-import { muteOptLabel } from '../lib/format'
+import { muteOptLabel, chatURL } from '../lib/format'
 import { BULK_CHAT_LIMIT, toggleChatSelection } from '../lib/selection'
 import { useNav, usePageParam } from '../nav'
 import {
+  ChatRef,
   EmptyState,
   ErrorState,
   FormDrawer,
@@ -256,8 +257,17 @@ export function ChatsPage({ bulkLimit = BULK_CHAT_LIMIT }: { bulkLimit?: number 
             return (
               <ListRow
                 key={chatKey(chat)}
-                primary={chat.title || String(chat.chat_id)}
-                secondary={`${chat.chat_id} · ${botLabel(chat.bot_id)}`}
+                primary={
+                  <ChatRef
+                    name={chat.title || String(chat.chat_id)}
+                    url={chatURL(chat.username)}
+                  />
+                }
+                secondary={
+                  chat.username
+                    ? `@${chat.username} · ${botLabel(chat.bot_id)}`
+                    : `${chat.chat_id} · ${botLabel(chat.bot_id)}`
+                }
                 badge={<ChatStatusBadge chat={chat} />}
                 chevron={!batch}
                 onClick={() => (batch ? toggleSelect(chat) : nav.push({ k: 'chat', botId: chat.bot_id, chatId: chat.chat_id }))}

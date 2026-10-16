@@ -272,3 +272,11 @@ export function muteOptLabel(
 export function meLabel(me: { uid: number; username?: string }): string {
   return me.username ? `@${me.username}` : `uid ${me.uid}`
 }
+
+/**
+ * chatURL 由公开群的 @ 名拼出 t.me 链接；私有群（无 @ 名）返回空串，
+ * 调用方据此决定是否把群名渲染成链接。
+ */
+export function chatURL(username?: string | null): string {
+  return username ? `https://t.me/${username}` : ''
+}

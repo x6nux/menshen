@@ -4,7 +4,7 @@ import { Box, Button, Typography } from '@mui/material'
 import { useUser, useMiniState } from '../../api/hooks'
 import { actionLabel, displayTz, fmtTS, fmtTSFull } from '../../lib/format'
 import { verdictInfo } from '../../lib/status'
-import { Segmented } from '../../ui'
+import { Segmented, ChatRef } from '../../ui'
 import { CardBlock, DataTable, InfoList, PageHeader, StatCard, StatusBadge } from '../components'
 import type { Column } from '../components'
 import type { UserLogRow } from '../../api/types'
@@ -34,7 +34,7 @@ export function UserView({ id }: { id: number }) {
     { key: 'time', header: '时间', width: 130, render: (row) => fmtTS(row.created_at, tz) },
     { key: 'verdict', header: '判定', width: 90, render: (row) => <StatusBadge info={verdictInfo(row.verdict)} /> },
     { key: 'action', header: '处置', width: 120, render: (row) => actionLabel(row.action) },
-    { key: 'chat', header: '群组', width: 140, render: (row) => row.chat_id },
+    { key: 'chat', header: '群组', width: 140, render: (row) => <ChatRef name={row.chat} url={row.chat_url} fallback={row.chat_id} /> },
     {
       key: 'text',
       header: '正文',

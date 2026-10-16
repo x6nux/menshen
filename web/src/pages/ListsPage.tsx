@@ -22,6 +22,7 @@ import { displayTz, fmtTS, meLabel, whiteSourceLabel } from '../lib/format'
 import { usePageParam } from '../nav'
 import {
   Badge,
+  ChatRef,
   ErrorState,
   FormDrawer,
   ListRow,
@@ -46,10 +47,15 @@ function botLabelOf(bots: Bot[], botID: number): string {
   return bots.find((b) => b.bot_id === botID)?.label ?? `bot ${botID}`
 }
 
-/** scopeText 白名单范围：全平台 / bot 所有群 / 群 X。 */
-function scopeText(w: Pick<WhiteRow, 'bot_id' | 'chat_id'>): string {
-  if (w.bot_id === 0) return '全平台'
-  return w.chat_id === 0 ? 'bot 所有群' : `群 ${w.chat_id}`
+/** ScopeText 白名单范围：全平台 / bot 所有群 / 群（公开群带 t.me 链接）。 */
+function ScopeText({ w }: { w: Pick<WhiteRow, 'bot_id' | 'chat_id' | 'chat' | 'chat_url'> }) {
+  if (w.bot_id === 0) return <>全平台</>
+  if (w.chat_id === 0) return <>bot 所有群</>
+  return (
+    <>
+      群 <ChatRef name={w.chat} url={w.chat_url} fallback={w.chat_id} />
+    </>
+  )
 }
 
 /** countText 搜索计数：无过滤时输出 `共 N 人`，过滤时输出 `匹配 M / 共 N 人`。 */
@@ -382,7 +388,11 @@ export function ListsPage({ section }: { section?: string }) {
             {whiteRows.map((w) => (
               <ListRow
                 key={`${w.bot_id}:${w.chat_id}:${w.user_id}`}
-                primary={`${w.user_id} · ${scopeText(w)}`}
+                primary={
+                  <>
+                    {w.user_id} · <ScopeText w={w} />
+                  </>
+                }
                 secondary={`来源 ${whiteSourceLabel(w.source)} · ${
                   w.expires_at ? `到 ${fmtTS(w.expires_at, tz)}` : '永久'
                 }`}
@@ -565,8 +575,9 @@ export function ListsPage({ section }: { section?: string }) {
                   ownedChats.map((c) => (
                     <SwitchRow
                       key={c.chat_id}
+                      ariaLabel={c.title || String(c.chat_id)}
                       primary={c.title || String(c.chat_id)}
-                      secondary={String(c.chat_id)}
+                      secondary={c.username ? `@${c.username}` : String(c.chat_id)}
                       checked={gbanOwn.chats.includes(c.chat_id)}
                       disabled={ownMut.isPending}
                       onChange={(next) => toggleOwnChat(c.chat_id, next)}

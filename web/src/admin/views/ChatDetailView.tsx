@@ -11,8 +11,9 @@ import {
 } from '@mui/material'
 import { useChatMutation } from '../../api/mutations'
 import { useMiniState } from '../../api/hooks'
-import { muteOptLabel, punishLabel } from '../../lib/format'
+import { muteOptLabel, punishLabel, chatURL } from '../../lib/format'
 import { chatStatus } from '../../lib/status'
+import { ChatRef } from '../../ui'
 import { CardBlock, ConfirmButton, InfoList, PageHeader, StatusBadge } from '../components'
 import { useRunFeedback } from '../feedback'
 
@@ -40,8 +41,12 @@ export function ChatDetailView({ botId, chatId }: { botId: number; chatId: numbe
   return (
     <>
       <PageHeader
-        title={chat.title || `chat ${chat.chat_id}`}
-        subtitle={`${bot?.label ?? `bot ${botId}`} · chat id ${chat.chat_id}`}
+        title={<ChatRef name={chat.title || chat.chat_id} url={chatURL(chat.username)} />}
+        subtitle={
+          chat.username
+            ? `@${chat.username} · ${bot?.label ?? `bot ${botId}`}`
+            : `${bot?.label ?? `bot ${botId}`} · chat id ${chat.chat_id}`
+        }
         actions={<StatusBadge info={chatStatus(chat)} />}
       />
 

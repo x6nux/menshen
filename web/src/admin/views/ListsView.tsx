@@ -17,7 +17,7 @@ import { useAdminMutation, useGbanMutation, useGbanOwnMutation, useWhitelistMuta
 import { useMiniState } from '../../api/hooks'
 import { filterRows, gbanKey, profileOKKey, whiteKey } from '../../lib/filters'
 import { fmtTSFull, whiteSourceLabel } from '../../lib/format'
-import { SearchField } from '../../ui'
+import { ChatRef, SearchField } from '../../ui'
 import { CardBlock, DataTable, PageHeader, Toolbar } from '../components'
 import type { Column } from '../components'
 import { useRunFeedback } from '../feedback'
@@ -76,7 +76,16 @@ function WhitelistSection() {
   const rows = filterRows(whitelist, q, whiteKey)
   const botLabel = (id: number) => (id === 0 ? '全平台' : (bots.find((b) => b.bot_id === id)?.label ?? `bot ${id}`))
   const scope = (row: WhiteRow) =>
-    row.bot_id === 0 ? '全平台' : row.chat_id === 0 ? `${botLabel(row.bot_id)} 下所有群` : `${botLabel(row.bot_id)} · ${row.chat_id}`
+    row.bot_id === 0 ? (
+      <>全平台</>
+    ) : row.chat_id === 0 ? (
+      <>{`${botLabel(row.bot_id)} 下所有群`}</>
+    ) : (
+      <>
+        {`${botLabel(row.bot_id)} · `}
+        <ChatRef name={row.chat} url={row.chat_url} fallback={row.chat_id} />
+      </>
+    )
 
   const columns: Column<WhiteRow>[] = [
     { key: 'user', header: '用户', width: 120, render: (row) => `uid ${row.user_id}` },

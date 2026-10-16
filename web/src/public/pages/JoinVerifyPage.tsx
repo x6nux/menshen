@@ -9,6 +9,7 @@ import type { JoinVerifyData, WebRoute } from '../api'
 import { mountCaptcha } from '../captcha'
 import { collectSignals } from '../fingerprint'
 import { errorText, InvalidState } from '../InvalidState'
+import { ChatRef } from '../../ui'
 
 const PROVIDER_LABEL: Record<string, string> = {
   turnstile: 'Cloudflare Turnstile',
@@ -70,7 +71,15 @@ export function JoinVerifyPage({ route }: { route: WebRoute }) {
     <Box data-testid="join-verify">
       <Box sx={{ bgcolor: 'background.paper', borderRadius: 2, p: 2, mb: 2 }}>
         <Typography sx={{ fontSize: 18, fontWeight: 700, mb: 1 }}>
-          {data.chat ? `加入「${data.chat}」` : '入群验证'}
+          {data.chat ? (
+            <>
+              加入「
+              <ChatRef name={data.chat} url={data.chat_url} />
+              」
+            </>
+          ) : (
+            '入群验证'
+          )}
         </Typography>
         <Typography sx={{ fontSize: 14, lineHeight: 1.8 }}>
           为防广告机器人，请先完成人机验证。通过后即可在群里发言；

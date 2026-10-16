@@ -27,6 +27,8 @@ export interface Chat {
   bot_id: number
   chat_id: number
   title: string
+  /** 公开群的 @ 名；私有群为空。群名可据此渲染成 t.me 链接。 */
+  username?: string
   enabled: boolean
   dryrun: boolean
   group_alert: boolean
@@ -79,6 +81,9 @@ export interface GbanOwn {
 export interface WhiteRow {
   bot_id: number
   chat_id: number
+  /** chat_id != 0 时的群展示名与公开群链接。 */
+  chat?: string
+  chat_url?: string
   user_id: number
   expires_at: number
   source: string
@@ -191,6 +196,9 @@ export interface LogRow {
   id: number
   bot_id: number
   chat_id: number
+  /** 群展示名；公开群另有 chat_url 链接。 */
+  chat?: string
+  chat_url?: string
   user_id: number
   message_id: number
   verdict: string
@@ -219,6 +227,8 @@ export interface LogsResp {
 export interface UserLogRow {
   id: number
   chat_id: number
+  chat?: string
+  chat_url?: string
   verdict: string
   confidence: number
   kind: string
@@ -271,6 +281,8 @@ export interface AppealRow {
 
 export interface AppealRedeem {
   chat_id: number
+  chat?: string
+  chat_url?: string
   by_uid: number
   at: number
 }
@@ -343,6 +355,8 @@ export interface RuleSample {
   kind: string
   user_id: number
   chat_id: number
+  chat?: string
+  chat_url?: string
   created_at: number
   text: string
 }

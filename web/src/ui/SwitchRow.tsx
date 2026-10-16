@@ -10,6 +10,8 @@ export interface SwitchRowProps {
   onChange: (checked: boolean) => void
   disabled?: boolean
   badge?: ReactNode
+  /** 开关的无障碍名；primary 不是纯文本时（如群名带链接）必须显式给。 */
+  ariaLabel?: string
 }
 
 export function SwitchRow({
@@ -19,6 +21,7 @@ export function SwitchRow({
   onChange,
   disabled = false,
   badge,
+  ariaLabel,
 }: SwitchRowProps) {
   return (
     <ListItemButton
@@ -48,7 +51,11 @@ export function SwitchRow({
             if (!disabled) onChange(event.target.checked)
           }}
           onClick={(event) => event.stopPropagation()}
-          slotProps={{ input: { 'aria-label': typeof primary === 'string' ? primary : '开关' } }}
+          slotProps={{
+            input: {
+              'aria-label': ariaLabel ?? (typeof primary === 'string' ? primary : '开关'),
+            },
+          }}
         />
       </Box>
     </ListItemButton>

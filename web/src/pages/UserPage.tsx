@@ -9,7 +9,7 @@ import type { UserDossier, UserLogRow } from '../api/types'
 import { actionLabel, displayTz, fmtTS } from '../lib/format'
 import { verdictInfo } from '../lib/status'
 import { useNav } from '../nav'
-import { Badge, EmptyState, ErrorState, ListRow, SectionCard, Segmented, Skeletons } from '../ui'
+import { Badge, ChatRef, EmptyState, ErrorState, ListRow, SectionCard, Segmented, Skeletons } from '../ui'
 import { InfiniteFooter, InfoRow, ListLoading } from './shared'
 
 const MONO = 'ui-monospace, Menlo, monospace'
@@ -130,7 +130,8 @@ function UserLogListRow({
       }
       secondary={
         <Box component="span" sx={{ display: 'block' }}>
-          群 {log.chat_id} · {Math.round(log.confidence * 100)}%
+          群 <ChatRef name={log.chat} url={log.chat_url} fallback={log.chat_id} /> ·{' '}
+          {Math.round(log.confidence * 100)}%
           {log.text !== '' && (
             <Box component="span" sx={{ display: 'block' }}>
               {log.text.slice(0, 50)}

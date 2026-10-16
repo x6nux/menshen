@@ -82,6 +82,9 @@ export function parseRoute(pathname: string): WebRoute | null {
 export interface AppealLimit {
   type: string
   chat_id: number
+  /** 群展示名（公开群带 chat_url 链接）；后端查不到群名时回退为 chat_id。 */
+  chat?: string
+  chat_url?: string
   time: string
   reason: string
   text: string
@@ -90,6 +93,7 @@ export interface AppealLimit {
 export interface AppealMessage {
   chat_id: number
   title: string
+  chat_url?: string
   text: string
   time: string
 }
@@ -119,6 +123,7 @@ export interface JoinVerifyData {
   uid: number
   chat_id: number
   chat?: string
+  chat_url?: string
   /** turnstile / hcaptcha / cap；空表示未配置。 */
   provider: string
   sitekey: string
@@ -167,6 +172,7 @@ export interface LogRecordView {
     user_name: string
     chat_id: number
     chat: string
+    chat_url?: string
     message_id: number
     text: string
     verdict: string
@@ -196,6 +202,7 @@ export interface AppealPenalty {
   label: string
   chat_id: number
   chat: string
+  chat_url?: string
   text: string
   reason: string
   at: number
@@ -228,6 +235,7 @@ export interface AppealDossierView {
   penalties?: AppealPenalty[]
   history?: {
     chat: string
+    chat_url?: string
     text: string
     at: number
     time: string
@@ -236,6 +244,7 @@ export interface AppealDossierView {
   }[]
   history_more?: {
     chat: string
+    chat_url?: string
     text: string
     at: number
     time: string
@@ -247,6 +256,7 @@ export interface AppealDossierView {
     id: number
     chat_id: number
     chat: string
+    chat_url?: string
     verdict: string
     confidence: number
     action: string

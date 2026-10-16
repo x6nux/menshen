@@ -12,6 +12,7 @@ import { appealStatusInfo, appealSummary, verdictInfo } from '../lib/status'
 import { useNav, usePageParam } from '../nav'
 import {
   Badge,
+  ChatRef,
   EmptyState,
   ErrorState,
   ListRow,
@@ -293,7 +294,9 @@ function LogListRow({
       secondary={
         <Box component="span" sx={{ display: 'block' }}>
           <UserLink userId={log.user_id} onClick={onUser} testId={`log-user-${log.id}`} />
-          {` · 群 ${log.chat_id} · ${Math.round(log.confidence * 100)}% · ${log.cost_text}`}
+          {' · 群 '}
+          <ChatRef name={log.chat} url={log.chat_url} fallback={log.chat_id} />
+          {` · ${Math.round(log.confidence * 100)}% · ${log.cost_text}`}
           {log.text !== '' && (
             <Box component="span" sx={{ display: 'block' }}>
               {log.text.slice(0, 50)}

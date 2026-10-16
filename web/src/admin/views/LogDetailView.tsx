@@ -5,6 +5,7 @@ import { useLogactMutation, useRulesMutation } from '../../api/mutations'
 import { actionLabel, deciderLabel, displayTz, fmtTSFull, kindLabel, verdictLabel } from '../../lib/format'
 import { verdictInfo } from '../../lib/status'
 import { openLink } from '../../telegram'
+import { ChatRef } from '../../ui'
 import { CardBlock, ConfirmButton, InfoList, PageHeader, StatusBadge } from '../components'
 import { useRunFeedback } from '../feedback'
 import { useAdminNav } from '../nav'
@@ -57,7 +58,9 @@ export function LogDetailView({ id }: { id: number }) {
             { label: '用户', value: `uid ${row.user_id}` },
             {
               label: '群组',
-              value: chat?.title ? `${chat.title}（${row.chat_id}）` : String(row.chat_id),
+              value: (
+                <ChatRef name={row.chat || chat?.title} url={row.chat_url} fallback={row.chat_id} />
+              ),
             },
           ]}
         />

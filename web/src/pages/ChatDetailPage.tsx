@@ -8,9 +8,10 @@ import { errorStatus } from '../api/client'
 import { useMiniState } from '../api/hooks'
 import { useChatMutation, useOptimisticMiniMutation } from '../api/mutations'
 import type { Chat, State } from '../api/types'
-import { muteOptLabel, punishLabel } from '../lib/format'
+import { muteOptLabel, punishLabel, chatURL } from '../lib/format'
 import { useNav } from '../nav'
 import {
+  ChatRef,
   EmptyState,
   ErrorState,
   ListRow,
@@ -118,8 +119,14 @@ export function ChatDetailPage({ botId, chatId }: { botId: number; chatId: numbe
     <Box data-testid="chat-detail-page">
       <SectionCard>
         <ListRow
-          primary={chat.title || String(chat.chat_id)}
-          secondary={`chat_id ${chat.chat_id} · ${bot ? bot.label : `bot ${botId}`}`}
+          primary={
+            <ChatRef name={chat.title || String(chat.chat_id)} url={chatURL(chat.username)} />
+          }
+          secondary={
+            chat.username
+              ? `@${chat.username} · ${bot ? bot.label : `bot ${botId}`}`
+              : `chat_id ${chat.chat_id} · ${bot ? bot.label : `bot ${botId}`}`
+          }
           badge={<ChatStatusBadge chat={chat} />}
         />
         <SwitchRow

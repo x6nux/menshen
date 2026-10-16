@@ -10,7 +10,7 @@ import { apAI, displayTz, fmtTS } from '../lib/format'
 import { appealStatusInfo } from '../lib/status'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
-import { Badge, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
+import { Badge, ChatRef, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
 import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
@@ -161,7 +161,8 @@ export function AppealDetailPage({ id }: { id: number }) {
           a.redeems.map((redeem, index) => (
             <InfoRow key={`${redeem.chat_id}-${redeem.at}-${index}`} label={`兑换 ${index + 1}`}>
               <Box component="span" sx={{ fontFamily: MONO }}>
-                群 {redeem.chat_id} · uid {redeem.by_uid} · {fmtTS(redeem.at, tz)}
+                群 <ChatRef name={redeem.chat} url={redeem.chat_url} fallback={redeem.chat_id} /> ·
+                uid {redeem.by_uid} · {fmtTS(redeem.at, tz)}
               </Box>
             </InfoRow>
           ))

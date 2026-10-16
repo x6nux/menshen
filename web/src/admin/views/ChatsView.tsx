@@ -18,10 +18,10 @@ import {
 import { useChatMutation } from '../../api/mutations'
 import { useMiniState } from '../../api/hooks'
 import { filterRows } from '../../lib/filters'
-import { punishLabel } from '../../lib/format'
+import { punishLabel, chatURL } from '../../lib/format'
 import { toggleChatSelection } from '../../lib/selection'
 import { chatStatus } from '../../lib/status'
-import { SearchField, useToast } from '../../ui'
+import { ChatRef, SearchField, useToast } from '../../ui'
 import { ConfirmButton, DataTable, PageHeader, StatusBadge, Toolbar } from '../components'
 import type { Column } from '../components'
 import { useRunFeedback } from '../feedback'
@@ -97,7 +97,7 @@ export function ChatsView() {
     })
   }
   columns.push(
-    { key: 'title', header: '群组', render: (row) => row.title || `chat ${row.chat_id}` },
+    { key: 'title', header: '群组', render: (row) => <ChatRef name={row.title || row.chat_id} url={chatURL(row.username)} /> },
     { key: 'bot', header: '机器人', width: 180, render: (row) => botLabel(row.bot_id) },
     { key: 'status', header: '状态', width: 96, render: (row) => <StatusBadge info={chatStatus(row)} /> },
     {

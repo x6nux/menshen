@@ -7,6 +7,7 @@ import type { AppealData, WebRoute } from '../api'
 import { collectSignals } from '../fingerprint'
 import { errorText, InvalidState } from '../InvalidState'
 import { TurnstileWidget } from '../TurnstileWidget'
+import { ChatRef } from '../../ui'
 
 const LIMIT_LABEL: Record<string, string> = {
   join_profile: '进群资料审核限制',
@@ -103,7 +104,14 @@ export function AppealVerifyPage({ route }: { route: WebRoute }) {
             {data.limits.map((l, i) => (
               <Box component="li" key={i} sx={{ mb: 1.25, fontSize: 14, lineHeight: 1.7 }}>
                 {LIMIT_LABEL[l.type] ?? l.type}
-                {l.chat_id ? ` · 群 ${l.chat_id}` : ''}
+                {l.chat_id ? (
+                  <>
+                    {' · 群 '}
+                    <ChatRef name={l.chat} url={l.chat_url} fallback={l.chat_id} />
+                  </>
+                ) : (
+                  ''
+                )}
                 {l.time ? ` · ${l.time}` : ''}
                 {l.reason && <Sub>理由：{l.reason}</Sub>}
                 {l.text && <Sub>原消息：{l.text}</Sub>}
@@ -257,7 +265,9 @@ function Messages({ messages }: { messages: AppealData['messages'] }) {
     <>
       {groups.map((g, i) => (
         <Box key={i} sx={{ mb: 1 }}>
-          <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>群 {g.title}</Typography>
+          <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
+            群 <ChatRef name={g.title} url={g.items[0]?.chat_url} fallback={g.items[0]?.chat_id} />
+          </Typography>
           <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
             {g.items.map((m, j) => (
               <Box

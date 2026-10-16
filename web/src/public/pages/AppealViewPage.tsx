@@ -4,6 +4,7 @@ import { Box, Button, CircularProgress, Typography, useMediaQuery } from '@mui/m
 import type { AppealDossierView, WebRoute } from '../api'
 import { InvalidState } from '../InvalidState'
 import { useGate } from '../useGate'
+import { ChatRef } from '../../ui'
 
 const cardSx = { bgcolor: 'background.paper', borderRadius: 2, p: 2, mb: 2 }
 const titleSx = { fontSize: 15, fontWeight: 700, mb: 1 }
@@ -216,7 +217,8 @@ function SideActivity({ view }: { view: AppealDossierView }) {
           <List>
             {logs.map((l) => (
               <li key={l.id}>
-                <Mono>{l.time}</Mono> {l.chat} · {l.verdict} {Math.round(l.confidence * 100)}% →{' '}
+                <Mono>{l.time}</Mono> <ChatRef name={l.chat} url={l.chat_url} /> · {l.verdict}{' '}
+                {Math.round(l.confidence * 100)}% →{' '}
                 {l.action_label || l.action}
                 {l.reason && <Sub>理由：{l.reason}</Sub>}
               </li>
@@ -293,7 +295,12 @@ function PenaltyList({
         {items.map((p, i) => (
           <li key={i}>
             <Badge active={active}>{active ? '生效中' : '历史'}</Badge> {p.label || p.type}
-            {p.chat && ` · ${p.chat}`}
+            {p.chat && (
+              <>
+                {' · '}
+                <ChatRef name={p.chat} url={p.chat_url} />
+              </>
+            )}
             {p.time && ` `}
             {p.time && <Mono>{p.time}</Mono>}
             {p.reason && <Sub>理由：{p.reason}</Sub>}
@@ -311,7 +318,12 @@ function HistoryList({ items }: { items: NonNullable<AppealDossierView['history'
       {items.map((h, i) => (
         <li key={i} style={h.blocked ? { background: 'rgba(250,81,81,0.08)', borderRadius: 4 } : undefined}>
           <Mono>{h.time}</Mono>
-          {h.chat && <span style={{ color: '#888' }}> {h.chat}</span>}
+          {h.chat && (
+            <span style={{ color: '#888' }}>
+              {' '}
+              <ChatRef name={h.chat} url={h.chat_url} />
+            </span>
+          )}
           <div style={{ wordBreak: 'break-word' }}>
             {h.text}
             {h.mark && <b> ← {h.mark}</b>}

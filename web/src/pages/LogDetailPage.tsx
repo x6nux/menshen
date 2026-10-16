@@ -10,7 +10,7 @@ import { useLogactMutation, useRulesMutation } from '../api/mutations'
 import { actionLabel, deciderLabel, displayTz, fmtTS, kindLabel, verdictLabel } from '../lib/format'
 import { useNav } from '../nav'
 import { openLink } from '../telegram'
-import { ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
+import { ChatRef, ErrorState, SectionCard, Skeletons, useConfirm, useToast } from '../ui'
 import { COMPACT_BTN_SX, InfoRow, UserLink } from './shared'
 import { useBarReserve } from './useBarReserve'
 
@@ -120,8 +120,7 @@ export function LogDetailPage({ id }: { id: number }) {
       label: '群 / 用户',
       value: (
         <>
-          <Mono>{String(l.chat_id)}</Mono>
-          {chat?.title ? ` · ${chat.title}` : ''}
+          <ChatRef name={l.chat || chat?.title} url={l.chat_url} fallback={l.chat_id} />
           {' / '}
           <UserLink userId={l.user_id} onClick={() => nav.push({ k: 'user', id: l.user_id })} />
         </>

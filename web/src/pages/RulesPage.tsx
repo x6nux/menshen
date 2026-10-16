@@ -31,6 +31,7 @@ import { actionLabel, displayTz, fmtTS, verdictLabel } from '../lib/format'
 import { useNav, usePageParam } from '../nav'
 import {
   Badge,
+  ChatRef,
   EmptyState,
   ErrorState,
   FormDrawer,
@@ -712,7 +713,8 @@ function SampleRow({
         </Typography>
       </Box>
       <Typography sx={{ mt: 0.5, fontSize: 12, color: 'text.secondary' }}>
-        chat {sample.chat_id} · uid {sample.user_id}
+        chat <ChatRef name={sample.chat} url={sample.chat_url} fallback={sample.chat_id} /> · uid{' '}
+        {sample.user_id}
       </Typography>
       <Typography sx={{ mt: 0.25, fontSize: 13, lineHeight: 1.6, wordBreak: 'break-word' }}>
         {sample.text || '（空文本）'}

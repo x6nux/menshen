@@ -5,6 +5,7 @@ import { useAppealactMutation } from '../../api/mutations'
 import { apAI, apStatus, displayTz, fmtTSFull } from '../../lib/format'
 import { appealStatusInfo } from '../../lib/status'
 import { openLink } from '../../telegram'
+import { ChatRef } from '../../ui'
 import { CardBlock, ConfirmButton, InfoList, MonoText, PageHeader, StatusBadge } from '../components'
 import { useRunFeedback } from '../feedback'
 
@@ -92,7 +93,8 @@ export function AppealDetailView({ id }: { id: number }) {
             <Typography sx={{ fontSize: 13, mb: 0.5 }}>兑换记录</Typography>
             {a.redeems.map((r, index) => (
               <Typography key={index} sx={{ fontSize: 12.5, color: 'text.secondary' }}>
-                {fmtTSFull(r.at, tz)} · 群 {r.chat_id} · by uid {r.by_uid}
+                {fmtTSFull(r.at, tz)} · 群{' '}
+                <ChatRef name={r.chat} url={r.chat_url} fallback={r.chat_id} /> · by uid {r.by_uid}
               </Typography>
             ))}
           </Box>

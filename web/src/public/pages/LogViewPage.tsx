@@ -3,6 +3,7 @@ import { Box, Button, CircularProgress, Typography } from '@mui/material'
 import type { LogRecordView, WebRoute } from '../api'
 import { InvalidState } from '../InvalidState'
 import { useGate } from '../useGate'
+import { ChatRef } from '../../ui'
 
 const cardSx = { bgcolor: 'background.paper', borderRadius: 2, p: 2, mb: 2 }
 const titleSx = { fontSize: 15, fontWeight: 700, mb: 1 }
@@ -46,7 +47,7 @@ function LogContent({ view }: { view: LogRecordView }) {
           用户：<Mono>{r.user_id}</Mono>
           {r.user_name && `（${r.user_name}）`}
           <br />
-          群组：{r.chat}
+          群组：<ChatRef name={r.chat} url={r.chat_url} fallback={r.chat_id} />
           <br />
           入群时间：{view.member.joined || '未知'} ｜ 群内发言：{view.member.msgs} ｜ 历史命中：
           {view.member.hits}
