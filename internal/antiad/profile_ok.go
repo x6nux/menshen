@@ -29,11 +29,12 @@ const (
 )
 
 // profileOKClause 说明资料已被复判放行这一信号，两级判定与冷判定共用。
-const profileOKClause = "sender.profile_ok 为 true 表示这个账号的**资料**（昵称、" +
-	"用户名、简介与挂的链接）不久前已被复判确认不构成广告，在 profile_ok_until " +
-	"之前不得再凭资料判为广告（名字奇怪、只有一个频道/bot 链接、写着联系方式，" +
-	"都不算理由）；正文、引用、历史照常判断 —— 放行只免掉资料这一路，他之后" +
-	"发广告照样按广告处置。"
+const profileOKClause = "sender.profile_ok=true means this account's **profile** (nickname, username, " +
+	"bio and linked accounts) was recently confirmed by the review model not to constitute " +
+	"advertising, so it must not be judged as advertising from the profile before profile_ok_until " +
+	"(an odd name, a single channel/bot link or a merely stated contact detail are no longer reasons); " +
+	"the body text, the quote and the history are still judged as usual — the clearance only removes " +
+	"the profile line, and ads posted afterwards are still handled as ads. "
 
 // profileHash 是资料指纹：用户名 + 昵称 + 简介。它绑定放行所针对的那份
 // 资料——资料变更后自动失效，避免放行被继续沿用。

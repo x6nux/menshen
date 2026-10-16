@@ -169,7 +169,7 @@ func TestEvidenceRetryNote(t *testing.T) {
 		strings.Count(evidenceRetryNote, "%s") != 1 {
 		t.Error("改正提示应恰好有一个不符项占位符")
 	}
-	for _, want := range []string{"逐字", "evidence", "变形还原", "判定对象"} {
+	for _, want := range []string{"quoted verbatim", "evidence", "de-obfuscate", "judgement targets"} {
 		if !strings.Contains(evidenceRetryNote, want) {
 			t.Errorf("改正提示应包含 %q", want)
 		}
@@ -242,10 +242,10 @@ func TestEvidenceRetryCorrectsVerdict(t *testing.T) {
 		t.Errorf("改正后应按正常处理，得到 %v", v)
 	}
 	for _, want := range []string{
-		"你是 Telegram 群组的反广告审核员", // 原提示词随重发带上
-		"未通过证据核对",               // 附带的错误说明
-		"日入5000 私聊我",            // 上一轮的输出与不符项都要点名
-		"逐字",                    // 二次强调摘录要求
+		"You are the anti-ad reviewer", // 原提示词随重发带上
+		"failed evidence verification", // 附带的错误说明
+		"日入5000 私聊我",                   // 上一轮的输出与不符项都要点名
+		"quoted verbatim",              // 二次强调摘录要求
 	} {
 		if !strings.Contains(retryBody, want) {
 			t.Errorf("改正重试的请求应带上原提示词与不符项（缺 %q）", want)

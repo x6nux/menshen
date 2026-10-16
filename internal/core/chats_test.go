@@ -16,14 +16,14 @@ func TestChatOps(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	sh, bot := b.Shared, testutil.TestBotID
 
-	if err := sh.AddChat(bot, -100, "群A"); err != nil {
+	if err := sh.AddChat(bot, -100, "群A", ""); err != nil {
 		t.Fatal(err)
 	}
 	c, ok := sh.Cache.Snap().ChatConf(bot, -100)
 	if !ok || !c.Enabled || !c.Dryrun || c.GroupAlert || c.Title != "群A" {
 		t.Fatalf("新群应为启用+演练、标题群A，得到 %+v", c)
 	}
-	if err := sh.AddChat(bot, -100, ""); err != nil {
+	if err := sh.AddChat(bot, -100, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if c, _ := sh.Cache.Snap().ChatConf(bot, -100); c.Title != "群A" {
@@ -59,7 +59,7 @@ func TestAddChatRejectsMainBot(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.RegisterMainTestBot(t, b.Shared, testutil.TestToken, testutil.TestBotID, 1)
 	var op *core.OpError
-	if err := b.Shared.AddChat(testutil.TestBotID, -100, ""); !errors.As(err, &op) {
+	if err := b.Shared.AddChat(testutil.TestBotID, -100, "", ""); !errors.As(err, &op) {
 		t.Fatalf("给主 bot 加群应被拒，得到 %v", err)
 	}
 }

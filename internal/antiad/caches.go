@@ -19,6 +19,12 @@ type caches struct {
 	// （主 bot 不入群、同群多 bot 时只有一个被提为管理员）：挑出来存着，
 	// 后续查询直接用它，不必每回都把非管理员的重试一遍。
 	chatQueryBot core.TTLMap[int64, int64]
+	// chatMemberDead 记下「该群挂着的 bot 一个都不是管理员」，键 chatID。
+	// 没有管理员 bot 时每个成员的 getChatMember 都必被 CHAT_ADMIN_REQUIRED
+	// 拒答，逐条重试只是空跑（每条群消息一次 TG 往返，且跑在串行的更新处理
+	// 路径上）。记下后整群短路，直到 TTL 到期再看一次 —— 管理员把某个 bot
+	// 提为管理员后，最多这么久恢复。
+	chatMemberDead core.TTLMap[int64, struct{}]
 	// bio 缓存 TG 个人资料（getChat），键 "botID:uid"。广告号的强特征常写在
 	// 简介里，但全量送检下不缓存就是每条群消息多一次 TG 往返。键里带 bot：
 	// 查不查得到取决于该 bot 与用户有没有共同会话，共用一个键会让查不到的
@@ -93,6 +99,7 @@ func GCCaches(sh *core.Shared) {
 	c := cachesOf(sh)
 	c.chatAdmin.GC(now)
 	c.chatQueryBot.GC(now)
+	c.chatMemberDead.GC(now)
 	c.bio.GC(now)
 	c.photo.GC(now)
 	c.link.GC(now)

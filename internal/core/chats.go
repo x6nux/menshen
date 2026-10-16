@@ -12,8 +12,9 @@ import (
 // 迟早各长出一套规则。
 
 // AddChat 把一个群加到某个 bot 名下。新群默认**演练**：判定照常执行但
-// 不作用于群内，确认无误伤后再切正式。已存在时只补标题（空标题不覆盖已有）。
-func (sh *Shared) AddChat(botID, chatID int64, title string) error {
+// 不作用于群内，确认无误伤后再切正式。已存在时只补标题与公开 @ 名
+// （空值不覆盖已有）。
+func (sh *Shared) AddChat(botID, chatID int64, title, username string) error {
 	if chatID == 0 {
 		return Bad("chat_id 无效")
 	}
@@ -22,11 +23,12 @@ func (sh *Shared) AddChat(botID, chatID int64, title string) error {
 		return Bad("主 bot 不入群、不判定，不能添加生效群")
 	}
 	if _, err := sh.Store.Write.Exec(`INSERT INTO bot_chats
-		(bot_id,chat_id,title,enabled,dryrun,group_alert,created_at)
-		VALUES (?,?,?,1,1,0,?)
-		ON CONFLICT(bot_id,chat_id) DO UPDATE SET title=excluded.title
-		WHERE excluded.title<>''`,
-		botID, chatID, title, time.Now().Unix()); err != nil {
+		(bot_id,chat_id,title,username,enabled,dryrun,group_alert,created_at)
+		VALUES (?,?,?,?,1,1,0,?)
+		ON CONFLICT(bot_id,chat_id) DO UPDATE SET
+			title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE bot_chats.title END,
+			username=CASE WHEN excluded.username<>'' THEN excluded.username ELSE bot_chats.username END`,
+		botID, chatID, title, username, time.Now().Unix()); err != nil {
 		return err
 	}
 	return sh.Cache.Reload()

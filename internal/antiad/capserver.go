@@ -35,7 +35,10 @@ import (
 // 算同样的值，所以两边必须完全一致 —— 有测试用官方算法钉住。
 
 const (
-	capChallengeCount = 50
+	// capChallengeCount 是每个挑战要求解出的解答数。总工作量 =
+	// capChallengeCount × 16^capChallengeDiff；难度位取不了分数，要精调
+	// 总工作量就调这里（500 = 基准 50 的 10 倍）。
+	capChallengeCount = 500
 	capChallengeSize  = 32
 	capChallengeDiff  = 4
 	capChallengeTTL   = 10 * time.Minute

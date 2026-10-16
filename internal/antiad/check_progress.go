@@ -94,7 +94,14 @@ func (p *checkProgress) judgeStep(stage string, v adVerdict, err error) {
 	if v.IsAd && v.Kind != "" && v.Kind != "none" {
 		sb.WriteString(" · " + html.EscapeString(adKindLabel(v.Kind)))
 	}
-	fmt.Fprintf(&sb, "，置信度 %.0f%%", v.Confidence*100)
+	if v.Planned {
+		// 复判给的是处置意见，不再有置信度（见 decide.go）。
+		if d := decisionText(v); d != "" {
+			sb.WriteString(" · " + html.EscapeString(d))
+		}
+	} else {
+		fmt.Fprintf(&sb, "，置信度 %.0f%%", v.Confidence*100)
+	}
 	if v.Severity > 0 {
 		fmt.Fprintf(&sb, "，危害度 %.1f", v.Severity)
 	}

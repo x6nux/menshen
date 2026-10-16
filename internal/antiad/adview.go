@@ -114,19 +114,22 @@ func logViewDataOf(sh *core.Shared, id int64) (map[string]any, bool) {
 	if !ok {
 		return nil, false
 	}
+	ref := core.LookupChatRef(sh.Cache.Snap(), row.ChatID)
 	record := map[string]any{
 		"id": row.ID, "user_id": row.UserID, "user_name": row.UserName,
-		"chat_id": row.ChatID, "chat": fmt.Sprintf("%d", row.ChatID),
+		"chat_id": row.ChatID, "chat": ref.Display(), "chat_url": ref.URL(),
 		"message_id": row.MessageID,
 		"text":       row.Text, "verdict": row.Verdict, "confidence": row.Confidence,
 		"decider": row.Decider, "kind": row.Kind,
 		"action": row.Action, "action_label": ActionLabel(row.Action),
 		"reason": row.Reason, "created": formatTS(sh, row.CreatedAt),
+		// 初判与复判各自的原始结论分开给（见 verdictStage）：页面据此对照
+		// 两级，而不是只看被复判覆盖后的最终结论。历史行可能为空。
+		"so_verdict":  row.SoStage(),
+		"llm_verdict": row.LlmStage(),
+		"decision":    recordDecision(row),
 	}
 	member := map[string]any{"joined": "", "msgs": int64(0), "hits": int64(0)}
-	if c, ok := sh.Cache.Snap().ChatConf(row.BotID, row.ChatID); ok && c.Title != "" {
-		record["chat"] = c.Title + "（" + fmt.Sprintf("%d", row.ChatID) + "）"
-	}
 	var joined, msgs, hits int64
 	if err := sh.Store.Read.QueryRow(`SELECT joined_at,msg_count,ad_hits
 		FROM group_members WHERE chat_id=? AND user_id=?`,
@@ -282,18 +285,20 @@ type appealViewData struct {
 }
 
 type appealViewPenalty struct {
-	Type   string `json:"type"`
-	Label  string `json:"label"` // 中文类型名
-	ChatID int64  `json:"chat_id"`
-	Chat   string `json:"chat"`
-	Text   string `json:"text"`
-	Reason string `json:"reason"`
-	At     int64  `json:"at"`
-	Time   string `json:"time"`
+	Type    string `json:"type"`
+	Label   string `json:"label"` // 中文类型名
+	ChatID  int64  `json:"chat_id"`
+	Chat    string `json:"chat"`
+	ChatURL string `json:"chat_url"` // 公开群的 t.me 链接；私有群为空
+	Text    string `json:"text"`
+	Reason  string `json:"reason"`
+	At      int64  `json:"at"`
+	Time    string `json:"time"`
 }
 
 type appealViewMsg struct {
 	Chat    string `json:"chat"`
+	ChatURL string `json:"chat_url"`
 	Text    string `json:"text"`
 	At      int64  `json:"at"`
 	Time    string `json:"time"`
@@ -305,6 +310,7 @@ type appealViewLog struct {
 	ID          int64   `json:"id"`
 	ChatID      int64   `json:"chat_id"`
 	Chat        string  `json:"chat"`
+	ChatURL     string  `json:"chat_url"`
 	Verdict     string  `json:"verdict"`
 	Conf        float64 `json:"confidence"`
 	Action      string  `json:"action"`

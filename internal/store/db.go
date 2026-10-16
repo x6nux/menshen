@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS bot_chats (
   bot_id      INTEGER NOT NULL,
   chat_id     INTEGER NOT NULL,
   title       TEXT    NOT NULL DEFAULT '',
+  username    TEXT    NOT NULL DEFAULT '',
   enabled     INTEGER NOT NULL DEFAULT 1,
   dryrun      INTEGER NOT NULL DEFAULT 1,
   group_alert INTEGER NOT NULL DEFAULT 0,
@@ -470,6 +471,9 @@ func migrate(db *sql.DB) error {
 		{"group_messages", "punished", "INTEGER NOT NULL DEFAULT 0"},
 		// punish：本群的处罚方式。-1 = 跟随 bot 设置（antiad_ban），0 = 禁言，1 = 封禁。
 		{"bot_chats", "punish", "INTEGER NOT NULL DEFAULT -1"},
+		// username：公开群的 @ 名，把群引用渲染成可点的 t.me 链接。老库
+		// 默认空串，由群消息或 getChat 补齐（见 core.RefreshChatMeta）。
+		{"bot_chats", "username", "TEXT NOT NULL DEFAULT ''"},
 		// is_main：主 bot 标记。老库升级时先全部按工作 bot 处理，
 		// 由 ensureMainBot 在启动时把配置里那个 bot 置 1。
 		{"bots", "is_main", "INTEGER NOT NULL DEFAULT 0"},
@@ -518,6 +522,11 @@ func migrate(db *sql.DB) error {
 		// 显式指定时才会写上。
 		{"gban", "mode", "TEXT NOT NULL DEFAULT ''"},
 		{"gban_own_bans", "mode", "TEXT NOT NULL DEFAULT ''"},
+		// so_verdict / llm_verdict：初判与复判各自的原始结论（JSON，
+		// 见 antiad/verdictStage）。分两列存，复判不再覆盖初判 ——
+		// 面板与复查卡片据此对照两级。老库默认空串。
+		{"antiad_log", "so_verdict", "TEXT NOT NULL DEFAULT ''"},
+		{"antiad_log", "llm_verdict", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)

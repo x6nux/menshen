@@ -11,7 +11,7 @@ import (
 )
 
 // TestMiniLogsFiltersAndSearch：记录列表的筛选（前端默认带已删除）与
-// 搜索（原文 / 理由 / 纯数字 ID）是记录页可用的前提，先验证后端。
+// 搜索（原文 / 理由 / 记录号 / 纯数字 uid）是记录页可用的前提，先验证后端。
 func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	_, b := testutil.NewTestRegistry(t, nil)
 	sh := b.Shared
@@ -49,11 +49,13 @@ func TestMiniLogsFiltersAndSearch(t *testing.T) {
 	}
 	// 五条：两条被删除、一条放行（写 'clean'）、一条被护栏拦下，
 	// 外加一条 'none' 的正常记录：筛选要把它一起认下。
+	// 第六条只在正文里提到「#3」，用来验证「#N」是记录号而不是关键词。
 	seed(1, 555, "ad", "deleted_muted", "加微信买号", "推广")
 	seed(2, 556, "clean", "none", "今天天气不错", "")
 	seed(3, 557, "skipped", "skipped", "随便聊聊", "超出本群送检频率上限")
 	seed(4, 558, "ad", "deleted", "促销优惠", "推销")
 	seed(5, 559, "none", "none", "旧版遗留的正常记录", "")
+	seed(6, 600, "ad", "alerted", "看 #3 这条", "")
 
 	if got := ids(call("logs", map[string]any{"verdict": "deleted"})); len(got) != 2 ||
 		!got[1] || !got[4] {

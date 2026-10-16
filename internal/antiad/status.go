@@ -3,7 +3,6 @@ package antiad
 import (
 	"fmt"
 	"html"
-	"strconv"
 	"strings"
 	"time"
 
@@ -74,14 +73,9 @@ func messagePenaltyName(action string) string {
 	return "禁言"
 }
 
-// chatRef 渲染群引用：全平台找得到标题就带上，否则只有 id。
+// chatRef 渲染群引用：群名（公开群带 t.me 链接），群配置查不到时退回数字 id。
 func chatRef(snap *store.Snapshot, chatID int64) string {
-	for _, rec := range snap.Bots {
-		if c, ok := snap.ChatConf(rec.BotID, chatID); ok && c.Title != "" {
-			return strconv.FormatInt(chatID, 10) + "（" + html.EscapeString(c.Title) + "）"
-		}
-	}
-	return strconv.FormatInt(chatID, 10)
+	return core.LookupChatRef(snap, chatID).HTML()
 }
 
 // mainBotUsername 取主 bot 的用户名；没配主 bot（或还没拿到用户名）时

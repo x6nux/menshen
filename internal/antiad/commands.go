@@ -608,7 +608,7 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 	}
 	// 采信线与进群冷判定同一根：资料证据比一条消息少得多。
 	line := float64(snap.BotSettingInt(b.BotID(), "antiad_cold_conf", 85))
-	if !v.IsAd || v.Confidence*100 < line {
+	if !adAccepted(v, line, true) {
 		if !v.IsAd && v.ProfileOKHours > 0 && !conf.Dryrun {
 			GrantProfileOK(b, prof, v.ProfileOKHours, "资料复查放行："+v.Reason)
 		}
@@ -639,8 +639,13 @@ func reviewProfileOnly(b *core.Bot, snap *store.Snapshot, conf store.BotChat,
 		Shape:    profileShape(prof),
 	})
 	if _, ok := loadJoinMute(b.Store, chatID, u.ID); ok {
-		p.finish(fmt.Sprintf("🔎 <b>资料复查结果</b>\n🔒 %s 已按进群资料限制处置（%s，置信度 %.0f%%）。",
-			userLink(u.ID), html.EscapeString(adKindLabel(v.Kind)), v.Confidence*100), nil, ttl)
+		// 复判结论给的是处置意见、没有置信度；初判结论才显示置信度。
+		detail := fmt.Sprintf("置信度 %.0f%%", v.Confidence*100)
+		if v.Planned {
+			detail = decisionText(v)
+		}
+		p.finish(fmt.Sprintf("🔎 <b>资料复查结果</b>\n🔒 %s 已按进群资料限制处置（%s，%s）。",
+			userLink(u.ID), html.EscapeString(adKindLabel(v.Kind)), detail), nil, ttl)
 	} else {
 		p.finish("🔎 <b>资料复查结果</b>\n⚠️ 限制发言失败，详见流水与日志。", nil, ttl)
 	}

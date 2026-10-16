@@ -30,6 +30,11 @@ func IsChatAdmin(b *core.Bot, chatID, uid int64) bool {
 	return admin
 }
 
+// chatMemberDeadTTL 是「该群没有管理员 bot」这一判断的缓存时长。期间该群的
+// 成员身份查询整体短路，不再逐条打 TG；管理员把某个 bot 提为管理员后，最多
+// 这么久恢复。
+const chatMemberDeadTTL = 10 * time.Minute
+
 // queryChatAdmin 向 TG 查一次，ok 为假表示没查成（已记日志，不缓存）。
 func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 	if uid < 0 {
@@ -51,6 +56,12 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 		return resp.Result.LinkedChatID == uid, true
 	}
 
+	// 该群已判定「没有管理员 bot」：问谁都是 CHAT_ADMIN_REQUIRED，直接按普通
+	// 成员处理，不再逐条空跑（这里不记日志，判定那一刻已经记过一次）。
+	if _, dead := cachesOf(b.Shared).chatMemberDead.Get(chatID); dead {
+		return false, false
+	}
+
 	raw, q, err := chatQuery(b, chatID, "getChatMember", map[string]any{
 		"chat_id": chatID, "user_id": uid,
 	})
@@ -59,7 +70,10 @@ func queryChatAdmin(b *core.Bot, chatID, uid int64) (admin, ok bool) {
 		switch {
 		case errors.As(err, &apiErr) && apiErr.AdminRequired():
 			// 群里的 bot 一个都不是管理员——这是配置问题，管理员需要知道
-			// 把其中某个提为管理员，否则成员身份永远查不到。
+			// 把其中某个提为管理员，否则成员身份永远查不到。记下整群短路，
+			// 之后这个群的成员查询不再逐条重试（TTL 到期后再确认一次）。
+			cachesOf(b.Shared).chatMemberDead.Set(chatID, struct{}{}, chatMemberDeadTTL)
+			cachesOf(b.Shared).chatQueryBot.Delete(chatID)
 			slog.Warn("反广告：群内没有管理员 bot，查不了成员身份，按普通成员处理",
 				"chat", chatID, "uid", uid)
 		case errors.As(err, &apiErr) && apiErr.NotFound():

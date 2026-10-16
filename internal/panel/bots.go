@@ -170,12 +170,18 @@ func showBotDetail(b *core.Bot, chatID, msgID, uid, botID int64) {
 		if c.Dryrun {
 			mode = "🧪演练"
 		}
-		title := c.Title
+		title := strings.TrimSpace(c.Title)
 		if title == "" {
 			title = "（未命名）"
 		}
-		fmt.Fprintf(&sb, "%s <code>%d</code> %s · %s\n",
-			mark, c.ChatID, html.EscapeString(btnValue(title)), mode)
+		// 公开群把群名做成 t.me 链接，点一下就能进群核对。
+		if c.Username != "" {
+			title = `<a href="https://t.me/` + html.EscapeString(c.Username) +
+				`">` + html.EscapeString(title) + `</a>`
+		} else {
+			title = html.EscapeString(title)
+		}
+		fmt.Fprintf(&sb, "%s %s · %s\n", mark, title, mode)
 	}
 	if len(chats) == 0 {
 		sb.WriteString("（还没添加任何群，本 bot 不会处理任何消息）\n")
@@ -270,12 +276,18 @@ func showChatDetail(b *core.Bot, chatID, msgID, botID, targetChat int64) {
 	}
 
 	var sb strings.Builder
-	title := c.Title
+	title := strings.TrimSpace(c.Title)
 	if title == "" {
 		title = "（未命名）"
 	}
-	fmt.Fprintf(&sb, "💬 <b>%s</b>\n<code>%d</code>\n\n",
-		html.EscapeString(title), c.ChatID)
+	// 群名做标题；公开群另给一条可点的 t.me 链接，私有群给出 chat_id
+	// （配置台里它是稳定的标识，仍要能看到）。
+	sub := "<code>" + strconv.FormatInt(c.ChatID, 10) + "</code>"
+	if c.Username != "" {
+		sub = `<a href="https://t.me/` + html.EscapeString(c.Username) +
+			`">t.me/` + html.EscapeString(c.Username) + `</a> · ` + sub
+	}
+	fmt.Fprintf(&sb, "💬 <b>%s</b>\n%s\n\n", html.EscapeString(title), sub)
 
 	if c.Enabled {
 		sb.WriteString("状态: ✅ 已启用\n")
@@ -710,7 +722,7 @@ func showBotExempt(b *core.Bot, chatID, msgID, botID int64) {
 		sb.WriteString("\n<b>白名单</b>（免于反广告检查）\n")
 		loc := b.Cache.Snap().Location()
 		for _, w := range whitelist {
-			scope := fmt.Sprintf("群 <code>%d</code>", w.chatID)
+			scope := "群 " + core.LookupChatRef(b.Cache.Snap(), w.chatID).HTML()
 			if w.chatID == 0 {
 				scope = "本 bot 所有群"
 			}

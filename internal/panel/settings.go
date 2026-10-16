@@ -682,13 +682,15 @@ func handleSettingsInput(b *core.Bot, m *tg.Message, p core.PendingInput, text s
 			showBotDetail(b, chatID, 0, uid, botID)
 			return
 		}
-		if err := b.AddChat(botID, id, chatTitle(b.Shared, botID, id)); err != nil {
+		title, username := chatMeta(b.Shared, botID, id)
+		if err := b.AddChat(botID, id, title, username); err != nil {
 			b.Send(chatID, opText(err, "保存失败。"), nil)
 			return
 		}
 		b.Send(chatID, fmt.Sprintf(
-			"✅ 已添加群 <code>%d</code>，当前是<b>演练模式</b>。\n\n"+
-				"观察几天拦截记录，确认没有误伤后再切到正式模式。", id), nil)
+			"✅ 已添加群 %s，当前是<b>演练模式</b>。\n\n"+
+				"观察几天拦截记录，确认没有误伤后再切到正式模式。",
+			chatRef(b.Shared, botID, id).HTML()), nil)
 		showChatDetail(b, chatID, 0, botID, id)
 
 	case "bot_ex_add":

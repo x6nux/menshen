@@ -80,13 +80,18 @@ func alertTTL(b *core.Bot, snap *store.Snapshot, v adVerdict) time.Duration {
 	}
 	hard := int64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
 	severe := snap.BotSettingInt(b.BotID(), "antiad_alert_severe", 2)
-	if int64(v.Confidence*100) >= hard && v.Severity >= float64(severe) {
+	hardLine := int64(v.Confidence*100) >= hard
+	if v.Planned {
+		// 复判没有置信度：要删又要禁言即为「处置已落地」那一档。
+		hardLine = v.Delete && v.Mute != muteNone
+	}
+	if hardLine && v.Severity >= float64(severe) {
 		return time.Duration(short) * time.Second
 	}
 	return normal
 }
 
-// verdictBrief 是群内提醒的结论部分：只说明结论与置信度。
+// verdictBrief 是群内提醒的结论部分：只说明结论与置信度或复判给的处置意见。
 //
 // 复判模型的长篇理由留给记录卡片、查看页与私聊汇总等查看详情的位置 ——
 // 理由常引述广告原文，贴回群里等于替其再次发送。
@@ -94,12 +99,18 @@ func verdictBrief(v adVerdict) string {
 	if v.Decider == "manual" {
 		return "" // 人工标记的头部已经写明，不必重复
 	}
-	if v.Confidence <= 0 && v.Severity <= 0 {
-		return "" // 判定失败这类没有结论可给时不硬编
-	}
 	choice := "clean"
 	if v.IsAd {
 		choice = "ad"
+	}
+	if v.Planned {
+		if d := decisionText(v); d != "" {
+			return soChoiceLabel(choice) + "：" + d
+		}
+		return ""
+	}
+	if v.Confidence <= 0 && v.Severity <= 0 {
+		return "" // 判定失败这类没有结论可给时不硬编
 	}
 	s := fmt.Sprintf("%s 置信度:%.0f%%", soChoiceLabel(choice), v.Confidence*100)
 	if v.Severity > 0 {

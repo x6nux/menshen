@@ -161,6 +161,48 @@ func TestIsChatAdminNoAdminBotWarns(t *testing.T) {
 	}
 }
 
+// TestIsChatAdminNoAdminBotShortCircuits：整群都没有管理员 bot 时，判明一次
+// 就够——后续成员的查询直接按普通成员处理，不再逐条打 TG（每条群消息一次往
+// 返，且跑在串行的更新处理路径上），也不再把同一条警告刷屏。
+func TestIsChatAdminNoAdminBotShortCircuits(t *testing.T) {
+	reg, primary := testutil.NewTestRegistry(t, nil)
+	sh := primary.Shared
+	first, firstTG := testutil.AddRegistryBot(t, reg, sh, 4343, 777)
+	second, secondTG := testutil.AddRegistryBot(t, reg, sh, 4344, 777)
+	testutil.EnableAntiad(t, first, -100)
+	testutil.EnableAntiad(t, second, -100)
+	firstTG.Err["getChatMember"] = adminRequiredErr()
+	secondTG.Err["getChatMember"] = adminRequiredErr()
+
+	msgs := warnMessages(t)
+	if IsChatAdmin(first, -100, 42) {
+		t.Error("查不到就该按普通成员处理")
+	}
+	before1, before2 := firstTG.CountCalls("getChatMember"), secondTG.CountCalls("getChatMember")
+	// 换个人再查：整群已短路，一个 TG 调用都不该再发。
+	if IsChatAdmin(first, -100, 43) {
+		t.Error("短路后仍按普通成员处理")
+	}
+	if firstTG.CountCalls("getChatMember") != before1 ||
+		secondTG.CountCalls("getChatMember") != before2 {
+		t.Errorf("整群短路后不该再打 TG：first %d→%d, second %d→%d",
+			before1, firstTG.CountCalls("getChatMember"),
+			before2, secondTG.CountCalls("getChatMember"))
+	}
+	if n := 0; containsMsg(msgs(), "群内没有管理员 bot") {
+		for _, m := range msgs() {
+			if strings.Contains(m, "群内没有管理员 bot") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("同一群的警告只该记一次，实际 %d 次", n)
+		}
+	} else {
+		t.Error("判明没有管理员 bot 时该记一次警告")
+	}
+}
+
 // TestIsChatAdminNetworkErrorNoFailover：网络故障不换 bot 再试——候选走
 // 同一条出口与同一份代理，换一个只是把传输层超时再等一遍（每次最坏 40 秒），
 // 而这条查询跑在串行的更新处理路径上。

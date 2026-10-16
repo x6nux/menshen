@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"menshen/internal/store"
 	"menshen/internal/testutil"
@@ -81,8 +80,24 @@ func TestBuildSystemOneReqScoreCriteriaIsList(t *testing.T) {
 // 转发、个人简介与引用外部聊天的载荷，否则模型会凭空判广告。
 func TestPromptsSeparateQuotedFromBio(t *testing.T) {
 	for name, p := range map[string]string{"so": soInstructions, "llm": llmSystemPrompt} {
-		if !strings.Contains(p, "没有 quoted 字段") {
+		if !strings.Contains(p, "No quoted field means") {
 			t.Errorf("%s 提示词未区分 quoted 与 bio / is_forwarded", name)
+		}
+	}
+}
+
+// TestPromptsExplainBotCommands：两级消息判定的提示词都必须写明「正文是发给
+// 别的机器人的命令时那是举报动作」—— 不说的话模型会把它读成「正文极短、
+// 载荷全在引用」的规避形态，或把反复发举报命令读成刷屏骚扰，把举报的人判成
+// 发广告的人。同时必须留着「召唤 bot 的命令仍是引流」这个例外，否则
+// /start 88 @a @b 这类召唤傀儡 bot 的形态会被一并放行。
+func TestPromptsExplainBotCommands(t *testing.T) {
+	for name, p := range map[string]string{"so": soInstructions, "llm": llmSystemPrompt} {
+		if !strings.Contains(p, "slash-command addressed to some bot") {
+			t.Errorf("%s 提示词未说明发给别的机器人的命令是举报动作", name)
+		}
+		if !strings.Contains(p, "used to summon bots") {
+			t.Errorf("%s 提示词缺少「召唤 bot 的命令仍是引流」的例外", name)
 		}
 	}
 }
@@ -95,7 +110,7 @@ func TestPromptsCoverServiceListAd(t *testing.T) {
 		"cold": coldInstructions, "coldLLM": coldLLMPrompt,
 		"prewarm": prewarmInstructions, "prewarmLLM": prewarmLLMPrompt,
 	} {
-		if !strings.Contains(p, "业务清单") || !strings.Contains(p, "没有标价也算") {
+		if !strings.Contains(p, "business list") || !strings.Contains(p, "even without") {
 			t.Errorf("%s 提示词缺少「资料写成业务清单也是招揽」的口径", name)
 		}
 	}
@@ -105,11 +120,11 @@ func TestPromptsCoverServiceListAd(t *testing.T) {
 // 当成本条消息（或此人资料）里的内容，凭空判广告。
 func TestPromptsExplainKnownAdPatterns(t *testing.T) {
 	if !strings.Contains(llmSystemPrompt, "known_ad_patterns") ||
-		!strings.Contains(llmSystemPrompt, "参考样本") {
+		!strings.Contains(llmSystemPrompt, "reference sample library") {
 		t.Error("复判提示词未说明 known_ad_patterns 只是参考样本")
 	}
 	for name, p := range map[string]string{"cold": coldInstructions, "coldLLM": coldLLMPrompt} {
-		if !strings.Contains(p, "known_ad_patterns") || !strings.Contains(p, "不是此人的资料") {
+		if !strings.Contains(p, "known_ad_patterns") || !strings.Contains(p, "not this person's profile") {
 			t.Errorf("%s 提示词未说明 known_ad_patterns 不是此人的资料", name)
 		}
 	}
@@ -126,18 +141,18 @@ func TestPromptsExplainMatchedRules(t *testing.T) {
 		if !strings.Contains(p, "matched_rules") {
 			t.Errorf("%s 提示词未说明 matched_rules", name)
 		}
-		if !strings.Contains(p, "强证据") {
+		if !strings.Contains(p, "strong evidence") {
 			t.Errorf("%s 提示词未写明 matched_rules 是强证据", name)
 		}
-		if !strings.Contains(p, "可以判正常") {
+		if !strings.Contains(p, "Judging normal is allowed") {
 			t.Errorf("%s 提示词未给出结合语境推翻的出口", name)
 		}
 		// 推翻出口必须写明：note 是样本的完整形态，缺引流载荷不算呈现该形态；
 		// 群主题内的同形内容按正常处理。否则模型只会照抄规则结论。
-		if !strings.Contains(p, "不算呈现该形态") {
+		if !strings.Contains(p, "the form is not present") {
 			t.Errorf("%s 提示词未说明形态只命中一部分时不算呈现", name)
 		}
-		if !strings.Contains(p, "正常讨论的") || !strings.Contains(p, "这类内容") {
+		if !strings.Contains(p, "exactly what this group normally discusses") {
 			t.Errorf("%s 提示词未说明群主题内的同形内容按正常处理", name)
 		}
 	}
@@ -403,7 +418,7 @@ func TestReviewFailureDemotesWeakVerdict(t *testing.T) {
 // 复核。摘要可能从广告样本里归纳出某种表面特征，而该特征在正常账号的隐私
 // 提示中同样常见，模型照摘要执行会误判为广告。
 func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
-	for _, want := range []string{"归纳提示", "不是判决", "双向机器人", "隐私保护", "按上下文复核"} {
+	for _, want := range []string{"inductive hint", "not a verdict", "双向机器人", "privacy protection", "re-checked against context"} {
 		if !strings.Contains(patternClause, want) {
 			t.Errorf("patternClause 应保留口径 %q：\n%s", want, patternClause)
 		}
@@ -415,12 +430,12 @@ func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
 		"coldInstructions": coldInstructions,
 		"coldLLMPrompt":    coldLLMPrompt,
 	} {
-		if !strings.Contains(prompt, "归纳提示") {
+		if !strings.Contains(prompt, "inductive hint") {
 			t.Errorf("%s 缺少形态口径", name)
 		}
 	}
 	// 摘要生成器要求形态带上下文条件，不许写成单个关键词。
-	if !strings.Contains(digestSystemPrompt, "每条形态必须写清上下文条件") {
+	if !strings.Contains(digestSystemPrompt, "Every form must state its context conditions") {
 		t.Error("摘要生成提示词应要求写清上下文条件")
 	}
 }
@@ -431,9 +446,10 @@ func TestPatternClauseGuardsKeywordMisjudgment(t *testing.T) {
 func TestPreActLineSkipsLowConfidence(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
-	// 初判 70%（低于线），复判确认是广告：终判照常处置，但之前不动手。
+	// 初判 70%（低于线），复判确认是广告并给永久禁言：终判照常处置，
+	// 但之前不动手。
 	fakeAIWith(t, b, soReply("ad", 0.70, "scam", "message"),
-		llmReply(true, 0.9, "scam", "message"))
+		llmReplyDec(true, "scam", "message", true, muteForever))
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "加微信 日入5000"))
 	waitIdle(t, b)
 
@@ -441,8 +457,8 @@ func TestPreActLineSkipsLowConfidence(t *testing.T) {
 	if len(mutes) != 1 {
 		t.Fatalf("低于初判线只该有终判的正式禁言，得到 %d 次", len(mutes))
 	}
-	if d := untilOf(mutes[0]); d <= int64(tempMute/time.Second)+5 {
-		t.Errorf("那一次应是正式禁言（按本群时长），得到 %d 秒", d)
+	if _, ok := mutes[0]["until_date"]; ok {
+		t.Errorf("复判给的是永久禁言，这一次不该带 until_date：%v", mutes[0]["until_date"])
 	}
 	if n := fake.CountCalls("deleteMessage"); n != 1 {
 		t.Errorf("消息应在终判时删一次，得到 %d 次", n)
@@ -455,7 +471,7 @@ func TestPreActLineSkipsLowConfidence(t *testing.T) {
 	b2, fake2 := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b2, -100)
 	fakeAIWith(t, b2, soReply("ad", 0.95, "scam", "message"),
-		llmReply(true, 0.95, "scam", "message"))
+		llmReplyDec(true, "scam", "message", true, muteForever))
 	HandleGroupMessage(b2, testutil.GroupMsg(-100, 43, 8, "加微信 日入5000"))
 	waitIdle(t, b2)
 	if n := len(fake2.Calls("restrictChatMember")); n != 2 {

@@ -120,11 +120,11 @@ func tickHourly(sh *core.Shared) {
 	}
 }
 
-// refreshChatTitles 用这个 bot 的 token 把名下的群标题刷一遍。
+// refreshChatTitles 用这个 bot 的 token 把名下的群标题与公开 @ 名刷一遍。
 //
-// 标题只在添加群那一刻抓过：先加配置、后入群的群会一直空着，群改名也不会
-// 跟着变。onlyEmpty 为真只查空标题（分钟级快速自愈）；否则全量（小时级，
-// 跟进群改名）。按 bot 限量、逐条间隔，避免触发 TG 速率限制。
+// 这两样只在添加群那一刻抓过：先加配置、后入群的群会一直空着，群改名或
+// 从私有转公开也不会跟着变。onlyEmpty 为真只查空标题（分钟级快速自愈）；
+// 否则全量（小时级，跟进群改名）。按 bot 限量、逐条间隔，避免触发 TG 速率限制。
 func refreshChatTitles(b *core.Bot, onlyEmpty bool) {
 	q := `SELECT chat_id FROM bot_chats WHERE bot_id=?`
 	if onlyEmpty {
@@ -143,7 +143,7 @@ func refreshChatTitles(b *core.Bot, onlyEmpty bool) {
 	}
 	rows.Close()
 	for _, id := range ids {
-		b.RefreshChatTitle(id)
+		b.RefreshChatMeta(id)
 		time.Sleep(50 * time.Millisecond)
 	}
 }

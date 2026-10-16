@@ -16,10 +16,10 @@ import (
 // adVerdict 是一次判定的结果。
 type adVerdict struct {
 	IsAd       bool
-	Confidence float64 // 0..1
+	Confidence float64 // 0..1；初判（systemone）与本地合成结论会给，复判不给
 	Kind       string
 	Reason     string
-	Decider    string // systemone / llm / systemone+llm
+	Decider    string // systemone / llm / systemone+llm / rule:<id> / hash / manual …
 	// Model 是给出这条结论的那个模型名。Decider 只说走了几级，说不出
 	// 具体是谁 —— 而换模型后校准阈值，第一件事就是知道眼前这条判定
 	// 出自哪个模型。两级都跑时记最终拍板的那个。
@@ -28,9 +28,17 @@ type adVerdict struct {
 	// message = 只有这条消息是。前者连带删除此人近期的全部消息；后者的内容
 	// 会记成哈希，同样的内容再出现直接删（见 hash.go）。
 	Scope string
-	// Severity 是 systemone 给的危害度（0-3，可带小数）。复判的 JSON 里
-	// 没有这一项，所以复判结论恒为 0；群内提醒的短撤回只认初判这条。
+	// Severity 是危害度（0-3，可带小数）：初判给分值，复判也可给。
 	Severity float64
+	// Planned 表示这条结论自带处置意见（复判给的 delete / mute），定档直接
+	// 照它，不再走置信度矩阵。初判与本地合成结论不给，仍按置信度定档。
+	Planned bool
+	// Delete 是复判给的处置意见：是否删除这条消息。无消息可删的路径
+	// （进群资料检查、前置号复核）恒为 false，只走 Mute。
+	Delete bool
+	// Mute 是复判给的禁言时长：muteNone / muteShort（5 分钟）/ muteForever。
+	// 空串按 muteNone 处理。
+	Mute string
 	// ProfileOKHours 是复判给的资料临时放行时长（1~72 小时，0 = 不放行）。
 	// 只有复判判为正常、且可疑的只是资料本身时才会给（见 profile_ok.go）。
 	ProfileOKHours int
@@ -38,8 +46,72 @@ type adVerdict struct {
 	// 关键词/短语，可多项。一致性门（evidence_gate.go）拿它与判定对象
 	// 核对，流水与复查卡片也展示它——管理员不用再从判词里猜依据。
 	Evidence []string
-	Usage    billing.Usage
-	Cost     int64 // quota
+	// Prior 是升级复判前那一级的原始结论（初判 / 规则命中 / 内容哈希）。
+	// 只用于两级分开落库与展示（见 verdictStage）；定档只用最终这一级。
+	Prior *verdictStage
+	Usage billing.Usage
+	Cost  int64 // quota
+}
+
+// 复判给的禁言时长取值。
+const (
+	muteNone    = "none"
+	muteShort   = "5m"
+	muteForever = "forever"
+)
+
+// decisionText 渲染一条结论里的处置意见（复判给的 delete / mute）。判为广告
+// 但未动手时给「不处置」；非复判结论没有处置意见，返回空串。
+func decisionText(v adVerdict) string {
+	if !v.Planned {
+		return ""
+	}
+	if d := stageDecision(v.Delete, v.Mute); d != "" {
+		return d
+	}
+	return "不处置"
+}
+
+// stageDecision 渲染处置意见；没删也没禁言返回空串。
+func stageDecision(del bool, mute string) string {
+	var parts []string
+	if del {
+		parts = append(parts, "删除消息")
+	}
+	switch mute {
+	case muteShort:
+		parts = append(parts, "禁言 5 分钟")
+	case muteForever:
+		parts = append(parts, "永久禁言")
+	}
+	return strings.Join(parts, " + ")
+}
+
+// verdictStage 是某一级判定的原始结论。初判与复判各存一份，避免复判覆盖掉
+// 初判 —— antiad_log 的 so_verdict / llm_verdict 两列据此落库，面板与复查
+// 卡片据此对照两级。
+type verdictStage struct {
+	Stage      string   `json:"stage"` // so | llm | rule | hash | manual | shape | leader
+	IsAd       bool     `json:"is_ad"`
+	Confidence float64  `json:"confidence,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	Scope      string   `json:"scope,omitempty"`
+	Severity   float64  `json:"severity,omitempty"`
+	Delete     bool     `json:"delete,omitempty"`
+	Mute       string   `json:"mute,omitempty"`
+	Decider    string   `json:"decider,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// stage 把这一级结论转成可落库、可展示的形态。stage 名由调用方按来源给。
+func (v adVerdict) stage(stage string) verdictStage {
+	return verdictStage{
+		Stage: stage, IsAd: v.IsAd, Confidence: v.Confidence, Kind: v.Kind,
+		Scope: v.Scope, Severity: v.Severity, Delete: v.Delete, Mute: v.Mute,
+		Decider: v.Decider, Model: v.Model, Evidence: v.Evidence, Reason: v.Reason,
+	}
 }
 
 // buildSystemOneReq 构造 jev 请求体。
@@ -59,43 +131,49 @@ func buildSystemOneReq(st adState, instructions string) map[string]any {
 				"type":         "choice",
 				"instructions": instructions,
 				"criteria": map[string]any{
-					"ad": "推广、引流、招揽、诈骗话术；或昵称/简介写着推广文案、收益承诺、" +
-						"引流话术，或挂的频道/群组本身是广告；或露骨色情内容（性描述、性暴力、" +
-						"乱伦、涉及未成年人），即使没有联系方式与广告语；或变形还原后属于以上任一种",
-					"clean": "正常交流，包括分享技术链接、讨论商品价格、转发新闻",
+					"ad": "promotion, traffic-driving, solicitation or scam wording; or a nickname/bio " +
+						"carrying promo copy, earnings promises or traffic-driving lines, or a linked " +
+						"channel/group that is itself an ad; or explicit pornographic content (sexual " +
+						"description, sexual violence, incest, involving minors) even without contact " +
+						"details or ad copy; or anything that de-obfuscates to any of the above",
+					"clean": "normal conversation, including sharing technical links, discussing product " +
+						"prices, forwarding news",
 				},
 			},
 			"ad_kind": map[string]any{
 				"type":         "choice",
-				"instructions": "若是广告，属于哪一类？判为广告时不得选 none，不是广告才选 none。",
+				"instructions": "If it is an ad, which category is it? Category must not be none when judging advertising; choose none only when it is not an ad.",
 				"criteria": map[string]any{
-					"none":   "不是广告",
-					"crypto": "加密货币、炒币、空投、交易所拉新",
-					"porn":   "色情招揽：约炮、裸聊、上门服务、色情网站或色情群推广",
-					"porn_bait": "色情内容：露骨的性描述、性暴力、乱伦、涉及未成年人的色情文字或" +
-						"猎奇标题党（「看完整版」「点击观看」），即使没有任何联系方式或广告语",
-					"gambling":   "赌博、博彩、彩票",
-					"scam":       "诈骗，含兼职刷单、日入话术、杀猪盘、假客服、代还款",
-					"promo":      "商品或服务推广、拉群引流、导流到私聊或主页",
-					"spam_flood": "无实质内容的刷屏",
+					"none":   "not an ad",
+					"crypto": "cryptocurrency, coin trading, airdrops, exchange referrals",
+					"porn":   "porn solicitation: hookups, nude chat, door-to-door services, porn site or porn group promotion",
+					"porn_bait": "pornographic content: explicit sexual description, sexual violence, incest, " +
+						"pornographic text involving minors or clickbait titles (「看完整版」「点击观看」), " +
+						"even with no contact detail or ad copy",
+					"gambling":   "gambling, betting, lottery",
+					"scam":       "scams, including part-time brushing, 「日入」 pitches, pig-butchering, fake customer service, repayment on one's behalf",
+					"promo":      "goods or service promotion, group-invite traffic-driving, driving traffic to DMs or a profile",
+					"spam_flood": "flooding with no substantive content",
 				},
 			},
 			// 决定删一条还是删光：账号本身就是广告号的，此人近期发的都是铺垫。
 			"ad_scope": map[string]any{
 				"type":         "choice",
-				"instructions": "若是广告，问题出在账号还是只在这条消息？",
+				"instructions": "If it is an ad, does the problem lie in the account or only in this message?",
 				"criteria": map[string]any{
-					"account": "账号本身就是广告号：用户名、昵称、简介写着推广文案、收益承诺、" +
-						"引流话术或色情招揽，或挂的频道/群组本身是广告（见 bio_links）",
-					"message": "只有这条消息的内容是广告，账号资料本身正常；不是广告也选这个",
+					"account": "the account itself is an ad account: username, nickname or bio carries " +
+						"promo copy, earnings promises, traffic-driving lines or porn solicitation, or a " +
+						"linked channel/group is itself an ad (see bio_links)",
+					"message": "only this message's content is an ad and the account profile itself is " +
+						"normal; choose this also when it is not an ad",
 				},
 			},
 			"severity": map[string]any{
 				"type":         "score",
-				"instructions": "危害程度：0 = 无害，3 = 诈骗、露骨色情或大规模刷屏。",
+				"instructions": "Harm level: 0 = harmless, 3 = scam, explicit porn or mass flooding.",
 				// score 题的 criteria 必须是有序列表，下标即分值；缺失或写成
 				// map 上游直接 422。4xx 不重试，主判随之静默回落成只有大模型。
-				"criteria": []string{"无害", "轻度推广", "明显引流", "诈骗、露骨色情或大规模刷屏"},
+				"criteria": []string{"harmless", "mild promotion", "clear traffic-driving", "scam, explicit porn or mass flooding"},
 			},
 		},
 	}
@@ -117,6 +195,8 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	if len(soModels) == 0 {
 		return adVerdict{}, fmt.Errorf("反广告：未配置判定模型（antiad_so_models）")
 	}
+	// 送检前统一剥掉不可见字符：载荷与证据核对语料用同一份（见 sanitized）。
+	st = st.sanitized()
 
 	reply, err := aiCall(b.Shared, upstream.EPSystemOne, soModels,
 		buildSystemOneReq(st, instructions), upstreamNotifier(b))
@@ -188,6 +268,10 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 	if len(llmModels) == 0 {
 		return adVerdict{}, fmt.Errorf("反广告：未配置复判模型（antiad_llm_models）")
 	}
+	// 送检前统一剥掉不可见字符：载荷与下面的证据核对语料用同一份（见
+	// sanitized）—— 否则模型摘的是归一化后的原文，核对拿未归一化的语料
+	// 去比，正确结论会被证据门打回。
+	st = st.sanitized()
 
 	payload := map[string]any{
 		"state": st,
@@ -251,7 +335,7 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 		"messages": append(slices.Clone(req["messages"].([]map[string]string)),
 			map[string]string{"role": "assistant", "content": obj},
 			map[string]string{"role": "user",
-				"content": fmt.Sprintf(evidenceRetryNote, strings.Join(misses, "；"))}),
+				"content": fmt.Sprintf(evidenceRetryNote, strings.Join(misses, "; "))}),
 	}
 	reply2, err2 := aiCall(b.Shared, upstream.EPChat, llmModels, retryReq, upstreamNotifier(b))
 	if err2 != nil {
@@ -284,13 +368,14 @@ func judgeLLM(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict,
 }
 
 // evidenceRetryNote 是改正重试附在末尾的用户消息：一次把要求说死。
-const evidenceRetryNote = "你上一次的输出未通过证据核对：%s。\n" +
-	"请重新输出完整的 JSON（字段与要求不变）。特别注意：evidence 数组里每一项" +
-	"都必须从判定对象（message.text、quoted、sender 的昵称/用户名/简介/bio_links、" +
-	"recent_context、review_history、matched_rules）的原文里**逐字**摘出，" +
-	"不得编造、改写、概括或变形还原（原文写「看煮页」就摘「看煮页」）；" +
-	"判为广告必须给出至少一项真实存在的证据。样本库（known_ad_patterns / " +
-	"known_false_positives）里的文字不是判定对象，不得摘进 evidence。"
+const evidenceRetryNote = "Your previous output failed evidence verification: %s.\n" +
+	"Output the complete JSON again (same fields and requirements). Pay special attention: every " +
+	"entry of the evidence array must be **quoted verbatim** from the judgement targets (message.text, " +
+	"quoted, sender's nickname/username/bio/bio_links, recent_context, review_history, matched_rules); " +
+	"never fabricate, rewrite, summarize or de-obfuscate (if the source writes 「看煮页」 quote " +
+	"「看煮页」). Judging advertising requires at least one genuinely present piece of evidence. Text " +
+	"in the sample libraries (known_ad_patterns / known_false_positives) is not a judgement target and " +
+	"must not be quoted into evidence."
 
 // parseLLMReply 把上游响应解析成复判结论。返回值里的 obj 是模型这次输出的
 // JSON 原文，改正重试要把它作为上一轮的 assistant 消息回传。
@@ -313,12 +398,14 @@ func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 		return adVerdict{}, "", fmt.Errorf("反广告：大模型未返回 JSON")
 	}
 	var out struct {
-		IsAd       bool    `json:"is_ad"`
-		Confidence float64 `json:"confidence"`
-		Kind       string  `json:"kind"`
-		Scope      string  `json:"scope"`
-		Severity   float64 `json:"severity"`
-		Reason     string  `json:"reason"`
+		IsAd     bool    `json:"is_ad"`
+		Kind     string  `json:"kind"`
+		Scope    string  `json:"scope"`
+		Severity float64 `json:"severity"`
+		// Delete / Mute 是复判的处置意见：是否删这条消息、禁言多久。
+		Delete bool   `json:"delete"`
+		Mute   string `json:"mute"`
+		Reason string `json:"reason"`
 		// Evidence 是模型声明的判广告证据（原文逐字摘录，见 adVerdict）。
 		Evidence []string `json:"evidence"`
 		// ProfileOKHours 是资料临时放行时长：只在判为正常、且可疑的
@@ -332,6 +419,11 @@ func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 	// is_ad，照它会删消息、记哈希，故按正常处理。
 	if out.IsAd && out.Kind == "none" {
 		out.IsAd = false
+	}
+	// 判为正常时处置意见一律作废：不回删、不禁言，只可能给资料放行时长。
+	del, mute := out.Delete, normalizeMute(out.Mute)
+	if !out.IsAd {
+		del, mute = false, muteNone
 	}
 	okHours := 0
 	if !out.IsAd {
@@ -353,11 +445,24 @@ func parseLLMReply(reply aiReply) (adVerdict, string, error) {
 		}
 	}
 	return adVerdict{
-		IsAd: out.IsAd, Confidence: out.Confidence, Kind: out.Kind, Scope: out.Scope,
-		Severity: out.Severity,
-		Reason:   out.Reason, Decider: "llm", Model: reply.Model,
+		IsAd: out.IsAd, Kind: out.Kind, Scope: out.Scope, Severity: out.Severity,
+		// 复判自带处置意见：定档直接照 delete/mute，不再看置信度。
+		Planned: true, Delete: del, Mute: mute,
+		Reason: out.Reason, Decider: "llm", Model: reply.Model,
 		ProfileOKHours: okHours, Evidence: ev, Usage: reply.Usage, Cost: reply.Cost,
 	}, obj, nil
+}
+
+// normalizeMute 把复判给的禁言时长收敛到三档。模型偶尔会写近似值或中文，
+// 认不出的按不禁言处理 —— 宁可漏一次禁言，也不把不能识别的字符串当处罚。
+func normalizeMute(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case muteShort, "5", "5min", "5分钟":
+		return muteShort
+	case muteForever, "permanent", "forever_mute", "永久", "永久禁言":
+		return muteForever
+	}
+	return muteNone
 }
 
 // extractJSONObject 从模型输出中提取首个完整的 JSON 对象。
@@ -416,6 +521,9 @@ func judgeBoth(b *core.Bot, snap *store.Snapshot, st adState,
 	// reason 里：复查的价值正在于让人看见两个模型是否一致。
 	final := llm
 	final.Decider = "systemone+llm"
+	// 初判那一级挂上来，与复判分开落库/展示（见 verdictStage）。
+	stg := so.stage("so")
+	final.Prior = &stg
 	final.Cost = llm.Cost + so.Cost
 	final.Usage = billing.MergeUsage(llm.Usage, so.Usage)
 	agree := "一致"
@@ -511,9 +619,22 @@ func review(b *core.Bot, snap *store.Snapshot, st adState, prior adVerdict, sysP
 		return prior
 	}
 	llm.Decider = prior.Decider + "+llm"
+	// 初判那一级的原始结论挂上来：定档仍以复判为准，但两级要分开落库与
+	// 展示（见 verdictStage），复判不得把它覆盖掉。
+	stg := prior.stage(initialStageName(prior.Decider))
+	llm.Prior = &stg
 	llm.Cost += prior.Cost
 	llm.Usage = billing.MergeUsage(llm.Usage, prior.Usage)
 	return llm
+}
+
+// initialStageName 给"初判级"结论起 stage 名：systemone 记 so，其余用它自己的
+// Decider（rule:<id> / hash / manual / phash / prewarm_shell …）。
+func initialStageName(decider string) string {
+	if decider == "" || decider == "systemone" {
+		return "so"
+	}
+	return decider
 }
 
 // demoteUnconfirmed 把复判没跑成、初判又没把握的结论降级成未定。
@@ -529,6 +650,8 @@ func demoteUnconfirmed(b *core.Bot, snap *store.Snapshot, v *adVerdict, why stri
 		return false
 	}
 	v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
+	// 处置意见一并作废：结论既已降为未定，就不该再留着 delete/mute。
+	v.Planned, v.Delete, v.Mute = false, false, muteNone
 	v.Reason = "（" + why + "，且初判置信度 " +
 		fmt.Sprintf("%.0f%%", v.Confidence*100) + " 低于采信线，按未定放行）" + v.Reason
 	return true

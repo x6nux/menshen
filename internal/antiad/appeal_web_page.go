@@ -321,8 +321,10 @@ func appealPageDataOf(sh *core.Shared, ap appealRec) map[string]any {
 
 	limits := []map[string]any{}
 	for _, p := range effectivePenalties(sh, ap.BotID, ap.UserID) {
+		r := core.LookupChatRef(sh.Cache.Snap(), p.ChatID)
 		limits = append(limits, map[string]any{
 			"type": p.Type, "chat_id": p.ChatID,
+			"chat": r.Display(), "chat_url": r.URL(),
 			"time":   pageTS(loc, p.At),
 			"reason": core.TruncateRunes(strings.TrimSpace(p.Reason), 400),
 			"text":   core.TruncateRunes(strings.TrimSpace(p.Text), 400),
@@ -406,10 +408,7 @@ func appealPageMessages(sh *core.Shared, ap appealRec, loc *time.Location) []map
 		if err != nil {
 			continue
 		}
-		title := strconv.FormatInt(c.ChatID, 10)
-		if strings.TrimSpace(c.Title) != "" {
-			title = c.Title
-		}
+		ref := core.LookupChatRef(snap, c.ChatID)
 		for rows.Next() {
 			var text string
 			var at int64
@@ -417,7 +416,7 @@ func appealPageMessages(sh *core.Shared, ap appealRec, loc *time.Location) []map
 				continue
 			}
 			out = append(out, map[string]any{
-				"chat_id": c.ChatID, "title": title,
+				"chat_id": c.ChatID, "title": ref.Display(), "chat_url": ref.URL(),
 				"text": core.TruncateRunes(text, appealPageMsgLength),
 				"at":   at, "time": time.Unix(at, 0).In(loc).Format("01-02 15:04"),
 			})

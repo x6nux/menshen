@@ -200,14 +200,15 @@ func showAntiAdLog(b *core.Bot, chatID, msgID, botID int64, page int, all bool) 
 		}
 		// 时刻按 settings.tz_name 呈现：管理员需看到本地时间，UTC 不便于对照。
 		when := time.Unix(at, 0).In(loc).Format("01-02 15:04")
-		// chat_id/ad_kind 都要渲染出来——这个页面是跨所有生效群的全局列表，
-		// 不带群号就看不出命中来自哪个群；ad_kind 是复盘形态时最直接的分类线索。
+		// 群引用与 ad_kind 都要渲染出来——这个页面是跨所有生效群的全局列表，
+		// 不写群名就看不出命中来自哪个群（公开群带链接，点进去直接到群）；
+		// ad_kind 是复盘形态时最直接的分类线索。
 		kindSuffix := ""
 		if kind != "" {
 			kindSuffix = " [" + html.EscapeString(antiad.AdKindLabel(kind)) + "]"
 		}
-		fmt.Fprintf(&sb, "• %s <code>%s</code> #%d 群<code>%d</code> 用户<code>%d</code> %.0f%% %s%s\n  <i>%s</i>\n",
-			mark, when, id, cid, uid, conf*100, html.EscapeString(actionLabel(action)),
+		fmt.Fprintf(&sb, "• %s <code>%s</code> #%d 群%s 用户<code>%d</code> %.0f%% %s%s\n  <i>%s</i>\n",
+			mark, when, id, chatTag(b, cid), uid, conf*100, html.EscapeString(actionLabel(action)),
 			kindSuffix, html.EscapeString(core.TruncateRunes(text, 60)))
 	}
 	// 不查 rows.Err() 会把只扫到一半当成扫完了：拦截记录是合规/复盘的审计面，
@@ -895,8 +896,9 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 				fmt.Sprintf("a:ad:gbl:%d:%d%s", target, page, suffix)}})
 		}
 		for _, chatID := range chatOrder {
-			actionRows = append(actionRows, [][2]string{{"🔓 解除群 " +
-				strconv.FormatInt(chatID, 10) + " 的限制",
+			name := core.TruncateRunes(
+				core.LookupChatRef(b.Cache.Snap(), chatID).Display(), 20)
+			actionRows = append(actionRows, [][2]string{{"🔓 解除群 " + name + " 的限制",
 				fmt.Sprintf("a:ad:lift:%d:%d:%d%s", chatID, target, page, suffix)}})
 		}
 		sb.WriteString("\n")
@@ -944,13 +946,10 @@ func showUserLogs(b *core.Bot, chatID, msgID, uid, target int64, page int, all b
 	b.EditOrSend(chatID, msgID, sb.String(), tg.InlineKB(kb...))
 }
 
-// chatTag 渲染群标签：本 bot 有群配置就带上标题，否则只有 id。
-// 主管理员看的是全平台记录，群里可能属于别的 bot，所以查不到时给 id 就够。
+// chatTag 渲染群标签：群名（公开群带 t.me 链接），查不到群配置时退回数字 id。
+// 主管理员看的是全平台记录，群里可能属于别的 bot，所以全平台查。
 func chatTag(b *core.Bot, chatID int64) string {
-	if c, ok := b.Cache.Snap().ChatConf(b.BotID(), chatID); ok && c.Title != "" {
-		return fmt.Sprintf("<code>%d</code>（%s）", chatID, html.EscapeString(c.Title))
-	}
-	return fmt.Sprintf("<code>%d</code>", chatID)
+	return core.LookupChatRef(b.Cache.Snap(), chatID).HTML()
 }
 
 // managedBotsClause 返回按权限过滤 antiad_log 的 SQL 片段与参数：

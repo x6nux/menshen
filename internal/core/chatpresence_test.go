@@ -128,7 +128,7 @@ func TestSweepUnconfiguredChatsKeepsConfigured(t *testing.T) {
 	b.NoteChatPresence(memberUpdate(-100999, "supergroup", "member", true,
 		time.Now().Add(-2*time.Hour).Unix()))
 	// 挂到名下（新群默认演练、这里未启用也无所谓）：配置过就不该退。
-	if err := sh.AddChat(b.BotID(), -100999, "测试群"); err != nil {
+	if err := sh.AddChat(b.BotID(), -100999, "测试群", ""); err != nil {
 		t.Fatal(err)
 	}
 

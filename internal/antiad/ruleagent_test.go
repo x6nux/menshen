@@ -1336,7 +1336,7 @@ func TestRuleAgentTargetRecord(t *testing.T) {
 		t.Errorf("不应报错：%v", st["error"])
 	}
 	body, _ := firstBody.Load().(string)
-	for _, want := range []string{"指定记录模式", "办理贷款加微信 vx123", "系统预取的覆盖空白清单"} {
+	for _, want := range []string{"Designated-record mode", "办理贷款加微信 vx123", "Pre-fetched coverage-gap list"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("启动消息应包含 %q，实际首轮请求：%s", want, body)
 		}

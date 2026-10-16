@@ -123,8 +123,8 @@ func StartJoinBackfill(b *core.Bot, chatID int64, username string, force bool) (
 			return
 		}
 		for _, admin := range b.AlertTargets() {
-			b.Send(admin, "🗂 <b>历史成员入群时间已补全</b>\n\n群 <code>"+
-				strconv.FormatInt(chatID, 10)+"</code>：补上 <b>"+
+			b.Send(admin, "🗂 <b>历史成员入群时间已补全</b>\n\n群 "+
+				chatRef(b.Cache.Snap(), chatID)+"：补上 <b>"+
 				strconv.Itoa(filled)+"</b> 条。\n<i>年龄轴（新人/老人分档）对这些人现在生效了。</i>",
 				nil)
 		}

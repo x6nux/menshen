@@ -404,7 +404,8 @@ func miniState(sh *core.Shared, w http.ResponseWriter, uid int64, username strin
 		for _, c := range snap.ChatsOf(rec.BotID) {
 			chats = append(chats, map[string]any{
 				"bot_id": rec.BotID, "chat_id": c.ChatID, "title": c.Title,
-				"enabled": c.Enabled, "dryrun": c.Dryrun,
+				"username": c.Username,
+				"enabled":  c.Enabled, "dryrun": c.Dryrun,
 				"group_alert": c.GroupAlert, "punish": c.Punish,
 			})
 		}
@@ -643,10 +644,14 @@ func miniWhitelistRows(sh *core.Shared, uid int64, main bool) []map[string]any {
 		if !main && w.BotID != 0 && !sh.CanManageBot(uid, w.BotID) {
 			continue
 		}
-		out = append(out, map[string]any{
+		m := map[string]any{
 			"bot_id": w.BotID, "chat_id": w.ChatID, "user_id": w.UserID,
 			"expires_at": w.ExpiresAt, "source": w.Source, "by_uid": w.ByUID,
-		})
+		}
+		if w.ChatID != 0 {
+			addChatRef(m, sh, w.ChatID)
+		}
+		out = append(out, m)
 	}
 	return out
 }
@@ -784,8 +789,8 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			miniErr(w, http.StatusBadRequest, "该 bot 未在运行，无法补全")
 			return
 		}
-		title := chatTitle(sh, botID, chatID)
-		started, why := antiad.StartJoinBackfill(inst, chatID, title, true)
+		_, username := chatMeta(sh, botID, chatID)
+		started, why := antiad.StartJoinBackfill(inst, chatID, username, true)
 		if !started {
 			if why == "" {
 				miniErr(w, http.StatusBadRequest, "补全任务已在运行，稍等结果")
@@ -801,7 +806,8 @@ func miniChat(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 	switch action {
 	case "add", "update":
 		if _, ok := sh.Cache.Snap().ChatConf(botID, chatID); !ok {
-			if err := sh.AddChat(botID, chatID, chatTitle(sh, botID, chatID)); err != nil {
+			title, username := chatMeta(sh, botID, chatID)
+			if err := sh.AddChat(botID, chatID, title, username); err != nil {
 				miniFail(w, err, "添加失败")
 				return
 			}
@@ -1301,7 +1307,7 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 			miniFail(w, err, "测试失败")
 			return
 		}
-		miniOK(w, map[string]any{"test": miniRuleTestJSON(res)})
+		miniOK(w, map[string]any{"test": miniRuleTestJSON(sh, res)})
 	case "save":
 		id, res, err := antiad.SaveRule(sh, uid, id, antiad.RuleInput{
 			Name: miniStr(body, "name"), Pattern: miniStr(body, "pattern"),
@@ -1310,7 +1316,7 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 			miniFail(w, err, "保存失败")
 			return
 		}
-		miniOK(w, map[string]any{"ok": true, "id": id, "test": miniRuleTestJSON(res)})
+		miniOK(w, map[string]any{"ok": true, "id": id, "test": miniRuleTestJSON(sh, res)})
 	case "toggle", "enforce", "remove":
 		var err error
 		switch miniStr(body, "action") {
@@ -1354,15 +1360,17 @@ func miniRules(sh *core.Shared, w http.ResponseWriter, uid int64, body map[strin
 }
 
 // miniRuleTestJSON 把测试结果转成前端契约形状。
-func miniRuleTestJSON(r antiad.RuleTestResult) map[string]any {
+func miniRuleTestJSON(sh *core.Shared, r antiad.RuleTestResult) map[string]any {
 	samples := func(list []antiad.RuleSample) []map[string]any {
 		out := make([]map[string]any, 0, len(list))
 		for _, s := range list {
-			out = append(out, map[string]any{
+			m := map[string]any{
 				"id": s.ID, "verdict": s.Verdict, "action": s.Action,
 				"kind": s.Kind, "user_id": s.UserID, "chat_id": s.ChatID,
 				"created_at": s.CreatedAt, "text": s.Text,
-			})
+			}
+			addChatRef(m, sh, s.ChatID)
+			out = append(out, m)
 		}
 		return out
 	}
@@ -1405,6 +1413,14 @@ func miniLogRow(out map[string]any, id, botID, chatID, userID, msgID, cost, at i
 	out["cost_text"] = billing.FormatUSDFine(cost)
 	out["created_at"] = at
 	out["view_url"] = viewURL
+}
+
+// addChatRef 给一条 JSON 记录补上群展示名与公开群链接，供前端把裸 chat_id
+// 渲染成群引用（公开群带 t.me 链接，私有群只有群名）。
+func addChatRef(out map[string]any, sh *core.Shared, chatID int64) {
+	ref := core.LookupChatRef(sh.Cache.Snap(), chatID)
+	out["chat"] = ref.Display()
+	out["chat_url"] = ref.URL()
 }
 
 // mainBotID 返回主 bot 的记录号；没配主 bot 时返回 0。
@@ -1470,11 +1486,13 @@ func miniUser(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid int64
 	rows := antiad.LoadUserLogs(sh, scopeBot, target, !all, 20, int((page-1)*20))
 	logs := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		logs = append(logs, map[string]any{
+		m := map[string]any{
 			"id": r.ID, "chat_id": r.ChatID, "verdict": r.Verdict,
 			"confidence": r.Conf, "kind": r.Kind, "action": r.Action,
 			"reason": r.Reason, "text": r.Text, "created_at": r.At,
-		})
+		}
+		addChatRef(m, sh, r.ChatID)
+		logs = append(logs, m)
 	}
 	miniOK(w, map[string]any{
 		"user_id": target, "name": d.Name, "username": d.Username, "bio": d.Bio,
@@ -1573,6 +1591,7 @@ func miniLogs(sh *core.Shared, w http.ResponseWriter, uid int64, body map[string
 			miniLogRow(m, id, botID, chatID, userID, msgID, cost, at,
 				verdict, kind, action, reason, text, decider, conf,
 				antiad.LogViewURL(sh, id))
+			addChatRef(m, sh, chatID)
 			out = append(out, m)
 		}
 	}
@@ -1603,6 +1622,7 @@ func miniLogDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body map[s
 	miniLogRow(out, lid, botID, chatID, userID, msgID, cost, at,
 		verdict, kind, action, reason, text, decider, conf,
 		antiad.LogViewURL(sh, lid))
+	addChatRef(out, sh, chatID)
 	miniOK(w, out)
 }
 
@@ -1779,8 +1799,9 @@ func miniAppealDetail(sh *core.Shared, w http.ResponseWriter, uid int64, body ma
 		for rd.Next() {
 			var chatID, by, rat int64
 			if rd.Scan(&chatID, &by, &rat) == nil {
-				redeems = append(redeems, map[string]any{
-					"chat_id": chatID, "by_uid": by, "at": rat})
+				m := map[string]any{"chat_id": chatID, "by_uid": by, "at": rat}
+				addChatRef(m, sh, chatID)
+				redeems = append(redeems, m)
 			}
 		}
 		rd.Close()

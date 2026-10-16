@@ -126,11 +126,7 @@ func renderAdSummary(b *core.Bot, from, to int64) (string, map[string]any, bool)
 	var btnRow [][2]string
 	for i, h := range list {
 		if i == 0 || h.ChatID != lastChat {
-			title := strconv.FormatInt(h.ChatID, 10)
-			if c, ok := snap.ChatConf(id, h.ChatID); ok && c.Title != "" {
-				title = c.Title
-			}
-			fmt.Fprintf(&sb, "\n<b>%s</b>\n", html.EscapeString(title))
+			fmt.Fprintf(&sb, "\n<b>%s</b>\n", chatRef(snap, h.ChatID))
 			lastChat = h.ChatID
 		}
 		if h.Verdict == "clean" {
@@ -184,10 +180,19 @@ func RenderAdRecord(b *core.Bot, r AdLogRow) (string, map[string]any) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "📋 <b>记录 #%d</b>\n\n", r.ID)
 	fmt.Fprintf(&sb, "时间: %s\n", time.Unix(r.CreatedAt, 0).In(loc).Format("01-02 15:04"))
-	fmt.Fprintf(&sb, "群组: <code>%d</code>\n用户: %s\n", r.ChatID, userLink(r.UserID))
-	fmt.Fprintf(&sb, "判定: %s · %s · 置信度 %.0f%% · 来源 %s\n",
-		map[string]string{"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[r.Verdict],
-		html.EscapeString(adKindLabel(r.Kind)), r.Confidence*100, html.EscapeString(r.Decider))
+	fmt.Fprintf(&sb, "群组: %s\n用户: %s\n",
+		chatRef(b.Cache.Snap(), r.ChatID), userLink(r.UserID))
+	// 置信度取初判那级的（复判不给置信度）；复判给的是处置意见，另起一段。
+	line := fmt.Sprintf("判定: %s · %s · 来源 %s", map[string]string{
+		"ad": "广告", "clean": "正常", "error": "失败", "skipped": "未送检"}[r.Verdict],
+		adKindLabel(r.Kind), r.Decider)
+	if conf := recordConfidence(r); conf > 0 {
+		line += fmt.Sprintf(" · 置信度 %.0f%%", conf*100)
+	}
+	if d := recordDecision(r); d != "" {
+		line += " · 复判 " + d
+	}
+	fmt.Fprintf(&sb, "%s\n", html.EscapeString(line))
 	fmt.Fprintf(&sb, "处置: %s\n", html.EscapeString(ActionLabel(r.Action)))
 	// 原文与理由直接给管理员看：记录卡片的用途就是让他当场判断，
 	// 再让人去网页上翻一遍是把判断成本推给了他。

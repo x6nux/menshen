@@ -28,15 +28,23 @@ type adAction struct {
 	// 不单列动作名：流水里仍记 deleted_muted，另在理由里注明（见 logNote）。
 	Purge bool
 	// Temp 是复判前的临时禁言，时长 tempMute（见 judgeAndAct）。
-	Temp  bool
-	Alert bool
-	Name  string // none / alerted / deleted / muted / deleted_muted / deleted_banned
+	Temp bool
+	// MuteFor 是本动作的禁言时长：>0 为限时（如复判给的 5 分钟），
+	// mutePermanent 为永久；0 表示未指定，按本群 antiad_mute_minutes（人工
+	// 与旧路径沿用）。Temp 为真时用 tempMute，忽略本字段。
+	MuteFor time.Duration
+	Alert   bool
+	Name    string // none / alerted / deleted / muted / deleted_muted / deleted_banned
 }
 
 // tempMute 是复判前临时禁言的时长。必须长过复判的最坏耗时（aiTotalBudget），
 // 否则正式禁言还没落地它就到期了；TG 把不足 30 秒的当成永久。
 // 给到 5 分钟：复判最坏 45 秒，但上游抖动时会重试，余量要留足。
 const tempMute = 5 * time.Minute
+
+// mutePermanent 是广告 Action.MuteFor 的永久禁言取值，区别于 0（未指定、
+// 按本群 antiad_mute_minutes）。ApplyAction 把它换算成"不带 until_date"。
+const mutePermanent time.Duration = -1
 
 // ---- 复判期的临时禁言 ----
 //
@@ -135,7 +143,9 @@ func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bo
 	// 短禁言也是禁言，同样要过禁言置信度下限：低置信的结论只删不禁，
 	// 没必要让一个可能清白的人 5 分钟发不了言。默认档位本就 ≥75%，
 	// 这条只在按模型结论定档把低置信结论放进删除档时才起作用。
-	if act.Name == "deleted" &&
+	// 复判（Planned）已自己给了禁言意见，delete-only 就是它明说不禁言，
+	// 不再附短禁言。
+	if act.Name == "deleted" && !v.Planned &&
 		snap.BotSettingInt(b.BotID(), "antiad_short_mute", 0) == 1 &&
 		!belowMuteConf(b, snap, v) {
 		act.Short = true
@@ -220,10 +230,15 @@ func ApplyAction(b *core.Bot, m *tg.Message, act adAction, dryrun bool) string {
 		}
 	}
 	if act.Mute {
-		minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
-		d := time.Duration(minutes) * time.Minute
-		if act.Temp {
+		d := act.MuteFor
+		switch {
+		case act.Temp:
 			d = tempMute
+		case d == mutePermanent:
+			d = 0 // 不带 until_date 即永久
+		case d == 0:
+			minutes := b.Cache.Snap().BotSettingInt(b.BotID(), "antiad_mute_minutes", 1440)
+			d = time.Duration(minutes) * time.Minute
 		}
 		if s := muteOrExplain(b, m.Chat.ID, m.From.ID, d); s != "" {
 			notes = append(notes, s)
@@ -477,14 +492,19 @@ const gbanSevereLine = 2.0
 // gbanWorthy 报告这次判定是否达到进入联合封禁名单的门槛。
 //
 // 联合封禁会把人从所有接入群一起移出，比单群禁言重得多，所以除了广告且
-// 要罚之外还要一条独立的证据线：按置信度分档时禁言档本身就意味着过了
-// 处置线；按模型结论定档（antiad_bool_verdict）时置信度不参与档位，必须
-// 把这条线单独补回来 —— 否则低置信的误报也会把人全平台封禁。
+// 要罚之外还要一条独立的证据线：
+//   - 复判（Planned）给了处置意见时，"永久禁言"本身就是这条线（模型明确
+//     认定为惯犯/高危害）；
+//   - 初判/本地结论按置信度硬线（antiad_act_hard）。
+//
+// 危害度达到 gbanSevereLine 也单独够格。
 func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
-	hard := float64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
-	confHigh := v.Confidence*100 >= hard
+	hard := v.Mute == muteForever
+	if !v.Planned {
+		hard = v.Confidence*100 >= float64(snap.BotSettingInt(b.BotID(), "antiad_act_hard", 90))
+	}
 	severe := v.Severity >= gbanSevereLine
-	if !confHigh && !severe {
+	if !hard && !severe {
 		return false
 	}
 	// 账号级结论（资料本身就是广告号）再抬一道门槛：它的证据全在昵称、
@@ -492,7 +512,7 @@ func gbanWorthy(b *core.Bot, snap *store.Snapshot, v adVerdict) bool {
 	// 封禁，误伤一个正常用户的代价远大于漏掉一个广告号；这一档只认真有
 	// 把握的。
 	if v.Scope == "account" {
-		return confHigh && severe
+		return hard && severe
 	}
 	return true
 }

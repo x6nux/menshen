@@ -43,29 +43,38 @@ func miniFail(w http.ResponseWriter, err error, generic string) {
 	miniErr(w, http.StatusInternalServerError, generic)
 }
 
-// chatTitle 用负责该群的 bot 查群标题；实例不在运行或查询失败返回空串。
-// 查不到不算失败——bot 还没进群就添加 chat_id 是合法的使用顺序。
+// chatMeta 用负责该群的 bot 查群标题与公开 @ 名；实例不在运行或查询失败
+// 返回空串。查不到不算失败——bot 还没进群就添加 chat_id 是合法的使用顺序。
 // 不能用面板所在的 bot 查：那通常是不入群的主 bot，永远查不到。
-func chatTitle(sh *core.Shared, botID, chatID int64) string {
+func chatMeta(sh *core.Shared, botID, chatID int64) (title, username string) {
 	if sh.Reg == nil {
-		return ""
+		return "", ""
 	}
 	b, ok := sh.Reg.LookupID(botID)
 	if !ok {
-		return ""
+		return "", ""
 	}
 	raw, err := b.TG.Call("getChat", map[string]any{"chat_id": chatID})
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	var resp struct {
 		OK     bool `json:"ok"`
 		Result struct {
-			Title string `json:"title"`
+			Title    string `json:"title"`
+			Username string `json:"username"`
 		} `json:"result"`
 	}
 	if json.Unmarshal(raw, &resp) != nil || !resp.OK {
-		return ""
+		return "", ""
 	}
-	return resp.Result.Title
+	return resp.Result.Title, resp.Result.Username
+}
+
+// chatRef 渲染一个群的展示引用（群名，公开群带 t.me 链接）。
+func chatRef(sh *core.Shared, botID, chatID int64) core.ChatRef {
+	if c, ok := sh.Cache.Snap().ChatConf(botID, chatID); ok {
+		return core.ChatRef{ID: chatID, Title: c.Title, Username: c.Username}
+	}
+	return core.LookupChatRef(sh.Cache.Snap(), chatID)
 }

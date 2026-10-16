@@ -431,8 +431,8 @@ func TestPrewarmPromptsShareClauses(t *testing.T) {
 	for name, p := range map[string]string{
 		"prewarm": prewarmInstructions, "prewarmLLM": prewarmLLMPrompt,
 	} {
-		for _, want := range []string{"prewarm_check", "photo_known", "业务清单",
-			"没有标价也算", "known_ad_patterns", "不是此人的资料"} {
+		for _, want := range []string{"prewarm_check", "photo_known", "business list",
+			"even without", "known_ad_patterns", "not this person's profile"} {
 			if !strings.Contains(p, want) {
 				t.Errorf("%s 提示词缺少 %q", name, want)
 			}

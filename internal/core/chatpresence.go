@@ -160,8 +160,8 @@ func (b *Bot) SweepUnconfiguredChats(now time.Time) {
 // 故障。频次天然受限，同一个群要再触发需有人再把它拉进去并等满一个
 // 等待期。
 func (b *Bot) notifyAutoLeave(chatID int64, minutes int64) {
-	msg := "ℹ️ 本 bot 已自动退出群组 <code>" +
-		strconv.FormatInt(chatID, 10) + "</code>\n\n" +
+	msg := "ℹ️ 本 bot 已自动退出群组 " +
+		LookupChatRef(b.Cache.Snap(), chatID).HTML() + "\n\n" +
 		"加入后 <b>" + strconv.FormatInt(minutes, 10) + " 分钟</b>内未在面板把它配置到该群。" +
 		"如果这是你的群，请先在面板把群添加到本 bot 名下，再把 bot 拉回群并设为管理员。"
 	for _, admin := range b.AlertTargets() {

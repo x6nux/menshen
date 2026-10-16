@@ -13,7 +13,7 @@ func TestMessageAdHashDeletesDirectly(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	soN, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
-		llmReply(true, 0.95, "scam", "message"))
+		llmReplyDec(true, "scam", "message", true, muteForever))
 
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 1, "日入过万 加V"))
 	waitIdle(t, b)
@@ -37,8 +37,12 @@ func TestMessageAdHashDeletesDirectly(t *testing.T) {
 		t.Error("命中哈希后禁言应交给复判模型决定")
 	}
 	muteCalls := fake.Calls("restrictChatMember")
-	if len(muteCalls) != mute0+1 || untilOf(muteCalls[len(muteCalls)-1]) < 23*3600 {
+	if len(muteCalls) != mute0+1 {
 		t.Error("复判确认后应正式禁言（且命中时不先临时禁言）")
+	}
+	if _, ok := muteCalls[len(muteCalls)-1]["until_date"]; ok {
+		t.Errorf("复判给的是永久禁言，不该带 until_date：%v",
+			muteCalls[len(muteCalls)-1]["until_date"])
 	}
 	_, action, reason := logRow(t, b)
 	if action != "deleted_muted" || !strings.Contains(reason, "内容相同") {

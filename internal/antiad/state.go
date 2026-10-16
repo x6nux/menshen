@@ -194,13 +194,61 @@ func buildProfile(b *core.Bot, m *tg.Message, gm groupMember, now int64) senderP
 	return p
 }
 
+// sanitized 返回把所有文本字段里的不可见字符剥掉的副本。送检载荷与证据
+// 核对语料都用它，保证模型看到的文本与核对的文本是同一份 —— 否则模型
+// 摘的是归一化后的原文，核对却拿未归一化的语料去比，正确结论会被打回
+// （见 sanitizeVisible）。
+//
+// 只碰不可见字符，不动空白的落点，也不做形近字还原：那是模型按提示词
+// 自行还原的事，程序化替换会误伤正常文本。
+func (st adState) sanitized() adState {
+	st.Chat.Title = sanitizeVisible(st.Chat.Title)
+	st.Message.Text = sanitizeVisible(st.Message.Text)
+	if st.Quoted != nil {
+		q := *st.Quoted
+		q.Text, q.From = sanitizeVisible(q.Text), sanitizeVisible(q.From)
+		st.Quoted = &q
+	}
+	st.Sender = st.Sender.sanitized()
+	for i := range st.RecentContext {
+		st.RecentContext[i].Name = sanitizeVisible(st.RecentContext[i].Name)
+		st.RecentContext[i].Text = sanitizeVisible(st.RecentContext[i].Text)
+	}
+	for i := range st.ReviewHistory {
+		st.ReviewHistory[i].Name = sanitizeVisible(st.ReviewHistory[i].Name)
+		st.ReviewHistory[i].Text = sanitizeVisible(st.ReviewHistory[i].Text)
+	}
+	for i := range st.MatchedRules {
+		st.MatchedRules[i].Name = sanitizeVisible(st.MatchedRules[i].Name)
+		st.MatchedRules[i].Category = sanitizeVisible(st.MatchedRules[i].Category)
+		st.MatchedRules[i].Note = sanitizeVisible(st.MatchedRules[i].Note)
+	}
+	return st
+}
+
+// sanitized 返回资料里各文本字段剥掉不可见字符的副本（见 adState.sanitized）。
+func (p senderProfile) sanitized() senderProfile {
+	p.Username = sanitizeVisible(p.Username)
+	p.FirstName = sanitizeVisible(p.FirstName)
+	p.LastName = sanitizeVisible(p.LastName)
+	p.Bio = sanitizeVisible(p.Bio)
+	for i := range p.BioLinks {
+		p.BioLinks[i].Handle = sanitizeVisible(p.BioLinks[i].Handle)
+		p.BioLinks[i].Title = sanitizeVisible(p.BioLinks[i].Title)
+		p.BioLinks[i].About = sanitizeVisible(p.BioLinks[i].About)
+	}
+	return p
+}
+
 // buildState 组装送检载荷。recent_context 取自本人留底并排除当前这条，
 // 所以当前消息先留底再调用它是安全的（HandleGroupMessage 正是如此）。
 func buildState(b *core.Bot, snap *store.Snapshot, m *tg.Message, p senderProfile) adState {
 	text := msgText(m)
 	st := adState{
 		Message: adMessageInfo{
-			Text:        core.TruncateRunes(text, adStateTextLimit),
+			// 先剥不可见字符再截断：否则攻击者用几千个零宽字符把真实
+			// 载荷顶出 2000 字上限之外，模型就看不到它了。
+			Text:        core.TruncateRunes(sanitizeVisible(text), adStateTextLimit),
 			HasMedia:    hasMediaCarrier(m),
 			IsForwarded: len(m.ForwardOrigin) > 0,
 			IsEdited:    m.EditDate != 0,

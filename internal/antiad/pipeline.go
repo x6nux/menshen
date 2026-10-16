@@ -61,11 +61,17 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	if !active {
 		return
 	}
-	// 标题只在添加群那一刻抓过；先加配置、后把 bot 拉进群的群标题是空的。
-	// 收到消息说明 bot 现在能看到它了，按群限频补一次（失败下一条再试）。
-	if conf.Title == "" && b.AdLimits.Allow(fmt.Sprintf("chat:title:%d", conf.ChatID), 1) {
-		chatID := conf.ChatID
-		b.AdSubmit(func() { b.RefreshChatTitle(chatID) })
+	// 群标题与公开 @ 名只在添加群那一刻抓过；先加配置、后把 bot 拉进群的群
+	// 两者都是空的。收到消息说明 bot 现在能看到它了：消息本身带着这两个
+	// 字段，直接写回即可（不花 getChat）；消息里没有标题时退回按群限频查一次。
+	if conf.Title == "" || (conf.Username == "" && m.Chat.Username != "") {
+		chatID, title, uname := conf.ChatID, m.Chat.Title, m.Chat.Username
+		switch {
+		case title != "" || uname != "":
+			b.AdSubmit(func() { b.SetChatMeta(chatID, title, uname) })
+		case conf.Title == "" && b.AdLimits.Allow(fmt.Sprintf("chat:title:%d", chatID), 1):
+			b.AdSubmit(func() { b.RefreshChatMeta(chatID) })
+		}
 	}
 	edited := m.EditDate != 0
 

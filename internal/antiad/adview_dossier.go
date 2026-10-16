@@ -103,19 +103,9 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		data.Bot = strconv.FormatInt(ap.BotID, 10)
 	}
 
-	// 群标题：给资料里的 chat_id 配上人看得懂的名字，配置删了就只有 ID。
-	titles := map[int64]string{}
-	for _, c := range snap.ChatsOf(ap.BotID) {
-		if t := strings.TrimSpace(c.Title); t != "" {
-			titles[c.ChatID] = t
-		}
-	}
-	label := func(id int64) string {
-		if t, ok := titles[id]; ok {
-			return t
-		}
-		return strconv.FormatInt(id, 10)
-	}
+	// 群引用：给资料里的 chat_id 配上人看得懂的名字（公开群还带链接），
+	// 配置删了就只有 ID。全平台查，本 bot 配置被删但别的 bot 还在也能命中。
+	ref := func(id int64) core.ChatRef { return core.LookupChatRef(snap, id) }
 
 	// 判定时记下的昵称。广告号被处置后常改名，现场查（也多半查不到：
 	// 没私聊过）没有意义。
@@ -184,7 +174,8 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 		case "gban_own":
 			v.Chat = "本 bot 名下群组"
 		default:
-			v.Chat = label(p.ChatID)
+			r := ref(p.ChatID)
+			v.Chat, v.ChatURL = r.Display(), r.URL()
 		}
 		active[penaKey(p.Type, p.ChatID, p.At)] = true
 		data.Limits = append(data.Limits, v)
@@ -210,7 +201,8 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 					continue
 				}
 				p.Label = penaltyLabel(p.Type)
-				p.Chat = label(p.ChatID)
+				r := ref(p.ChatID)
+				p.Chat, p.ChatURL = r.Display(), r.URL()
 				p.Time = formatTS(sh, p.At)
 				p.Text = clip(p.Text, dossierTextLen)
 				p.Reason = clip(p.Reason, dossierNoteLen)
@@ -263,9 +255,11 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 			if rows.Scan(&chatID, &msgID, &m.Text, &m.At) != nil {
 				continue
 			}
-			if c := label(chatID); c != last {
+			r := ref(chatID)
+			if c := r.Display(); c != last {
 				m.Chat, last = c, c
 			}
+			m.ChatURL = r.URL()
 			m.Time = formatTS(sh, m.At)
 			m.Text = clip(m.Text, dossierTextLen)
 			m.Mark = marks[[2]int64{chatID, msgID}]
@@ -289,7 +283,8 @@ func loadAppealDossier(sh *core.Shared, ap appealRec, data *appealViewData) {
 			var l appealViewLog
 			if rows.Scan(&l.ID, &l.ChatID, &l.Verdict, &l.Conf, &l.Action,
 				&l.Reason, &l.At) == nil {
-				l.Chat = label(l.ChatID)
+				r := ref(l.ChatID)
+				l.Chat, l.ChatURL = r.Display(), r.URL()
 				l.Time = formatTS(sh, l.At)
 				l.ActionLabel = ActionLabel(l.Action)
 				l.Reason = clip(l.Reason, dossierNoteLen)

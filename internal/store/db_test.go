@@ -87,6 +87,7 @@ func TestMigrateOldDB(t *testing.T) {
 	}
 	defer s.Close()
 	for _, c := range [][2]string{{"bot_chats", "punish"},
+		{"bot_chats", "username"},
 		{"group_members", "whitelisted"}, {"group_messages", "media_group"},
 		{"group_messages", "punished"},
 		{"bots", "is_main"}, {"upstreams", "kind"},
@@ -94,7 +95,8 @@ func TestMigrateOldDB(t *testing.T) {
 		{"join_mutes", "kind"}, {"group_members", "prewarm_checked_at"},
 		{"group_members", "profile_hash"}, {"group_members", "prewarm_next_at"},
 		{"group_members", "prewarm_watch"},
-		{"join_mutes", "shape"}} {
+		{"join_mutes", "shape"},
+		{"antiad_log", "so_verdict"}, {"antiad_log", "llm_verdict"}} {
 		if has, err := hasColumn(s.Write, c[0], c[1]); err != nil || !has {
 			t.Errorf("%s.%s 没有补上（err=%v）", c[0], c[1], err)
 		}

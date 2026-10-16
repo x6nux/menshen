@@ -46,7 +46,7 @@ func TestDeleteFirstThenReview(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	_, llmN := fakeAIWith(t, b, soReply("ad", 0.95, "scam", "message"),
-		llmReply(true, 0.95, "scam", "message"))
+		llmReplyDec(true, "scam", "message", true, muteForever))
 
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "日入过万 私聊"))
 	waitIdle(t, b)
@@ -64,8 +64,9 @@ func TestDeleteFirstThenReview(t *testing.T) {
 	if d := untilOf(mutes[0]); d > int64(tempMute/time.Second)+5 {
 		t.Errorf("第一次应是临时禁言，时长 %d 秒", d)
 	}
-	if d := untilOf(mutes[1]); d < 23*3600 {
-		t.Errorf("复判确认后应是正式禁言，时长 %d 秒", d)
+	// 复判给的是永久禁言：正式那一次不带 until_date。
+	if _, ok := mutes[1]["until_date"]; ok {
+		t.Errorf("复判给永久禁言，正式禁言不该带 until_date：%v", mutes[1]["until_date"])
 	}
 	if n := countRows(t, b, `SELECT COUNT(*) FROM antiad_log`); n != 1 {
 		t.Errorf("一条消息只该落一条流水，实际 %d", n)
@@ -461,9 +462,9 @@ func TestShortMuteOnDeletedTier(t *testing.T) {
 	}
 }
 
-// TestBoolVerdictMode：打开按模型结论定档后，只看模型的是/否结论，
-// 不看置信度——同一条广告的置信度会波动，卡硬阈值会让它时而只删、时而
-// 禁言。老人仍只删不禁。
+// TestBoolVerdictMode：复判按结论与处置意见定档，不看置信度——同一条广告的
+// 置信度会波动，卡硬阈值会让它时而只删、时而禁言。复判给永久禁言时新人禁言、
+// 老人（普通广告）仍只删不禁。
 func TestBoolVerdictMode(t *testing.T) {
 	b, fake := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
@@ -474,19 +475,19 @@ func TestBoolVerdictMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, llmN := fakeAIWith(t, b, soReplySev("ad", 0.88, "promo", "message", 1),
-		llmReply(true, 0.82, "promo", "message"))
+		llmReplyDec(true, "promo", "message", true, muteForever))
 
-	// 新人：置信度只有 82%（低于置信度阈值）。
+	// 新人：复判只给 82% 那类波动置信度不再是定档依据，处置意见才作数。
 	HandleGroupMessage(b, testutil.GroupMsg(-100, 42, 7, "探花 9000 一单"))
 	waitIdle(t, b)
 
 	mutes := fake.Calls("restrictChatMember")
 	if len(mutes) == 0 {
-		t.Fatal("bool 模式下模型判为广告就该禁言，实际一次都没禁")
+		t.Fatal("复判判为广告并给永久禁言时就该禁言，实际一次都没禁")
 	}
 	last := mutes[len(mutes)-1]
 	if _, has := last["until_date"]; has {
-		t.Errorf("mute_hours=0 时该是永久禁言，不该带 until_date: %v", last["until_date"])
+		t.Errorf("复判给的是永久禁言，不该带 until_date: %v", last["until_date"])
 	}
 	if _, action, _ := logRow(t, b); action != "deleted_muted" {
 		t.Errorf("动作应为 deleted_muted，得到 %q", action)

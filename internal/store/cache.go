@@ -236,9 +236,12 @@ func (r *BotRec) Label() string {
 
 // BotChat 是 bot_chats 的一行：某个 bot 在某个群的行为配置。
 type BotChat struct {
-	BotID      int64
-	ChatID     int64
-	Title      string
+	BotID  int64
+	ChatID int64
+	Title  string
+	// Username 是公开群的 @ 名（私有群为空），用来把群引用渲染成可点的
+	// t.me 链接。判定流水、告警与面板都靠它。
+	Username   string
 	Enabled    bool
 	Dryrun     bool
 	GroupAlert bool
@@ -727,7 +730,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 		return err
 	}
 
-	rows, err = q.Query(`SELECT bot_id,chat_id,title,enabled,dryrun,
+	rows, err = q.Query(`SELECT bot_id,chat_id,title,username,enabled,dryrun,
 		group_alert,punish,created_at FROM bot_chats`)
 	if err != nil {
 		return err
@@ -735,7 +738,7 @@ func (c *Cache) loadTenancy(snap *Snapshot, q rowQueryer) error {
 	for rows.Next() {
 		var bc BotChat
 		var en, dry, ga int64
-		if err := rows.Scan(&bc.BotID, &bc.ChatID, &bc.Title, &en, &dry, &ga,
+		if err := rows.Scan(&bc.BotID, &bc.ChatID, &bc.Title, &bc.Username, &en, &dry, &ga,
 			&bc.Punish, &bc.CreatedAt); err != nil {
 			rows.Close()
 			return err

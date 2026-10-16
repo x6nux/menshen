@@ -32,12 +32,45 @@ var evidenceTokenRe = regexp.MustCompile(
 	`(?i)t\.me/[+%]?[a-z0-9_-]+|@[a-z][a-z0-9_]{3,31}|` +
 		`[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,12}|\+?\d{7,}`)
 
-// stripInvisible 去掉空白与零宽字符：广告文案常用零宽字符拆词，
-// 判词引用时通常已剥掉；两边都归一化后才比得上。
+// invisibleRune 报告 r 是不显示、但能被用来拆词或藏载荷的字符：Unicode
+// 格式类（Cf：零宽空格/连接符、双向控制、软连字符、TAG 字符等）与变体
+// 选择符（含补充区 U+E0100–E01EF），外加几个已废弃的填充符。
+//
+// 只判 Cf 不够：变体选择符是 Mn（非空白标记），而实际攻击里用得最多的
+// 正是 U+E00xx 的 TAG 与 U+E01xx 的补充区变体选择符 —— 这两段必须显式列出，
+// 否则它们会原样进入送检载荷与证据核对语料。
+func invisibleRune(r rune) bool {
+	switch {
+	case r >= 0xfe00 && r <= 0xfe0f, // 变体选择符
+		r >= 0xe0100 && r <= 0xe01ef, // 变体选择符补充区
+		r == 0x034f,                  // 组合字素连接符
+		r == 0x180e,                  // 蒙古文元音分隔符
+		r == 0x3164, r == 0xffa0:     // 韩文空白填充符
+		return true
+	}
+	return unicode.Is(unicode.Cf, r)
+}
+
+// sanitizeVisible 剥掉不显示的字符、保留空白：交给 AI 的文本先过它。
+// 攻击者惯用不可见字符拆词（「看简介」写成夹着零宽字符的形态），模型
+// 既可能读漏，也可能在逐字摘录证据时抄错一位，使正确结论被证据门打回。
+// 先归一化再送检，模型看到的是正常文本，摘录也就对得上。
+func sanitizeVisible(s string) string {
+	if !strings.ContainsFunc(s, invisibleRune) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if invisibleRune(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// stripInvisible 去掉空白与不显示的字符：证据核对两侧都归一化后才比得上。
 func stripInvisible(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) || (r >= 0x200b && r <= 0x200f) ||
-			r == 0x2060 || (r >= 0xfe00 && r <= 0xfe0f) {
+		if unicode.IsSpace(r) || invisibleRune(r) {
 			return -1
 		}
 		return r
@@ -60,9 +93,13 @@ func evidenceKey(tok string) string {
 
 // promptEvidenceVocab 是提示词自身出现的 token。判词有时会复述提示词里的
 // 规则原文，这些 token 不构成输入中不存在的证据，核对时跳过。
+//
+// 这里用 sanitizeVisible、不用 stripInvisible：提示词是英文，空格被剥掉后
+// 相邻单词会粘成长串，域名与 t.me 链接会连上前一个词一起被抽出来
+// （checker ping0.cc 抽成 checkerping0.cc），提示词里的 token 就进不了词表。
 var promptEvidenceVocab = func() map[string]bool {
 	m := map[string]bool{}
-	for _, tok := range evidenceTokenRe.FindAllString(stripInvisible(
+	for _, tok := range evidenceTokenRe.FindAllString(sanitizeVisible(
 		soInstructions+llmSystemPrompt+pornClause+payloadClause+evasionClause+
 			fpExamplesClause+bioLinksClause+serviceListClause+patternClause+
 			matchedRulesClause), -1) {
@@ -218,6 +255,9 @@ func evidenceDemote(v adVerdict, misses []string) adVerdict {
 		shown = strings.Join(misses[:3], "；") + " 等"
 	}
 	v.IsAd, v.Kind, v.Scope, v.Severity = false, "none", "message", 0
+	// 结论降为未定，处置意见一并作废：留着只会在展示与区分级 JSON 里
+	// 出现「正常但删消息/禁言」的自相矛盾。
+	v.Planned, v.Delete, v.Mute = false, false, muteNone
 	v.Reason = "（判词与输入不符，按未定放行待人工复核：" + shown + "）" + v.Reason
 	return v
 }

@@ -216,8 +216,10 @@ func joinVerifyPageData(b *core.Bot, sh *core.Shared, rec joinVerifyRec) map[str
 			data["minutes"] = m
 			data["expires"] = rec.CreatedAt + m*60
 		}
-		if c, ok := b.Cache.Snap().ChatConf(b.BotID(), rec.ChatID); ok && strings.TrimSpace(c.Title) != "" {
-			data["chat"] = c.Title
+		ref := core.LookupChatRef(b.Cache.Snap(), rec.ChatID)
+		if ref.Title != "" {
+			data["chat"] = ref.Display()
+			data["chat_url"] = ref.URL()
 		}
 	}
 	if p.name == "cap" {

@@ -146,7 +146,7 @@ func TestLLMStreamAssemblesContentAndUsage(t *testing.T) {
 		sseStart(w)
 		sseChunk(w, `{"choices":[{"delta":{"role":"assistant"}}]}`)
 		sseChunk(w, `{"choices":[{"delta":{"content":"{\"is_ad\":true,"}}]}`)
-		sseChunk(w, `{"choices":[{"delta":{"content":"\"confidence\":0.88,\"kind\":\"scam\",\"reason\":\"流式\",\"evidence\":[\"测试群\"]}"}}]}`)
+		sseChunk(w, `{"choices":[{"delta":{"content":"\"delete\":true,\"mute\":\"forever\",\"kind\":\"scam\",\"reason\":\"流式\",\"evidence\":[\"测试群\"]}"}}]}`)
 		sseChunk(w, `{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30}}`)
 		sseChunk(w, `[DONE]`)
 	})
@@ -155,7 +155,7 @@ func TestLLMStreamAssemblesContentAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("judgeLLM: %v", err)
 	}
-	if !v.IsAd || v.Confidence != 0.88 || v.Kind != "scam" || v.Reason != "流式" {
+	if !v.IsAd || !v.Planned || v.Mute != muteForever || v.Kind != "scam" || v.Reason != "流式" {
 		t.Errorf("拼接后的结论不对: %+v", v)
 	}
 	if v.Usage.PromptTokens != 120 || v.Usage.CompletionTokens != 30 {

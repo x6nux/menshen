@@ -710,8 +710,8 @@ func gbanGuard(b *core.Bot, conf store.BotChat, u *tg.TGUser) bool {
 	verdict := map[string]string{"ban": "被封禁出群", "mute": "被禁言"}[act]
 	for _, admin := range b.AlertTargets() {
 		b.Send(admin, fmt.Sprintf(
-			"🚫 <b>联合封禁拦截</b>\n\n用户 %s (<code>%d</code>) 进入群 <code>%d</code> 时%s。\n原因: %s",
-			html.EscapeString(senderName(u)), u.ID, conf.ChatID, verdict,
+			"🚫 <b>联合封禁拦截</b>\n\n用户 %s (<code>%d</code>) 进入群 %s 时%s。\n原因: %s",
+			html.EscapeString(senderName(u)), u.ID, chatRef(b.Cache.Snap(), conf.ChatID), verdict,
 			html.EscapeString(core.TruncateRunes(rec.Reason, 120))), nil)
 	}
 	return true

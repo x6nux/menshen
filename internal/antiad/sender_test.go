@@ -284,7 +284,7 @@ func TestResolveLinkBotAbout(t *testing.T) {
 // 引导到自己 bot 的联系方式算正常、案底看 ad_known。
 func TestBioLinksClauseKeepsContactNormal(t *testing.T) {
 	for _, want := range []string{
-		"名字本身不构成证据", "有问题联系我的管家", "ad_known", "Chat killer",
+		"name alone is not evidence", "有问题联系我的管家", "ad_known", "Child killer",
 	} {
 		if want == "Chat killer" {
 			want = "Child killer"

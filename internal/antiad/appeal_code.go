@@ -301,14 +301,14 @@ func HandleDirectRedeem(b *core.Bot, m *tg.Message, code string) {
 			if b.Reg == nil {
 				failCount++
 				failNotes = append(failNotes, fmt.Sprintf(
-					"群 %d：bot 未在运行", c.ChatID))
+					"群 %s：bot 未在运行", chatRef(snap, c.ChatID)))
 				continue
 			}
 			inst, live := b.Reg.LookupID(rec.BotID)
 			if !live {
 				failCount++
 				failNotes = append(failNotes, fmt.Sprintf(
-					"群 %d：bot 未在运行", c.ChatID))
+					"群 %s：bot 未在运行", chatRef(snap, c.ChatID)))
 				continue
 			}
 			redeemInChat(inst, ap, c.ChatID, uid)

@@ -109,13 +109,32 @@ func soReplySev(choice string, conf float64, kind, scope string, sev float64) st
 
 // llmReply 造一条大模型（非流式形状）响应。
 //
+// 复判已不再返回置信度，改为直接给处置意见（delete / mute，见 decide.go）。
+// 这里按 conf 挑一档处置，让沿用旧断言的用例语义不变：≥0.9 删 + 永久禁言，
+// ≥0.75 删 + 5 分钟，其余判广告但不动手。需要精确指定处置的用例用 llmReplyDec。
+//
 // 判广告时带上 evidence：取证词是测试群标题，必然出现在判定对象的
 // 语料里（见 evidenceCorpus）。否则一致性门会把所有测试结论降级，
 // 测试的就不是目标链路。门本身的拦截与改正重试由
 // evidence_gate_test.go 用自造响应专测。
 func llmReply(isAd bool, conf float64, kind, scope string) string {
-	inner, _ := json.Marshal(map[string]any{"is_ad": isAd, "confidence": conf,
-		"kind": kind, "scope": scope, "reason": "测试", "evidence": testEvidence})
+	del, mute := false, muteNone
+	if isAd {
+		del = true
+		switch {
+		case conf >= 0.9:
+			mute = muteForever
+		case conf >= 0.75:
+			mute = muteShort
+		}
+	}
+	return llmReplyDec(isAd, kind, scope, del, mute)
+}
+
+// llmReplyDec 造一条带明确处置意见的大模型响应。
+func llmReplyDec(isAd bool, kind, scope string, del bool, mute string) string {
+	inner, _ := json.Marshal(map[string]any{"is_ad": isAd, "kind": kind, "scope": scope,
+		"delete": del, "mute": mute, "reason": "测试", "evidence": testEvidence})
 	out, _ := json.Marshal(map[string]any{"choices": []any{
 		map[string]any{"message": map[string]any{"content": string(inner)}}}})
 	return string(out)

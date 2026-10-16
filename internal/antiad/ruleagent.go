@@ -647,23 +647,27 @@ func ruleAgentKickoff(sh *core.Shared, opts ruleStartOpts) string {
 		if payload, errMsg := ruleAgentRecordPayload(sh, opts.targetLogID); errMsg == "" {
 			raw, _ := json.Marshal(payload)
 			id := strconv.FormatInt(opts.targetLogID, 10)
-			msg += "\n\n【指定记录模式】管理员指定判定流水 #" + id +
-				" 为唯一重点，请针对这条记录的形态总结正则。\n目标记录：" + string(raw) +
-				"\n要求：" +
-				"1) 先 read_record #" + id + " 确认全文与判定信息；" +
-				"2) 用 find 从它特有的关键词与组合特征入手，配合 list_uncovered / list_banned " +
-				"搜索同类记录，确认这是可归纳的形态而不是孤例（同类样本太少时说明情况，不要硬写）；" +
-				"3) 正则只锚定该类形态特有的证据，test_rule 必须 fp=0、undone=0；" +
-				"4) create_rule 的 evidence_ids 必须包含 #" + id + "；" +
-				"5) 完成目标后若还有预算，按覆盖清单继续处理其他类型，否则总结收尾。"
+			msg += "\n\n【Designated-record mode】The admin designated judgement stream #" + id +
+				" as the sole focus; summarize a regex for this record's form.\nTarget record: " + string(raw) +
+				"\nRequirements: " +
+				"1) read_record #" + id + " first to confirm the full text and verdict info; " +
+				"2) use find starting from its distinctive keywords and combinations, together with " +
+				"list_uncovered / list_banned to search for same-class records and confirm this is an " +
+				"inducible form rather than a one-off (explain when there are too few same-class " +
+				"samples; do not force a rule); " +
+				"3) anchor the regex only on evidence specific to that class of form; test_rule must " +
+				"give fp=0 and undone=0; " +
+				"4) create_rule's evidence_ids must include #" + id + "; " +
+				"5) after the target, if budget remains, continue through the coverage list; otherwise " +
+				"summarize and finish."
 		} else {
-			msg += "\n\n【指定记录模式】目标记录读取失败：" + errMsg
+			msg += "\n\n【Designated-record mode】Failed to read the target record: " + errMsg
 		}
 	}
 	if snap := sh.Cache.Snap(); snap != nil {
 		scan := &ruleAgentRun{sh: sh}
 		if work := scan.listUncovered(listUncoveredArgs{Limit: 10}); work != "" {
-			msg += "\n\n【系统预取的覆盖空白清单】\n" + work
+			msg += "\n\n【Pre-fetched coverage-gap list】\n" + work
 		}
 	}
 	return msg
@@ -847,8 +851,8 @@ type testRuleArgs struct {
 type createRuleArgs struct {
 	Name        string  `json:"name" jsonschema:"required,description=规则中文名称，不超过 60 字，说明打击什么广告形态"`
 	Category    string  `json:"category" jsonschema:"description=分类（如 contact/domain/promo），不超过 20 字"`
-	Pattern     string  `json:"pattern" jsonschema:"required,description=RE2 正则；不得匹配空文本；必须通过全库测试（fp=0 且 undone=0）"`
-	Note        string  `json:"note" jsonschema:"description=中文理由与证据说明，不超过 300 字"`
+	Pattern     string  `json:"pattern" jsonschema:"required,description=RE2 正则；不得匹配空文本；每个 | 分支都必须锚定广告载荷（联系方式/链接/价格/收益承诺/招揽话术），不得含仅由日常词汇构成的泛化分支；必须通过全库测试（fp=0 且 undone=0）"`
+	Note        string  `json:"note" jsonschema:"description=中文理由与证据说明：说明打击的形态并点明正则锚定的载荷要素，不超过 300 字"`
 	EvidenceIDs []int64 `json:"evidence_ids" jsonschema:"description=支持该规则的判定流水 id 列表，来自 list_banned / read_record / find"`
 }
 
@@ -1701,34 +1705,38 @@ func ruleSamplesJSON(list []RuleSample, max int) []ruleAgentSample {
 
 // ---- 提示词 ----
 
-// ruleAgentSystemPrompt 是规则发现 Agent 的中文系统提示词。
-const ruleAgentSystemPrompt = `你是「门神」反广告系统的规则发现工程师，任务不是聊天，而是从历史判定流水里总结出高精度的「必封正则规则」。本轮目标是**一次性覆盖所有值得写正则的未覆盖形态**：启动消息里给了一份覆盖空白清单，逐类处理，不要只做一条就收尾。
+// ruleAgentSystemPrompt 是规则发现 Agent 的英文系统提示词（最终总结仍用
+// 中文：它要展示在面板的步骤日志里）。
+const ruleAgentSystemPrompt = `You are the rule-discovery engineer of the "Menshen" anti-ad system. Your task is not chat, but summarizing high-precision "auto-ban regular-expression rules" from the historical judgement stream. This round's goal is to **cover all uncovered forms worth a regex in one pass**: the kickoff message gives a coverage-gap list — work through it class by class and do not stop after a single rule.
 
-可用语料：antiad_log 判定流水。verdict='ad' 是已确认广告，verdict='clean'/'none' 是正常消息，action='undone' 是被管理员撤销的误判。所有结论必须有流水证据，不得凭想象编造正则。
+Available corpus: the antiad_log judgement stream. verdict='ad' is a confirmed ad, verdict='clean'/'none' is a normal message, action='undone' is a false positive an admin reverted. Every conclusion must have stream evidence; never invent a regex from imagination.
 
-硬性约束（违反即创建失败）：
-1. 正则必须是 Go RE2 语法：不支持环视（(?=...)/(?!...)）、反向引用（\1）、条件表达式等 PCRE 特性；
-2. 正则不得匹配空文本（例如 a*、.* 一律不能作为规则，会命中纯图/贴纸消息）；
-3. 不得命中任何正常聊天：create_rule 之前必须 test_rule，且 fp=0、undone=0；
-4. 优先锚定广告特有的组合形态：联系方式（微信/QQ/telegram/whatsapp 等 + 账号串）、招聘/贷款/博彩等话术组合、引流域名与短链形态；不要用「加微信」「看主页」这类正常聊天也会大量出现的裸词；
-5. 一条规则只表达一个形态，不要把互不相关的形态硬塞进一条正则；
-6. 每条规则必须可解释：name 说明打击的广告形态，note 写明理由，evidence_ids 填你实际读过或命中的流水 id；
-7. 建议用 (?i) 忽略大小写，用边界、字符类与量词收紧匹配；宁可少覆盖一点，也不能误封；
-8. 不要创建与现有规则 pattern 完全相同的规则（create_rule 会拒绝）。
+Hard constraints (violating any makes creation fail):
+1. Regexes must be Go RE2 syntax: no lookaround ((?=...)/(?!...)), no backreferences (\1), no conditional expressions or other PCRE features;
+2. A regex must not match empty text (e.g. a*, .* can never be a rule — they would match image/sticker-only messages);
+3. It must not match any normal chat: before create_rule you must run test_rule and get fp=0 and undone=0;
+4. **Payload anchoring is mandatory**: every rule must require an ad-specific payload inside the same match — a contact detail, an invite/group link (t.me/+…, https://…), a price, an earnings/rebate promise, an explicit solicitation line, or an obfuscated ad-keyword combination. Words that only express attitude, benefit or reassurance (成本, 风险, 门槛, 免费, 优惠, 教程, 项目, 领取, 体验, 正规, 靠谱, 无押金, 零风险 …) are ordinary conversation vocabulary, **not** payloads; likewise do not use bare words like 「加微信」「看主页」 that normal chat also uses heavily;
+5. **Every alternation branch must satisfy rule 4 on its own**. Never widen a specific rule by appending a generic synonym as a new branch: a single weak branch is enough to ban an innocent member even when every other branch is precise. After adding a branch, verify that branch alone cannot match ordinary chat; for each branch ask "would an ordinary member ever type these exact words in a normal conversation?" — if yes, that branch must carry the payload too. A rule whose whole match is just a tone word pair (e.g. 无/免/零 + 押金/风险/成本) fails this test and must not be created;
+6. One rule expresses one form; do not cram unrelated forms into one regex;
+7. Every rule must be explainable: name states the ad form it targets, note gives the reason **and names the payload element the regex anchors on**, evidence_ids lists the stream ids you actually read or that matched;
+8. Prefer (?i) for case-insensitivity, and tighten matching with boundaries, character classes and quantifiers; better to cover a bit less than to false-positive;
+9. **fp=0 is necessary but not sufficient**: the corpus is only this service's judgement stream — only the normal messages that happened to be recorded before you tested — and group writing keeps changing. Never conclude "fp=0, therefore safe"; a rule is acceptable only when the *shape itself* cannot plausibly occur in ordinary chat. Prefer the narrow, high-signal form over the broad one;
+10. **Do not build a rule out of a bare name, sticker-pack name, platform name, ticker or internal label** (a sticker-pack id, "Bitget VIP", a stock symbol, or a structural marker another component inserted such as "类型: promo" / "［冒用国家领导人］"): members invoke sticker packs, discuss platforms and quote these freely, and such markers can themselves be wrong. Anchor on the words the sender actually wrote, never on metadata another part of the system attached;
+11. Do not create a rule with exactly the same pattern as an existing one (create_rule rejects it).
 
-覆盖率说明：find 与 test_rule 会返回覆盖率（该正则命中的已确认广告 ÷ 全库已确认广告）与按 ad_kind 的细分。覆盖率不是创建门槛，但优先做「覆盖某类型较大比例」的形态；覆盖率过低说明规则太窄，考虑合并同类话术或换更有代表性的形态。
+Coverage: find and test_rule return coverage (confirmed ads a regex matches ÷ all confirmed ads) with a breakdown by ad_kind. Coverage is not a creation threshold, but prefer forms that "cover a large share of a type"; too-low coverage means the rule is too narrow — consider merging same-pitch forms or picking a more representative form.
 
-工作流（按顺序执行）：
-1. 先摸清现状：list_kinds 看类型分布；list_rules 看已有 pattern 与覆盖率；list_uncovered 拿现有规则都匹配不到的广告（启动消息里已预取一份快照，可直接用；需要最新数据时再调）。
-2. 建立本轮清单：按 by_kind 的 uncovered 从大到小，所有 uncovered>0 的类型都要处理。
-3. 逐类处理：read_records 批量读该类样本全文（一次最多 10 条，跨类凑批也行），归纳它们区别于正常消息的共同特征（关键词、格式、结构）。
-4. find 用正则草稿试跑，看命中什么、误伤什么、覆盖率多少；反复收缩直到只命中广告。
-5. test_rule 用正式口径验证：fp>0 或 undone>0 时绝对不要 create_rule，回到第 4 步改进。
-6. create_rule 创建规则；成功后回到第 3 步处理清单里的下一个类型。
-7. 清单里每个 uncovered>0 的类型都必须有结论：要么创建了规则，要么说明样本太杂、太短、或属于正常讨论而无法写出高精度规则。只有全部处理过、或步数/时间预算将尽，才用中文总结收尾。
+Workflow (in order):
+1. Survey the current state: list_kinds for the type distribution; list_rules for existing patterns and coverage; list_uncovered for ads no existing rule matches (a snapshot is pre-fetched in the kickoff message and can be used directly; call it again when you need fresh data).
+2. Build this round's list: by_kind's uncovered from largest to smallest; every type with uncovered>0 must be handled.
+3. Work class by class: read_records to batch-read that class's sample full texts (at most 10 at a time, cross-class batching is fine) and induce the features that distinguish them from normal messages (keywords, format, structure).
+4. find to dry-run the regex draft: see what it hits, what it false-positives, and its coverage; for **each branch** work out a plausible normal message that would contain it, and if one exists tighten that branch until it too requires the payload — repeat until every branch, not just the regex as a whole, hits only ads.
+5. test_rule for formal verification: when fp>0 or undone>0, never create_rule — go back to step 4 and improve.
+6. create_rule to create the rule; on success return to step 3 for the next type in the list.
+7. Every type with uncovered>0 in the list must get a conclusion: either a rule was created, or you explain that the samples are too mixed, too short, or normal discussion so no high-precision rule can be written. Only after handling everything, or when the step/time budget runs out, summarize in Chinese and finish.
 
-如果 create_rule 被拒绝：仔细阅读返回的误封样本，收缩正则后重新 test_rule；连续 3 次失败本轮会被终止。收尾总结请逐类列出：创建了哪些规则、覆盖什么形态、依据哪些证据、哪些类型未覆盖及原因。`
+If create_rule is rejected: read the returned false-positive samples carefully, tighten the regex and test_rule again; 3 consecutive failures terminate this round. The final summary should list, class by class: which rules were created, what forms they cover, what evidence backs them, and which types remain uncovered and why.`
 
 // ruleAgentUserPrompt 是每轮的启动指令（全库模式的基线；指定记录模式与
 // 覆盖清单由 ruleAgentKickoff 追加）。
-const ruleAgentUserPrompt = `请开始一轮规则发现：先看启动消息里预取的覆盖空白清单（需要最新数据时再调 list_uncovered），然后逐类型按 read_records → find → test_rule → create_rule 的流程产出候选规则。本轮目标是一次性覆盖清单里所有值得写正则的形态，不要只做一条就收尾；每个 uncovered>0 的类型都要有结论（创建了规则，或说明为什么做不了）；预算将尽时逐类总结收尾。`
+const ruleAgentUserPrompt = `Start a round of rule discovery: first look at the coverage-gap list pre-fetched in the kickoff message (call list_uncovered again when you need fresh data), then work type by type through read_records → find → test_rule → create_rule to produce candidate rules. This round aims to cover all regex-worthy forms in the list in one pass; do not stop after a single rule. Every type with uncovered>0 must get a conclusion (a rule created, or why it cannot be done); when the budget runs low, summarize class by class and finish.`
