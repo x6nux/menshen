@@ -514,6 +514,11 @@ func migrate(db *sql.DB) error {
 		// 复查间隔封顶 prewarmWatchInterval（5min）；资料补齐后由复查路径
 		// 清零。
 		{"group_members", "prewarm_watch", "INTEGER NOT NULL DEFAULT 0"},
+		// hist_cleared_at：管理员放行这个人（/uad、/uban、记录卡片的「解封」）
+		// 的时刻。此前的判定史不再作为后续判定的证据：留底按这一刻截断
+		// （见 antiad.loadUserMessages），命中数归零。放行过的人不该被自己
+		// 解封前的记录再一次封掉。只截断不删除 —— 留底与流水是审计口径。
+		{"group_members", "hist_cleared_at", "INTEGER NOT NULL DEFAULT 0"},
 		// shape：这条进群限制对应的资料形状哈希（profile_shapes.shape）。
 		// 解除限制时按它反查删除，避免误伤解掉之后形状还在复用。
 		{"join_mutes", "shape", "TEXT NOT NULL DEFAULT ''"},

@@ -81,6 +81,12 @@ func HandleUadCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	banOK, banDesc := Unban(b, conf.ChatID, uid)
 	muteOK, muteDesc := LiftMute(b, conf.ChatID, uid)
 
+	// 解封前的判定史不再进后续判定（见 ResetUserHistory）。必须与白名单缓冲
+	// 分开做：缓冲只管接下来这段时间不判，而复查、recent_context 之后还会
+	// 照旧拿那段旧留底当证据 —— 被封禁的人 LiftMute 会失败，所以不能指望
+	// 它那一路把记录带清。
+	ResetUserHistory(b, conf.ChatID, uid)
+
 	// 本群生效的联合封禁一并解除（只解除当前限制而不动名单时，用户再次发言
 	// 又会被名单自动禁言，管理员需重复操作 `解除联合封禁`）。范围按
 	// 身份分：服务管理员（主/次）连全局组一起解，群管理员只解本群所属的

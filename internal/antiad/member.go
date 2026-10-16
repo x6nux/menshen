@@ -264,15 +264,23 @@ type gmsgRow struct {
 // excludePunished 为真时跳过已处罚的消息（见 markPunished），只让还没
 // 被处置过的发言进 recent_context；/check 复查传 false——整体复查
 // 看的就是全部历史，判过的消息也是这个账号的证据。
+//
+// 两种调用都按 hist_cleared_at 截断：管理员放行过这个人之后（见
+// ResetUserHistory），解封之前的留底不再进判定 —— 否则复查会拿那段被
+// 处置过的内容重新判一次，刚解封的人又被封回去。之后的新发言照常。
 func loadUserMessages(s *store.Store, chatID, uid int64, limit int, excludePunished bool) []gmsgRow {
 	// 没有文字的（图片、贴纸）只为连带删除留着 ID，复查里是空行。
+	// 画像行不存在时子查询给 NULL，必须 COALESCE 成 0：`at >= NULL` 为
+	// 假会把这个人的全部留底都滤掉。
 	q := `SELECT message_id,text,at FROM group_messages
-		WHERE chat_id=? AND user_id=? AND text != ''`
+		WHERE chat_id=? AND user_id=? AND text != ''
+		AND at >= COALESCE((SELECT hist_cleared_at FROM group_members
+			WHERE chat_id=? AND user_id=?), 0)`
 	if excludePunished {
 		q += ` AND punished=0`
 	}
 	q += ` ORDER BY at DESC, message_id DESC LIMIT ?`
-	rows, err := s.Read.Query(q, chatID, uid, limit)
+	rows, err := s.Read.Query(q, chatID, uid, chatID, uid, limit)
 	if err != nil {
 		slog.Error("反广告：读取留底失败", "chat", chatID, "uid", uid, "err", err)
 		return nil

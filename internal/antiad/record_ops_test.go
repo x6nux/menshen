@@ -200,3 +200,81 @@ func TestAdHitsCounted(t *testing.T) {
 		}
 	}
 }
+
+// TestResetUserHistoryCutsJudgmentHistory：管理员放行之后，解封前的留底不再
+// 进判定、命中数归零；放行之后的新发言照常留底、照常进判定。
+//
+// 线上事故的回归：管理员解封 25 分钟后，一次复查照旧拿那段被处置过的留底
+// 重新判了一次，把人又封了（reason 原文「该账号此前已有广告记录」）。
+func TestResetUserHistoryCutsJudgmentHistory(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	const uid = 555
+	now := time.Now().Unix()
+	touchMember(b, -100, uid, now-3600)
+	BumpAdHits(b, -100, uid, 2)
+	for i, at := range []int64{now - 600, now - 300} {
+		if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+			(chat_id,message_id,user_id,text,at,media_group,punished)
+			VALUES (-100,?,?,'日入5000 私聊我',?,'',1)`, 100+i, uid, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, false)); n != 2 {
+		t.Fatalf("预置留底应为 2 条，实际 %d", n)
+	}
+
+	ResetUserHistory(b, -100, uid)
+
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE chat_id=-100 AND user_id=555 AND ad_hits=0
+		AND hist_cleared_at>0`); n != 1 {
+		t.Error("放行应把命中数归零并落一个截断时刻")
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, false)); n != 0 {
+		t.Errorf("解封前的留底不该再进判定，实际还剩 %d 条", n)
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, true)); n != 0 {
+		t.Errorf("recent_context 同样应截断，实际还剩 %d 条", n)
+	}
+	// 放行之后的新发言照常是证据。
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at,media_group,punished)
+		VALUES (-100,200,?,'解封之后的新话',?,'',0)`, uid, now+1); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, false)); n != 1 {
+		t.Errorf("放行之后的新发言应照常留底，实际 %d 条", n)
+	}
+}
+
+// TestLiftMuteKeepsHistory：截断判定史**不能**挂在 LiftMute 上 —— 申诉自动
+// 解除与解禁码兑换也走那条路，挂上去等于任何刷广告的人都能靠申诉把案底刷白。
+func TestLiftMuteKeepsHistory(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	_ = fake
+
+	const uid = 556
+	now := time.Now().Unix()
+	touchMember(b, -100, uid, now-3600)
+	BumpAdHits(b, -100, uid, 2)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at,media_group,punished)
+		VALUES (-100,300,?,'日入5000 私聊我',?,'',1)`, uid, now-300); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, desc := LiftMute(b, -100, uid); !ok {
+		t.Fatalf("解禁言应成功：%s", desc)
+	}
+
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE chat_id=-100 AND user_id=556 AND hist_cleared_at=0 AND ad_hits=2`); n != 1 {
+		t.Error("申诉/解禁码走的 LiftMute 不该截断判定史，也不该清命中数")
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, false)); n != 1 {
+		t.Errorf("申诉路径下留底应保持原样，实际 %d 条", n)
+	}
+}

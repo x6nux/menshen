@@ -134,3 +134,38 @@ func stringOf(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+// TestUadCutsJudgmentHistory：/uad 放行之后此人解封前的留底不再进判定，
+// 命中数归零 —— 否则复查会照原样把人再判一次（线上真实发生）。
+func TestUadCutsJudgmentHistory(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	const uid = 6001
+	now := time.Now().Unix()
+	touchMember(b, -100, uid, now-3600)
+	BumpAdHits(b, -100, uid, 1)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at,media_group,punished)
+		VALUES (-100,400,?,'贝斯国际源头黑u买卖 招代理',?,'',1)`, uid, now-300); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(chat_id,user_id,message_id,text,verdict,confidence,decider,ad_kind,
+		 action,reason,created_at,bot_id)
+		VALUES (-100,?,400,'贝斯国际源头黑u买卖 招代理','ad',0.95,'llm','crypto',
+		 'deleted_muted','广告',?,?)`, uid, now-300, b.BotID()); err != nil {
+		t.Fatal(err)
+	}
+
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 1, 21, "/uad 6001"))
+	waitIdle(t, b)
+
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE chat_id=-100 AND user_id=6001 AND hist_cleared_at>0 AND ad_hits=0`); n != 1 {
+		t.Error("/uad 应把此人的判定史截断并把命中数归零")
+	}
+	if n := len(loadUserMessages(b.Store, -100, uid, 10, false)); n != 0 {
+		t.Errorf("解封前的留底不该再进复查，实际 %d 条", n)
+	}
+}

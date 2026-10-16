@@ -91,10 +91,14 @@ func ubanInChat(sh *core.Shared, bots []*core.Bot, chatID, uid int64) string {
 	NoteLifted(sh, chatID, uid)
 	// 未解除的处罚流水也要标掉：人在 TG 侧可能早已能发言（限时到期、被验证
 	// 机器人放开），留着它复查任务会把人再次禁言。进群限制已由 AdminLiftGban
-	// 按同一范围清过。
+	// 按同一范围清过。判定史同一次一并截断（见 ResetUserHistory），否则复查
+	// 还会拿解封前的留底把人又判回去。
 	defer func() {
 		for _, b := range bots {
 			MarkPenaltiesLifted(b, chatID, uid)
+		}
+		if len(bots) > 0 {
+			ResetUserHistory(bots[0], chatID, uid)
 		}
 	}()
 

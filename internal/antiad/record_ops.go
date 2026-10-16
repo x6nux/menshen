@@ -221,6 +221,8 @@ func ReleaseUser(b *core.Bot, r AdLogRow, actor int64) string {
 		b.IsStaff(actor)); s != "" {
 		did = append(did, "联合封禁（"+s+"）")
 	}
+	// 放行即截断判定史：判过的内容不再作为之后的证据（见 ResetUserHistory）。
+	ResetUserHistory(b, r.ChatID, r.UserID)
 	UpdateAdLog(b, r.ID, r.Action,
 		appendNote(r.Reason, "管理员解封（判定维持）："+strings.Join(did, "、")))
 	slog.Info("反广告：管理员解封（判定维持）", "log", r.ID,
@@ -246,6 +248,8 @@ func ReleaseUserInChat(b *core.Bot, chatID, uid, actor int64) (bool, string) {
 	if _, found := loadJoinMute(b.Store, chatID, uid); found {
 		dropJoinMute(b, chatID, uid)
 	}
+	// 与 /uad、记录卡片的解封同一档：放行即截断判定史（见 ResetUserHistory）。
+	ResetUserHistory(b, chatID, uid)
 	note := "已解除"
 	if gban != "" {
 		note += "（联合封禁：" + gban + "）"
@@ -283,4 +287,27 @@ func MarkPenaltiesLifted(b *core.Bot, chatID, uid int64) {
 		time.Now().Unix(), b.BotID(), chatID, uid); err != nil {
 		slog.Error("反广告：标记处罚已解除失败", "chat", chatID, "uid", uid, "err", err)
 	}
+}
+
+// ResetUserHistory 把某人在某群的判定史截到此刻：此前的留底不再进判定，
+// 历史命中数归零（见 group_members.hist_cleared_at）。
+//
+// 只给管理员主动放行的路径用（/uad、/uban、记录卡片的「解封」）。放行之后
+// 那段被处置过的历史不该继续把人往封禁推：复查会拿留底当证据重新判一次
+// （线上真实发生过 —— 管理员解封 25 分钟后，一次复查照原样把他又封了）、
+// prior_ad_hits 会把模型推向「惯犯从重」。结果是刚放行又封回去，管理员
+// 只好反复解封。
+//
+// **不能**放进 LiftMute：申诉与解禁码兑换也走那条路，把它们也算上等于
+// 任何刷广告的人都能靠申诉把自己的案底刷白。白名单缓冲（/uad 的 24 小时）
+// 管的是之后这段时间不再判，与这里截断的是两件事。
+func ResetUserHistory(b *core.Bot, chatID, uid int64) {
+	if _, err := b.Store.Write.Exec(`UPDATE group_members
+		SET hist_cleared_at=MAX(hist_cleared_at, ?), ad_hits=0
+		WHERE chat_id=? AND user_id=?`,
+		time.Now().Unix(), chatID, uid); err != nil {
+		slog.Error("反广告：截断判定史失败", "chat", chatID, "uid", uid, "err", err)
+		return
+	}
+	slog.Info("反广告：管理员放行，此人在本群的判定史已截断", "chat", chatID, "uid", uid)
 }
