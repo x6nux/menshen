@@ -244,9 +244,9 @@ type MsgPayload struct {
 		Performer string `json:"performer"`
 		FileName  string `json:"file_name"`
 	} `json:"audio"`
-	Document  *FileNamed `json:"document"`
-	Video     *FileNamed `json:"video"`
-	Animation *FileNamed `json:"animation"`
+	Document  *FileNamed   `json:"document"`
+	Video     *MovingMedia `json:"video"`
+	Animation *MovingMedia `json:"animation"`
 	Story     *struct {
 		Chat *Chat `json:"chat"`
 	} `json:"story"`
@@ -262,7 +262,7 @@ type MsgPayload struct {
 	// 这些字段，这几类消息在判定侧就是空的。
 	PaidMedia       *PaidMediaInfo   `json:"paid_media"`
 	LivePhoto       *LivePhoto       `json:"live_photo"`
-	VideoNote       *MediaMeta       `json:"video_note"`
+	VideoNote       *MovingMedia     `json:"video_note"`
 	Voice           *MediaMeta       `json:"voice"`
 	Location        *Location        `json:"location"`
 	Dice            *Dice            `json:"dice"`
@@ -513,11 +513,26 @@ type LivePhoto struct {
 	Height int         `json:"height"`
 }
 
-// MediaMeta 是只有时长、尺寸这类元数据的媒体（语音、视频消息）。
-// 它们没有文件名，能进正文的只有类型与时长。
+// MediaMeta 是只有时长这类元数据的媒体（语音）。它没有文件名，能进正文的
+// 只有类型与时长。
 type MediaMeta struct {
 	Duration int `json:"duration"`
 	Length   int `json:"length"`
+}
+
+// MovingMedia 是会动的媒体：视频、动图、视频消息。
+//
+// 三者都取不到正文，只能看画面，所以除文件名外还要带下载句柄、体积与时长
+// —— 抽帧识图靠它们（见 antiad 的 videoframes.go）。体积用来看下载前是否
+// 超出 getFile 的上限。
+type MovingMedia struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name"`
+	FileSize     int64  `json:"file_size"`
+	Duration     int    `json:"duration"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
 }
 
 // Location 是位置。经纬度本身不是文字，但坐标是载荷的一部分。

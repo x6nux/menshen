@@ -95,9 +95,13 @@ func payloadLines(p *tg.MsgPayload) []string {
 	if v := p.Audio; v != nil {
 		add("［音频］", v.Title, v.Performer, v.FileName)
 	}
-	for _, f := range []*tg.FileNamed{p.Document, p.Video, p.Animation} {
-		if f != nil {
-			add("［文件］", f.FileName)
+	if v := p.Document; v != nil {
+		add("［文件］", v.FileName)
+	}
+	// 视频与动图另有抽帧识图；文件名本身仍是攻击者可控的文字。
+	for _, v := range []*tg.MovingMedia{p.Video, p.Animation} {
+		if v != nil {
+			add("［文件］", v.FileName)
 		}
 	}
 	if v := p.Story; v != nil && v.Chat != nil {

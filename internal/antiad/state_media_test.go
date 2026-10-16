@@ -24,7 +24,7 @@ func TestHasMediaCarrier(t *testing.T) {
 		// （进了的话每条语音都要花一次 AI），全靠这个信号让模型知道
 		// 面前是一条语音/一条定位，而不是一条空消息。
 		{"语音", &tg.Message{MsgPayload: tg.MsgPayload{Voice: &tg.MediaMeta{Duration: 3}}}, true},
-		{"视频消息", &tg.Message{MsgPayload: tg.MsgPayload{VideoNote: &tg.MediaMeta{Length: 200}}}, true},
+		{"视频消息", &tg.Message{MsgPayload: tg.MsgPayload{VideoNote: &tg.MovingMedia{FileID: "v"}}}, true},
 		{"实况照片", &tg.Message{MsgPayload: tg.MsgPayload{LivePhoto: &tg.LivePhoto{Photo: []tg.PhotoSize{{FileID: "f"}}}}}, true},
 		{"付费媒体", &tg.Message{MsgPayload: tg.MsgPayload{PaidMedia: &tg.PaidMediaInfo{StarCount: 5}}}, true},
 		{"定位", &tg.Message{MsgPayload: tg.MsgPayload{Location: &tg.Location{Latitude: 1}}}, true},
