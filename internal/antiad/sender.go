@@ -296,11 +296,13 @@ const (
 // （-100…），下游据此区分频道与真人。
 //
 // 匿名管理员（sender_chat 是本群）与关联频道自动转发保持原样，由 adExempt 豁免。
-// 访客 bot 代发的换成召唤者：留底、判定、处置都记在召唤者名下。
+//
+// 访客 bot（guest mode）的代发**不换**发送者。guest_bot_caller_user 的定义是
+// 「哪条消息触发了这个 bot 的回复」，而内容是这个 bot 自己生成的：把它记在
+// 触发者名下，等于让任意一个 bot 都能把广告栽到随便一个成员头上 —— 成员
+// 回复广告 bot 发 /ad 举报，bot 回一条广告就能让举报的人被封。内容归发布它
+// 的那个 bot，处置也只落在内容上（见 botSenderAction）。
 func senderOf(m *tg.Message) *tg.TGUser {
-	if m.GuestBotCallerUser != nil {
-		return m.GuestBotCallerUser
-	}
 	c := m.SenderChat
 	if c == nil || (m.Chat != nil && c.ID == m.Chat.ID) ||
 		(m.From != nil && m.From.ID == tgServiceUID) {
@@ -309,15 +311,59 @@ func senderOf(m *tg.Message) *tg.TGUser {
 	return &tg.TGUser{ID: c.ID, FirstName: c.Title, Username: c.Username}
 }
 
+// guestSummonWindow 是「召唤语 → bot 代发」允许的时间跨度。访客模式是即时的，
+// 留一点余量覆盖 TG 的推送延迟。
+const guestSummonWindow = 10 * time.Minute
+
+// guestSummoner 报告访客 bot 这条代发的触发者是不是**召唤者**，是则返回他。
+//
+// TG 把 guest_bot_caller_user 填成「哪条消息触发了这条回复」的作者，而那条
+// 触发消息只有两种：
+//   - 直接 @ 这个 bot 的召唤语：它就是群内容，会进留底（也可能已判过、删过）。
+//   - 回复 bot 的消息试图举报的命令（/ad、/spam@x）：命令一律不留底。
+//
+// 所以判据取「触发者在本群最近一条留底里 @ 过这个 bot」：有召唤语才按他处置，
+// 只有举报命令（或什么都查不到）时留在 bot 名下。取证方向偏向不罚人 —— 这类
+// 代发是攻击者可控的归属，错了就是封一个无辜成员。
+func guestSummoner(b *core.Bot, m *tg.Message) *tg.TGUser {
+	caller := m.GuestBotCallerUser
+	if caller == nil || caller.ID <= 0 || m.Chat == nil {
+		return nil
+	}
+	bot := m.GuestBot
+	if bot == nil || bot.Username == "" {
+		return nil
+	}
+	at := m.Date
+	if at == 0 {
+		at = time.Now().Unix()
+	}
+	var text string
+	if err := b.Store.Read.QueryRow(`SELECT text FROM group_messages
+		WHERE chat_id=? AND user_id=? AND at<=? AND at>?
+		ORDER BY at DESC LIMIT 1`,
+		m.Chat.ID, caller.ID, at, at-int64(guestSummonWindow/time.Second),
+	).Scan(&text); err != nil {
+		return nil
+	}
+	if !strings.Contains(strings.ToLower(text), "@"+strings.ToLower(bot.Username)) {
+		return nil
+	}
+	return caller
+}
+
 // asSender 返回一份把 From 换成实际发言者的副本（不改原消息：同一条 update
-// 可能还被别处读着）。访客 bot 代发的另把 bot 记进 GuestBot，正文里要标出来。
+// 可能还被别处读着）。访客 bot 代发的把那个 bot 记进 GuestBot，正文里标出
+// 来源（见 msgText）；发送者仍是这个 bot，是否算在触发者头上由调用方按
+// guestSummoner 定（见 HandleGroupMessage）。
 func asSender(m *tg.Message) *tg.Message {
+	guest := m.GuestBotCallerUser != nil && m.From != nil && m.From.IsBot
 	u := senderOf(m)
-	if u == m.From {
+	if u == m.From && !guest {
 		return m
 	}
 	cp := *m
-	if m.GuestBotCallerUser != nil && m.From != nil && m.From.IsBot {
+	if guest {
 		cp.GuestBot = m.From
 	}
 	cp.From = u

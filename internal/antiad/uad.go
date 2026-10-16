@@ -52,7 +52,7 @@ func HandleUadCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string
 	var uid int64
 	switch {
 	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
-		// 以频道身份或访客 bot 发的，处置落在实际发言者身上（与 /ban 同）。
+		// 以频道身份发的处置落在频道上（与 /ban 同；访客 bot 发的发送者就是那个 bot）。
 		uid = senderOf(m.ReplyToMessage).ID
 	case arg != "":
 		id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)

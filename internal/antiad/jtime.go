@@ -66,7 +66,7 @@ func HandleJtimeCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg stri
 	var who *tg.TGUser
 	switch {
 	case m.ReplyToMessage != nil && m.ReplyToMessage.From != nil:
-		// 以频道身份或访客 bot 发的，查的是实际发言者（与 /ban 同口径）。
+		// 以频道身份发的查的是频道（与 /ban 同口径；访客 bot 发的发送者就是那个 bot）。
 		who = senderOf(m.ReplyToMessage)
 		uid = who.ID
 	case strings.TrimSpace(arg) != "":

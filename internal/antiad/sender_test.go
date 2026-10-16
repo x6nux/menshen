@@ -40,18 +40,20 @@ func TestSenderOf(t *testing.T) {
 	if senderOf(m).ID != tgServiceUID {
 		t.Error("自动转发不该被换掉")
 	}
-	// 访客 bot：换成召唤者
+	// 访客 bot：发送者仍是那个 bot，不换成触发它的人
 	m = testutil.GroupMsg(-100, 999, 1, "x")
 	m.From.IsBot = true
 	m.GuestBotCallerUser = &tg.TGUser{ID: 55}
-	if senderOf(m).ID != 55 {
-		t.Error("访客 bot 代发的应算在召唤者头上")
+	if senderOf(m).ID != 999 {
+		t.Errorf("访客 bot 代发的发送者应是那个 bot，实际 %d", senderOf(m).ID)
 	}
 }
 
-// TestGuestBotJudgedAsCaller：bot 一律豁免对访客 bot 不成立，否则随意 @ 几个
-// 广告 bot 就能绕过检测。留底、画像记在召唤者名下，正文标出是哪个 bot 代发的。
-func TestGuestBotJudgedAsCaller(t *testing.T) {
+// TestGuestBotJudgedAsBot：bot 一律豁免对访客 bot 不成立，否则随意 @ 几个
+// 广告 bot 就能绕过检测。但内容归发布它的那个 bot，不记在触发它的人名下 ——
+// guest_bot_caller_user 只是「哪条消息触发了这条回复」，任何 bot 都能靠它把
+// 广告栽到随便一个成员头上（见 senderOf）。
+func TestGuestBotJudgedAsBot(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	testutil.EnableAntiad(t, b, -100)
 	soN, _ := fakeAIWith(t, b, soReply("clean", 0.9, "none", "message"), llmReply(false, 0.9, "none", "message"))
@@ -68,8 +70,135 @@ func TestGuestBotJudgedAsCaller(t *testing.T) {
 	var uid int64
 	var text string
 	b.Store.Read.QueryRow(`SELECT user_id,text FROM group_messages WHERE message_id=7`).Scan(&uid, &text)
-	if uid != 55 || !strings.Contains(text, "［访客 bot］@AdsBot") {
-		t.Errorf("留底 uid=%d text=%q；应记在召唤者名下并标出访客 bot", uid, text)
+	if uid != 999 || !strings.Contains(text, "［访客 bot］@AdsBot") {
+		t.Errorf("留底 uid=%d text=%q；应记在代发的 bot 名下并标出访客 bot", uid, text)
+	}
+}
+
+// TestGuestBotAdNotPunishTriggerer 是线上事故的回归：广告 bot 用访客模式回复
+// 举报者的消息发广告，TG 把参数填成 guest_bot_caller_user=举报者。此前这条广告
+// 记在举报者名下，举报的人被判成发广告的人、封 24 小时。现在：内容照删，处罚不
+// 落在任何人身上 —— bot 没有可改的成员权限，禁言它必然失败，封不封那个 bot 由
+// 管理员在告警上决定。
+func TestGuestBotAdNotPunishTriggerer(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.97, "crypto", "message"),
+		llmReply(true, 0.97, "crypto", "message"))
+
+	const (
+		guestBotID = 8888888888
+		reporterID = 555
+	)
+	m := testutil.GroupMsg(-100, guestBotID, 900, "贝斯国际源头黑u买卖 招代理 @BSGJUU8")
+	m.From.IsBot, m.From.Username = true, "BSGJUU_bot"
+	// 广告 bot 回复的是举报者那条 /ad。
+	m.ReplyToMessage = testutil.GroupMsg(-100, reporterID, 899, "/ad")
+	m.GuestBotCallerUser = &tg.TGUser{ID: reporterID, Username: "reporter"}
+	HandleGroupMessage(b, m)
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("deleteMessage"); n == 0 {
+		t.Error("访客 bot 发的广告应当被删除")
+	}
+	if n := fake.CountCalls("restrictChatMember"); n != 0 {
+		t.Errorf("不该禁言任何人（含那个 bot），实际 restrictChatMember %d 次", n)
+	}
+	if n := fake.CountCalls("banChatMember"); n != 0 {
+		t.Errorf("不该自动封禁 bot，实际 banChatMember %d 次", n)
+	}
+	verdict, _, action, uid, n := lastLog(t, b)
+	if n == 0 || verdict != "ad" {
+		t.Fatalf("应有 ad 流水，实际 verdict=%q n=%d", verdict, n)
+	}
+	if uid != guestBotID {
+		t.Errorf("流水记在 %d 名下，应为代发的 bot %d", uid, guestBotID)
+	}
+	if action == "deleted_muted" || strings.Contains(action, "banned") {
+		t.Errorf("访客 bot 内容只该删消息，实际 action=%q", action)
+	}
+	// 举报者不该留下任何广告印记。
+	var hits int64
+	b.Store.Read.QueryRow(`SELECT ad_hits FROM group_members WHERE chat_id=-100 AND user_id=?`,
+		reporterID).Scan(&hits)
+	if hits != 0 {
+		t.Errorf("举报者 ad_hits=%d，应为 0", hits)
+	}
+}
+
+// TestGuestBotSummonerPunished：触发消息是「直接 @ 这个 bot 的召唤语」时，
+// 触发者就是召唤者，按他处置。召唤语本身是群内容、会进留底，正是靠它把
+// 召唤者与只回复举报的人区分开（举报命令不进留底）。
+func TestGuestBotSummonerPunished(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fakeAIWith(t, b, soReply("ad", 0.97, "crypto", "message"),
+		llmReply(true, 0.97, "crypto", "message"))
+
+	const (
+		guestBotID = 8888888888
+		summonerID = 666
+	)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at,media_group,punished)
+		VALUES (-100,899,?,'@AdsBot',1700000000-30,'',0)`, summonerID); err != nil {
+		t.Fatal(err)
+	}
+
+	m := testutil.GroupMsg(-100, guestBotID, 900, "贝斯国际源头黑u买卖 招代理")
+	m.From.IsBot, m.From.Username = true, "AdsBot"
+	m.GuestBotCallerUser = &tg.TGUser{ID: summonerID, Username: "summoner"}
+	HandleGroupMessage(b, m)
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("deleteMessage"); n == 0 {
+		t.Error("广告内容应当被删除")
+	}
+	if n := fake.CountCalls("restrictChatMember"); n == 0 {
+		t.Error("直接 @ 召唤的触发者应当被禁言")
+	}
+	if _, _, _, uid, n := lastLog(t, b); n == 0 || uid != summonerID {
+		t.Errorf("流水应记在召唤者 %d 名下，实际 uid=%d n=%d", summonerID, uid, n)
+	}
+}
+
+// TestAdIsCheckAlias：/ad 是 /check 的别名（群成员习惯用 /ad 举报）。
+func TestAdIsCheckAlias(t *testing.T) {
+	for _, c := range []struct{ in, arg string }{
+		{"/ad", ""},
+		{"/ad@SomeBot", ""},
+		{"/ad 8868688919", "8868688919"},
+	} {
+		cmd, arg, ok := parseAdCommand(c.in)
+		if !ok || cmd != "/check" || arg != c.arg {
+			t.Errorf("parseAdCommand(%q) = (%q,%q,%v)，期望 (/check,%q,true)",
+				c.in, cmd, arg, ok, c.arg)
+		}
+	}
+}
+
+// TestAdAliasReportRunsCheck：成员用 /ad 举报时走复查（命令本身删掉），
+// 而不是落到判定链路里被当成内容。
+func TestAdAliasReportRunsCheck(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	soN, _ := fakeAIWith(t, b, soReply("clean", 0.99, "none", "message"),
+		llmReply(false, 0.99, "none", "message"))
+
+	m := testutil.GroupMsg(-100, 42, 20, "/ad")
+	m.From.Username = "reporter"
+	m.ReplyToMessage = testutil.GroupMsg(-100, 777001, 19, "在发广告的内容")
+	HandleGroupMessage(b, m)
+	waitIdle(t, b)
+
+	if n := fake.CountCalls("deleteMessage"); n == 0 {
+		t.Error("举报命令本身应当被删除")
+	}
+	if n := soN.Load(); n != 0 {
+		t.Errorf("举报者的命令不该送检，实际 %d 次", n)
+	}
+	if _, _, _, _, n := lastLog(t, b); n != 0 {
+		t.Errorf("举报者的命令不该进判定流水，实际 %d 条", n)
 	}
 }
 

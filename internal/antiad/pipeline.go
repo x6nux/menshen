@@ -37,10 +37,22 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	if m.Chat == nil || m.From == nil {
 		return
 	}
-	// 以频道身份发言、访客 bot 代发的，换成实际发言者：豁免、画像、留底、
-	// 处置都落在他身上，删除仍作用于这条消息本身。bot 一律豁免对这两类
-	// 不成立，否则 @ 几个广告 bot、或换成频道身份即可绕过检测。
+	// 以频道身份发言的换成实际发言者：豁免、画像、留底、处置都落在频道上，
+	// 删除仍作用于这条消息本身。bot 一律豁免对这类不成立，否则换成频道身份
+	// 即可绕过检测。
 	m = asSender(m)
+	// 访客 bot 的代发默认记在那个 bot 名下（见 senderOf），处置只落在内容上。
+	// 但触发它的若是「直接 @ 这个 bot 的召唤语」，触发者就是召唤者，按他论处
+	// —— 广告 bot 的代发正是他要的。只有举报命令（/ad、/spam@x）触发的才
+	// 留在 bot 名下：命令不进留底，无法区分，但举报的人绝不能被罚，否则广告
+	// bot 回一条广告就能把举报者封掉。
+	if m.GuestBot != nil {
+		if s := guestSummoner(b, m); s != nil {
+			cp := *m
+			cp.From = s
+			m = &cp
+		}
+	}
 	at := m.Date
 	if at == 0 {
 		at = time.Now().Unix()
@@ -218,8 +230,8 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 				Decider: "rule:" + strconv.FormatInt(r.ID, 10),
 				Reason:  fmt.Sprintf("命中必封规则《%s》", r.Name),
 			}
-			act := withPunish(adAction{Delete: true, Mute: true, Alert: true,
-				Name: "deleted_muted"}, snap.BanMode(conf))
+			act := botSenderAction(m, withPunish(adAction{Delete: true, Mute: true, Alert: true,
+				Name: "deleted_muted"}, snap.BanMode(conf)))
 			note := ApplyAction(b, m, act, conf.Dryrun)
 			// 对方已被封禁出群时禁言那一步被跳过：流水仍记封禁，不降级成禁言。
 			act = withPunish(act, muteSkippedBanned(note))
@@ -399,7 +411,7 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		}
 		actOnVerdict(b, snap, conf, m, profile, v, pre, preNote, text)
 	}
-	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
+	act := botSenderAction(m, planAction(b, snap, conf, isNewbie(b, snap, profile), v))
 	// 规则命中时必须过大模型复判（systemone 已被跳过）；其余沿用采信线与
 	// 要罚才复判。
 	forceReview := ruleHit && hasLLM(b, snap)
@@ -428,8 +440,10 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 	// 一律先删 + 临时禁言，复判正常时 actOnVerdict 会自动解除。
 	var pre adAction
 	var preNote string
+	// 先行动作同样按发送者收窄：bot 不能被禁言（见 botSenderAction），
+	// 对 bot 内容只先删，处罚不做。
 	if ruleHit {
-		pre = adAction{Delete: true, Mute: m.From.ID > 0, Temp: true}
+		pre = botSenderAction(m, adAction{Delete: true, Mute: m.From.ID > 0, Temp: true})
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)
 		if pre.Mute && !conf.Dryrun && !muteSkippedBanned(preNote) {
 			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。
@@ -437,7 +451,8 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		}
 	} else if !belowFloor && v.Confidence*100 >= float64(snap.BotSettingInt(
 		b.BotID(), "antiad_pre_act_conf", store.DefaultPreActConf)) {
-		pre = adAction{Delete: act.Delete, Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true}
+		pre = botSenderAction(m, adAction{Delete: act.Delete,
+			Mute: (act.Mute || act.Ban) && m.From.ID > 0, Temp: true})
 		preNote = ApplyAction(b, m, pre, conf.Dryrun)
 		if pre.Mute && !conf.Dryrun && !muteSkippedBanned(preNote) {
 			// 记下来，终判不罚时（或管理员复查发现正常时）主动解掉。

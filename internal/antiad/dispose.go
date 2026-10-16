@@ -153,6 +153,26 @@ func planAction(b *core.Bot, snap *store.Snapshot, conf store.BotChat, newbie bo
 	return act
 }
 
+// botSenderAction 收窄 bot 发送者的处置：bot 没有可改的成员权限，禁言它必然
+// 失败；本服务也不替管理员封别人的 bot，所以只留下删除与告警 —— 判成广告的
+// bot 内容（含访客 bot 代发的）必须从群里消失，封不封那个 bot 由管理员在告警
+// 上点。连带删除照旧：同一波广告常常还有别的几条。
+func botSenderAction(m *tg.Message, act adAction) adAction {
+	if m == nil || m.From == nil || !m.From.IsBot {
+		return act
+	}
+	act.Mute, act.Ban, act.Short, act.Temp = false, false, false, false
+	switch {
+	case act.Delete:
+		act.Name = "deleted"
+	case act.Alert:
+		act.Name = "alerted"
+	default:
+		act.Name = "none"
+	}
+	return act
+}
+
 // withPunish 把禁言档换成封禁（ban 为真时）。/ban 与自动判定共用。
 func withPunish(act adAction, ban bool) adAction {
 	if !ban || !act.Mute {
@@ -579,7 +599,7 @@ func actOnVerdict(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.M
 
 	// 演练是**每个群**各自的状态：新加的群先观察、老群已转正式。
 	dryrun := conf.Dryrun
-	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
+	act := botSenderAction(m, planAction(b, snap, conf, isNewbie(b, snap, profile), v))
 	// 非按模型结论定档时，内容哈希命中一律只删不罚（后来者的资料与资历
 	// 没判过，见 hashHit）；按模型结论定档时不豁免：哈希命中的内容本身
 	// 就是模型判过的广告。

@@ -19,7 +19,8 @@ import (
 // 一个刷了几千条的号会让单次请求成本过高。
 const adReviewLimit = 60
 
-const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>，" +
+const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>" +
+	"（<code>/ad</code> 是它的别名），" +
 	"或直接发 <code>/check &lt;user_id&gt;</code> / <code>/check @用户名</code>" +
 	"（频道填 -100 开头的频道 ID）。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查；" +
@@ -41,7 +42,11 @@ func parseAdCommand(text string) (cmd, arg string, ok bool) {
 		head = head[:i]
 	}
 	switch head {
-	case "/check", "/ban", "/banad", "/white", "/uad", "/ungban", "/jtime":
+	case "/check", "/ad":
+		// /ad 是 /check 的别名：群里的举报命令习惯用 /ad（见 otherBotCommand），
+		// 认它把举报收进来走复查，命令本身照常删除，而不是让它落进判定链路。
+		return "/check", strings.Join(f[1:], " "), true
+	case "/ban", "/banad", "/white", "/uad", "/ungban", "/jtime":
 		return head, strings.Join(f[1:], " "), true
 	}
 	return "", "", false
@@ -76,11 +81,12 @@ func isCommandToken(text string) bool {
 
 // otherBotCommand 报告这条消息是否只是「发给某个机器人的一条命令」。
 //
-// 群里常见的形态是成员用别的反广告 bot 的命令举报：引用一条广告发 /ad、
-// /spam@xxx。命令本身是举报动作，引用段是被举报者的内容，当普通群聊内容
+// 群里常见的形态是成员用别的反广告 bot 的命令举报：引用一条广告发 /spam@xxx、
+// /report。命令本身是举报动作，引用段是被举报者的内容，当普通群聊内容
 // 送检会把他判成发广告的人：模型把「短正文 + 引用里的广告」读成载荷全在
 // 引用的规避形态，把反复发举报命令读成刷屏骚扰。这类消息与本服务自己的
-// 命令同等对待：不留底、不进判定。
+// 命令同等对待：不留底、不进判定。（本服务自己的 /ad 别名在 parseAdCommand
+// 就已接住，走到这里的 /ad 是发给别人的。）
 //
 // 只在消息除命令外什么都没有时才成立：配图、文件、卡片、按钮、隐藏链接、
 // 转发、召唤者任一存在都可能挂着载荷（msgText 会为它们多出一行带方括号的
@@ -241,7 +247,7 @@ const banadCmdUsage = "用法：<b>回复</b>要标记的那条消息发送 <cod
 // MessageID 为 0 时调用方会摘掉删除动作）。
 func resolveCmdTarget(b *core.Bot, chatID int64, m *tg.Message, arg string) (*tg.Message, bool) {
 	if m.ReplyToMessage != nil && m.ReplyToMessage.From != nil {
-		// 以频道身份或访客 bot 发的，处置要落在频道/召唤者身上。
+		// 以频道身份发的处置要落在频道上（见 senderOf）。
 		cp := *m.ReplyToMessage
 		cp.From = asSender(m.ReplyToMessage).From
 		return &cp, true
@@ -467,7 +473,7 @@ func reviewAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, tgt *tg
 	}
 
 	dryrun := conf.Dryrun
-	act := planAction(b, snap, conf, isNewbie(b, snap, profile), v)
+	act := botSenderAction(tgt, planAction(b, snap, conf, isNewbie(b, snap, profile), v))
 	if tgt.MessageID == 0 {
 		// /check <user_id> 没有指向具体消息，删不了任何东西。
 		// 不摘掉的话 deleteMessage 必然失败，告警里还会多一条假的失败说明。

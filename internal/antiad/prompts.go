@@ -176,7 +176,9 @@ const pornClause = "**Pornographic content is always advertising**: explicit sex
 const evasionClause = "mentioned_bots are the bots @-mentioned in this message; a new member sending " +
 	"just a string of @xxxbot with almost nothing else is the classic way of summoning a guest bot to " +
 	"post on one's behalf, and is advertising. 「［访客 bot］@xxx」 means this message was posted by a " +
-	"guest bot summoned by this person, so its content counts as this person's own. " +
+	"guest bot (Bot API guest mode) in response to a member's message: the sender is that bot and the " +
+	"content is the bot's own, so judge the content on its own and never read the member whose message " +
+	"merely triggered the bot's reply as the advertiser. " +
 	"message.is_edited=true means this message was edited after being sent and text is the edited " +
 	"version; sending normal content to slip past detection and then editing it into an ad is a common " +
 	"evasion, so judge the edited content. " +

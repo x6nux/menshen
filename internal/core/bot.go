@@ -569,6 +569,7 @@ type Dispatcher func(*Bot, *tg.Update)
 // 这比藏起来更好：藏不住，不如让群管直接看到自己有这个工具。
 var adGroupCmds = []map[string]string{
 	{"command": "check", "description": "复查某人是否在发广告（回复消息或 /check user_id）"},
+	{"command": "ad", "description": "同 /check：复查某人是否在发广告"},
 	{"command": "ban", "description": "封禁某人出群（群管理员：回复消息或 /ban user_id）"},
 	{"command": "banad", "description": "标记为广告并处置（群管理员：回复消息或 /banad user_id）"},
 	{"command": "white", "description": "加入本群反广告白名单（群管理员，回复对方的消息）"},
