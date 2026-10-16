@@ -20,6 +20,15 @@ func TestHasMediaCarrier(t *testing.T) {
 		{"联系人卡片", &tg.Message{MsgPayload: tg.MsgPayload{Contact: &tg.Contact{}}}, true},
 		{"纯文字", &tg.Message{Text: "网友正常聊天"}, false},
 		{"只有配文的图", &tg.Message{Caption: "看这个", Photo: []tg.PhotoSize{{FileID: "f"}}}, true},
+		// 只有媒体、没有文字的这几类同样要报成有媒体：它们不进判定正文
+		// （进了的话每条语音都要花一次 AI），全靠这个信号让模型知道
+		// 面前是一条语音/一条定位，而不是一条空消息。
+		{"语音", &tg.Message{MsgPayload: tg.MsgPayload{Voice: &tg.MediaMeta{Duration: 3}}}, true},
+		{"视频消息", &tg.Message{MsgPayload: tg.MsgPayload{VideoNote: &tg.MediaMeta{Length: 200}}}, true},
+		{"实况照片", &tg.Message{MsgPayload: tg.MsgPayload{LivePhoto: &tg.LivePhoto{Photo: []tg.PhotoSize{{FileID: "f"}}}}}, true},
+		{"付费媒体", &tg.Message{MsgPayload: tg.MsgPayload{PaidMedia: &tg.PaidMediaInfo{StarCount: 5}}}, true},
+		{"定位", &tg.Message{MsgPayload: tg.MsgPayload{Location: &tg.Location{Latitude: 1}}}, true},
+		{"骰子", &tg.Message{MsgPayload: tg.MsgPayload{Dice: &tg.Dice{Emoji: "🎲", Value: 3}}}, true},
 	}
 	for _, c := range cases {
 		if got := hasMediaCarrier(c.m); got != c.want {

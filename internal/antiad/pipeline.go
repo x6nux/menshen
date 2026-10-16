@@ -171,6 +171,13 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 	// 全部消息，靠的是这里的 ID。
 	recordMessage(b, m.Chat.ID, m.MessageID, m.From.ID, text, at, m.MediaGroupID)
 
+	// 载荷全不可识别：TG 推来的是一种我们没有解的消息类型。客户端看得到
+	// 正文，判定侧只剩来源标注，与「无正文」无法区分，只能放行 —— 把原始
+	// 报文留下来，缺口才看得见。
+	if !hasPayload(m) {
+		noteUnknownPayload(b, m)
+	}
+
 	// 相册里判定之后才到的那几张：整组已判成广告，到一张删一张。
 	if m.MediaGroupID != "" && albumDoomed(b, m.Chat.ID, m.MediaGroupID) {
 		markPunished(b, m.Chat.ID, m.MessageID)
@@ -444,6 +451,29 @@ func judgeAndAct(b *core.Bot, snap *store.Snapshot, conf store.BotChat, m *tg.Me
 		}
 		finish(v, pre, preNote)
 	}
+}
+
+// unknownPayloadRawMax 是留档的原始报文上限。够看清消息类型与字段名，
+// 又不至于让一条长报文把日志撑爆。
+const unknownPayloadRawMax = 4000
+
+// noteUnknownPayload 记下一条载荷不可识别的消息，并附上 TG 推来的原始报文。
+//
+// 客户端能渲染、我们解不出来的类型（新版本新增的消息类型）在判定侧就是
+// 「没有正文」：与正常的空正文消息无法区分，只会被静默放行。原始报文里
+// 有完整字段名，下一个新类型第一次出现时可以直接照着补，不必再从外部
+// 一点点反推。
+func noteUnknownPayload(b *core.Bot, m *tg.Message) {
+	if len(m.Raw) == 0 {
+		return
+	}
+	// 同一群每分钟只留一条：新类型出现时往往是同一波刷屏，不必逐条留。
+	if !b.AdLimits.Allow(fmt.Sprintf("unknown-payload:%d", m.Chat.ID), 1) {
+		return
+	}
+	slog.Warn("反广告：消息载荷不可识别，留原始报文",
+		"chat", m.Chat.ID, "uid", m.From.ID, "msg", m.MessageID,
+		"raw", core.TruncateRunes(string(m.Raw), unknownPayloadRawMax))
 }
 
 // adAllow 是送检前的滥用护栏，返回 false 表示这条不送检。

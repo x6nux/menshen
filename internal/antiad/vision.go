@@ -45,16 +45,14 @@ type visual struct {
 }
 
 // visualOf 取消息里要识图的图：图片取不超过 visionMaxSide 的最大一档（都更大时
-// 取最小的）；静态贴纸看原图，动态/视频贴纸看缩略图。
+// 取最小的）；静态贴纸看原图，动态/视频贴纸看缩略图。实况照片的静态图与普通
+// 图片同源，走同一条路径。
 func visualOf(m *tg.Message) (visual, bool) {
 	if len(m.Photo) > 0 {
-		p := m.Photo[0]
-		for _, s := range m.Photo {
-			if max(s.Width, s.Height) <= visionMaxSide {
-				p = s
-			}
-		}
-		return visual{p.FileID, p.FileUniqueID, "［图片］"}, true
+		return photoVisual(m.Photo, "［图片］"), true
+	}
+	if lp := m.LivePhoto; lp != nil && len(lp.Photo) > 0 {
+		return photoVisual(lp.Photo, "［实况照片］"), true
 	}
 	if s := m.Sticker; s != nil {
 		// 贴纸包名本身也是信号：广告贴纸包常以引流账号命名。
@@ -67,6 +65,18 @@ func visualOf(m *tg.Message) (visual, bool) {
 		}
 	}
 	return visual{}, false
+}
+
+// photoVisual 从一档尺寸里挑一张识图：取不超过 visionMaxSide 的最大一档，
+// 都更大时取最小的那档。
+func photoVisual(sizes []tg.PhotoSize, label string) visual {
+	p := sizes[0]
+	for _, s := range sizes {
+		if max(s.Width, s.Height) <= visionMaxSide {
+			p = s
+		}
+	}
+	return visual{p.FileID, p.FileUniqueID, label}
 }
 
 // visionOn 报告是否配了识图模型。没配时图片与贴纸不判，零额外开销。

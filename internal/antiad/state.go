@@ -157,12 +157,16 @@ func (p senderProfile) ProfileEmpty() bool {
 }
 
 // hasMediaCarrier 报告这条消息是否真的携带媒体（图、贴纸、视频、文件、
-// 语音、联系人卡片、投票等）。依据是媒体字段本身，不能以有无正文判断，
-// 否则纯图、纯贴纸会被报成 has_media=false，与实际相反。
+// 语音、联系人卡片、投票、实况照片、付费媒体等）。依据是媒体字段本身，
+// 不能以有无正文判断，否则纯图、纯贴纸会被报成 has_media=false，
+// 与实际相反。
 func hasMediaCarrier(m *tg.Message) bool {
 	return len(m.Photo) > 0 || m.Sticker != nil || m.Video != nil ||
 		m.Document != nil || m.Audio != nil || m.Animation != nil ||
-		m.Contact != nil || m.Poll != nil || m.Venue != nil || m.Invoice != nil
+		m.Contact != nil || m.Poll != nil || m.Venue != nil || m.Invoice != nil ||
+		m.LivePhoto != nil || m.VideoNote != nil || m.Voice != nil ||
+		m.PaidMedia != nil || m.Game != nil || m.Checklist != nil || m.Story != nil ||
+		m.Location != nil || m.Dice != nil
 }
 
 // buildProfile 组装发送者画像。

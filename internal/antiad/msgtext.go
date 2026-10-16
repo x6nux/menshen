@@ -34,6 +34,10 @@ func msgText(m *tg.Message) string {
 		}
 	}
 	parts = append(parts, payloadLines(&m.MsgPayload)...)
+	parts = append(parts, fieldLines(m)...)
+	if m.RichMessage != nil {
+		parts = append(parts, richLines(m.RichMessage)...)
+	}
 	if m.ReplyMarkup != nil {
 		for _, row := range m.ReplyMarkup.InlineKeyboard {
 			for _, btn := range row {
@@ -102,7 +106,265 @@ func payloadLines(p *tg.MsgPayload) []string {
 	if v := p.LinkPreviewOptions; v != nil {
 		add("［预览］", v.URL)
 	}
+	// 付费媒体把内容锁在星数后面，能读到的只有价格、项数与配文。
+	if v := p.PaidMedia; v != nil {
+		f := []string{fmt.Sprintf("%d 项，%d 星", len(v.PaidMedia), v.StarCount)}
+		for _, it := range v.PaidMedia {
+			f = append(f, it.Caption)
+		}
+		add("［付费媒体］", f...)
+	}
+	if v := p.Giveaway; v != nil {
+		add("［抽奖］", v.PrizeDescription, fmt.Sprintf("%d 名", v.WinnerCount))
+	}
+	if v := p.GiveawayWinners; v != nil {
+		add("［开奖］", v.PrizeDescription, fmt.Sprintf("%d 名", v.WinnerCount))
+	}
+	// 实况照片、视频消息、语音、定位、骰子只有媒体本身或数值，没有可判的
+	// 文字：不进正文（进了的话每条语音都要花一次 AI），只在 hasMediaCarrier
+	// 里算作媒体；实况照片的静态图另有识图路径（见 visualOf）。
 	return out
+}
+
+// fieldLines 渲染只挂在 Message 上的载荷：礼物、分享、Web App 数据、支付、
+// 投票选项与清单任务的增删、群改名、置顶消息。
+//
+// 它们不在 MsgPayload 里（ExternalReplyInfo 没有这些字段），但同样要进
+// 同一段正文：正文、留底、告警、去重共用一个口径。
+func fieldLines(m *tg.Message) []string {
+	var out []string
+	add := func(prefix string, fields ...string) {
+		if s := joinNonEmpty(prefix, fields...); s != prefix {
+			out = append(out, s)
+		}
+	}
+	if v := m.Gift; v != nil {
+		add("［礼物］", v.Label(), v.Text)
+	}
+	if v := m.GiftUpgradeSent; v != nil {
+		add("［礼物升级］", v.Label(), v.Text)
+	}
+	if v := m.UniqueGift; v != nil {
+		add("［独特礼物］", v.Label(), v.Text)
+	}
+	if m.GiveawayCreated != nil {
+		out = append(out, "［抽奖开始］")
+	}
+	if v := m.GiveawayCompleted; v != nil {
+		add("［抽奖结束］", fmt.Sprintf("%d 名中奖", v.WinnerCount))
+	}
+	if v := m.UsersShared; v != nil {
+		f := []string{fmt.Sprintf("%d 人", len(v.Users))}
+		for _, u := range v.Users {
+			f = append(f, chatLabel(strings.TrimSpace(u.FirstName+" "+u.LastName), u.Username))
+		}
+		add("［分享用户］", f...)
+	}
+	if v := m.ChatShared; v != nil {
+		add("［分享聊天］", chatLabel(v.Title, v.Username))
+	}
+	if v := m.WebAppData; v != nil {
+		add("［网页数据］", v.ButtonText, v.Data)
+	}
+	if v := m.SuccessfulPayment; v != nil {
+		add("［支付］", v.InvoicePayload,
+			fmt.Sprintf("%d %s", v.TotalAmount, v.Currency), v.Order())
+	}
+	if v := m.RefundedPayment; v != nil {
+		add("［退款］", v.InvoicePayload, fmt.Sprintf("%d %s", v.TotalAmount, v.Currency))
+	}
+	if v := m.ProximityAlert; v != nil {
+		add("［雷达提醒］", displayUserName(v.Traveler), displayUserName(v.Watcher),
+			fmt.Sprintf("%d 米", v.Distance))
+	}
+	if m.ConnectedWebsite != "" {
+		add("［登录网站］", m.ConnectedWebsite)
+	}
+	if v := m.PaidMessagePrice; v != nil {
+		add("［付费消息］", fmt.Sprintf("%d 星", v.StarCount))
+	}
+	if v := m.PollOptionAdded; v != nil {
+		add("［投票新增选项］", v.Text())
+	}
+	if v := m.PollOptionDeleted; v != nil {
+		add("［投票删除选项］", v.Text())
+	}
+	if v := m.ChecklistTasksAdded; v != nil {
+		add("［清单新增任务］", v.Texts()...)
+	}
+	if v := m.ChecklistTasksDone; v != nil {
+		add("［清单完成任务］", v.Texts()...)
+	}
+	if m.NewChatTitle != "" {
+		add("［群改名］", m.NewChatTitle)
+	}
+	if v := m.PinnedMessage; v != nil {
+		add("［置顶消息］", oneLine(v.Text), oneLine(v.Caption))
+	}
+	return out
+}
+
+// richLines 渲染富消息（Bot API 10.1）。
+//
+// 富消息的正文全在块里，text 与 reply_markup 都是空的：不渲染它，一条
+// 有正文、有链接、有按钮的广告在判定侧就只是一条空消息。块逐层展开，
+// 与群里看到的内容对齐。
+func richLines(msg *tg.RichMessage) []string {
+	var out []string
+	for _, b := range msg.Blocks {
+		out = append(out, blockLines(b, "")...)
+	}
+	return out
+}
+
+// blockLines 渲染一个富消息块。depth 是嵌套层数，只用来避免异常报文
+// （互相引用的容器块）把渲染撑爆。
+func blockLines(b tg.RichBlock, depth string) []string {
+	if len(depth) > 4 {
+		return nil
+	}
+	var out []string
+
+	text := func(prefix string, nodes ...*tg.RichText) {
+		f := make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			f = append(f, n.Line())
+		}
+		if s := joinNonEmpty(prefix, f...); s != prefix {
+			out = append(out, s)
+		}
+	}
+
+	switch b.Type {
+	case "paragraph", "heading", "pre", "footer", "blockquote",
+		"expandable_blockquote", "pullquote", "thinking":
+		text("［富消息］", b.Text, b.Credit)
+	case "mathematical_expression":
+		if s := strings.TrimSpace(b.Expression); s != "" {
+			out = append(out, "［富消息］"+s)
+		}
+	case "buttons":
+		for _, btn := range b.Buttons {
+			if s := joinNonEmpty("［按钮］", btn.Parts()...); s != "［按钮］" {
+				out = append(out, s)
+			}
+		}
+	case "list":
+		for _, it := range b.Items {
+			if s := strings.TrimSpace(it.Label); s != "" {
+				out = append(out, "［富消息］"+s)
+			}
+			for _, sub := range it.Blocks {
+				out = append(out, blockLines(sub, depth+".")...)
+			}
+		}
+	case "table":
+		for _, row := range b.Cells {
+			var f []string
+			for _, cell := range row {
+				f = append(f, cell.Text.Line())
+			}
+			if s := joinNonEmpty("［表格］", f...); s != "［表格］" {
+				out = append(out, s)
+			}
+		}
+	case "divider", "anchor":
+		// 分隔线与锚点没有内容，只是个位置标记。
+	case "photo", "animation", "audio", "document", "video", "voice_note":
+		out = append(out, mediaBlockLine(b))
+		if b.Caption != nil {
+			text("［配文］", b.Caption.Text, b.Caption.Credit)
+		}
+	case "map":
+		if b.Location != nil {
+			out = append(out, fmt.Sprintf("［地图］%.4f,%.4f", b.Location.Latitude, b.Location.Longitude))
+		}
+	default:
+		// 容器类块（collage / slideshow / details / 引用块的子块）与
+		// 还没见过的新块类型：先展开子块，再把类型名留痕 —— 内容读不到
+		// 也要看得出「这里有东西」，新块类型就是这样被发现的。
+		for _, sub := range b.Blocks {
+			out = append(out, blockLines(sub, depth+".")...)
+		}
+		if b.Summary != nil {
+			text("［富消息］", b.Summary)
+		}
+		if b.Caption != nil {
+			text("［配文］", b.Caption.Text, b.Caption.Credit)
+		}
+		if len(out) == 0 && b.Type != "" {
+			out = append(out, "［富消息·未识别的块］"+b.Type)
+		}
+	}
+	return out
+}
+
+// mediaBlockLine 渲染富消息里的媒体块。只取文件名一类的文字，媒体本身
+// 不下载：文件名是攻击者可控的文字，图片则至少留下规格，让「这里有媒体」
+// 这件事不丢。
+func mediaBlockLine(b tg.RichBlock) string {
+	kind := map[string]string{
+		"photo": "图片", "animation": "动图", "audio": "音频",
+		"document": "文件", "video": "视频", "voice_note": "语音",
+	}[b.Type]
+	f := []string{kind}
+	var named *tg.FileNamed
+	switch b.Type {
+	case "animation":
+		named = b.Animation
+	case "audio":
+		named = b.Audio
+	case "document":
+		named = b.Document
+	case "video":
+		named = b.Video
+	case "voice_note":
+		named = b.VoiceNote
+	}
+	if named != nil {
+		f = append(f, named.FileName)
+	}
+	if len(b.Photo) > 0 {
+		f = append(f, fmt.Sprintf("%d 张", len(b.Photo)))
+	}
+	return joinNonEmpty("［富消息·媒体］", f...)
+}
+
+// hasPayload 报告这条消息有没有可识别的载荷。
+//
+// 为假说明 TG 推来的是一个我们没有解的消息类型：客户端看得到正文，
+// 判定侧只剩来源标注。调用方据此留下原始报文（见 noteUnknownPayload）——
+// 这类缺口只有看得见才会被补上。
+//
+// 判据要宽：有媒体就算有载荷。否则「转发的无配文视频」这种正常消息
+// 会被反复当成新类型留档。
+func hasPayload(m *tg.Message) bool {
+	if m.Text != "" || m.Caption != "" || m.Vision != "" {
+		return true
+	}
+	for _, es := range [][]tg.MessageEntity{m.Entities, m.CaptionEntities} {
+		for _, e := range es {
+			if e.Type == "text_link" && e.URL != "" {
+				return true
+			}
+		}
+	}
+	if m.RichMessage != nil || m.ReplyMarkup != nil {
+		return true
+	}
+	// service 消息本来就不带载荷，不算「没解出来」。
+	if m.NewChatMembers != nil || m.ServiceSeen() || hasMediaCarrier(m) {
+		return true
+	}
+	if _, seeable := visualOf(m); seeable {
+		return true
+	}
+	// 引用段不算载荷：回复消息本身必然带内容，只看到引用说明带的那份
+	// 内容没解出来，正是要留档的形态。
+	//
+	// 便宜的判据都试过才渲染：普通消息在第一个 return 就出了这个函数，
+	// 剩下这些只有不携带文字、也不是媒体的消息才会走到。
+	return len(payloadLines(&m.MsgPayload)) > 0 || len(fieldLines(m)) > 0
 }
 
 // joinNonEmpty 以空格拼接非空字段并加上前缀；全空时只返回前缀。
