@@ -205,3 +205,93 @@ func TestClearCommandDMPicksTarget(t *testing.T) {
 		t.Errorf("三个群都该落截断时刻且命中数归零，实际 %d 个", n)
 	}
 }
+
+// TestClearSubAdminScope：次管只能清理自己名下 bot 的群。三条路径都要挡住
+// 别人的群 —— 清单只列出自己的、`/clear <chat_id>` 拒绝范围外的、
+// 点别人群的按钮同样拒绝；点「全部群」也只清自己的那一批。
+func TestClearSubAdminScope(t *testing.T) {
+	reg, a := testutil.NewTestRegistry(t, dispatch)
+	sh := a.Shared
+	mine, fake := testutil.AddRegistryBot(t, reg, sh, 4343, 999) // 次管名下的 bot
+	other, _ := testutil.AddRegistryBot(t, reg, sh, 4444, 777)   // 别人的 bot
+	testutil.EnableAntiad(t, mine, -300)
+	testutil.EnableAntiad(t, other, -200)
+	if err := sh.AddAdmin(999, "次管", 777); err != nil {
+		t.Fatalf("加次管失败: %v", err)
+	}
+	if err := mine.PutSetting("antiad_cmd_rpm", "20"); err != nil {
+		t.Fatalf("放宽命令限频失败: %v", err)
+	}
+
+	now := time.Now().Unix()
+	for _, c := range []struct{ chat, uid int64 }{{-200, 9101}, {-300, 9102}} {
+		touchMember(a, c.chat, c.uid, now-3600)
+		if _, err := a.Store.Write.Exec(`INSERT INTO group_messages
+			(chat_id,message_id,user_id,text,at,media_group,punished)
+			VALUES (?,?,?,'日入5000 私聊我',?,'',1)`,
+			c.chat, c.uid, c.uid, now-300); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left := func(chat, uid int64) int {
+		return len(loadUserMessages(a.Store, chat, uid, 10, false))
+	}
+	if left(-300, 9102) != 1 || left(-200, 9101) != 1 {
+		t.Fatal("预置留底失败")
+	}
+
+	dm := &tg.Message{MessageID: 9, Date: 1700000000, Text: "/clear",
+		From: &tg.TGUser{ID: 999}, Chat: &tg.Chat{ID: 999, Type: "private"}}
+	cb := func(chatID int64) *tg.CallbackQuery {
+		return &tg.CallbackQuery{ID: "c1", From: &tg.TGUser{ID: 999},
+			Data: clearCallbackData(chatID),
+			Message: &tg.Message{MessageID: 9,
+				Chat: &tg.Chat{ID: 999, Type: "private"}}}
+	}
+
+	// 清单里只有自己的群 + 全部群。
+	fake.Reset()
+	HandleClearCommandDM(mine, dm, "")
+	calls := fake.Calls("sendMessage")
+	if len(calls) != 1 {
+		t.Fatalf("该回一条目标清单，实际 %d 条", len(calls))
+	}
+	want := []string{clearCallbackData(-300), clearCallbackData(0)}
+	if got := cbDataOfKB(t, calls[0]["reply_markup"]); !slices.Equal(got, want) {
+		t.Errorf("次管的清单应只有自己的群，得到 %q，期望 %q", got, want)
+	}
+
+	// 直接带别人群的 chat_id：拒绝，且两个群都不动。
+	fake.Reset()
+	HandleClearCommandDM(mine, dm, "-200")
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "不在你能管的范围") {
+		t.Errorf("次管清别人的群该被拒绝，得到 %v", p)
+	}
+	if left(-300, 9102) != 1 || left(-200, 9101) != 1 {
+		t.Error("被拒绝的请求不该动任何数据")
+	}
+
+	// 点别人群的按钮：同样拒绝。
+	fake.Reset()
+	HandleClearCallback(mine, cb(-200))
+	if fake.CountCalls("answerCallbackQuery") == 0 {
+		t.Error("按钮一律要应答，否则客户端一直转圈")
+	}
+	for _, p := range fake.Calls("editMessageText") {
+		t.Errorf("越权按钮不该改消息：%v", p)
+	}
+	if left(-200, 9101) != 1 {
+		t.Error("越权按钮不该清理别人的群")
+	}
+
+	// 点「全部群」：只清自己的那一批。
+	fake.Reset()
+	HandleClearCallback(mine, cb(0))
+	if left(-300, 9102) != 0 {
+		t.Error("自己的群该被清理")
+	}
+	if left(-200, 9101) != 1 {
+		t.Error("次管的「全部群」不该碰别人的群")
+	}
+}
