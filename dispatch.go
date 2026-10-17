@@ -155,6 +155,16 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		}
 		antiad.HandleGbanCommandDM(b, m, strings.TrimSpace(arg))
 		return
+	case text == "/clear" || strings.HasPrefix(text, "/clear ") ||
+		strings.HasPrefix(text, "/clear@"):
+		// 私聊形态与群内 /clear 是同一个动作，区别是范围：群内只管发命令
+		// 的那个群，私聊里由发起人挑目标群或全部群（见 HandleClearCommandDM）。
+		arg := strings.TrimPrefix(text, "/clear")
+		if strings.HasPrefix(arg, "@") { // /clear@botname [all|chat_id]
+			_, arg, _ = strings.Cut(arg, " ")
+		}
+		antiad.HandleClearCommandDM(b, m, strings.TrimSpace(arg))
+		return
 	case text == "/log" || strings.HasPrefix(text, "/log ") ||
 		strings.HasPrefix(text, "/log@"):
 		panel.HandleLogCommand(b, m, text)
@@ -224,6 +234,12 @@ func handleCallback(b *core.Bot, q *tg.CallbackQuery) {
 			b.AnswerCallback(q.ID, "")
 			return
 		}
+	}
+	if strings.HasPrefix(q.Data, "a:cl:") {
+		// 私聊清理清单的按钮：能不能点由发起人身份决定，见
+		// HandleClearCallback（它自己也再查一次 IsStaff）。
+		antiad.HandleClearCallback(b, q)
+		return
 	}
 	panel.HandleAdminCallback(b, q)
 }

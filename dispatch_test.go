@@ -354,3 +354,48 @@ func TestBanGbanCommandRouting(t *testing.T) {
 		t.Errorf("陌生人不该能触发 /ban：%v", p)
 	}
 }
+
+// TestClearCommandDMRouting：私聊 /clear 与它的清单按钮只对服务管理员生效；
+// 陌生人的同样文字落到申诉通道，不暴露命令。
+func TestClearCommandDMRouting(t *testing.T) {
+	dm := func(uid int64, text string) *tg.Update {
+		return &tg.Update{Message: &tg.Message{MessageID: 1, Date: 1700000000, Text: text,
+			From: &tg.TGUser{ID: uid}, Chat: &tg.Chat{ID: uid, Type: "private"}}}
+	}
+	b, fake, _ := testutil.NewTestBotDispatch(t, 777, 777, nil)
+
+	fake.Reset()
+	dispatch(b, dm(777, "/clear"))
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "清理") {
+		t.Errorf("管理员发 /clear 应得到回应，得到 %v", p)
+	}
+
+	fake.Reset()
+	dispatch(b, dm(12345, "/clear"))
+	if p := fake.LastCall("sendMessage"); p != nil &&
+		strings.Contains(p["text"].(string), "清理") {
+		t.Errorf("陌生人不该能触发清理：%v", p)
+	}
+
+	// 清单按钮走 a:cl: 前缀的分支，同样只放管理员进来。
+	cb := func(uid int64) *tg.Update {
+		return &tg.Update{CallbackQuery: &tg.CallbackQuery{ID: "c1",
+			From:    &tg.TGUser{ID: uid},
+			Data:    "a:cl:0",
+			Message: &tg.Message{MessageID: 2, Chat: &tg.Chat{ID: uid, Type: "private"}}}}
+	}
+	fake.Reset()
+	dispatch(b, cb(777))
+	if fake.CountCalls("answerCallbackQuery") == 0 {
+		t.Error("管理员的清单按钮该被应答")
+	}
+	fake.Reset()
+	dispatch(b, cb(12345))
+	if fake.CountCalls("answerCallbackQuery") == 0 {
+		t.Error("按钮一律要应答，否则客户端一直转圈")
+	}
+	for _, p := range fake.Calls("editMessageText") {
+		t.Errorf("陌生人点的按钮不该改消息：%v", p)
+	}
+}
