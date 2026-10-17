@@ -249,6 +249,57 @@ func TestResetUserHistoryCutsJudgmentHistory(t *testing.T) {
 	}
 }
 
+// TestResetChatHistoryCutsWholeChat：/clear 把本群全部成员的判定史截到此刻，
+// 只影响本群，且只改「还算不算证据」—— 留底与流水不删。
+func TestResetChatHistoryCutsWholeChat(t *testing.T) {
+	b, _ := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+
+	now := time.Now().Unix()
+	for _, uid := range []int64{701, 702} {
+		touchMember(b, -100, uid, now-3600)
+		BumpAdHits(b, -100, uid, 2)
+		if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+			(chat_id,message_id,user_id,text,at,media_group,punished)
+			VALUES (-100,?,?,'日入5000 私聊我',?,'',1)`, uid, uid, now-300); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 别的群不在作用面内。
+	touchMember(b, -200, 701, now-3600)
+	if _, err := b.Store.Write.Exec(`INSERT INTO group_messages
+		(chat_id,message_id,user_id,text,at,media_group,punished)
+		VALUES (-200,9001,701,'别的群的话',?,'',0)`, now-300); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := ResetChatHistory(b, -100)
+	if err != nil {
+		t.Fatalf("截断失败: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("应截断 2 名成员，实际 %d", n)
+	}
+	for _, uid := range []int64{701, 702} {
+		if got := len(loadUserMessages(b.Store, -100, uid, 10, false)); got != 0 {
+			t.Errorf("uid %d 的留底不该再进判定，实际还剩 %d 条", uid, got)
+		}
+		if got := len(loadUserMessages(b.Store, -100, uid, 10, true)); got != 0 {
+			t.Errorf("uid %d 的 recent_context 同样应截断，实际还剩 %d 条", uid, got)
+		}
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_members
+		WHERE chat_id=-100 AND hist_cleared_at>0 AND ad_hits=0`); n != 2 {
+		t.Error("两名成员都应落截断时刻且命中数归零")
+	}
+	if n := countRows(t, b, `SELECT COUNT(*) FROM group_messages WHERE chat_id=-100`); n != 2 {
+		t.Errorf("留底应原样保留，实际 %d 条", n)
+	}
+	if n := len(loadUserMessages(b.Store, -200, 701, 10, false)); n != 1 {
+		t.Errorf("别的群的留底不该被牵连，实际 %d 条", n)
+	}
+}
+
 // TestLiftMuteKeepsHistory：截断判定史**不能**挂在 LiftMute 上 —— 申诉自动
 // 解除与解禁码兑换也走那条路，挂上去等于任何刷广告的人都能靠申诉把案底刷白。
 func TestLiftMuteKeepsHistory(t *testing.T) {

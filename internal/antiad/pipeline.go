@@ -155,6 +155,8 @@ func HandleGroupMessage(b *core.Bot, m *tg.Message) {
 				HandleUngbanCommand(b, conf, m, arg)
 			case "/jtime":
 				HandleJtimeCommand(b, conf, m, arg)
+			case "/clear":
+				HandleClearCommand(b, conf, m)
 			}
 		}
 		return

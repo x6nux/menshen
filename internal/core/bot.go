@@ -576,6 +576,7 @@ var adGroupCmds = []map[string]string{
 	{"command": "uad", "description": "解除某人在本群的限制并清记录（群管理员）"},
 	{"command": "ungban", "description": "解除某人在本群的联合封禁（主/次管理员含全局组）"},
 	{"command": "jtime", "description": "查看入群时间（回复消息或 /jtime user_id；直接发 /jtime 查自己）"},
+	{"command": "clear", "description": "清理本群全部成员的判定上下文（群管理员）"},
 }
 
 func (b *Bot) RegisterCommands() {

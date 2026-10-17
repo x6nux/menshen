@@ -311,3 +311,24 @@ func ResetUserHistory(b *core.Bot, chatID, uid int64) {
 	}
 	slog.Info("反广告：管理员放行，此人在本群的判定史已截断", "chat", chatID, "uid", uid)
 }
+
+// ResetChatHistory 把本群**全部成员**的判定史截到此刻（见 /clear）。
+//
+// 与 ResetUserHistory 同一口径，只是作用面从一个人扩到整群：此前的留底
+// 不再进 recent_context 与复查，历史命中数归零。不解除任何限制、不删留底与
+// 流水 —— 留底是 /check 复查与连带删除的依据，删了就再也查不回来；这里改的
+// 只是「它还算不算证据」。
+//
+// 返回被截断的成员画像行数（留底与画像同时存在的人；只有留底没有画像行的
+// 目标不在其中 —— 那种行不存在，本来就没有可截断的状态）。
+func ResetChatHistory(b *core.Bot, chatID int64) (int64, error) {
+	res, err := b.Store.Write.Exec(`UPDATE group_members
+		SET hist_cleared_at=MAX(hist_cleared_at, ?), ad_hits=0
+		WHERE chat_id=?`, time.Now().Unix(), chatID)
+	if err != nil {
+		slog.Error("反广告：截断本群判定史失败", "chat", chatID, "err", err)
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}

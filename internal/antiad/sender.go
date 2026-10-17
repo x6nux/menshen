@@ -311,6 +311,23 @@ func senderOf(m *tg.Message) *tg.TGUser {
 	return &tg.TGUser{ID: c.ID, FirstName: c.Title, Username: c.Username}
 }
 
+// authoredByChat 报告这条消息是不是以聊天身份发的，而不是某个成员本人发的。
+//
+// 三种形态的共同点是发送者不是一个成员账号：关联频道的帖子自动转发进讨论群
+// 时 from 是 777000 服务账号（见 tgServiceUID）；频道以自身身份发帖时
+// sender_chat 是那个频道；匿名管理员的 sender_chat 就是本群本身。
+//
+// 用于判定引用段的归属：这类内容不是引用者写的，不该记在引用者名下。
+func authoredByChat(m *tg.Message) bool {
+	if m == nil {
+		return false
+	}
+	if m.From != nil && m.From.ID == tgServiceUID {
+		return true
+	}
+	return m.SenderChat != nil
+}
+
 // guestSummonWindow 是「召唤语 → bot 代发」允许的时间跨度。访客模式是即时的，
 // 留一点余量覆盖 TG 的推送延迟。
 const guestSummonWindow = 10 * time.Minute

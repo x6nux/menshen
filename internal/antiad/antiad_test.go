@@ -227,6 +227,8 @@ func TestParseAdCommand(t *testing.T) {
 		{"/banad 12345", "/banad", "12345", true},
 		{"/ungban", "/ungban", "", true},
 		{"/ungban @someone", "/ungban", "@someone", true},
+		{"/clear", "/clear", "", true},
+		{"/clear@some_bot", "/clear", "", true},
 		{"/adx", "", "", false},
 		{"随便聊天", "", "", false},
 		{"", "", "", false},
@@ -642,6 +644,48 @@ func TestGroupQuoteNotJudged(t *testing.T) {
 	}
 	if got := judgingText(ext); !strings.Contains(got, "频道推广") {
 		t.Errorf("judgingText 应含外部引用，得到 %q", got)
+	}
+}
+
+// TestChannelQuoteNotRecorded：引用本群里频道（或匿名管理员代表的群本身）
+// 发的帖子时，引用段断了 —— 它不是引用者写的内容。成员回复一条频道广告，
+// 那段广告不该落进他自己的留底：留底喂给复查与 recent_context，之后会被
+// 当成他发过的东西。
+func TestChannelQuoteNotRecorded(t *testing.T) {
+	channelPost := testutil.GroupMsg(-100, -1001234567890, 6, "限时五折 加我")
+	channelPost.SenderChat = &tg.Chat{ID: -1001234567890, Title: "某频道"}
+	m := testutil.GroupMsg(-100, 42, 7, "多少钱")
+	m.ReplyToMessage = channelPost
+	if q := quotedInfo(m); q != nil {
+		t.Errorf("引用频道帖子不该取到引用段: %+v", q)
+	}
+	if got := displayText(m); got != "多少钱" {
+		t.Errorf("displayText = %q，期望只留本人正文", got)
+	}
+
+	// 关联频道的帖子自动转发进讨论群：from 是 777000 服务账号。
+	fwd := testutil.GroupMsg(-100, 777000, 8, "限时五折 加我")
+	reply := testutil.GroupMsg(-100, 42, 9, "多少钱")
+	reply.ReplyToMessage = fwd
+	if got := displayText(reply); got != "多少钱" {
+		t.Errorf("引用关联频道转发的帖子应只留本人正文，得到 %q", got)
+	}
+
+	// 匿名管理员：sender_chat 是本群，发言者不是一个成员账号。
+	anon := testutil.GroupMsg(-100, 1087968824, 10, "群公告 私聊管理员")
+	anon.SenderChat = &tg.Chat{ID: -100, Title: "测试群"}
+	ar := testutil.GroupMsg(-100, 42, 11, "收到")
+	ar.ReplyToMessage = anon
+	if got := displayText(ar); got != "收到" {
+		t.Errorf("引用群身份发的帖子应只留本人正文，得到 %q", got)
+	}
+
+	// 群友的消息照旧保留引用：那是本人可以批评、举报的内容。
+	person := testutil.GroupMsg(-100, 43, 12, "加我微信 xxx")
+	pr := testutil.GroupMsg(-100, 42, 13, "这是广告")
+	pr.ReplyToMessage = person
+	if got := displayText(pr); got != "这是广告\n［引用］加我微信 xxx" {
+		t.Errorf("引用群友的消息应照实保留引用段，得到 %q", got)
 	}
 }
 

@@ -423,7 +423,7 @@ func forwardSource(raw json.RawMessage) string {
 const quoteMark = "［引用］"
 
 // displayText 是这条消息在群里实际可见的全部文字：本人正文加上被引用的
-// 内容。
+// 内容（引用本群频道／群身份发的帖子时只有本人正文，见 quotedInfo）。
 //
 // 判空、去重、上下文、落库、告警五处共用它，因为引用规避会把本人正文
 // 压到空或一两个字符：
@@ -443,7 +443,8 @@ func displayText(m *tg.Message) string {
 // 群内引用是别人的话：引用一条广告来提醒管理员 / 批评 / 询问属于举报与
 // 讨论，把那段广告算到引用者头上会把他判成发广告的人。外部引用（频道、
 // 其它聊天）保留 —— 那是正文为空、载荷全在引用里的主要规避形态。留底、
-// 去重、告警仍走 displayText（审计口径，引用照实保留）。
+// 去重、告警仍走 displayText（审计口径，引用照实保留；本群频道／群身份
+// 发的帖子除外，那段连留底也不进，见 quotedInfo）。
 func judgingText(m *tg.Message) string {
 	q := quotedInfo(m)
 	if q == nil || !q.IsExternal {

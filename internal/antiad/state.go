@@ -70,7 +70,9 @@ type adChatInfo struct {
 //
 // 只有外部聊天引用会进送检载荷（见 buildState）：群内引用是别人的话，
 // 引用一条广告提醒管理员 / 批评 / 询问是举报行为，不算引用者的载荷。
-// 留底与告警仍用 displayText 保留全部引用，那是审计口径。
+// 留底与告警仍用 displayText 保留引用，那是审计口径 —— 唯一不进留底的
+// 是本群频道／群身份发的帖子：它整段由 quotedInfo 返回 nil（见
+// authoredByChat）。
 type adQuotedInfo struct {
 	Text string `json:"text"`
 	From string `json:"from"`
@@ -85,6 +87,9 @@ type adQuotedInfo struct {
 //
 // 取值优先级：手动选中的引文 > 跨聊天引用摘要 > 同群原消息。
 // 手动引文优先，是因为它才是群里实际显示、其他成员看得到的那一段。
+//
+// 被引用的那条由频道或群身份发出时整体返回 nil：那段内容是别人写的，
+// 引用它不该把别人的话记在引用者头上（见 authoredByChat）。
 func quotedInfo(m *tg.Message) *adQuotedInfo {
 	q := &adQuotedInfo{}
 
@@ -102,6 +107,13 @@ func quotedInfo(m *tg.Message) *adQuotedInfo {
 			q.From = c.Title
 		}
 	} else if r := m.ReplyToMessage; r != nil {
+		// 本群里频道（或匿名管理员代表的群本身）发的帖子：引用段不是引用者
+		// 写的内容。整条引用在这里断掉，留底与告警才只记本人正文 —— 否则
+		// 成员回复一条频道广告，那段广告篇幅就落进他自己的留底，之后的
+		// 复查与上下文会把它当成他发过的东西（见 displayText）。
+		if authoredByChat(r) {
+			return nil
+		}
 		q.Text = msgText(r)
 		q.From = senderName(r.From)
 		if r.From == nil {
