@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -40,16 +42,36 @@ const (
 	aiRetryBase = 200 * time.Millisecond
 )
 
-// aiSessionID 是所有大模型请求共用的会话标识（OpenAI 的 user 字段与兼容
-// 网关的 session_id 都填它）。
+// aiSessionID 是除 jev 外的大模型请求共用的会话标识（OpenAI 的 user 字段与
+// 兼容网关的 session_id 都填它）。
 //
 // 固定一个值是为了让上游把同一路判定的 KV 前缀留在同一个会话/副本上：判定
 // 用的 system 提示词对所有消息都一样（几 KB 的稳定前缀），固定会话才谈得上
 // 命中前缀缓存，也省掉跨副本的冷启动。
 //
-// 只加在 chat 端点上：systemone 是 TypeSafe 原生形态，多带字段会直接返回
-// 400 Invalid request，导致初判整条失败。
+// jev 不固定：每次请求用新值（见 sessionIDForModel）。上游对 jev 的限流与
+// 副本粘滞按会话算，固定成一个值等于把所有判定请求塞进同一个桶。
 const aiSessionID = "menshen-antiad"
+
+// sessionIDForModel 返回本次请求要用的会话标识。jev 每次请求完全随机；
+// 其余模型沿用固定值，保住前缀缓存。
+func sessionIDForModel(model string) string {
+	_, id := upstream.SplitModelName(model)
+	if strings.HasPrefix(strings.ToLower(id), "jev-") {
+		return newSessionID()
+	}
+	return aiSessionID
+}
+
+// newSessionID 生成一个随机会话标识（16 字节，hex）。
+func newSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand 失败极罕见，退化成时间戳也不能让判定请求发不出去。
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // aiAttemptCap 是单次尝试的时间上限（测试可调）。
 //
@@ -385,12 +407,12 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	for k, v := range payload {
 		p[k] = v
 	}
-	// 稳定会话标识（见 aiSessionID）。systemone 不加：会返回 400。
-	// 只有 OpenAI Completions 渠道会原样带上它；其余渠道的协议适配层
-	// 只挑自己认识的字段，多余字段不会传给上游。
+	// 会话标识（见 aiSessionID / sessionIDForModel）。chat 端点走 body，
+	// systemone 的 body 不接受这些字段（实测 400），只能放同名请求头。
+	sid := sessionIDForModel(model)
 	if ep == upstream.EPChat {
-		p["user"] = aiSessionID
-		p["session_id"] = aiSessionID
+		p["user"] = sid
+		p["session_id"] = sid
 	}
 	body, err := json.Marshal(up.BuildBody(ep, model, p))
 	if err != nil {
@@ -437,6 +459,9 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	// 鉴权头按渠道类型设置：Anthropic 用 x-api-key，Gemini 用
 	// x-goog-api-key，其余用 Bearer。
 	up.SetAuth(req)
+	if ep == upstream.EPSystemOne {
+		req.Header.Set("X-Session-Id", sid)
+	}
 
 	resp, err := sh.AIClient.Do(req)
 	if err != nil {

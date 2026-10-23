@@ -1,10 +1,12 @@
 package antiad
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -421,38 +423,99 @@ func TestSlowModelGetsCutForTheFastRetry(t *testing.T) {
 	}
 }
 
-// TestLLMRequestCarriesStableSession：大模型请求要带固定的会话标识（user +
-// session_id），让上游把同一路判定的前缀留在同一个会话/副本上；systemone
-// 是 TypeSafe 原生形态，多带字段会 400，绝不能加。
-func TestLLMRequestCarriesStableSession(t *testing.T) {
+// TestAIRequestSessionID：会话标识按模型区分 —— jev 每次请求都用新的随机值
+// （systemone 放请求头，body 带 session_id/user 实测会 400），其余模型沿用
+// 固定值，保住上游的前缀缓存。
+func TestAIRequestSessionID(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
-	var chatBody, soBody atomic.Value
+
+	type captured struct {
+		body   string
+		header string
+	}
+	var mu sync.Mutex
+	var chats, sos []captured
 	fakeAI(t, b, func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		if strings.HasSuffix(r.URL.Path, "/systemone") {
-			soBody.Store(string(raw))
+			sos = append(sos, captured{body: string(raw), header: r.Header.Get("X-Session-Id")})
+		} else {
+			chats = append(chats, captured{body: string(raw)})
+		}
+		mu.Unlock()
+
+		if strings.HasSuffix(r.URL.Path, "/systemone") {
 			w.Write([]byte(`{"answers":{"is_ad":{"choice":"clean","confidence":0.9}}}`))
 			return
 		}
-		chatBody.Store(string(raw))
 		w.Write([]byte(`{"choices":[{"message":{"content":` +
 			`"{\"is_ad\":false,\"confidence\":0.9,\"reason\":\"正常\"}"}}]}`))
 	})
 
+	setGlobal(t, b, "antiad_so_models", `["fake/jev-1.13"]`)
+	setGlobal(t, b, "antiad_llm_models", `["fake/jev-1.13"]`)
+	for i := 0; i < 2; i++ {
+		if _, err := judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions); err != nil {
+			t.Fatalf("judgeSystemOne: %v", err)
+		}
+		if _, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt); err != nil {
+			t.Fatalf("judgeLLM: %v", err)
+		}
+	}
+
+	mu.Lock()
+	gotChats := append([]captured(nil), chats...)
+	gotSOs := append([]captured(nil), sos...)
+	mu.Unlock()
+	if len(gotChats) != 2 || len(gotSOs) != 2 {
+		t.Fatalf("请求数不对：chat=%d systemone=%d", len(gotChats), len(gotSOs))
+	}
+
+	sessionOf := func(body string) (user, sid string) {
+		t.Helper()
+		var m map[string]any
+		if err := json.Unmarshal([]byte(body), &m); err != nil {
+			t.Fatalf("请求体不是 JSON：%v %s", err, body)
+		}
+		user, _ = m["user"].(string)
+		sid, _ = m["session_id"].(string)
+		return
+	}
+
+	u0, s0 := sessionOf(gotChats[0].body)
+	u1, s1 := sessionOf(gotChats[1].body)
+	if u0 == "" || u0 != s0 || u1 == "" || u1 != s1 {
+		t.Errorf("chat 请求的 user/session_id 应成对出现：%q/%q, %q/%q", u0, s0, u1, s1)
+	}
+	if u0 == u1 || s0 == s1 {
+		t.Errorf("jev 的 chat 会话标识每次请求都应不同：%q == %q", u0, u1)
+	}
+	if u0 == aiSessionID {
+		t.Errorf("jev 不该再使用固定会话标识 %q", aiSessionID)
+	}
+
+	for i, so := range gotSOs {
+		if strings.Contains(so.body, "session_id") || strings.Contains(so.body, `"user"`) {
+			t.Errorf("systemone body 不该带这些字段（实测会 400）：%s", so.body)
+		}
+		if so.header == "" {
+			t.Errorf("第 %d 次 systemone 请求缺少 X-Session-Id", i)
+		}
+	}
+	if gotSOs[0].header == gotSOs[1].header {
+		t.Errorf("systemone 的 X-Session-Id 每次请求都应不同：%q", gotSOs[0].header)
+	}
+
+	// 非 jev 模型仍用固定会话，避免丢掉前缀缓存。
+	setGlobal(t, b, "antiad_llm_models", `["fake/llm-model"]`)
 	if _, err := judgeLLM(b, b.Cache.Snap(), adState{}, adVerdict{}, llmSystemPrompt); err != nil {
 		t.Fatalf("judgeLLM: %v", err)
 	}
-	body, _ := chatBody.Load().(string)
-	if !strings.Contains(body, `"user":"`+aiSessionID+`"`) ||
-		!strings.Contains(body, `"session_id":"`+aiSessionID+`"`) {
-		t.Errorf("chat 请求应带固定会话标识：%s", body)
-	}
-
-	if _, err := judgeSystemOne(b, b.Cache.Snap(), adState{}, soInstructions); err != nil {
-		t.Fatalf("judgeSystemOne: %v", err)
-	}
-	so, _ := soBody.Load().(string)
-	if strings.Contains(so, "session_id") || strings.Contains(so, `"user"`) {
-		t.Errorf("systemone 请求不该带这些字段（实测会 400）：%s", so)
+	mu.Lock()
+	last := chats[len(chats)-1]
+	mu.Unlock()
+	if user, sid := sessionOf(last.body); user != aiSessionID || sid != aiSessionID {
+		t.Errorf("非 jev 模型应沿用固定会话 %q，得到 %q/%q", aiSessionID, user, sid)
 	}
 }
