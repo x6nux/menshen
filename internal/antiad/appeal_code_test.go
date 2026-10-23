@@ -145,6 +145,89 @@ func TestGroupRedeemExpiredAndSelf(t *testing.T) {
 	}
 }
 
+// TestGroupRedeemAnonymousAdmin：匿名管理员发言时 from 是 GroupAnonymousBot，
+// 也要按群管理员处理：先回进度，再兑换，最后编辑同一条消息。
+func TestGroupRedeemAnonymousAdmin(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	const code = "MSU-7K2Q-9XFM"
+	insertCodedAppeal(t, b, 555, code, time.Now().Add(time.Hour).Unix())
+
+	msg := testutil.GroupMsg(-100, groupAnonymousBotID, 907, code)
+	msg.From.IsBot = true
+	msg.SenderChat = &tg.Chat{ID: -100, Type: "supergroup", Title: "测试群"}
+	HandleGroupMessage(b, msg)
+	waitIdle(t, b)
+
+	var wl int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM ad_whitelist
+		WHERE user_id=555 AND chat_id=-100`).Scan(&wl)
+	if wl != 1 {
+		t.Errorf("匿名管理员发的码应完成兑换，白名单 %d 条", wl)
+	}
+
+	progress, final := false, false
+	for _, c := range fake.Calls("sendMessage") {
+		if text, _ := c["text"].(string); strings.Contains(text, "正在解封") &&
+			strings.Contains(text, "555") {
+			progress = true
+		}
+	}
+	for _, c := range fake.Calls("editMessageText") {
+		if text, _ := c["text"].(string); strings.Contains(text, "已解除限制") {
+			final = true
+		}
+	}
+	if !progress || !final {
+		t.Errorf("应先回进度再编辑成结果（progress=%v final=%v）", progress, final)
+	}
+}
+
+// TestGroupRedeemAdminAlwaysReplies：群管发的码不管能不能兑换都要有回复。
+func TestGroupRedeemAdminAlwaysReplies(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+
+	assertReply := func(want string) {
+		t.Helper()
+		for _, c := range fake.Calls("sendMessage") {
+			if text, _ := c["text"].(string); strings.Contains(text, want) {
+				return
+			}
+		}
+		t.Errorf("应回包含 %q 的提示，实际：%+v", want, fake.Calls("sendMessage"))
+	}
+
+	// 别的 bot 的码。
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,code,code_expires,created_at,updated_at)
+		VALUES (?,?,'code',?,?,?,?)`,
+		b.BotID()+1, int64(556), "MSU-AAAA-BBBB", now+3600, now, now); err != nil {
+		t.Fatal(err)
+	}
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 908, "MSU-AAAA-BBBB"))
+	assertReply("不属于本群所属的 bot")
+
+	// 库里不存在的码。
+	fake.Reset()
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 909, "MSU-ZZZZ-ZZZZ"))
+	assertReply("解禁码无效")
+
+	// 申诉人自己发自己的码（同时是群管）。
+	fake.Reset()
+	insertCodedAppeal(t, b, 777, "MSU-CCCC-DDDD", time.Now().Add(time.Hour).Unix())
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 910, "MSU-CCCC-DDDD"))
+	assertReply("自己的解禁码")
+
+	var redeems int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeal_redeems`).Scan(&redeems)
+	if redeems != 0 {
+		t.Errorf("上述情况都不该产生兑换记录，实际 %d 条", redeems)
+	}
+}
+
 // TestGroupCheckUnlockCodeShowsReason：管理员在群里发 /check <解禁码> 只查
 // 封禁原因，不触发兑换；普通成员无权查看。
 func TestGroupCheckUnlockCodeShowsReason(t *testing.T) {

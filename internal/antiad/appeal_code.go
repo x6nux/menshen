@@ -98,13 +98,12 @@ func loadAppealByCode(s *store.Store, code string) (appealRec, bool) {
 
 // handleGroupRedeem 尝试把一条群消息当作解禁码兑换。
 //
-// 以下四条全部满足才截下这条消息，否则照常留底、照常判定：广告号只要
-// 在消息里塞一段长得像解禁码的文字，就能躲过判定。
+// 只有群管理员（含匿名管理员）发的码才会被截下并回复；普通成员发的一律
+// 照常留底、照常判定 —— 否则广告号只要在消息里塞一段像解禁码的文字，
+// 就能躲过判定。
 //
-//  1. 消息里有符合格式的串
-//  2. 解禁码存在，且申诉单的 bot_id 等于本 bot（同群多个 menshen bot 各管各的码）
-//  3. 发送人不是申诉人本人
-//  4. 发送人有权限（主管理员 / bot 归属人 / 本群 TG 管理员）
+// 管理员发的码一律回复，不管码是否有效、是否属于本 bot、是否已过期：
+// 有效就兑换，其余情况给出具体原因，避免管理员发了码却没有任何反馈。
 func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 	// 命令优先：/check <解禁码> 是查封禁原因，不是兑换。命令消息一律不
 	// 走兑换，否则会被下面当成裸码截下并真的解封。
@@ -115,32 +114,37 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 	if !ok {
 		return false
 	}
-	ap, ok := loadAppealByCode(b.Store, code)
-	if !ok || ap.BotID != b.BotID() {
-		return false
-	}
-	if m.From.ID == ap.UserID {
-		return false
-	}
-	if !canMarkAd(b, conf.ChatID, m.From.ID) {
+	if !canMarkAdOrAnonymous(b, conf.ChatID, m) {
 		return false
 	}
 
-	// 到这里才截下这条消息。
+	// 到这里一律截下这条消息并回复。
 	deleteMsg := func() {
 		b.TG.Call("deleteMessage", map[string]any{
 			"chat_id": conf.ChatID, "message_id": m.MessageID})
 	}
-	reply := func(text string) {
-		ttl := time.Duration(b.Cache.Snap().BotSettingInt(
-			b.BotID(), "antiad_alert_ttl", 0)) * time.Second
-		groupNotice(b, conf.ChatID, text, nil, ttl)
+	deleteMsg()
+
+	ttl := time.Duration(b.Cache.Snap().BotSettingInt(
+		b.BotID(), "antiad_alert_ttl", 0)) * time.Second
+	reply := func(text string) { groupNotice(b, conf.ChatID, text, nil, ttl) }
+
+	ap, found := loadAppealByCode(b.Store, code)
+	switch {
+	case !found:
+		reply("解禁码无效。")
+		return true
+	case ap.BotID != b.BotID():
+		reply("这个解禁码不属于本群所属的 bot，请到对应 bot 的群或私聊里兑换。")
+		return true
+	case m.From.ID == ap.UserID:
+		reply("这是申诉人自己的解禁码，需要由其他群管理员兑换。")
+		return true
 	}
 
 	now := time.Now().Unix()
 	if ap.Status != "code" || ap.CodeExpires < now {
 		reply("该解禁码已失效。")
-		deleteMsg()
 		return true
 	}
 	var redeemed int
@@ -148,21 +152,49 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 		WHERE appeal_id=? AND chat_id=?`, ap.ID, conf.ChatID).Scan(&redeemed)
 	if redeemed > 0 {
 		reply("该解禁码已在本群用过。")
-		deleteMsg()
 		return true
 	}
+
+	// 先回进度，解封完成后编辑同一条消息：解封要调几个 TG 接口，
+	// 慢的时候管理员会以为命令没生效而重复发送。
+	progress := sendGroup(b, conf.ChatID,
+		fmt.Sprintf("⏳ 正在解封 %s……", userLink(ap.UserID)), nil)
+	scheduleAlertCleanup(b, conf.ChatID, progress, ttl)
 
 	redeemInChat(b, ap, conf.ChatID, m.From.ID)
 	if err := b.Cache.Reload(); err != nil {
 		slog.Error("申诉：群内兑换后刷新快照失败", "err", err)
 	}
-	deleteMsg()
-	reply(fmt.Sprintf("✅ %s 已解除限制，24 小时内不受反广告检查。",
-		userLink(ap.UserID)))
+
+	final := fmt.Sprintf("✅ %s 已解除限制，24 小时内不受反广告检查。",
+		userLink(ap.UserID))
+	if progress != 0 {
+		b.EditNoPreview(conf.ChatID, progress, final, nil)
+		// 从完成时刻重新计时，进度条不会刚变成结果就被撤走。
+		scheduleAlertCleanup(b, conf.ChatID, progress, ttl)
+	} else {
+		groupNotice(b, conf.ChatID, final, nil, ttl)
+	}
 	sendWhitelistNotice(b, ap.UserID)
 	slog.Info("申诉：解禁码在群内兑换", "appeal", ap.ID,
 		"chat", conf.ChatID, "by", m.From.ID)
 	return true
+}
+
+// canMarkAdOrAnonymous 是群内兑换用的权限判断：匿名管理员发言时 from 是
+// GroupAnonymousBot 占位账号，拿它去查群管理权限永远查不到；但此时
+// sender_chat 就是本群，可以直接认定为本群管理员。
+func canMarkAdOrAnonymous(b *core.Bot, chatID int64, m *tg.Message) bool {
+	if m.From != nil && m.From.ID == groupAnonymousBotID {
+		return true
+	}
+	if m.SenderChat != nil && m.Chat != nil && m.SenderChat.ID == m.Chat.ID {
+		return true
+	}
+	if m.From == nil {
+		return false
+	}
+	return canMarkAd(b, chatID, m.From.ID)
 }
 
 // codeInspectLimit 是一次查询最多列出的生效限制条数。
