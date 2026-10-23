@@ -20,6 +20,8 @@ import (
 func TestChatDropsRejectedTemperature(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	const model = "hot/no-temp-model"
+	// 标记是进程级全局表：-count=2 时上一轮记下的会让本轮拿不到「第一次被拒」。
+	upstream.ClearTemperatureUnsupported("no-temp-model")
 
 	var withTemp, without atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

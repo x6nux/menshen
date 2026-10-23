@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"menshen/internal/upstream"
 	"testing"
 	"time"
 
@@ -104,6 +106,7 @@ func waitRuleAgentDone(t *testing.T, timeout time.Duration) map[string]any {
 func TestRuleAgentDropsRejectedTemperature(t *testing.T) {
 	b, _ := testutil.NewTestBot(t, 1)
 	const model = "hotrule/no-temp-agent"
+	upstream.ClearTemperatureUnsupported("no-temp-agent")
 
 	var withTemp, without atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

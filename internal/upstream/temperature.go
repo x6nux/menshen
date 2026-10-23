@@ -40,6 +40,17 @@ func MarkTemperatureUnsupported(modelID string) {
 	}
 }
 
+// ClearTemperatureUnsupported 清掉某个模型 ID 的「不接受 temperature」标记。
+//
+// 主要是给测试用的：该标记是进程级全局表，go test -count=2 这类同进程
+// 重复跑的场景里，上一轮记下的标记会让下一轮测试拿不到「第一次被拒」的
+// 形状。网关侧恢复支持该参数后想让它重新探测，也可以调它。
+func ClearTemperatureUnsupported(modelID string) {
+	if modelID != "" {
+		temperatureUnsupported.Delete(modelID)
+	}
+}
+
 // TemperatureRejected 判断一次上游错误是否为「模型不接受 temperature」。
 //
 // 判据只有两条：4xx（参数不认识、参数已废弃、字段不允许都是这一档）且
