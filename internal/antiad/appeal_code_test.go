@@ -205,6 +205,99 @@ func TestGroupCheckUnlockCodeShowsReason(t *testing.T) {
 	}
 }
 
+// TestCheckCodeDM：私聊 /check <解禁码> 只查原因、不兑换；私聊不限身份
+// （码本身就是凭证），群内才限群管理员。
+func TestCheckCodeDM(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	const code = "MSU-7K2Q-9XFM"
+	appealID := insertCodedAppeal(t, b, 555, code, time.Now().Add(time.Hour).Unix())
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,action,reason,created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		b.BotID(), int64(-100), int64(555), int64(900), "广告正文",
+		"ad", 0.93, "systemone", "deleted_muted", "测试封禁原因",
+		time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	dm := func(uid int64) *tg.Message {
+		return &tg.Message{MessageID: 1, Chat: &tg.Chat{ID: uid, Type: "private"},
+			From: &tg.TGUser{ID: uid}, Text: "/check " + code}
+	}
+
+	HandleCheckCodeDM(b, dm(1), code)
+	found := false
+	for _, c := range fake.Calls("sendMessage") {
+		if text, _ := c["text"].(string); strings.Contains(text, "解禁码查询") &&
+			strings.Contains(text, "测试封禁原因") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("管理员私聊查询应返回封禁原因：%+v", fake.Calls("sendMessage"))
+	}
+	var redeems int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeal_redeems
+		WHERE appeal_id=?`, appealID).Scan(&redeems)
+	if redeems != 0 {
+		t.Errorf("私聊查询不该兑换，实际写了 %d 条", redeems)
+	}
+
+	// 任何私聊发送者都能查：码本身是凭证。
+	fake.Reset()
+	HandleCheckCodeDM(b, dm(888), code)
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "解禁码查询") {
+		t.Errorf("私聊查码不该受身份限制，得到 %v", p)
+	}
+}
+
+// TestCheckCodeDMCrossBot：私聊可以查别的 bot 的码，卡片标出所属 bot。
+func TestCheckCodeDMCrossBot(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO bots
+		(token,bot_id,username,owner_id,enabled,created_at)
+		VALUES ('other-token',9999,'otherbot',888,1,?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Cache.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	const code = "MSU-AAAA-BBBB"
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,code,code_expires,created_at,updated_at)
+		VALUES (9999,556,'code',?,?,?,?)`, code, now+3600, now, now); err != nil {
+		t.Fatal(err)
+	}
+	dm := func(uid int64) *tg.Message {
+		return &tg.Message{MessageID: 1, Chat: &tg.Chat{ID: uid, Type: "private"},
+			From: &tg.TGUser{ID: uid}, Text: "/check " + code}
+	}
+
+	// 主管理员（uid=1）：可以查。
+	HandleCheckCodeDM(b, dm(1), code)
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "@otherbot") {
+		t.Errorf("主管理员查别的 bot 的码应成功并标出所属 bot，得到 %v", p)
+	}
+
+	// 归属人 888：可以查。
+	fake.Reset()
+	HandleCheckCodeDM(b, dm(888), code)
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "解禁码查询") {
+		t.Errorf("bot 归属人应能查自己 bot 的码，得到 %v", p)
+	}
+
+	// 任意私聊发送者都可以查。
+	fake.Reset()
+	HandleCheckCodeDM(b, dm(889), code)
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "解禁码查询") {
+		t.Errorf("私聊查码不该受身份限制，得到 %v", p)
+	}
+}
+
 // TestGroupCheckUnlockCodeRejectsOtherBot：别的 bot 签发的码按无效处理，
 // 不暴露它是否存在。
 func TestGroupCheckUnlockCodeRejectsOtherBot(t *testing.T) {

@@ -178,10 +178,34 @@ func codeInspectText(b *core.Bot, chatID int64, code string) string {
 		// 不区分「不存在」与「属于别的 bot」：否则可以用来枚举码空间。
 		return "解禁码无效或不属于本 bot。"
 	}
+	return renderCodeInspect(b, chatID, ap)
+}
 
+// HandleCheckCodeDM 处理私聊的 /check <解禁码>。
+//
+// 私聊不限制身份：解禁码本身就是凭证，只有申诉人收到过它（群里才限群管理员）。
+func HandleCheckCodeDM(b *core.Bot, m *tg.Message, code string) {
+	ap, ok := loadAppealByCode(b.Store, code)
+	if !ok {
+		b.Send(m.Chat.ID, "解禁码无效。", nil)
+		return
+	}
+	b.Send(m.Chat.ID, renderCodeInspect(b, 0, ap), nil)
+}
+
+// renderCodeInspect 渲染查询卡片。chatID=0 表示私聊查询：兑换记录按整张
+// 申诉单列出，不做「本群」限定。
+func renderCodeInspect(b *core.Bot, chatID int64, ap appealRec) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🎟 <b>解禁码查询</b>\n<code>%s</code>\n\n", html.EscapeString(ap.Code))
 	fmt.Fprintf(&sb, "用户：%s\n", userLink(ap.UserID))
+	if chatID == 0 {
+		if rec := b.Cache.Snap().Bots[ap.BotID]; rec != nil {
+			fmt.Fprintf(&sb, "所属 bot：%s\n", html.EscapeString(rec.Label()))
+		} else {
+			fmt.Fprintf(&sb, "所属 bot：%d\n", ap.BotID)
+		}
+	}
 	fmt.Fprintf(&sb, "申诉：#%d · %s\n", ap.ID, appealStatusLabel(ap.Status))
 
 	fmt.Fprintf(&sb, "AI 复核：%s", appealAIResultLabel(ap.AIResult))
@@ -198,7 +222,8 @@ func codeInspectText(b *core.Bot, chatID int64, code string) string {
 		}
 	}
 
-	ps := ActivePenalties(b.Shared, b.BotID(), ap.UserID)
+	// 生效限制按申诉所属 bot 取：私聊里主管理员可能正在查另一个 bot 的码。
+	ps := ActivePenalties(b.Shared, ap.BotID, ap.UserID)
 	if len(ps) == 0 {
 		sb.WriteString("\n<b>当前生效限制</b>：无（已解除或已到期）\n")
 	} else {
@@ -228,6 +253,11 @@ func codeInspectText(b *core.Bot, chatID int64, code string) string {
 		fmt.Fprintf(&sb, "\n<b>判定原因</b>\n%s\n", html.EscapeString(r))
 	}
 
+	if chatID == 0 {
+		appendRedeemSummary(&sb, b, ap.ID)
+		return sb.String()
+	}
+
 	var redeemChat, byUID, at int64
 	err := b.Store.Read.QueryRow(`SELECT chat_id,by_uid,at FROM appeal_redeems
 		WHERE appeal_id=? AND chat_id IN (0,?)
@@ -244,6 +274,42 @@ func codeInspectText(b *core.Bot, chatID int64, code string) string {
 		sb.WriteString("\n兑换：本群未兑换")
 	}
 	return sb.String()
+}
+
+// appendRedeemSummary 列出这张申诉单的全部兑换记录（私聊查询用）。
+func appendRedeemSummary(sb *strings.Builder, b *core.Bot, appealID int64) {
+	rows, err := b.Store.Read.Query(`SELECT chat_id,by_uid,at FROM appeal_redeems
+		WHERE appeal_id=? ORDER BY at`, appealID)
+	if err != nil {
+		sb.WriteString("\n兑换：未兑换")
+		return
+	}
+	defer rows.Close()
+
+	n := 0
+	for rows.Next() {
+		var chatID, byUID, at int64
+		if rows.Scan(&chatID, &byUID, &at) != nil {
+			continue
+		}
+		if n >= codeInspectLimit {
+			sb.WriteString("\n…其余兑换记录略")
+			break
+		}
+		if n == 0 {
+			sb.WriteString("\n兑换：")
+		}
+		where := "私聊"
+		if chatID != 0 {
+			where = chatRef(b.Cache.Snap(), chatID)
+		}
+		fmt.Fprintf(sb, "\n• %s（%s，%s）", where, userLink(byUID),
+			formatTS(b.Shared, at))
+		n++
+	}
+	if n == 0 {
+		sb.WriteString("\n兑换：未兑换")
+	}
 }
 
 // redeemInChat 在一个群里执行兑换动作（范围只限本群）。

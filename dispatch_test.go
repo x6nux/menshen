@@ -399,3 +399,51 @@ func TestClearCommandDMRouting(t *testing.T) {
 		t.Errorf("陌生人点的按钮不该改消息：%v", p)
 	}
 }
+
+// TestCheckCodeDMRouting：私聊 /check <解禁码> 走查询而不是兑换，且不限
+// 身份（码本身就是凭证）。
+func TestCheckCodeDMRouting(t *testing.T) {
+	dm := func(uid int64, text string) *tg.Update {
+		return &tg.Update{Message: &tg.Message{MessageID: 1, Date: 1700000000, Text: text,
+			From: &tg.TGUser{ID: uid}, Chat: &tg.Chat{ID: uid, Type: "private"}}}
+	}
+	b, fake, sh := testutil.NewTestBotDispatch(t, 777, 777, nil)
+	const code = "MSU-7K2Q-9XFM"
+	now := time.Now().Unix()
+	if _, err := sh.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,code,code_expires,created_at,updated_at)
+		VALUES (?,?,'code',?,?,?,?)`,
+		b.BotID(), int64(555), code, now+3600, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.Reset()
+	dispatch(b, dm(777, "/check "+code))
+	p := fake.LastCall("sendMessage")
+	if p == nil || !strings.Contains(p["text"].(string), "解禁码查询") {
+		t.Errorf("管理员私聊 /check 解禁码应回查询卡片，得到 %v", p)
+	}
+	var redeems int
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeal_redeems`).Scan(&redeems)
+	if redeems != 0 {
+		t.Errorf("/check 解禁码不该兑换，实际写了 %d 条", redeems)
+	}
+
+	fake.Reset()
+	dispatch(b, dm(777, "/check"))
+	if p := fake.LastCall("sendMessage"); p == nil ||
+		!strings.Contains(p["text"].(string), "用法") {
+		t.Errorf("/check 不带码应回用法，得到 %v", p)
+	}
+
+	fake.Reset()
+	dispatch(b, dm(12345, "/check "+code))
+	p = fake.LastCall("sendMessage")
+	if p == nil || !strings.Contains(p["text"].(string), "解禁码查询") {
+		t.Errorf("私聊查码应对所有人开放，得到 %v", p)
+	}
+	sh.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeal_redeems`).Scan(&redeems)
+	if redeems != 0 {
+		t.Errorf("私聊查码不该兑换，实际写了 %d 条", redeems)
+	}
+}

@@ -94,6 +94,20 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 			"staff", b.IsStaff(m.From.ID))
 	}
 
+	// /check <解禁码>：私聊对所有人开放（码本身就是凭证），群内才限群管理员。
+	// 必须排在「含码即兑换」之前，否则会被当成私聊兑换。
+	if arg, isCheck := checkCommandArg(text); isCheck {
+		if code, ok := antiad.FindUnlockCode(arg); ok {
+			antiad.HandleCheckCodeDM(b, m, code)
+			return
+		}
+		if b.IsStaff(m.From.ID) {
+			b.Send(m.Chat.ID, "用法：<code>/check &lt;解禁码&gt;</code>", nil)
+			return
+		}
+		// 非管理员不带码：交回申诉通道，不额外暴露命令。
+	}
+
 	// 非管理员的私聊全部交给申诉通道：deep link、申诉理由输入、解禁码提示。
 	// 它必须先于权限判断：被限制发言的是普通用户，按非管理员一律忽略处理
 	// 会使申诉通道失效。
@@ -202,6 +216,21 @@ func handleMessage(b *core.Bot, m *tg.Message) {
 		return
 	}
 	// 其余消息忽略
+}
+
+// checkCommandArg 识别私聊 /check 命令并取出参数（容忍 /check@botname）。
+func checkCommandArg(text string) (arg string, isCheck bool) {
+	if text == "/check" {
+		return "", true
+	}
+	if !strings.HasPrefix(text, "/check ") && !strings.HasPrefix(text, "/check@") {
+		return "", false
+	}
+	arg = strings.TrimPrefix(text, "/check")
+	if strings.HasPrefix(arg, "@") { // /check@botname <code>
+		_, arg, _ = strings.Cut(arg, " ")
+	}
+	return strings.TrimSpace(arg), true
 }
 
 func handleCallback(b *core.Bot, q *tg.CallbackQuery) {

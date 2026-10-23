@@ -655,6 +655,7 @@ var adminCmds = []map[string]string{
 	{"command": "start", "description": "打开管理面板"},
 	{"command": "log", "description": "查看某条判定记录（/log 记录号）"},
 	{"command": "user", "description": "查看某人的资料与处置记录（/user user_id）"},
+	{"command": "check", "description": "查看解禁码对应用户的封禁原因（/check 解禁码）"},
 	{"command": "white", "description": "把某人加入本 bot 的豁免名单"},
 	{"command": "uban", "description": "在你能管的所有群里解除某人的封禁与禁言（/uban user_id）"},
 	{"command": "ban", "description": "在你能管的所有群里禁言或封禁某人（/ban user_id [mute|ban]）"},
