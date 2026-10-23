@@ -3,6 +3,7 @@ package antiad
 import (
 	"crypto/rand"
 	"fmt"
+	"html"
 	"log/slog"
 	"math/big"
 	"regexp"
@@ -105,6 +106,11 @@ func loadAppealByCode(s *store.Store, code string) (appealRec, bool) {
 //  3. 发送人不是申诉人本人
 //  4. 发送人有权限（主管理员 / bot 归属人 / 本群 TG 管理员）
 func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
+	// 命令优先：/check <解禁码> 是查封禁原因，不是兑换。命令消息一律不
+	// 走兑换，否则会被下面当成裸码截下并真的解封。
+	if _, _, ok := parseAdCommand(m.Text); ok {
+		return false
+	}
 	code, ok := findUnlockCode(m.Text)
 	if !ok {
 		return false
@@ -157,6 +163,87 @@ func handleGroupRedeem(b *core.Bot, conf store.BotChat, m *tg.Message) bool {
 	slog.Info("申诉：解禁码在群内兑换", "appeal", ap.ID,
 		"chat", conf.ChatID, "by", m.From.ID)
 	return true
+}
+
+// codeInspectLimit 是一次查询最多列出的生效限制条数。
+const codeInspectLimit = 5
+
+// codeInspectText 渲染解禁码对应账号的封禁原因，供群内 /check <解禁码> 使用。
+//
+// 只读库、不发模型请求。内容只给群管理员看：生效中的限制（含联合封禁）、
+// 申诉时的 AI 判定原因，以及这个码在本群有没有被兑换过。
+func codeInspectText(b *core.Bot, chatID int64, code string) string {
+	ap, ok := loadAppealByCode(b.Store, code)
+	if !ok || ap.BotID != b.BotID() {
+		// 不区分「不存在」与「属于别的 bot」：否则可以用来枚举码空间。
+		return "解禁码无效或不属于本 bot。"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🎟 <b>解禁码查询</b>\n<code>%s</code>\n\n", html.EscapeString(ap.Code))
+	fmt.Fprintf(&sb, "用户：%s\n", userLink(ap.UserID))
+	fmt.Fprintf(&sb, "申诉：#%d · %s\n", ap.ID, appealStatusLabel(ap.Status))
+
+	fmt.Fprintf(&sb, "AI 复核：%s", appealAIResultLabel(ap.AIResult))
+	if ap.AIConf > 0 {
+		fmt.Fprintf(&sb, "（%.0f%%）", ap.AIConf*100)
+	}
+	sb.WriteString("\n")
+	if ap.CodeExpires > 0 {
+		exp := formatTS(b.Shared, ap.CodeExpires)
+		if ap.CodeExpires < time.Now().Unix() {
+			fmt.Fprintf(&sb, "码有效期：已过期（%s）\n", exp)
+		} else {
+			fmt.Fprintf(&sb, "码有效期：%s\n", exp)
+		}
+	}
+
+	ps := ActivePenalties(b.Shared, b.BotID(), ap.UserID)
+	if len(ps) == 0 {
+		sb.WriteString("\n<b>当前生效限制</b>：无（已解除或已到期）\n")
+	} else {
+		sb.WriteString("\n<b>当前生效限制</b>\n")
+		for i, p := range ps {
+			if i == codeInspectLimit {
+				fmt.Fprintf(&sb, "…另有 %d 条\n", len(ps)-i)
+				break
+			}
+			scope := chatRef(b.Cache.Snap(), p.ChatID)
+			switch p.Type {
+			case "gban":
+				scope = "全平台"
+			case "gban_own":
+				scope = "专属联合封禁"
+			}
+			fmt.Fprintf(&sb, "• <b>%s</b>（%s）%s\n",
+				html.EscapeString(penaltyLabel(p.Type)), scope,
+				formatTS(b.Shared, p.At))
+			if r := clip(p.Reason, 200); r != "" {
+				fmt.Fprintf(&sb, "  %s\n", html.EscapeString(r))
+			}
+		}
+	}
+
+	if r := clip(ap.AIReason, 300); r != "" {
+		fmt.Fprintf(&sb, "\n<b>判定原因</b>\n%s\n", html.EscapeString(r))
+	}
+
+	var redeemChat, byUID, at int64
+	err := b.Store.Read.QueryRow(`SELECT chat_id,by_uid,at FROM appeal_redeems
+		WHERE appeal_id=? AND chat_id IN (0,?)
+		ORDER BY CASE WHEN chat_id=0 THEN 0 ELSE 1 END LIMIT 1`,
+		ap.ID, chatID).Scan(&redeemChat, &byUID, &at)
+	if err == nil {
+		where := "本群"
+		if redeemChat == 0 {
+			where = "私聊"
+		}
+		fmt.Fprintf(&sb, "\n兑换：%s已兑换（%s，%s）", where,
+			userLink(byUID), formatTS(b.Shared, at))
+	} else {
+		sb.WriteString("\n兑换：本群未兑换")
+	}
+	return sb.String()
 }
 
 // redeemInChat 在一个群里执行兑换动作（范围只限本群）。

@@ -145,6 +145,90 @@ func TestGroupRedeemExpiredAndSelf(t *testing.T) {
 	}
 }
 
+// TestGroupCheckUnlockCodeShowsReason：管理员在群里发 /check <解禁码> 只查
+// 封禁原因，不触发兑换；普通成员无权查看。
+func TestGroupCheckUnlockCodeShowsReason(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	const code = "MSU-7K2Q-9XFM"
+	appealID := insertCodedAppeal(t, b, 555, code, time.Now().Add(time.Hour).Unix())
+
+	if _, err := b.Store.Write.Exec(`INSERT INTO antiad_log
+		(bot_id,chat_id,user_id,message_id,text,verdict,confidence,decider,action,reason,created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		b.BotID(), int64(-100), int64(555), int64(900), "广告正文",
+		"ad", 0.93, "systemone", "deleted_muted", "测试封禁原因",
+		time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMsg := func(want ...string) {
+		t.Helper()
+		for _, c := range fake.Calls("sendMessage") {
+			text, _ := c["text"].(string)
+			ok := true
+			for _, w := range want {
+				if !strings.Contains(text, w) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return
+			}
+		}
+		t.Errorf("没找到包含 %q 的回复：%+v", want, fake.Calls("sendMessage"))
+	}
+
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 903, "/check "+code))
+	waitIdle(t, b)
+
+	var redeems int
+	b.Store.Read.QueryRow(`SELECT COUNT(*) FROM appeal_redeems
+		WHERE appeal_id=?`, appealID).Scan(&redeems)
+	if redeems != 0 {
+		t.Errorf("/check 查码不该兑换，实际写了 %d 条兑换记录", redeems)
+	}
+	assertMsg("解禁码查询", "555", "测试封禁原因", "未兑换")
+
+	// 普通成员：只能拿到无权提示，不能泄露判定原因。
+	fake.Reset()
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"member"}}`
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 999, 904, "/check "+code))
+	waitIdle(t, b)
+	assertMsg("只有群管理员")
+	for _, c := range fake.Calls("sendMessage") {
+		if text, _ := c["text"].(string); strings.Contains(text, "测试封禁原因") {
+			t.Errorf("普通成员不该看到封禁原因：%s", text)
+		}
+	}
+}
+
+// TestGroupCheckUnlockCodeRejectsOtherBot：别的 bot 签发的码按无效处理，
+// 不暴露它是否存在。
+func TestGroupCheckUnlockCodeRejectsOtherBot(t *testing.T) {
+	b, fake := testutil.NewTestBot(t, 1)
+	testutil.EnableAntiad(t, b, -100)
+	now := time.Now().Unix()
+	if _, err := b.Store.Write.Exec(`INSERT INTO appeals
+		(bot_id,user_id,status,code,code_expires,created_at,updated_at)
+		VALUES (?,?,'code',?,?,?,?)`,
+		b.BotID()+1, int64(556), "MSU-AAAA-BBBB", now+3600, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.Resp["getChatMember"] = `{"ok":true,"result":{"status":"administrator"}}`
+	HandleGroupMessage(b, testutil.GroupMsg(-100, 777, 905, "/check MSU-AAAA-BBBB"))
+	waitIdle(t, b)
+	for _, c := range fake.Calls("sendMessage") {
+		if text, _ := c["text"].(string); strings.Contains(text, "无效或不属于") {
+			return
+		}
+	}
+	t.Errorf("别的 bot 的码应回无效：%+v", fake.Calls("sendMessage"))
+}
+
 // TestDirectRedeemScopes：归属人兑换只解本 bot 名下的群、不动联合封禁名单；
 // 主管理员兑换解全平台并解除联合封禁。
 // TestDirectRedeemLiftsOwnGban：归属人兑换解禁码时，专属组的账本一并解除

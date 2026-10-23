@@ -23,6 +23,8 @@ const adCmdUsage = "用法：回复某人的消息发 <code>/check</code>" +
 	"（<code>/ad</code> 是它的别名），" +
 	"或直接发 <code>/check &lt;user_id&gt;</code> / <code>/check @用户名</code>" +
 	"（频道填 -100 开头的频道 ID）。\n" +
+	"群管理员还可以发 <code>/check &lt;解禁码&gt;</code>，" +
+	"查看该码对应用户的封禁原因与生效限制。\n" +
 	"会把该用户在本群的全部留底一次性交给两个模型复查；" +
 	"数据库里查无此人时直接回复「未有该用户数据」，不发模型请求；" +
 	"只有入群记录、还没发过言的按进群资料复查。"
@@ -123,6 +125,18 @@ func HandleAdCommand(b *core.Bot, conf store.BotChat, m *tg.Message, arg string)
 	// 会诱使他人反复触发，结论看过即应撤回。
 	b.TG.Call("deleteMessage", map[string]any{
 		"chat_id": conf.ChatID, "message_id": m.MessageID})
+
+	// /check <解禁码>：群管理员查这个码对应用户的封禁原因。只读库、不跑
+	// 模型；权限与 /ban 一致，普通成员不能看别人的判定原因。放在统一限频
+	// 之后：普通成员刷这个命令同样会让 bot 反复回复。
+	if code, ok := findUnlockCode(arg); ok {
+		if !canMarkAd(b, conf.ChatID, m.From.ID) {
+			reply("只有群管理员可以查询解禁码。")
+			return
+		}
+		reply(codeInspectText(b, conf.ChatID, code))
+		return
+	}
 
 	var target *tg.TGUser
 	var targetMsgID int64
