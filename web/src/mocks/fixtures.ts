@@ -324,6 +324,7 @@ export const mockState: State = {
       completion_price: 0.2,
       cache_read_price: 0.01,
       cache_write_price: 0.01,
+      simple_instructions: false,
       upstream: "demo",
       model_id: "gpt-5-mini",
     },

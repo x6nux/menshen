@@ -91,6 +91,10 @@ type Model struct {
 	CacheReadPrice  float64
 	CacheWritePrice float64
 	Enabled         bool
+	// SimpleInstructions：初判 is_ad 的 instructions 简化为一句话。给微调过
+	// 的初判模型用（不吃长口径提示词）；按模型标记而不是按 bot —— 同一
+	// 判定列表里标没标混着时，每次尝试按当前模型各自生效。
+	SimpleInstructions bool
 }
 
 // SplitModelName 把模型名切成（上游名, 模型ID）。

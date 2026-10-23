@@ -123,6 +123,8 @@ export interface Model {
   completion_price: number;
   cache_read_price: number;
   cache_write_price: number;
+  /** 初判提示词简化为一句话（微调初判模型专用）。 */
+  simple_instructions: boolean;
   /** 由模型名解析出的上游展示名；解析不出时为空串。 */
   upstream: string;
   model_id: string;

@@ -4,9 +4,10 @@ package antiad
 //
 // 给微调过的初判模型用（如 laya 私有微调版）：这类模型在判定语料上训过，
 // 长口径提示词对它没有增益，反而把载荷撑大（soInstructions 约 1 万字符，
-// 部分网关还收不下）；由 antiad_so_simple_instructions 开关控制，见
-// judgeSystemOne。判什么、选项空间（criteria）不变，state 里的
-// join_check / prewarm_check 标记也照常告诉模型当前是哪条判定路径。
+// 部分网关还收不下）；由 models 表的 simple_instructions 列按模型标记，
+// 见 aiAttempt —— 同一判定列表里标没标混着时，每次尝试按当前模型生效。
+// 判什么、选项空间（criteria）不变，state 里的 join_check / prewarm_check
+// 标记也照常告诉模型当前是哪条判定路径。
 const soInstructionsSimple = "Is this group message or account advertising, promotion, " +
 	"traffic-driving or a scam?"
 

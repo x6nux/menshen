@@ -416,6 +416,30 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		p["session_id"] = sid
 	}
 	built := up.BuildBody(ep, model, p)
+	// 微调初判模型不吃长口径：models 表里标了 simple_instructions 的模型，
+	// is_ad 的 instructions 在这一路尝试里换成一句话（soInstructionsSimple）。
+	// 按模型标记而不是按 bot —— 判定列表里标没标混着时，重试/并发换模型
+	// 各按各的生效，不会把 A 模型的开关带到 B 上。questions/is_ad 是各次
+	// 尝试共享的 map，替换前必须先拷贝，否则会污染原始载荷。
+	if ep == upstream.EPSystemOne {
+		if m := snap.Models[model]; m != nil && m.SimpleInstructions {
+			if qs, ok := built["questions"].(map[string]any); ok {
+				if q, ok := qs["is_ad"].(map[string]any); ok {
+					qc := make(map[string]any, len(q))
+					for k, v := range q {
+						qc[k] = v
+					}
+					qc["instructions"] = soInstructionsSimple
+					qs2 := make(map[string]any, len(qs))
+					for k, v := range qs {
+						qs2[k] = v
+					}
+					qs2["is_ad"] = qc
+					built["questions"] = qs2
+				}
+			}
+		}
+	}
 	body, err := json.Marshal(built)
 	if err != nil {
 		return aiResult{err: err} // 序列化都失败，重试多少次都一样

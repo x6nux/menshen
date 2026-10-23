@@ -92,8 +92,7 @@ var settingDefaults = map[string]string{
 	"alert_copy_main": "0",
 	// ---- AI 请求（全局）：不稳定的是上游模型本身，与哪个 bot 发起无关 ----
 	// systemone 平均不到 1 秒出结果，整次请求超过这个时限就当卡住，换一个立即重试。
-	"antiad_so_timeout_ms":          "2000",
-	"antiad_so_simple_instructions": "0", // 初判提示词简化为一句话：微调模型专用（antiad_so_simple_instructions）
+	"antiad_so_timeout_ms": "2000",
 	// 复判走流式，首字超过这个时限就当卡住，换一个立即重试。默认给到
 	// 15 秒：复判等的是大模型，推理模型的思考期可以到十几秒，时限过短
 	// 会在上游压力较大时把正常请求判成卡住并立即重试，反而放大负载。
@@ -636,19 +635,20 @@ func (c *Cache) Reload() error {
 
 func (c *Cache) loadModels(snap *Snapshot, q rowQueryer) error {
 	rows, err := q.Query(`SELECT name,prompt_price,completion_price,
-		cache_read_price,cache_write_price,enabled FROM models`)
+		cache_read_price,cache_write_price,enabled,simple_instructions FROM models`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		m := &upstream.Model{}
-		var en int64
+		var en, si int64
 		if err := rows.Scan(&m.Name, &m.PromptPrice, &m.CompletionPrice,
-			&m.CacheReadPrice, &m.CacheWritePrice, &en); err != nil {
+			&m.CacheReadPrice, &m.CacheWritePrice, &en, &si); err != nil {
 			return err
 		}
 		m.Enabled = en == 1
+		m.SimpleInstructions = si == 1
 		snap.Models[m.Name] = m
 	}
 	return rows.Err()

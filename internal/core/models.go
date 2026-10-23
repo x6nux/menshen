@@ -82,6 +82,9 @@ func (sh *Shared) AddModel(upName, modelID string, prices [4]float64) (string, e
 type ModelPatch struct {
 	Prices  [4]*float64
 	Enabled *bool
+	// SimpleInstructions：初判 is_ad 的 instructions 简化为一句话（微调
+	// 初判模型专用，见 upstream.Model）。
+	SimpleInstructions *bool
 }
 
 func (sh *Shared) UpdateModel(name string, p ModelPatch) error {
@@ -103,6 +106,10 @@ func (sh *Shared) UpdateModel(name string, p ModelPatch) error {
 	if p.Enabled != nil {
 		cols = append(cols, "enabled=?")
 		args = append(args, boolInt(*p.Enabled))
+	}
+	if p.SimpleInstructions != nil {
+		cols = append(cols, "simple_instructions=?")
+		args = append(args, boolInt(*p.SimpleInstructions))
 	}
 	if len(cols) == 0 {
 		return nil

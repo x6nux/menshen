@@ -161,12 +161,13 @@ CREATE TABLE IF NOT EXISTS upstreams (
 -- 模型单价，仅用于把判定开销折算成钱摆到面板上。
 -- 判定本身不依赖它——价格缺失只会让开销显示为 0，不影响拦截。
 CREATE TABLE IF NOT EXISTS models (
-  name              TEXT PRIMARY KEY,
-  prompt_price      REAL    NOT NULL,
-  completion_price  REAL    NOT NULL,
-  cache_read_price  REAL    NOT NULL DEFAULT 0,
-  cache_write_price REAL    NOT NULL DEFAULT 0,
-  enabled           INTEGER NOT NULL DEFAULT 1
+  name                TEXT PRIMARY KEY,
+  prompt_price        REAL    NOT NULL,
+  completion_price    REAL    NOT NULL,
+  cache_read_price    REAL    NOT NULL DEFAULT 0,
+  cache_write_price   REAL    NOT NULL DEFAULT 0,
+  enabled             INTEGER NOT NULL DEFAULT 1,
+  simple_instructions INTEGER NOT NULL DEFAULT 0
 );
 
 -- ai_log 是每次大模型调用的原始流水：请求体（已剥离固定提示词）、响应体、
@@ -556,6 +557,10 @@ func migrate(db *sql.DB) error {
 		// 面板与复查卡片据此对照两级。老库默认空串。
 		{"antiad_log", "so_verdict", "TEXT NOT NULL DEFAULT ''"},
 		{"antiad_log", "llm_verdict", "TEXT NOT NULL DEFAULT ''"},
+		// simple_instructions：初判提示词简化为一句话，按模型标记 —— 微调过
+		// 的初判模型（如 laya 私有版）不吃长口径；同一列表里标没标混着时，
+		// 每次尝试按当前模型各自生效（见 antiad.aiAttempt）。老库默认 0。
+		{"models", "simple_instructions", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		has, err := hasColumn(db, c.table, c.col)
