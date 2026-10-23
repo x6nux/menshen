@@ -169,6 +169,30 @@ CREATE TABLE IF NOT EXISTS models (
   enabled           INTEGER NOT NULL DEFAULT 1
 );
 
+-- ai_log 是每次大模型调用的原始流水：请求体（已剥离固定提示词）、响应体、
+-- 用量与成本、时延与失败阶段。判定/复判/识图/形态总结全部经 aiCall 走这里，
+-- 换模型校准阈值、排查漏判误判时第一手证据在库里，不必再翻上游。
+-- input 与 output 的体积都不小（各几 KB），保留期单独一档（ai_log_days），
+-- 不跟 antiad_log 的 log_retention_days 走。
+CREATE TABLE IF NOT EXISTS ai_log (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                INTEGER NOT NULL,
+  endpoint          TEXT    NOT NULL,             -- chat | systemone
+  model             TEXT    NOT NULL DEFAULT '',  -- 全名 <上游名>/<模型ID>
+  upstream          TEXT    NOT NULL DEFAULT '',  -- 实际命中的上游
+  status            TEXT    NOT NULL DEFAULT 'ok', -- ok | 失败阶段（HTTP 500 / 首字超时 / 流中断 …）
+  latency_ms        INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens     INTEGER NOT NULL DEFAULT 0,
+  quota_cost        INTEGER NOT NULL DEFAULT 0,
+  input             TEXT    NOT NULL DEFAULT '',  -- 剥离固定提示词后的请求体 JSON
+  output            TEXT    NOT NULL DEFAULT '',  -- 响应体 JSON（截断）
+  error             TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ai_log_ts ON ai_log(ts);
+CREATE INDEX IF NOT EXISTS idx_ai_log_model ON ai_log(model, ts);
+
 -- 群成员画像。反广告的「新人 / 老人」分档全部由它派生。
 -- joined_at = 0 表示 bot 部署前此人已在群里，年龄未知，一律按老用户处理。
 CREATE TABLE IF NOT EXISTS group_members (

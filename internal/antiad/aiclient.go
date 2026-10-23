@@ -391,7 +391,8 @@ func msSetting(snap *store.Snapshot, key string, def int64) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// aiAttempt 发一次请求。
+// aiAttempt 发一次请求：组装载荷（会话标识、按渠道改写形状）后交
+// aiAttemptDo 发出，成功失败都往 ai_log 落一行流水（见 ailog.go）。
 //
 // 两个端点各有各的卡住判据：systemone 平均不到 1 秒出结果，整次请求限时
 // antiad_so_timeout_ms；复判是流式的，只限首字 antiad_llm_ttft_ms ——首字之后
@@ -414,10 +415,24 @@ func aiAttempt(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 		p["user"] = sid
 		p["session_id"] = sid
 	}
-	body, err := json.Marshal(up.BuildBody(ep, model, p))
+	built := up.BuildBody(ep, model, p)
+	body, err := json.Marshal(built)
 	if err != nil {
 		return aiResult{err: err} // 序列化都失败，重试多少次都一样
 	}
+	r := aiAttemptDo(parent, sh, snap, ep, model, up, body, sid)
+	// 成功失败都要留痕：换模型校准阈值与排查漏判时，第一手证据是当时
+	// 发出去的载荷与拿回来的响应。剥离固定提示词只影响存储列，不影响请求。
+	logAICall(sh, ep, model, upName(up), stripFixedPrompts(ep, built), r)
+	return r
+}
+
+// aiAttemptDo 发出已序列化的请求体并解读响应：aiAttempt 去掉载荷组装与
+// 流水落库后的内核，只关心网络与协议。sid 是本次请求的会话标识，请求头
+// （systemone 的 X-Session-Id）与载荷（chat 的 user/session_id）必须是
+// 同一个值，由 aiAttempt 算好后传入。
+func aiAttemptDo(parent context.Context, sh *core.Shared, snap *store.Snapshot,
+	ep upstream.Endpoint, model string, up *upstream.Upstream, body []byte, sid string) aiResult {
 
 	limit := msSetting(snap, "antiad_llm_ttft_ms", 15000)
 	if ep == upstream.EPSystemOne {

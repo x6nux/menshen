@@ -347,6 +347,10 @@ func miniDispatch(sh *core.Shared, w http.ResponseWriter, r *http.Request, uid i
 		miniLogact(sh, w, r, uid, body)
 	case "syslog":
 		miniSysLog(sh, w, uid, body)
+	case "ailog":
+		miniAILog(sh, w, uid, body)
+	case "ailogitem":
+		miniAILogItem(sh, w, uid, body)
 	case "appeals":
 		miniAppeals(sh, w, uid, body)
 	case "appeal":

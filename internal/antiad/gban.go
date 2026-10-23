@@ -820,6 +820,17 @@ func CleanupData(sh *core.Shared) {
 	if _, err := deleteBatched(sh, "antiad_log", "created_at < ?", cut); err != nil {
 		slog.Error("清理判定流水失败", "err", err)
 	}
+	// ai_log 是模型调用流水，每行带请求/响应体，体积比判定流水大得多，
+	// 保留期单独一档（ai_log_days，默认 14）：排查漏判误判的窗口够用，
+	// 又不至于把库撑爆。非法值回落默认，而不是把 cutoff 算成当前时间
+	// —— 后者等于一次性清光。
+	aiDays := sh.Cache.Snap().SettingInt("ai_log_days", 14)
+	if aiDays < 1 {
+		aiDays = 14
+	}
+	if _, err := deleteBatched(sh, "ai_log", "ts < ?", time.Now().Unix()-aiDays*86400); err != nil {
+		slog.Error("清理模型调用流水失败", "err", err)
+	}
 	// group_messages 是群聊原文的留底，与 antiad_log 同寿。
 	if _, err := deleteBatched(sh, "group_messages", "at < ?", cut); err != nil {
 		slog.Error("清理群消息留底失败", "err", err)

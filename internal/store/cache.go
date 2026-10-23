@@ -57,6 +57,7 @@ var settingDefaults = map[string]string{
 	"tz_name":            "Asia/Shanghai",
 	"tz_offset":          "8",
 	"log_retention_days": "30",
+	"ai_log_days":        "14", // 模型调用流水（ai_log）保留天数：体积大，单独一档
 	// 运行日志文件（与数据库同目录）的大小上限（MB）。
 	// 任一为 0 关闭文件日志；总上限小于单文件时按单文件算（不留备份）。
 	"log_file_max_mb":   "10",

@@ -5,9 +5,15 @@
 // 拿到 initData 之后再传 enabled: true —— 否则请求会带着空 initData 发出，
 // 服务端回 401，UI 会显示误导性的身份失效提示。外壳可以在 initTelegram()
 // resolve 前先用 enabled: false 挂载页面。
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { api } from './client'
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
+import { api } from "./client";
 import type {
+  AILogDetail,
+  AILogsResp,
   AppealDetail,
   AppealsResp,
   LogDetail,
@@ -17,121 +23,141 @@ import type {
   State,
   SysLogsResp,
   UserDossier,
-} from './types'
+} from "./types";
 
 export const miniQueryKeys = {
-  state: ['state'] as const,
-  logs: (filter: string, q: string, page: number) => ['logs', filter, q, page] as const,
-  log: (id: number) => ['log', id] as const,
-  user: (id: number, filter: string, page: number) => ['user', id, filter, page] as const,
-  appeals: (filter: string, page: number) => ['appeals', filter, page] as const,
-  appeal: (id: number) => ['appeal', id] as const,
+  state: ["state"] as const,
+  logs: (filter: string, q: string, page: number) =>
+    ["logs", filter, q, page] as const,
+  log: (id: number) => ["log", id] as const,
+  user: (id: number, filter: string, page: number) =>
+    ["user", id, filter, page] as const,
+  appeals: (filter: string, page: number) => ["appeals", filter, page] as const,
+  appeal: (id: number) => ["appeal", id] as const,
   // 规则列表与 Agent 状态分开 key：写规则只需失效 'list'，不必连带重拉运行态。
-  rules: ['rules', 'list'] as const,
-  rulesAgent: ['rules', 'agent'] as const,
+  rules: ["rules", "list"] as const,
+  rulesAgent: ["rules", "agent"] as const,
   // 无限列表用独立 key（数据形状是 pages，不能与单页查询共 key）；
   // 前缀仍以资源名开头，写操作的 ['logs']/['user']/['appeals'] 失效照常命中。
-  logsInfinite: (filter: string, q: string) => ['logs', 'infinite', filter, q] as const,
-  userInfinite: (id: number, filter: string) => ['user', 'infinite', id, filter] as const,
-  appealsInfinite: (filter: string) => ['appeals', 'infinite', filter] as const,
+  logsInfinite: (filter: string, q: string) =>
+    ["logs", "infinite", filter, q] as const,
+  userInfinite: (id: number, filter: string) =>
+    ["user", "infinite", id, filter] as const,
+  appealsInfinite: (filter: string) => ["appeals", "infinite", filter] as const,
   // 运行日志是进程内缓冲，进程重启即变，没有写操作会失效它；刷新靠 refetch。
-  sysLogsInfinite: (level: string, q: string) => ['syslog', 'infinite', level, q] as const,
-}
+  sysLogsInfinite: (level: string, q: string) =>
+    ["syslog", "infinite", level, q] as const,
+  aiLogsInfinite: (q: string, status: string) =>
+    ["ailog", "infinite", q, status] as const,
+  aiLogItem: (id: number) => ["ailog", "item", id] as const,
+};
 
 /**
  * 记录筛选归一化：不传（undefined）默认 'deleted'（已删除）；
  * ''/'all' 表示全部，统一成 'all' 共用 queryKey；其余原样透传。
  */
 function normalizeLogFilter(filter?: string): string {
-  if (filter === undefined) return 'deleted'
-  return filter === '' || filter === 'all' ? 'all' : filter
+  if (filter === undefined) return "deleted";
+  return filter === "" || filter === "all" ? "all" : filter;
 }
 
 /** 申诉筛选归一化：''/'all' 表示全部；非法/未知值按默认档 'open' 兜底。 */
-function normalizeAppealFilter(filter: string): 'open' | 'all' {
-  return filter === '' || filter === 'all' ? 'all' : 'open'
+function normalizeAppealFilter(filter: string): "open" | "all" {
+  return filter === "" || filter === "all" ? "all" : "open";
 }
 
 /** 用户页筛选归一化：'all' 是全部，其余（含 ''/未知值）按默认档 'act' 兜底。 */
-function normalizeUserFilter(filter: string): 'act' | 'all' {
-  return filter === 'all' ? 'all' : 'act'
+function normalizeUserFilter(filter: string): "act" | "all" {
+  return filter === "all" ? "all" : "act";
 }
 
 /** useMiniState 拉取全量状态（概览/机器人/群组/名单的公共数据源）。 */
 export function useMiniState(enabled = true) {
   return useQuery({
     queryKey: miniQueryKeys.state,
-    queryFn: ({ signal }) => api<State>('state', undefined, signal),
+    queryFn: ({ signal }) => api<State>("state", undefined, signal),
     enabled,
-  })
+  });
 }
 
 export interface LogsParams {
   /** deleted（默认）/ all / ad / clean / skipped，对应后端 verdict。 */
-  filter?: string
-  q?: string
-  page?: number
-  enabled?: boolean
+  filter?: string;
+  q?: string;
+  page?: number;
+  enabled?: boolean;
 }
 
 export function useLogs(params: LogsParams = {}) {
-  const filter = normalizeLogFilter(params.filter)
-  const q = params.q ?? ''
-  const page = params.page ?? 1
+  const filter = normalizeLogFilter(params.filter);
+  const q = params.q ?? "";
+  const page = params.page ?? 1;
   return useQuery({
     queryKey: miniQueryKeys.logs(filter, q, page),
     queryFn: ({ signal }) =>
-      api<LogsResp>('logs', { verdict: filter === 'all' ? '' : filter, q, page }, signal),
+      api<LogsResp>(
+        "logs",
+        { verdict: filter === "all" ? "" : filter, q, page },
+        signal,
+      ),
     enabled: params.enabled ?? true,
-  })
+  });
 }
 
 export function useLog(id: number, enabled = true) {
   return useQuery({
     queryKey: miniQueryKeys.log(id),
-    queryFn: ({ signal }) => api<LogDetail>('log', { id }, signal),
+    queryFn: ({ signal }) => api<LogDetail>("log", { id }, signal),
     enabled: enabled && id > 0,
-  })
+  });
 }
 
-export function useUser(id: number, filter = 'act', page = 1, enabled = true) {
-  const normalized = normalizeUserFilter(filter)
+export function useUser(id: number, filter = "act", page = 1, enabled = true) {
+  const normalized = normalizeUserFilter(filter);
   return useQuery({
     queryKey: miniQueryKeys.user(id, normalized, page),
     queryFn: ({ signal }) =>
-      api<UserDossier>('user', { user_id: id, filter: normalized, page }, signal),
+      api<UserDossier>(
+        "user",
+        { user_id: id, filter: normalized, page },
+        signal,
+      ),
     enabled: enabled && id > 0,
-  })
+  });
 }
 
 export interface AppealsParams {
   /** open（默认）/ '' 或 all（全部）。 */
-  filter?: string
-  page?: number
-  enabled?: boolean
+  filter?: string;
+  page?: number;
+  enabled?: boolean;
 }
 
 export function useAppeals(params: AppealsParams = {}) {
-  const filter = normalizeAppealFilter(params.filter ?? 'open')
-  const page = params.page ?? 1
+  const filter = normalizeAppealFilter(params.filter ?? "open");
+  const page = params.page ?? 1;
   return useQuery({
     queryKey: miniQueryKeys.appeals(filter, page),
     queryFn: ({ signal }) =>
-      api<AppealsResp>('appeals', { filter: filter === 'open' ? 'open' : '', page }, signal),
+      api<AppealsResp>(
+        "appeals",
+        { filter: filter === "open" ? "open" : "", page },
+        signal,
+      ),
     enabled: params.enabled ?? true,
-  })
+  });
 }
 
 export function useAppeal(id: number, enabled = true) {
   return useQuery({
     queryKey: miniQueryKeys.appeal(id),
-    queryFn: ({ signal }) => api<AppealDetail>('appeal', { id }, signal),
+    queryFn: ({ signal }) => api<AppealDetail>("appeal", { id }, signal),
     enabled: enabled && id > 0,
-  })
+  });
 }
 
 /** RULE_AGENT_POLL_MS 是规则发现 Agent 运行中的状态轮询间隔。 */
-export const RULE_AGENT_POLL_MS = 2000
+export const RULE_AGENT_POLL_MS = 2000;
 
 /**
  * useRules 拉取全部必封规则（含未启用）。rules op 只对主管理员开放，
@@ -140,9 +166,10 @@ export const RULE_AGENT_POLL_MS = 2000
 export function useRules(enabled = true) {
   return useQuery({
     queryKey: miniQueryKeys.rules,
-    queryFn: ({ signal }) => api<RulesResp>('rules', { action: 'list' }, signal),
+    queryFn: ({ signal }) =>
+      api<RulesResp>("rules", { action: "list" }, signal),
     enabled,
-  })
+  });
 }
 
 /**
@@ -154,10 +181,11 @@ export function useRuleAgent(enabled = true) {
   return useQuery({
     queryKey: miniQueryKeys.rulesAgent,
     queryFn: ({ signal }) =>
-      api<RuleAgentStatusResp>('rules', { action: 'agent_status' }, signal),
+      api<RuleAgentStatusResp>("rules", { action: "agent_status" }, signal),
     enabled,
-    refetchInterval: (query) => (query.state.data?.agent.running ? RULE_AGENT_POLL_MS : false),
-  })
+    refetchInterval: (query) =>
+      query.state.data?.agent.running ? RULE_AGENT_POLL_MS : false,
+  });
 }
 
 // ---- 无限列表（记录/申诉/用户页）----
@@ -170,73 +198,89 @@ export function useRuleAgent(enabled = true) {
 
 export interface InfiniteLogsParams {
   /** deleted（默认）/ all / ad / clean / skipped。 */
-  filter?: string
-  q?: string
-  enabled?: boolean
+  filter?: string;
+  q?: string;
+  enabled?: boolean;
 }
 
 export function useInfiniteLogs(params: InfiniteLogsParams = {}) {
-  const filter = normalizeLogFilter(params.filter)
-  const q = params.q ?? ''
+  const filter = normalizeLogFilter(params.filter);
+  const q = params.q ?? "";
   return useInfiniteQuery({
     queryKey: miniQueryKeys.logsInfinite(filter, q),
     queryFn: ({ pageParam, signal }) =>
-      api<LogsResp>('logs', { verdict: filter === 'all' ? '' : filter, q, page: pageParam }, signal),
+      api<LogsResp>(
+        "logs",
+        { verdict: filter === "all" ? "" : filter, q, page: pageParam },
+        signal,
+      ),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
-      return loaded < last.total ? pages.length + 1 : undefined
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0);
+      return loaded < last.total ? pages.length + 1 : undefined;
     },
     enabled: params.enabled ?? true,
     placeholderData: keepPreviousData,
-  })
+  });
 }
 
 export interface InfiniteAppealsParams {
   /** open（默认）/ '' 或 all（全部）。 */
-  filter?: string
-  enabled?: boolean
+  filter?: string;
+  enabled?: boolean;
 }
 
 export function useInfiniteAppeals(params: InfiniteAppealsParams = {}) {
-  const filter = normalizeAppealFilter(params.filter ?? 'open')
+  const filter = normalizeAppealFilter(params.filter ?? "open");
   return useInfiniteQuery({
     queryKey: miniQueryKeys.appealsInfinite(filter),
     queryFn: ({ pageParam, signal }) =>
-      api<AppealsResp>('appeals', { filter: filter === 'open' ? 'open' : '', page: pageParam }, signal),
+      api<AppealsResp>(
+        "appeals",
+        { filter: filter === "open" ? "open" : "", page: pageParam },
+        signal,
+      ),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.appeals.length, 0)
-      return loaded < last.total ? pages.length + 1 : undefined
+      const loaded = pages.reduce((n, page) => n + page.appeals.length, 0);
+      return loaded < last.total ? pages.length + 1 : undefined;
     },
     enabled: params.enabled ?? true,
     placeholderData: keepPreviousData,
-  })
+  });
 }
 
-export function useInfiniteUserLogs(userId: number, filter = 'act', enabled = true) {
-  const normalized = normalizeUserFilter(filter)
+export function useInfiniteUserLogs(
+  userId: number,
+  filter = "act",
+  enabled = true,
+) {
+  const normalized = normalizeUserFilter(filter);
   return useInfiniteQuery({
     queryKey: miniQueryKeys.userInfinite(userId, normalized),
     queryFn: ({ pageParam, signal }) =>
-      api<UserDossier>('user', { user_id: userId, filter: normalized, page: pageParam }, signal),
+      api<UserDossier>(
+        "user",
+        { user_id: userId, filter: normalized, page: pageParam },
+        signal,
+      ),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
-      return loaded < last.shown ? pages.length + 1 : undefined
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0);
+      return loaded < last.shown ? pages.length + 1 : undefined;
     },
     enabled: enabled && userId > 0,
     placeholderData: keepPreviousData,
-  })
+  });
 }
 
 // ---- 运行日志（主管理员专属）----
 
 export interface InfiniteSysLogsParams {
   /** 级别下限：''/all（默认，不过滤）/ debug / info / warn / error。 */
-  level?: string
-  q?: string
-  enabled?: boolean
+  level?: string;
+  q?: string;
+  enabled?: boolean;
 }
 
 /**
@@ -244,19 +288,52 @@ export interface InfiniteSysLogsParams {
  * 调用方必须在确认 me.main 后才 enabled（次管不发请求）。日志是内存缓冲、
  * 不落库，写操作失效不适用；需要看最新的靠 refetch。
  */
-export function useInfiniteSysLogs(params: InfiniteSysLogsParams = {}) {
-  const level = params.level ?? ''
-  const q = params.q ?? ''
+/**
+ * useInfiniteAILogs 拉取模型调用流水（新→旧）。只有主管理员能读（服务端
+ * 403），调用方应在确认 me.main 后才 enabled。流水落库、只增不改，写操作
+ * 失效不适用；需要看最新的靠 refetch。
+ */
+export function useInfiniteAILogs(
+  params: { q?: string; status?: string; enabled?: boolean } = {},
+) {
+  const q = params.q ?? "";
+  const status = params.status ?? "";
   return useInfiniteQuery({
-    queryKey: miniQueryKeys.sysLogsInfinite(level, q),
+    queryKey: miniQueryKeys.aiLogsInfinite(q, status),
     queryFn: ({ pageParam, signal }) =>
-      api<SysLogsResp>('syslog', { level, q, page: pageParam }, signal),
+      api<AILogsResp>("ailog", { q, status, page: pageParam }, signal),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.logs.length, 0)
-      return loaded < last.total ? pages.length + 1 : undefined
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0);
+      return loaded < last.total ? pages.length + 1 : undefined;
     },
     enabled: params.enabled ?? true,
     placeholderData: keepPreviousData,
-  })
+  });
+}
+
+/** useAILogItem 拉一行流水的完整内容（含 input/output 全文）。 */
+export function useAILogItem(id: number, enabled = true) {
+  return useQuery({
+    queryKey: miniQueryKeys.aiLogItem(id),
+    queryFn: ({ signal }) => api<AILogDetail>("ailogitem", { id }, signal),
+    enabled: enabled && id > 0,
+  });
+}
+
+export function useInfiniteSysLogs(params: InfiniteSysLogsParams = {}) {
+  const level = params.level ?? "";
+  const q = params.q ?? "";
+  return useInfiniteQuery({
+    queryKey: miniQueryKeys.sysLogsInfinite(level, q),
+    queryFn: ({ pageParam, signal }) =>
+      api<SysLogsResp>("syslog", { level, q, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.logs.length, 0);
+      return loaded < last.total ? pages.length + 1 : undefined;
+    },
+    enabled: params.enabled ?? true,
+    placeholderData: keepPreviousData,
+  });
 }

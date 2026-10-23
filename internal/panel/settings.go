@@ -81,6 +81,7 @@ func stringSpecByKey(k string) *settingSpec {
 // 豁免名单是列表项，走专门的增删入口。
 var settingSpecs = []settingSpec{
 	{"log_retention_days", "记录保留天数", "正整数，至少 1；同时作用于判定流水与群消息留底", 1, 0, ""},
+	{"ai_log_days", "模型调用流水保留天数", "正整数，至少 1；每次模型调用的输入输出都落库（固定提示词已剥离），体积比判定流水大，默认 14 天", 1, 0, ""},
 	// 日志文件与数据库同目录，单文件写满滚成 .1 备份。
 	{"log_file_max_mb", "日志单文件上限（MB）", "非负整数；单个日志文件写到这么大就滚成备份。0 = 关闭文件日志", 0, 0, ""},
 	{"log_file_total_mb", "日志总大小上限（MB）", "非负整数；当前文件加全部备份超过它就从最旧的备份删起。0 = 关闭文件日志", 0, 0, ""},
@@ -182,7 +183,8 @@ var settingSections = []struct {
 	}},
 	{"护栏与成本", []string{
 		"antiad_rpm_chat", "antiad_cmd_rpm",
-		"log_retention_days", "log_file_max_mb", "log_file_total_mb", "max_bots_per_admin",
+		"log_retention_days", "ai_log_days", "log_file_max_mb", "log_file_total_mb",
+		"max_bots_per_admin",
 		"subbot_autoleave_minutes",
 		"antiad_upstream_alert_after", "antiad_upstream_alert_minutes",
 	}},
