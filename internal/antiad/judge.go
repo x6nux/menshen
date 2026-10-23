@@ -195,6 +195,12 @@ func judgeSystemOne(b *core.Bot, snap *store.Snapshot, st adState, instructions 
 	if len(soModels) == 0 {
 		return adVerdict{}, fmt.Errorf("反广告：未配置判定模型（antiad_so_models）")
 	}
+	// 微调初判模型（如 laya）不吃长口径：开关打开时把 is_ad 的 instructions
+	// 换成一句话（soInstructionsSimple）。只动初判载荷，复判提示词不受影响；
+	// both 作用域，单 bot 可覆盖 —— 微调模型通常只挂在个别 bot 上。
+	if snap.BotSettingInt(b.BotID(), "antiad_so_simple_instructions", 0) == 1 {
+		instructions = soInstructionsSimple
+	}
 	// 送检前统一剥掉不可见字符：载荷与证据核对语料用同一份（见 sanitized）。
 	st = st.sanitized()
 

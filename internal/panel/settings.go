@@ -91,6 +91,7 @@ var settingSpecs = []settingSpec{
 	{"antiad_digest_max", "形态摘要字数上限", "正整数，它会乘以每一条群消息的成本", 1, 0, ""},
 	{"antiad_unban_base", "自助解除重试基数（秒）", "正整数，第 n 次要等 base×2^(n-1)，封顶 1 小时", 1, 0, ""},
 	{"antiad_so_timeout_ms", "主判单次时限（毫秒）", "100-60000 的整数；超过它没回就换一个立即重试", 100, 60000, ""},
+	{"antiad_so_simple_instructions", "初判提示词简化为一句话", "1 = 开，0 = 关；给微调过的初判模型用：is_ad 的 instructions 换成一句「是不是广告」，判定选项与 state 不变。长口径提示词对微调模型没有增益，还把载荷撑大。默认关", 0, 1, "both"},
 	{"antiad_llm_ttft_ms", "复判首字时限（毫秒）", "100-60000 的整数；首字超过它没到就换一个立即重试", 100, 60000, ""},
 	{"antiad_llm_idle_ms", "复判流空闲超时（毫秒）", "100-60000 的整数；首字之后这么久没有新数据算上游卡住", 100, 60000, ""},
 	{"antiad_hedge_retries", "并发模式触发：每分钟重试数", "非负整数，1 分钟内重试超过它就进入并发模式；0 = 关闭", 0, 0, ""},
@@ -169,6 +170,7 @@ var settingSections = []struct {
 		"antiad_so_trust", "antiad_so_floor", "antiad_pre_act_conf", "antiad_ctx_msgs",
 		"antiad_so_timeout_ms", "antiad_llm_ttft_ms", "antiad_llm_idle_ms",
 		"antiad_hedge_retries", "antiad_hedge_minutes", "antiad_hedge_fanout",
+		"antiad_so_simple_instructions",
 	}},
 	{"进群与验证", []string{
 		"antiad_cold", "antiad_cold_conf", "antiad_cold_prefilter",

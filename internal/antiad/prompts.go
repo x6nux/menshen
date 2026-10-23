@@ -1,5 +1,15 @@
 package antiad
 
+// soInstructionsSimple 是初判提示词的极简形态：一句话问是不是广告。
+//
+// 给微调过的初判模型用（如 laya 私有微调版）：这类模型在判定语料上训过，
+// 长口径提示词对它没有增益，反而把载荷撑大（soInstructions 约 1 万字符，
+// 部分网关还收不下）；由 antiad_so_simple_instructions 开关控制，见
+// judgeSystemOne。判什么、选项空间（criteria）不变，state 里的
+// join_check / prewarm_check 标记也照常告诉模型当前是哪条判定路径。
+const soInstructionsSimple = "Is this group message or account advertising, promotion, " +
+	"traffic-driving or a scam?"
+
 // soInstructions 是主判定的提示词。画像在这里也要起作用——
 // 光把 age_hours 放进 state 而不告诉模型怎么用，它不会自己建立关联。
 //
