@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"menshen/internal/testutil"
 )
@@ -19,6 +20,7 @@ func TestAILogRecordsEveryAttempt(t *testing.T) {
 		bs := make([]byte, 1<<20)
 		n, _ := r.Body.Read(bs)
 		bodies = append(bodies, string(bs[:n]))
+		time.Sleep(30 * time.Millisecond)
 		fakeAIOK(w, r)
 	})
 
@@ -40,6 +42,10 @@ func TestAILogRecordsEveryAttempt(t *testing.T) {
 	}
 	if id == 0 || ts == 0 {
 		t.Errorf("id/ts 应有值: id=%d ts=%d", id, ts)
+	}
+	// 成功路径也要带耗时：假上游睡 30ms，落库的 latency_ms 不该是 0。
+	if latency < 20 {
+		t.Errorf("latency_ms = %d，成功调用也应记录真实耗时（≥20ms）", latency)
 	}
 	if endpoint != "systemone" || !strings.Contains(model, "so-model") {
 		t.Errorf("endpoint/model = %s/%s，应为 systemone/…so-model", endpoint, model)

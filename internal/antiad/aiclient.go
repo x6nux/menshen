@@ -585,7 +585,12 @@ func aiAttemptDo(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 	if m := snap.Models[model]; m != nil {
 		cost = billing.ComputeCost(usage, m)
 	}
-	return aiResult{reply: aiReply{Raw: raw, Usage: usage, Cost: cost, Model: model}}
+	return aiResult{
+		reply: aiReply{Raw: raw, Usage: usage, Cost: cost, Model: model},
+		// 成功也要带耗时：ai_log 的 latency_ms 靠它，之前只在失败路径赋值，
+		// 成功行落库全是 0。
+		elapsed: time.Since(start),
+	}
 }
 
 // upName 是日志与错误里的上游称呼：名字优先，没有名字才退回 ID。
