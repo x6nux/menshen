@@ -29,7 +29,7 @@ func TestLLMDoesNotReceiveSystemonePrior(t *testing.T) {
 		var req struct {
 			Messages []struct {
 				Role    string `json:"role"`
-				Content string `json:"content"`
+				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 		}
 		if err := json.Unmarshal([]byte(body.Load().(string)), &req); err != nil {
@@ -37,7 +37,11 @@ func TestLLMDoesNotReceiveSystemonePrior(t *testing.T) {
 		}
 		for _, m := range req.Messages {
 			if m.Role == "user" {
-				return m.Content
+				// system 消息的 content 是 parts 数组（缓存标记），user 的仍是
+				// JSON 字符串值，解掉引号层。
+				var text string
+				json.Unmarshal(m.Content, &text)
+				return text
 			}
 		}
 		return ""

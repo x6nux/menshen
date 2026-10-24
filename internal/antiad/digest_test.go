@@ -110,7 +110,7 @@ func TestRunAdDigestAppliesFixText(t *testing.T) {
 	var sent struct {
 		Messages []struct {
 			Role    string `json:"role"`
-			Content string `json:"content"`
+			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal([]byte(raw), &sent); err != nil {
@@ -119,10 +119,22 @@ func TestRunAdDigestAppliesFixText(t *testing.T) {
 	if len(sent.Messages) < 2 || sent.Messages[0].Role != "system" {
 		t.Fatalf("应有 system + user 两条消息，得到 %+v", sent.Messages)
 	}
-	if !strings.Contains(sent.Messages[0].Content, fix) {
-		t.Errorf("修正文本应在系统提示词里：\n%s", sent.Messages[0].Content)
+	// system 的 content 现在是带 cache_control 的 parts 数组
+	// （见 upstream.withSystemCacheMarker），原文在 parts[0].text。
+	var sysParts []struct {
+		Text string `json:"text"`
 	}
-	if strings.Contains(sent.Messages[1].Content, fix) {
+	if err := json.Unmarshal(sent.Messages[0].Content, &sysParts); err != nil {
+		t.Fatalf("system content 应是 parts 数组：%v", sent.Messages[0].Content)
+	}
+	if !strings.Contains(sysParts[0].Text, fix) {
+		t.Errorf("修正文本应在系统提示词里：\n%s", sysParts[0].Text)
+	}
+	var userText string
+	if err := json.Unmarshal(sent.Messages[1].Content, &userText); err != nil {
+		userText = string(sent.Messages[1].Content)
+	}
+	if strings.Contains(userText, fix) {
 		t.Error("修正文本不该混进样本（那是数据区，会被围栏隔离）")
 	}
 	// 摘要照常落库：修正文本不该挤掉输出。

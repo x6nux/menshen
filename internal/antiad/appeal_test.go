@@ -504,7 +504,7 @@ func TestJudgeAppealPrewarmPayload(t *testing.T) {
 	var req struct {
 		Messages []struct {
 			Role    string `json:"role"`
-			Content string `json:"content"`
+			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal([]byte(got), &req); err != nil {
@@ -513,7 +513,8 @@ func TestJudgeAppealPrewarmPayload(t *testing.T) {
 	var user string
 	for _, m := range req.Messages {
 		if m.Role == "user" {
-			user = m.Content
+			// content 是 JSON 字符串值（system 那条才是 parts 数组），解掉引号层。
+			json.Unmarshal(m.Content, &user)
 		}
 	}
 	var payload struct {

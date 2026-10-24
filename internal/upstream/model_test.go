@@ -241,8 +241,10 @@ func TestBuildBodyPerKind(t *testing.T) {
 
 	a := &Upstream{Name: "a", Kind: KindAnthropic}
 	body = a.BuildBody(EPChat, "a/claude", payload)
-	if body["system"] != "SYS" || body["max_tokens"] != anthropicDefaultMaxTokens {
-		t.Errorf("Anthropic 应把 system 提顶层并带 max_tokens: %v", body)
+	// system 现组装为带 cache_control 的 blocks（原生渠道必须显式打标才缓存），
+	// 形状详见 cache_test.go 的 TestBuildBodyAnthropicSystemCacheBlocks。
+	if _, ok := body["system"].([]map[string]any); !ok || body["max_tokens"] != anthropicDefaultMaxTokens {
+		t.Errorf("Anthropic 应把 system 提为带标记的 blocks 并带 max_tokens: %v", body)
 	}
 	if body["stream"] != true {
 		t.Errorf("Anthropic 应走流式: %v", body)

@@ -34,6 +34,20 @@ func TestExtractUsageSystemOne(t *testing.T) {
 
 // TestExtractUsageBadBodyIsZero 验证用量解析失败时返回零值而不是报错：
 // 用量只影响面板上的开销数字，不应让统计失败影响判定结果。
+// TestExtractUsageDeepSeekCacheFields：DeepSeek 原生缓存字段（部分中转
+// 不翻译成 OpenAI details 形态）也要算进命中，否则账面缓存被抹成 0。
+func TestExtractUsageDeepSeekCacheFields(t *testing.T) {
+	body := []byte(`{"usage":{"prompt_tokens":1000,"completion_tokens":10,
+		"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":200}}`)
+	u := ExtractUsage(upstream.EPChat, body)
+	if u.CacheReadTokens != 800 {
+		t.Errorf("CacheReadTokens = %d，应为 DeepSeek 原生命中的 800", u.CacheReadTokens)
+	}
+	if u.PromptTokens != 200 {
+		t.Errorf("PromptTokens = %d，应为总量减命中 200", u.PromptTokens)
+	}
+}
+
 func TestExtractUsageBadBodyIsZero(t *testing.T) {
 	for _, body := range []string{
 		`<html>502 Bad Gateway</html>`,

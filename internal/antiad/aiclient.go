@@ -528,6 +528,19 @@ func aiAttemptDo(parent context.Context, sh *core.Shared, snap *store.Snapshot,
 				detail = core.TruncateRunes(m, 200)
 			}
 		}
+		// 上游不接受 cache_control 缓存标记：记下这个上游，去掉标记立即
+		// 重发。标记默认启用（Claude 系网关必须显式打标才有前缀缓存），
+		// 个别严格校验的中转会 4xx，不能让它拖垮整条判定。
+		if upstream.CacheControlRejected(resp.StatusCode, detail) {
+			upstream.MarkCacheControlUnsupported(upName(up))
+			slog.Warn("反广告：上游不接受 cache_control 缓存标记，去掉后重试",
+				"上游", upName(up), "状态", resp.StatusCode)
+			return aiResult{
+				err: fmt.Errorf("上游 %s 返回 %d：不接受 cache_control 缓存标记，已去掉该标记重试",
+					upName(up), resp.StatusCode),
+				stage: st, elapsed: time.Since(start),
+				retryable: true, noBackoff: true}
+		}
 		// 模型不接受 temperature：记下它（见 upstream/temperature.go），
 		// 立即重发。判定要可复现所以固定 temperature=0，但有的模型直接
 		// 拒绝该参数，不让步就是整条判定失败放行。下一次尝试会经 BuildBody

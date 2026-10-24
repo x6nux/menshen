@@ -60,14 +60,23 @@ type openAIUsage struct {
 		CachedTokens     int `json:"cached_tokens"`
 		CacheWriteTokens int `json:"cache_write_tokens"` // newapi 扩展字段
 	} `json:"prompt_tokens_details"`
+	// DeepSeek 原生字段：部分中转不翻译成 OpenAI 的 details 形态，
+	// 原样透传 prompt_cache_hit_tokens —— 不认它就会把命中记成 0，
+	// 账面缓存被抹掉（计费口径 cache_read 比 cache_write 便宜得多，
+	// 记零会虚增成本）。
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 }
 
 // OpenAI 的 prompt_tokens **包含** cached_tokens，必须减掉才能保证四类不重叠。
 func (o openAIUsage) normalize() Usage {
+	// 缓存命中取两处口径的较大者：details 与 DeepSeek 原生字段通常只有
+	// 一处有值，都有值时是同一件事的两种记法，取大不会重复计。
+	cached := max(o.PromptTokensDetails.CachedTokens, o.PromptCacheHitTokens)
 	return Usage{
-		PromptTokens:     nonNeg(o.PromptTokens - o.PromptTokensDetails.CachedTokens),
+		PromptTokens:     nonNeg(o.PromptTokens - cached),
 		CompletionTokens: nonNeg(o.CompletionTokens),
-		CacheReadTokens:  nonNeg(o.PromptTokensDetails.CachedTokens),
+		CacheReadTokens:  nonNeg(cached),
 		CacheWriteTokens: nonNeg(o.PromptTokensDetails.CacheWriteTokens),
 	}
 }

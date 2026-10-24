@@ -74,8 +74,68 @@ func (u *Upstream) BuildBody(ep Endpoint, model string, payload map[string]any) 
 		if _, ok := b["stream"]; !ok {
 			b["stream"] = true
 		}
+		// 常量 system 前缀打缓存标记（默认启用）：Claude 系网关必须显式
+		// cache_control 才缓存前缀；认该字段的网关当增益，个别严格校验的
+		// 中转回 4xx 时由判定侧记下本上游并立即去掉重发（见 antiad.aiAttempt）。
+		if !CacheControlUnsupported(u.Name) {
+			b["messages"] = withSystemCacheMarker(b["messages"])
+		}
 	}
 	return b
+}
+
+// withSystemCacheMarker 把第一条 system/developer 消息的文本内容改写成
+// 带 cache_control 的 content parts，其余消息原样。判定的 chat 载荷里
+// messages 有两种在途形态（[]map[string]string 与 []any——识图路径），
+// 各自处理；没有 system 消息、内容已是 parts 或该消息不是首条常量段时
+// 原样返回。markers 只打一条：缓存标记意味着「缓存到这块为止」，判定
+// 请求里只有 system 是跨请求不变的。
+func withSystemCacheMarker(msgs any) any {
+	switch ms := msgs.(type) {
+	case []map[string]string:
+		out := make([]any, len(ms))
+		marked := false
+		for i, m := range ms {
+			if !marked && (m["role"] == "system" || m["role"] == "developer") {
+				out[i] = map[string]any{"role": m["role"], "content": CacheControlParts(m["content"])}
+				marked = true
+				continue
+			}
+			out[i] = m
+		}
+		if marked {
+			return out
+		}
+		return ms
+	case []any:
+		// 先探后拷：切片与消息 map 都可能与调用方共享（识图路径两次尝试
+		// 复用同一载荷），不能原地改。
+		idx := -1
+		for i, mv := range ms {
+			m, ok := mv.(map[string]any)
+			if !ok || (m["role"] != "system" && m["role"] != "developer") {
+				continue
+			}
+			if _, ok := m["content"].(string); ok {
+				idx = i
+			}
+			break // 只看第一条 system/developer
+		}
+		if idx < 0 {
+			return ms
+		}
+		out := make([]any, len(ms))
+		copy(out, ms)
+		m := out[idx].(map[string]any)
+		nc := make(map[string]any, len(m))
+		for k, v := range m {
+			nc[k] = v
+		}
+		nc["content"] = CacheControlParts(m["content"].(string))
+		out[idx] = nc
+		return out
+	}
+	return msgs
 }
 
 // NormalizeResponse 把渠道响应翻译成调用方认的形状：chat 端点是 OpenAI
@@ -248,7 +308,10 @@ func bodyAnthropic(model string, payload map[string]any) map[string]any {
 		body["messages"] = out
 	}
 	if len(system) > 0 {
-		body["system"] = strings.Join(system, "\n\n")
+		// Anthropic 原生必须显式 cache_control 才缓存前缀：system 是判定
+		// 请求里唯一跨请求不变的段，标记打在它上面（低于最小可缓存长度时
+		// 上游静默跳过，不报错）。
+		body["system"] = CacheControlParts(strings.Join(system, "\n\n"))
 	}
 	if t, ok := payload["temperature"]; ok {
 		body["temperature"] = t
